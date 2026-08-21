@@ -1,0 +1,5 @@
+# OpenCode may install project-local plugin dependencies.
+node_modules/
+bun.lock
+package.json
+package-lock.json

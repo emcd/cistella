@@ -1,0 +1,20 @@
+# Per-repository cargo-nextest configuration. Lives under
+# `.auxiliary/configuration/` to keep all dev-tool config in one place;
+# it is NOT at the default `.config/nextest.toml` autoload path, so every
+# invocation must pass `--config-file .auxiliary/configuration/nextest.toml`
+# explicitly. Four places currently do: pre-commit.yaml (`cargo-nextest` and
+# `cargo-nextest-release` entries), tester.yaml (the `Test` step),
+# documentation/development-practices.md (Pre-Commit Validation), and
+# documentation/development/README.md (Local Validation). Adding a new
+# invocation point? Add the flag there too, or it silently won't load.
+#
+# Reference: https://nexte.st/docs/configuration/
+
+[profile.default]
+# Warning only, by deliberate choice: the suite today contains tests that
+# legitimately exceed 10 seconds, and `terminate-after` would convert a
+# SLOW warning into a hard failure for them. Future tests over 10s will
+# be flagged at introduction via the SLOW status; if a slow test is
+# intended and not intended to be flagged, add it as a per-test override
+# rather than raising the global threshold.
+slow-timeout = "10s"
