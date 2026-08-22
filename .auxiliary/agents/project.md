@@ -5,22 +5,22 @@ Structured tracking stays in `nb`.
 
 ## Purpose
 
-[Describe your project's purpose and goals]
+Cistella is a CLI driver that launches and supervises one OCI container per agent development session. It implements the devcontainers model for agent harnesses: declarative per-session profiles, allowlist-only mounts, runtime-agnostic container integration, and credential-absence push enforcement. Agentmux ([github.com/emcd/agentmux](https://github.com/emcd/agentmux)) is one consumer that invokes cistella as the session command via its coder profile mechanism; other orchestrators can use the same driver contract. The project aims to make agent containerization reproducible, auditable, and safe to run with broad permission scopes inside the container.
 
 ## Tech Stack
 
-[List your primary technologies]
+- Language: Rust (edition 2024).
+- Container integration: rootless container runtime for V1; `--userns=keep-id` for sane bind-mounted worktree ownership; runtime labels plus a sidecar `gc` verb for orphan reaping; Quadlet systemd user units for V1 long-lived supervision.
+- Transport: host terminal multiplexer hosts the session's TTY; the container is a long-lived service started detached; the harness launches inside it via a runtime exec call (never via attach to PID 1).
+- Identity: per-seat SSH signing keys plus `allowed_signers` for signed review commits; no authentication credential for code-hosting pushes inside the container.
+- Mount model: allowlist-only schema with explicit host-source, container-target, and mode triples; driver exports matching environment variables in the container.
+- Change management: OpenSpec (OPSX) per `openspec/` and the project's `AGENTS.md`.
 
 ## Notes
 
-<!-- Accumulate project-specific knowledge, constraints, deviations, and durable
-     links here. For structured items, use `nb`.
+Design decisions live in OpenSpec specifications under `openspec/` and in source-tree READMEs under `src/**/README.md`.
 
-     Migration: if upgrading from an AGENTS.md that still had inline Purpose,
-     Tech Stack, or Project Notes sections, move that body here once, then accept
-     the template-owned AGENTS.md pointer.
-
-     TODO: If this project uses multiple agent/worktree roles, create a stable
+<!-- TODO: If this project uses multiple agent/worktree roles, create a stable
      team-organization note in `nb`, modeled after one of the examples at:
      https://raw.githubusercontent.com/emcd/agents-common/master/examples/nb-notes/team-organization/README.md
      Then link the note here, for example:

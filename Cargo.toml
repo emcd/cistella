@@ -1,0 +1,30 @@
+[package]
+name = "cistella"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "External driver for Agentmux agent development containers"
+license = "Apache-2.0"
+repository = "https://github.com/emcd/cistella"
+homepage = "https://github.com/emcd/cistella"
+keywords = [ "agentmux", "containers", "podman", "agent", "devcontainers" ]
+categories = [ "command-line-utilities", "development-tools" ]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+]
+
+[lib]
+name = "cistella"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cistella"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]

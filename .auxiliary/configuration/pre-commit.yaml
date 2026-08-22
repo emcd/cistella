@@ -31,61 +31,61 @@ repos:
     - id: check-yaml
       name: 'Validate: YAML Files'
 
-# - repo: local
-#   hooks:
-#
-#     - id: cargo-fmt
-#       name: 'Check Style (Rust)'
-#       language: system
-#       entry: 'cargo fmt --all -- --check'
-#       pass_filenames: false
-#       require_serial: true
-#       stages: [ 'pre-commit' ]
-#       fail_fast: true
-#
-#     - id: cargo-clippy
-#       name: 'Lint (Rust: Clippy)'
-#       language: system
-#       entry: 'cargo clippy --all-targets --features "" -- -D warnings'
-#       pass_filenames: false
-#       require_serial: true
-#       stages: [ 'pre-commit' ]
-#       fail_fast: true
-#
-#     - id: linecheck
-#       name: 'Check: Line Counts'
-#       language: system
-#       entry: 'linecheck --config .auxiliary/configuration/linecheck.yaml'
-#       types: [ rust ]
-#       require_serial: true
-#       stages: [ 'pre-commit' ]
-#       fail_fast: true
-#
-#     - id: cargo-build
-#       name: 'Compile (Rust: Release)'
-#       language: system
-#       entry: 'cargo build --release --locked'
-#       pass_filenames: false
-#       require_serial: true
-#       stages: [ 'pre-merge-commit', 'pre-push' ]
-#       always_run: true
-#       fail_fast: true
-#
-#     - id: cargo-nextest
-#       name: 'Test (Rust, cargo-nextest)'
-#       language: system
-#       entry: 'cargo nextest run --locked --config-file .auxiliary/configuration/nextest.toml'
-#       pass_filenames: false
-#       require_serial: true
-#       stages: [ 'pre-merge-commit', 'pre-commit' ]
-#       fail_fast: true
-#
-#     - id: cargo-nextest-release
-#       name: 'Test (Rust: Release, cargo-nextest)'
-#       language: system
-#       entry: 'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml'
-#       pass_filenames: false
-#       require_serial: true
-#       stages: [ 'pre-merge-commit', 'pre-push' ]
-#       always_run: true
-#       fail_fast: true
+- repo: local
+  hooks:
+
+    - id: cargo-fmt
+      name: 'Check Style (Rust)'
+      language: system
+      entry: 'cargo fmt --all -- --check'
+      pass_filenames: false
+      require_serial: true
+      stages: [ 'pre-commit' ]
+      fail_fast: true
+
+    - id: cargo-clippy
+      name: 'Lint (Rust: Clippy)'
+      language: system
+      entry: 'cargo clippy --all-targets --features "" -- -D warnings'
+      pass_filenames: false
+      require_serial: true
+      stages: [ 'pre-commit' ]
+      fail_fast: true
+
+    - id: linecheck
+      name: 'Check: Line Counts'
+      language: system
+      entry: 'linecheck --config .auxiliary/configuration/linecheck.yaml'
+      types: [ rust ]
+      require_serial: true
+      stages: [ 'pre-commit' ]
+      fail_fast: true
+
+    - id: cargo-build
+      name: 'Compile (Rust: Release)'
+      language: system
+      entry: 'cargo build --release --locked'
+      pass_filenames: false
+      require_serial: true
+      stages: [ 'pre-merge-commit', 'pre-push' ]
+      always_run: true
+      fail_fast: true
+
+    - id: cargo-nextest
+      name: 'Test (Rust, cargo-nextest)'
+      language: system
+      entry: 'cargo nextest run --locked --config-file .auxiliary/configuration/nextest.toml'
+      pass_filenames: false
+      require_serial: true
+      stages: [ 'pre-merge-commit', 'pre-commit' ]
+      fail_fast: true
+
+    - id: cargo-nextest-release
+      name: 'Test (Rust: Release, cargo-nextest)'
+      language: system
+      entry: 'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml'
+      pass_filenames: false
+      require_serial: true
+      stages: [ 'pre-merge-commit', 'pre-push' ]
+      always_run: true
+      fail_fast: true
