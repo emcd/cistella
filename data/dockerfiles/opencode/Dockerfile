@@ -32,4 +32,5 @@ RUN if [ -n "$OPENCODE_VERSION" ]; then \
     fi \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && chmod +x /usr/local/bin/opencode \
+    && rm -rf /root/.opencode \
     && opencode --version

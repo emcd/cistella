@@ -14,13 +14,17 @@ The driver image SHALL be `debian:bookworm-slim` with `ncurses-bin` (provides `t
 ### Requirement: Binaries at user-independent paths, no pre-seeded per-user state
 The driver image SHALL place all harness binaries and static assets at user-independent paths (`/usr/local/bin`, `/usr/share`, `/opt`) and SHALL NOT pre-seed per-user writable state (`~/.local`, `~/.config`, etc.); writable state SHALL come only from profile allowlist mounts.
 
-#### Scenario: keep-id HOME=/ still finds binary
-- **WHEN** `podman run --rm --userns=keep-id -e TERM=xterm-ghostty` the image and `HOME=/` runs `command -v opencode` and `opencode --version`
-- **THEN** `command -v` is `/usr/local/bin/opencode` and `opencode --version` is the pinned version without `EACCES` `mkdir '/.local'`
+#### Scenario: keep-id HOME=/ still finds binary (independent of HOME writability)
+- **WHEN** `podman run --rm --userns=keep-id -e TERM=xterm-ghostty` the image and `HOME=/` runs `command -v opencode` and `test -x /usr/local/bin/opencode`
+- **THEN** `command -v` is `/usr/local/bin/opencode` and no `EACCES` occurs for binary discovery
+
+#### Scenario: opencode version with writable HOME
+- **WHEN** `podman run --rm --userns=keep-id --tmpfs /home/cistella -e HOME=/home/cistella -e TERM=xterm-ghostty` the image runs `opencode --version` (or `-e HOME=/tmp` for image-tier)
+- **THEN** it is the pinned version without `EACCES` `mkdir '/.local'` (writable `HOME` is required for harness execution; binary discovery `HOME=/` is independent and tests only `command -v`)
 
 ### Requirement: Version pinning and host prerequisites
 The driver SHALL pin `debian:bookworm-slim` and SHALL depend on host prerequisites `podman`, `uidmap`, `slirp4netns`, `fuse-overlayfs`, cgroup v2, and the invoking user's `subuid`/`subgid` range (e.g., `100000:65536`) in `/etc/subuid`/`/etc/subgid`.
 
 #### Scenario: Host preflight
-- **WHEN** `scripts/validate-rootless-podman` (pc-setup) is run
-- **THEN** it verifies command presence, cgroup v2, `subuid`/`subgid` entries for the invoking user, `podman info` `rootless:true` `cgroupVersion:v2` `storageDriver:overlay` `networkBackend:netavark`, `podman unshare`, and `~/.config/containers/systemd/` exists (implemented locally in pc-setup, not yet pushed; contract is SHALL)
+- **WHEN** `scripts/validate-rootless-podman` (pc-setup `eb8f6cb` on `origin/master`) is run
+- **THEN** it verifies command presence, cgroup v2, `subuid`/`subgid` entries for the invoking user, `podman info` `rootless:true` `cgroupVersion:v2` `storageDriver:overlay` `networkBackend:netavark`, `podman unshare`, and `~/.config/containers/systemd/` exists

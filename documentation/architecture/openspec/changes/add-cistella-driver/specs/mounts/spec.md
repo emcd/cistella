@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
-### Requirement: Declarative profile file with credential-surface slot
-The driver SHALL use a declarative profile file (TOML, e.g., `coders.toml` profile) with required fields: `harness`, `mounts` (allowlist triples), `env`, and `credential-surface` slot (even if PoC hardcodes its value per `home:coordination/6`).
+### Requirement: Declarative profile file with credential-surface slot and container-home
+The driver SHALL use a declarative profile file (TOML, e.g., `coders.toml` profile) with required fields: `harness`, `mounts` (allowlist triples), `env`, `credential-surface` slot (even if PoC hardcodes its value per `home:coordination/6`), and optional `container-home` (default `/home/cistella`) — the single distinguished writable session-home root. `HOME` SHALL be derived from `container-home`, not freely overridden via `env`.
 
 #### Scenario: Profile validation
-- **WHEN** a profile with `harness = "opencode"` and `mounts = [...]` and `credential-surface = "none"` is loaded
+- **WHEN** a profile with `harness = "opencode"` and `mounts = [...]` and `credential-surface = "none"` and `container-home = "/home/cistella"` is loaded
 - **THEN** validation succeeds; missing `credential-surface` fails
 
 ### Requirement: Allowlist-only mount triples with env exports and explicit HOME
@@ -16,7 +16,7 @@ The driver SHALL accept only an allowlist of explicit `(host-source, container-t
 
 #### Scenario: HOME explicitly set
 - **WHEN** `podman run --rm --userns=keep-id` is run without host `HOME` forwarded
-- **THEN** `echo $HOME` inside is `/home/cistella` (or the profile's `container-home`) and `opencode --version` does not attempt `mkdir '/.local'`
+- **THEN** `echo $HOME` inside is `/home/cistella` as set by the driver from the profile's `env` and `opencode --version` does not attempt `mkdir '/.local'`
 
 #### Scenario: No parent mount
 - **WHEN** a profile does not list a parent directory
@@ -36,8 +36,8 @@ The driver SHALL mount the seat's configured notebook repositories RW when neede
 - **WHEN** container runs `nb` MCP with the seat's `notebooks` list
 - **THEN** each configured repository is RW and `~/.config/nb` is RO
 
-### Requirement: Mount validation (canonicalize, reject unsafe/colliding)
-The driver SHALL canonicalize both sides of every mount triple before validation (longest existing prefix, per `dispositor` `assert_disjoint_roots` precedent) and SHALL reject any profile where a container-target is at or above sensitive roots (`/`, `/etc`, etc.) or where two container-targets overlap (one is an ancestor of the other).
+### Requirement: Mount validation (canonicalize, reject unsafe/colliding, two-tier topology)
+The driver SHALL canonicalize both sides of every mount triple before validation (longest existing prefix, per `dispositor` `assert_disjoint_roots` precedent) and SHALL reject any profile where a container-target is at or above sensitive roots (`/`, `/etc`, etc.) or where two triples overlap (one is an ancestor of the other). Triples MAY nest under the single distinguished writable session-home root at the explicit `HOME` (e.g., `/home/cistella` as tmpfs or session scratch, declared via `container-home`), which is a driver primitive, not a triple and not subject to peer-disjointness. Mount ordering: session-home first, then triples by path depth.
 
 #### Scenario: Canonicalize and reject overlap
 - **WHEN** a profile contains `host-source` `/tmp/link` (symlink to `/home/me/src`) and `container-target` `/work` + `container-target` `/work/src` overlap
