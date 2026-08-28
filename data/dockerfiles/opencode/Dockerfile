@@ -24,8 +24,12 @@ ARG OPENCODE_VERSION=1.18.23
 # binary version, but not script integrity. For production, use a versioned
 # artifact URL with checksum/signature verification (e.g., GitHub release tarball
 # + sha256) instead of the install script.
+# Install to /usr/local/bin so it is on PATH for --userns=keep-id (HOME=/, uid 1000).
 RUN if [ -n "$OPENCODE_VERSION" ]; then \
         curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE_VERSION"; \
     else \
         echo "OPENCODE_VERSION is empty; refusing to install latest (pin required for reproducibility)" >&2; exit 1; \
-    fi
+    fi \
+    && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && chmod +x /usr/local/bin/opencode \
+    && opencode --version

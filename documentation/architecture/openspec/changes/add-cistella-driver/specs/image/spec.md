@@ -11,6 +11,13 @@ The driver image SHALL be `debian:bookworm-slim` with `ncurses-bin` (provides `t
 - **WHEN** host is Ghostty `TERMINFO=/usr/local/share/terminfo` with `g/ghostty` + `x/xterm-ghostty`
 - **THEN** container `infocmp` succeeds without `-v /usr/local/share/terminfo:/usr/local/share/terminfo:ro`
 
+### Requirement: Binaries at user-independent paths, no pre-seeded per-user state
+The driver image SHALL place all harness binaries and static assets at user-independent paths (`/usr/local/bin`, `/usr/share`, `/opt`) and SHALL NOT pre-seed per-user writable state (`~/.local`, `~/.config`, etc.); writable state SHALL come only from profile allowlist mounts.
+
+#### Scenario: keep-id HOME=/ still finds binary
+- **WHEN** `podman run --rm --userns=keep-id -e TERM=xterm-ghostty` the image and `HOME=/` runs `command -v opencode` and `opencode --version`
+- **THEN** `command -v` is `/usr/local/bin/opencode` and `opencode --version` is the pinned version without `EACCES` `mkdir '/.local'`
+
 ### Requirement: Version pinning and host prerequisites
 The driver SHALL pin `debian:bookworm-slim` and SHALL depend on host prerequisites `podman`, `uidmap`, `slirp4netns`, `fuse-overlayfs`, cgroup v2, and the invoking user's `subuid`/`subgid` range (e.g., `100000:65536`) in `/etc/subuid`/`/etc/subgid`.
 

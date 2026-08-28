@@ -7,12 +7,16 @@ The driver SHALL use a declarative profile file (TOML, e.g., `coders.toml` profi
 - **WHEN** a profile with `harness = "opencode"` and `mounts = [...]` and `credential-surface = "none"` is loaded
 - **THEN** validation succeeds; missing `credential-surface` fails
 
-### Requirement: Allowlist-only mount triples with env exports
-The driver SHALL accept only an allowlist of explicit `(host-source, container-target, mode RO/RW)` triples per profile and SHALL export matching env vars (`XDG_STATE_HOME`, etc.) inside the container.
+### Requirement: Allowlist-only mount triples with env exports and explicit HOME
+The driver SHALL accept only an allowlist of explicit `(host-source, container-target, mode RO/RW)` triples per profile and SHALL export matching env vars (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, etc.) inside the container. `HOME` SHALL be set explicitly by the driver, consistent with the profile's container-targets (e.g., `/home/cistella`), and is part of the closed env list — not ambient from the host.
 
 #### Scenario: Opencode profile (canonical)
 - **WHEN** profile selects `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`, worktree, per-session scratch (`/tmp/cistella-<session>`), and the seat's configured notebook repositories RW with config RO
-- **THEN** only those paths are mounted, each as its triple, and env vars point at the container targets
+- **THEN** only those paths are mounted, each as its triple, and env vars (`HOME`, `XDG_*`) point at the container targets
+
+#### Scenario: HOME explicitly set
+- **WHEN** `podman run --rm --userns=keep-id` is run without host `HOME` forwarded
+- **THEN** `echo $HOME` inside is `/home/cistella` (or the profile's `container-home`) and `opencode --version` does not attempt `mkdir '/.local'`
 
 #### Scenario: No parent mount
 - **WHEN** a profile does not list a parent directory
