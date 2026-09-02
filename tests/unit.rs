@@ -5,5 +5,11 @@
 //! picks up `tests/unit.rs`; the `#[path]` attribute directs each
 //! submodule to its file in the subdirectory.
 
+#[path = "unit/identity.rs"]
+mod identity;
+#[path = "unit/mount.rs"]
+mod mount;
+#[path = "unit/runtime.rs"]
+mod runtime;
 #[path = "unit/version.rs"]
 mod version;

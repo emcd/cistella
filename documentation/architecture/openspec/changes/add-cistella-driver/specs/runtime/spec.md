@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: Rootless Podman lifecycle with labels and GC (no --rm)
-The driver SHALL manage one disposable container per session with labels `cistella.session-id`, `cistella.seat`, `cistella.harness`, `cistella.profile` and SHALL provide `stop`/`status`/`logs`/`gc` verbs. For the spike: `podman run -d --userns=keep-id`; for the V1 driver: `run` generates a Quadlet `.container` unit and `systemctl --user start` it (systemd owns the container). The driver SHALL NOT use `--rm` — removal is `gc`'s job. `gc` SHALL reap only `exited` containers with `cistella.*` labels in V1; running-orphan detection is deferred. `gc` SHALL fail closed (reap nothing) on any `podman inspect` error.
+### Requirement: Rootless Podman lifecycle with labels and GC (Quadlet --rm model)
+The driver SHALL manage one disposable container per session with labels `cistella.session-id`, `cistella.seat`, `cistella.harness`, `cistella.profile` and SHALL provide `stop`/`status`/`logs`/`gc` verbs. For the spike: `podman run -d --userns=keep-id`; for the V1 driver: `run` generates a Quadlet `.container` unit and `systemctl --user start` it (systemd owns the container). Quadlet adds `--rm` to `ExecStart` regardless — containers are removed on `systemctl stop` by design; post-mortem is `journalctl --user -u <service>` (fallback to `podman logs` for non-systemd containers). `gc` reaps orphaned unit files and stray non-systemd `exited` containers with `cistella.*` labels; running-orphan detection is deferred. `gc` SHALL fail closed (reap nothing) on any `podman inspect` error.
 
 #### Scenario: Label and GC
 - **WHEN** a Quadlet unit `cistella-*.container` is generated and started and the session crashes
-- **THEN** `podman ps --filter label=cistella.session-id=...` finds the exited container and `cistella gc` reaps it and `cistella logs` shows post-mortem
+- **THEN** `podman ps --filter label=cistella.session-id=...` finds the exited container (or `systemctl --user status` shows inactive) and `cistella gc` reaps the orphaned unit/file and `journalctl --user -u <service>` shows post-mortem
 
 #### Scenario: GC isolation (never reap unrelated or active)
 - **WHEN** an unrelated container without `cistella.*` labels, an active `cistella` session container (running with `cistella.*` labels), and an exited `cistella` session container exist
