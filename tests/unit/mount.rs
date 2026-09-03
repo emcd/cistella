@@ -17,8 +17,9 @@ fn rejects_sensitive_root() {
 fn rejects_container_home_traversal() {
     let prof = Profile::from_toml(
         r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 credential_surface = "none"
+mounts = []
 container_home = "/home/cistella/../../etc"
 "#,
     );
@@ -97,17 +98,79 @@ fn volume_args_order_home_first() {
 #[test]
 fn profile_requires_credential_surface() {
     let bad = r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 container_home = "/home/cistella"
 "#;
     assert!(Profile::from_toml(bad).is_err());
 }
 
 #[test]
+fn profile_requires_image() {
+    let bad = r#"
+credential_surface = "none"
+mounts = []
+container_home = "/home/cistella"
+"#;
+    assert!(Profile::from_toml(bad).is_err());
+}
+
+#[test]
+fn profile_requires_mounts() {
+    let bad = r#"
+image = "localhost/cistella/opencode:example"
+credential_surface = "none"
+container_home = "/home/cistella"
+"#;
+    assert!(Profile::from_toml(bad).is_err());
+}
+
+#[test]
+fn profile_rejects_reserved_label() {
+    let bad = r#"
+image = "localhost/cistella/opencode:example"
+credential_surface = "none"
+mounts = []
+[labels]
+cistella.id = "spoof"
+"#;
+    assert!(Profile::from_toml(bad).is_err());
+}
+
+#[test]
+fn profile_accepts_command_array_and_labels() {
+    let ok = r#"
+image = "localhost/cistella/opencode:example"
+credential_surface = "none"
+mounts = []
+command = ["opencode", "--model", "x"]
+[labels]
+"agentmux.session" = "s1"
+"#;
+    let prof = Profile::from_toml(ok).unwrap();
+    assert_eq!(prof.command.unwrap(), vec!["opencode", "--model", "x"]);
+}
+
+#[test]
+fn profile_expands_tilde_in_host_source() {
+    let ok = r#"
+image = "localhost/cistella/opencode:example"
+credential_surface = "none"
+[[mounts]]
+host_source = "~/.config/opencode"
+container_target = "/home/cistella/.config/opencode"
+mode = "ro"
+"#;
+    let prof = Profile::from_toml(ok).unwrap();
+    assert!(!prof.mounts[0].host_source.starts_with('~'));
+    assert!(prof.mounts[0].host_source.ends_with(".config/opencode"));
+}
+
+#[test]
 fn profile_rejects_home_in_env() {
     let bad = r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 credential_surface = "none"
+mounts = []
 container_home = "/home/cistella"
 [env]
 HOME = "/override"
@@ -118,7 +181,7 @@ HOME = "/override"
 #[test]
 fn profile_accepts_valid() {
     let ok = r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 credential_surface = "none"
 container_home = "/home/cistella"
 [[mounts]]

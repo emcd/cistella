@@ -18,3 +18,17 @@
 # intended and not intended to be flagged, add it as a per-test override
 # rather than raising the global threshold.
 slow-timeout = "10s"
+# Serial user-manager group: the lifecycle/labels/selectors/signals tests
+# drive the real systemd user manager and podman under one HOME registry
+# and one creation lock. Running them concurrently makes every test's `gc`
+# reap every other test's orphans and minted id prefixes collide, so
+# default validation flakes. The serial group makes the wall time the
+# honest sum; the Operator's suite-wall todo (cistella:todos/10) optimises
+# from this stable baseline. Unit tests stay parallel in the default group.
+
+[test-groups.user-manager]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "binary(integration)"
+test-group = "user-manager"

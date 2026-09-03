@@ -8,10 +8,13 @@
 pub mod cli;
 pub mod error;
 pub mod identity;
+pub mod lock;
 pub mod mount;
 pub mod preflight;
 pub mod profile;
+pub mod registry;
 pub mod runtime;
+pub mod session;
 pub mod transport;
 
 /// Returns the cistella package version as declared in `Cargo.toml`.

@@ -23,6 +23,12 @@ pub enum CistellaError {
     /// Preflight failure.
     #[error("preflight: {0}")]
     Preflight(String),
+    /// Advisory lock is held by another process (non-blocking acquire).
+    #[error("lock contended")]
+    LockContended,
+    /// Selector usage failure (ambiguous, empty, or mixed forms).
+    #[error("selector: {0}")]
+    Selector(String),
     /// IO wrapper.
     #[error(transparent)]
     Io(#[from] std::io::Error),

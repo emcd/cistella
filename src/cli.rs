@@ -1,4 +1,9 @@
 //! CLI definitions for the cistella driver.
+//!
+//! All-Latinate verb slate: `conduct` owns the session lifetime,
+//! `enter` provides companion entry, `survey` lists, `inspect` shows
+//! post-mortem, `terminate` tears down from outside, `gc` reaps orphans,
+//! `check` runs host preflight. No aliases.
 
 use clap::{Parser, Subcommand};
 
@@ -11,63 +16,76 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Create and start a session container.
-    Run {
-        /// Session id.
-        #[arg(long)]
-        session_id: String,
-        /// Seat name.
-        #[arg(long)]
-        seat: String,
-        /// Harness name.
-        #[arg(long)]
-        harness: String,
-        /// Profile name.
+    /// Mint a session id, create and start the container, exec the
+    /// harness argv on the pane PTY, wait, then tear down.
+    Conduct {
+        /// Profile name (resolved under `data/profiles/`) or file path.
         #[arg(long)]
         profile: String,
-        /// Worktree host path (required; becomes container /work).
+        /// Host directory mounted at `/work` (optional, defaults to cwd).
         #[arg(long)]
-        worktree: String,
-        /// Profile file path.
+        directory: Option<String>,
+        /// Identity label (not a credential selector).
         #[arg(long)]
-        profile_file: Option<String>,
-        /// Image ref.
-        #[arg(long, default_value = "cistella/opencode:example")]
-        image: String,
+        identity: Option<String>,
+        /// Generic label `k=v` for orchestrator correlation (repeatable;
+        /// `cistella.` prefix refused).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Image ref override (profile `image` otherwise).
+        #[arg(long)]
+        image: Option<String>,
+        /// Harness argv after `--` (profile `command` array otherwise).
+        #[arg(last = true)]
+        command: Vec<String>,
     },
-    /// Stop a session container.
-    Stop {
+    /// Enter a session with a companion shell via `podman exec -i -t`.
+    Enter {
+        /// Session id unique prefix (exactly one selector per invocation).
+        id: Option<String>,
+        /// Select by canonical host directory.
         #[arg(long)]
-        session_id: String,
-        #[arg(long)]
-        harness: String,
-    },
-    /// Status of session containers.
-    Status {
-        #[arg(long)]
-        session_id: Option<String>,
-    },
-    /// Logs of a session container.
-    Logs {
-        #[arg(long)]
-        session_id: String,
-        #[arg(long)]
-        harness: String,
-    },
-    /// Reap exited cistella containers.
-    Gc,
-    /// Execute a command inside the session container with closed env forwarded.
-    Exec {
-        /// Session id.
-        #[arg(long)]
-        session_id: String,
-        /// Harness name.
-        #[arg(long)]
-        harness: String,
+        directory: Option<String>,
+        /// Select by generic label `k=v` (repeatable, ANDed).
+        #[arg(long = "label")]
+        labels: Vec<String>,
         /// Command to execute (default: shell).
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Host preflight / doctor.
-    Doctor,
+    /// Survey sessions by joining the unit registry with runtime state.
+    Survey {
+        /// Filter by canonical host directory.
+        #[arg(long)]
+        directory: Option<String>,
+        /// Filter by generic label `k=v` (repeatable, ANDed).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+    },
+    /// Inspect a session (labels plus journald post-mortem).
+    Inspect {
+        /// Session id unique prefix (exactly one selector per invocation).
+        id: Option<String>,
+        /// Select by canonical host directory.
+        #[arg(long)]
+        directory: Option<String>,
+        /// Select by generic label `k=v` (repeatable, ANDed).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+    },
+    /// Terminate a session from outside via shared teardown.
+    Terminate {
+        /// Session id unique prefix (exactly one selector per invocation).
+        id: Option<String>,
+        /// Select by canonical host directory.
+        #[arg(long)]
+        directory: Option<String>,
+        /// Select by generic label `k=v` (repeatable, ANDed).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+    },
+    /// Reap orphaned cistella units and scratch.
+    Gc,
+    /// Host preflight check.
+    Check,
 }

@@ -1,0 +1,304 @@
+//! Core conduct lifecycle: mint, attached terminate, orphan reap.
+
+use std::process::Command;
+use std::time::Duration;
+
+use tempfile::TempDir;
+
+use super::helpers::*;
+
+#[test]
+fn conduct_exit_passthrough_and_mint() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let _guard = Guard::empty();
+
+    // Harness exit 42 passes through conduct.
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            "default",
+            "--directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "sh",
+            "-c",
+            "exit 42",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(42),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let id1 = first
+        .strip_prefix("conduct ")
+        .expect("conduct id line")
+        .to_string();
+    assert!(valid_minted_id(&id1));
+    assert!(scratch_gone(&id1), "no scratch residue");
+    assert!(!unit_path(&home, &id1).exists(), "no unit residue");
+
+    // Harness true exits 0 with a larger, time-sortable id.
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            "default",
+            "--directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "true",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let id2 = first
+        .strip_prefix("conduct ")
+        .expect("conduct id line")
+        .to_string();
+    assert!(valid_minted_id(&id2));
+    assert!(id2 > id1, "minted ids time-sortable: {id1} < {id2}");
+
+    // Caller-supplied ids are rejected (no --session-id flag exists).
+    let out = run_cistella(&home, &["conduct", "--session-id", "foo"]);
+    assert!(!out.status.success(), "--session-id must not exist");
+
+    // Missing images are typed refusals naming the image (never pulled).
+    let profile = worktree.path().join("missing.toml");
+    std::fs::write(
+        &profile,
+        "image = \"localhost/cistella/missing:example\"\ncredential_surface = \"none\"\n",
+    )
+    .unwrap();
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--directory",
+            &worktree_str,
+            "--",
+            "true",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("localhost/cistella/missing:example"),
+        "refusal names the image"
+    );
+
+    // Failure after install (bad harness path is post-start) leaves no residue.
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            "default",
+            "--directory",
+            &worktree_str,
+            "--",
+            "/nonexistent-harness-binary-xyz",
+        ],
+    );
+    assert!(!out.status.success());
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if let Some(id) = first.strip_prefix("conduct ") {
+        assert!(!unit_path(&home, id).exists(), "no unit residue");
+        assert!(scratch_gone(id), "no scratch residue");
+    }
+}
+
+#[test]
+fn conduct_lifecycle_terminate_while_attached() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    std::fs::write(worktree.path().join("README.md"), "# test").unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let corr = format!("s-{}-{}", std::process::id(), {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            % 1_000_000
+    });
+
+    let (mut conduct, id, mut guard) = spawn_conduct(
+        &home,
+        &worktree_str,
+        &[
+            "--identity",
+            "alice",
+            "--label",
+            &format!("agentmux.session={corr}"),
+        ],
+    );
+    wait_active(&id);
+
+    let container = format!("cistella-{id}");
+    let unit = unit_path(&home, &id);
+    assert!(unit.exists(), "unit missing after conduct start");
+    let content = std::fs::read_to_string(&unit).unwrap();
+    assert!(content.contains("Tmpfs=/home/cistella"));
+    assert!(content.contains("SuccessExitStatus=143"));
+    assert!(!content.contains("Environment=TERM="));
+    // cistella.command JSON array round-trips argv -> label -> argv.
+    let round = cistella::session::parse_command_label(&unit_label(&home, &id, "cistella.command"))
+        .unwrap();
+    assert_eq!(round, vec!["sleep".to_string(), "300".to_string()]);
+    assert_eq!(unit_label(&home, &id, "agentmux.session"), corr);
+
+    // survey with zero filters and with directory/label filters.
+    for args in [
+        vec!["survey"],
+        vec!["survey", "--directory", &worktree_str],
+        vec!["survey", "--label", &format!("agentmux.session={corr}")],
+    ] {
+        let out = run_cistella(&home, &args);
+        assert!(out.status.success());
+        let txt = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            txt.contains(&container),
+            "survey {args:?} shows session: {txt}"
+        );
+    }
+
+    // enter via PTY proves driver transport wiring (stty 30 100, not 0 0).
+    assert!(
+        enter_stty_via_pty(&home, &worktree_str),
+        "cistella enter stty via pty failed"
+    );
+
+    // terminate from another pane while conduct is attached converges.
+    // Full id: concurrent tests mint same-millisecond prefixes, so short
+    // prefixes are ambiguous across the shared registry by design.
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status = conduct.wait().expect("conduct reaped");
+    eprintln!("conduct end: {status:?}");
+    guard.id = None;
+
+    assert!(!unit.exists(), "unit file removed by shared teardown");
+    assert!(scratch_gone(&id), "scratch removed by shared teardown");
+    let show = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "-p",
+            "ActiveState",
+            "-p",
+            "LoadState",
+            &format!("{container}.service"),
+        ])
+        .output()
+        .unwrap();
+    let show_txt = String::from_utf8_lossy(&show.stdout).to_string();
+    assert!(
+        show_txt.contains("ActiveState=inactive") || show_txt.contains("LoadState=not-found"),
+        "service inactive/not-found: {show_txt}"
+    );
+    let failed = Command::new("systemctl")
+        .args(["--user", "--failed", "--no-legend"])
+        .output()
+        .unwrap();
+    let failed_txt = String::from_utf8_lossy(&failed.stdout).to_string();
+    assert!(
+        !failed_txt.contains(&container),
+        "not in --failed: {failed_txt}"
+    );
+}
+
+#[test]
+fn inspect_postmortem_and_gc_reap_orphan() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+
+    let (mut conduct, id, mut guard) = spawn_conduct(&home, &worktree_str, &["--identity", "bob"]);
+    wait_active(&id);
+    let container = format!("cistella-{id}");
+
+    // SIGKILL conduct: no teardown runs, unit file and scratch remain.
+    conduct.kill().expect("kill conduct");
+    let _ = conduct.wait();
+    guard.id = None;
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(unit_path(&home, &id).exists(), "orphan unit remains");
+
+    // External stop simulating a crash: container gone (--rm), unit orphaned.
+    let out = Command::new("systemctl")
+        .args(["--user", "stop", &format!("{container}.service")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        unit_path(&home, &id).exists(),
+        "unit file outlives external stop"
+    );
+    assert!(!scratch_gone(&id), "scratch outlives external stop");
+
+    // inspect reads labels plus journald post-mortem from the orphan unit.
+    let out = run_cistella(&home, &["inspect", &id]);
+    assert!(
+        out.status.success(),
+        "inspect: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let txt = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(txt.contains(&container), "inspect names session: {txt}");
+
+    // gc reaps the orphaned unit and scratch without manual pre-cleanup.
+    let out = run_cistella(&home, &["gc"]);
+    assert!(
+        out.status.success(),
+        "gc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!unit_path(&home, &id).exists(), "gc removes orphan unit");
+    assert!(scratch_gone(&id), "gc removes orphan scratch");
+}

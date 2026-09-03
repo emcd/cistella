@@ -1,21 +1,28 @@
-//! Declarative profile file with credential-surface and container-home.
+//! Declarative profile file with image, command, mounts, and labels.
+//!
+//! Cistella knows only profiles: the image tag or digest, the optional
+//! harness argv array, the allowlist mount triples, the credential-surface
+//! slot, environment exports, and optional generic labels. The harness
+//! itself is argv after `--` chosen by the caller.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::error::{CistellaError, Result};
 use crate::mount::{MountTriple, canonicalize_container_target, validate_mounts};
+use crate::session::validate_generic_label;
 
-/// Credential surface: `none` or a per-seat sign-only socket.
+/// Credential surface: `none` or a per-identity sign-only socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialSurface {
     /// No agent is mounted.
     None,
-    /// Per-seat socket mounted RO at the same path inside.
+    /// Per-identity socket mounted RO at the same path inside.
     Agent {
-        /// Host path of the per-seat `AF_UNIX` socket.
+        /// Host path of the per-identity `AF_UNIX` socket.
         ssh_agent: String,
     },
 }
@@ -77,29 +84,85 @@ impl<'de> Deserialize<'de> for CredentialSurface {
     }
 }
 
-/// Declarative profile loaded from TOML (e.g. `coders.toml` profile).
+/// Declarative profile loaded from TOML (e.g. `data/profiles/<name>.toml`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
-    /// Harness name, e.g. `opencode`.
-    pub harness: String,
-    /// Allowlist mount triples.
-    #[serde(default)]
+    /// Image tag or digest, e.g. `localhost/cistella-opencode:example`.
+    pub image: String,
+    /// Allowlist mount triples (required field, may be an empty list).
     pub mounts: Vec<MountTriple>,
+    /// Harness argv array (TOML array, never a shell string).
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
     /// Env exports inside the container.
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// Credential surface slot; `none` mounts nothing, `ssh_agent` mounts per-seat socket RO.
+    /// Credential surface slot; `none` mounts nothing, `ssh_agent` mounts per-identity socket RO.
     pub credential_surface: CredentialSurface,
     /// Single distinguished writable session-home root.
     #[serde(default = "default_container_home")]
     pub container_home: String,
+    /// Generic labels (CLI `--label` and this table share one rule:
+    /// `cistella.` prefix refused, only the driver emits `cistella.*`).
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
 }
 
 fn default_container_home() -> String {
     "/home/cistella".to_string()
 }
 
+/// Resolves a profile reference to a file path.
+///
+/// A reference containing `/` or ending in `.toml` is a file path;
+/// otherwise it is a profile name resolved under `data/profiles/` relative
+/// to the current directory, falling back to the crate manifest dir.
+fn resolve_profile_path(reference: &str) -> Result<PathBuf> {
+    if reference.contains('/') || reference.ends_with(".toml") {
+        return Ok(PathBuf::from(reference));
+    }
+    let file = format!("data/profiles/{reference}.toml");
+    let cwd_path = PathBuf::from(&file);
+    if cwd_path.exists() {
+        return Ok(cwd_path);
+    }
+    let manifest_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("data/profiles/{reference}.toml"));
+    if manifest_path.exists() {
+        return Ok(manifest_path);
+    }
+    Err(CistellaError::Profile(format!(
+        "profile {reference} not found as {file} (cwd) or {} (manifest)",
+        manifest_path.display()
+    )))
+}
+
 impl Profile {
+    /// Loads a profile by name (`data/profiles/<name>.toml`) or file path.
+    ///
+    /// Returns the profile, the sha256 hex digest of its TOML text, and the
+    /// registry name (the reference itself for names, the file stem for
+    /// paths — paths never enter labels).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` if the profile cannot be found,
+    /// read, parsed, or validated.
+    pub fn resolve(reference: &str) -> Result<(Self, String, String)> {
+        let path = resolve_profile_path(reference)?;
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| CistellaError::Profile(format!("read {}: {e}", path.display())))?;
+        let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
+        let name = if reference.contains('/') || reference.ends_with(".toml") {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| reference.to_string())
+        } else {
+            reference.to_string()
+        };
+        Ok((Self::from_toml(&raw)?, digest, name))
+    }
+
     /// Loads a profile from a TOML file.
     ///
     /// # Errors
@@ -112,6 +175,12 @@ impl Profile {
         Self::from_toml(&raw)
     }
 
+    /// Returns the sha256 hex digest of TOML text.
+    #[must_use]
+    pub fn digest_of(text: &str) -> String {
+        format!("{:x}", Sha256::digest(text.as_bytes()))
+    }
+
     /// Parses TOML text into a validated profile.
     ///
     /// # Errors
@@ -120,8 +189,42 @@ impl Profile {
     pub fn from_toml(text: &str) -> Result<Self> {
         let mut profile: Self =
             toml::from_str(text).map_err(|e| CistellaError::Profile(format!("parse: {e}")))?;
-        if profile.harness.trim().is_empty() {
-            return Err(CistellaError::Profile("harness is required".to_string()));
+        if profile.image.trim().is_empty() {
+            return Err(CistellaError::Profile("image is required".to_string()));
+        }
+        for ch in ["\n", "\r", "\0"] {
+            if profile.image.contains(ch) {
+                return Err(CistellaError::Profile(
+                    "image must not contain control characters".to_string(),
+                ));
+            }
+        }
+        if let Some(command) = &profile.command {
+            if command.is_empty() {
+                return Err(CistellaError::Profile(
+                    "command must be a non-empty argv array".to_string(),
+                ));
+            }
+            for arg in command {
+                if arg.contains('\n') || arg.contains('\r') || arg.contains('\0') {
+                    return Err(CistellaError::Profile(
+                        "command argv must not contain control characters".to_string(),
+                    ));
+                }
+            }
+        }
+        for (key, value) in &profile.labels {
+            validate_generic_label(key, value).map_err(CistellaError::Profile)?;
+        }
+        // Expand a leading `~` in host sources so shipped profiles stay
+        // portable across seats (`~/.config/opencode`, never bare `~`).
+        for triple in &mut profile.mounts {
+            if triple.host_source == "~" || triple.host_source.starts_with("~/") {
+                let home = std::env::var("HOME").map_err(|_| {
+                    CistellaError::Profile("HOME not set for ~ expansion".to_string())
+                })?;
+                triple.host_source = format!("{home}{}", &triple.host_source[1..]);
+            }
         }
         // credential_surface is required and validated by Deserialize; `None` is explicitly allowed.
         if profile.container_home.trim().is_empty() {
@@ -157,19 +260,6 @@ impl Profile {
                 ));
             }
         }
-        // Harness charset: session-related field
-        if !profile
-            .harness
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-            || profile.harness.is_empty()
-            || profile.harness.len() > 64
-            || profile.harness.starts_with('-')
-        {
-            return Err(CistellaError::Profile(
-                "harness must match [A-Za-z0-9._-]{1,64}".to_string(),
-            ));
-        }
         for (k, v) in &profile.env {
             if k.contains('\n') || k.contains('\r') || v.contains('\n') || v.contains('\r') {
                 return Err(CistellaError::Profile(format!(
@@ -187,11 +277,6 @@ impl Profile {
             {
                 return Err(CistellaError::Profile(format!(
                     "env key must match [A-Z_][A-Z0-9_]*: {k}"
-                )));
-            }
-            if k.contains('=') || v.contains('=') && v.contains('\n') {
-                return Err(CistellaError::Profile(format!(
-                    "env must not contain injection: {k}"
                 )));
             }
         }

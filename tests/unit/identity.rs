@@ -12,8 +12,9 @@ fn none_mounts_nothing_even_with_ambient_sock() {
     unsafe { std::env::set_var("SSH_AUTH_SOCK", &sock) };
     let prof = Profile::from_toml(
         r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 credential_surface = "none"
+mounts = []
 "#,
     )
     .unwrap();
@@ -32,8 +33,9 @@ fn agent_mounts_ro_from_profile() {
     std::fs::write(&sock, "").unwrap();
     let toml = format!(
         r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 credential_surface = {{ ssh_agent = "{}" }}
+mounts = []
 "#,
         sock.display()
     );
@@ -48,8 +50,9 @@ credential_surface = {{ ssh_agent = "{}" }}
 fn rejects_github_token_in_env() {
     let prof = Profile::from_toml(
         r#"
-harness = "opencode"
+image = "localhost/cistella/opencode:example"
 credential_surface = "none"
+mounts = []
 [env]
 GITHUB_TOKEN = "secret"
 "#,
