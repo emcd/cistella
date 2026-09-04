@@ -3,8 +3,8 @@
 ## Purpose
 TBD - created by archiving change add-cistella-driver. Update Purpose after archive.
 ## Requirements
-### Requirement: Per-seat signing via SSH agent (sign-only is key registration + absence)
-The driver SHALL mount a per-seat `AF_UNIX` SSH agent socket read-only and SHALL set `SSH_AUTH_SOCK` inside the container. Sign-only SHALL be enforced by GitHub key registration (key type `Signing` refuses auth) plus absence of any auth-registered credential in the container; the socket itself is a normal agent.
+### Requirement: Per-identity signing via SSH agent (sign-only is key registration + absence)
+The driver SHALL mount a per-identity `AF_UNIX` SSH agent socket read-only when `credential_surface = {ssh_agent="/run/.../seat.sock"}` and SHALL set `SSH_AUTH_SOCK` inside the container; `credential_surface = "none"` mounts nothing. Sign-only SHALL be enforced by GitHub key registration (key type `Signing` refuses auth) plus absence of any auth-registered credential; the socket itself is a normal agent. Identity is `cistella.identity` label (renamed from `cistella.seat`, not credential selector; credential surface remains profile-driven, Phase 2 binds identity to credential, S2) and `cistella.command` label records argv actually executed (renamed from `cistella.harness`).
 
 #### Scenario: Signing works, auth does not
 - **WHEN** container runs `ssh-add -l` and `git commit -S -m "review"` with the per-seat key (registered on GitHub as `Signing`)

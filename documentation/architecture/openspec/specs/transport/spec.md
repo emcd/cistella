@@ -3,8 +3,8 @@
 ## Purpose
 TBD - created by archiving change add-cistella-driver. Update Purpose after archive.
 ## Requirements
-### Requirement: Transport uses host PTY with podman exec -i -t on PTY slave
-The driver SHALL run `podman exec -i -t` with stdio on the session PTY slave (tmux pane or Agentmux Pty slave) and SHALL never use `podman attach` to PID 1.
+### Requirement: Transport uses host PTY with podman exec -i -t on PTY slave via conduct/enter
+The driver SHALL run `podman exec -i -t` with stdio on the session PTY slave (tmux pane or Agentmux Pty slave) and SHALL never use `podman attach` to PID 1. `conduct` SHALL own the harness lifetime: create unit -> start -> `podman exec -i -t` harness argv after `--` (or profile `command` array) on the pane PTY -> wait -> shared teardown, exiting with harness status or `128+signal` after `SIGHUP`/`SIGTERM`. `enter` SHALL provide companion shell entry using the same transport, with exactly one selector per invocation — positional `<id>` unique prefix, or `--directory <path>`, or one or more `--label k=v` (ANDed, `cistella.` refused, canonicalized), mixing forms is usage error and zero/multiple matches are typed refusals listing candidates.
 
 #### Scenario: Piped exec is deaf
 - **WHEN** `podman exec` is run with piped stdio
@@ -14,8 +14,12 @@ The driver SHALL run `podman exec -i -t` with stdio on the session PTY slave (tm
 - **WHEN** `podman exec -i -t` is run with stdio on the pane PTY slave
 - **THEN** `isatty` is true, `stty size` reflects the host window, and `DA1`/`0x03` traverse
 
+#### Scenario: Selector ambiguous is typed refusal
+- **WHEN** `enter --directory .` matches two sessions on same directory
+- **THEN** driver refuses with typed error listing candidates (I2)
+
 ### Requirement: Env forwarding is closed
-The driver SHALL forward `TERM` and `COLORTERM` (and `TERM_PROGRAM` as closed) via `-e` and SHALL NOT forward `TERMINFO` with baked images.
+The driver SHALL forward `TERM` and `COLORTERM` (and `TERM_PROGRAM` as closed) via `-e` at exec time for both `conduct` and `enter` and SHALL NOT forward `TERMINFO` with baked images. `conduct` SHALL NOT bake `TERM` into the unit; `enter` SHALL forward closed env at exec time.
 
 #### Scenario: Ghostty outside
 - **WHEN** host is `TERM=xterm-ghostty` `TERMINFO=/usr/local/share/terminfo`
@@ -37,11 +41,15 @@ The driver SHALL propagate `TIOCSWINSZ` on the host master as `SIGWINCH` to the 
 - **THEN** its initial `stty size` equals the current host window size
 
 ### Requirement: Exit-status passthrough
-The driver SHALL propagate the harness exit status via `podman exec` exit code.
+The driver SHALL propagate the harness exit status via `conduct` exit code (from `podman exec`).
 
 #### Scenario: Exit 42
-- **WHEN** `podman exec` runs `sh -c 'exit 42'`
-- **THEN** the client exits `42`
+- **WHEN** `conduct` runs harness `sh -c 'exit 42'` (argv after `--`)
+- **THEN** `conduct` exits `42`
+
+#### Scenario: Pane closed
+- **WHEN** `conduct` runs under a detached tmux and `kill-pane` sends `SIGHUP`
+- **THEN** `conduct` tears down (remove unit, scratch) and exits `128+1` unless harness had already exited (then harness status)
 
 ### Requirement: Signal delivery via 0x03
 The driver SHALL deliver `0x03` written to the host PTY master as `SIGINT` to the container foreground group via the slave line discipline (`isig`, `intr=^C`).
