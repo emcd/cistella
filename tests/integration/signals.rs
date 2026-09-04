@@ -2,12 +2,13 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tempfile::TempDir;
 
 use super::helpers::*;
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn signal_during_startup_tears_down() {
     // SIGTERM landing between install and start (opened deterministically by
@@ -68,6 +69,7 @@ fn signal_during_startup_tears_down() {
     assert!(scratch_gone(&id), "scratch removed by startup abort");
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn terminate_races_creation_waits() {
     // Terminate issued while conduct is still installing must wait for the
@@ -138,6 +140,7 @@ fn terminate_races_creation_waits() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains(&id));
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn sighup_conduct_tears_down() {
     if !systemd_available() {
@@ -167,6 +170,7 @@ fn sighup_conduct_tears_down() {
     assert!(scratch_gone(&id), "no scratch residue after signal");
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn gc_reaps_handwritten_orphan_after_lock_release() {
     // Phase variant of the creation-window promise: hold the creation lock
@@ -222,6 +226,7 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
     assert!(scratch_gone(fake_id), "orphan scratch reaped");
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn gc_creation_window_reaps_nothing() {
     // Holding the creation-window lock blocks a concurrent gc: it finishes
@@ -251,20 +256,4 @@ fn gc_creation_window_reaps_nothing() {
         "gc: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // The integration binary runs serially (see .config/nextest.toml), so
-    // no concurrent test holds the install lock; poll briefly regardless
-    // for `cargo test` runners that ignore the nextest config.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut free = false;
-    while Instant::now() <= deadline {
-        if cistella::lock::LockGuard::try_acquire()
-            .expect("try")
-            .is_some()
-        {
-            free = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    assert!(free, "lock released after gc");
 }

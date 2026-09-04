@@ -7,6 +7,7 @@ use tempfile::TempDir;
 
 use super::helpers::*;
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_exit_passthrough_and_mint() {
     if !systemd_available() {
@@ -140,6 +141,7 @@ fn conduct_exit_passthrough_and_mint() {
     }
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_lifecycle_terminate_while_attached() {
     if !systemd_available() {
@@ -248,6 +250,7 @@ fn conduct_lifecycle_terminate_while_attached() {
     );
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn inspect_postmortem_and_gc_reap_orphan() {
     if !systemd_available() {

@@ -7,6 +7,7 @@ use tempfile::TempDir;
 
 use super::helpers::*;
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn gc_inspect_failure_fails_closed() {
     // A present-but-uninspectable container is an invocation failure, not
@@ -84,6 +85,7 @@ fn gc_inspect_failure_fails_closed() {
     assert!(scratch_gone(&id));
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn command_label_edge_round_trip_live() {
     // Spaces, quotes, and `=` must survive Quadlet file -> podman label ->
@@ -137,6 +139,7 @@ fn command_label_edge_round_trip_live() {
     assert!(scratch_gone(&id));
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn spaced_directory_conduct() {
     // Host paths with spaces must survive Volume= quoting and directory labels.
@@ -203,6 +206,7 @@ fn spaced_directory_conduct() {
     assert!(scratch_gone(&id));
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn environment_values_verbatim() {
     // Env values with spaces, quotes, `=`, and `%` must arrive verbatim

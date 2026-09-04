@@ -18,17 +18,25 @@
 # intended and not intended to be flagged, add it as a per-test override
 # rather than raising the global threshold.
 slow-timeout = "10s"
-# Serial user-manager group: the lifecycle/labels/selectors/signals tests
+# Bounded user-manager group: the lifecycle/labels/selectors/signals tests
 # drive the real systemd user manager and podman under one HOME registry
-# and one creation lock. Running them concurrently makes every test's `gc`
-# reap every other test's orphans and minted id prefixes collide, so
-# default validation flakes. The serial group makes the wall time the
-# honest sum; the Operator's suite-wall todo (cistella:todos/10) optimises
-# from this stable baseline. Unit tests stay parallel in the default group.
+# and one creation lock, so they share one group; the group is bounded
+# (not unlimited) because 20 threads hammering podman/systemd starve
+# starts past the 60 s deadlines. Unit tests stay parallel outside it.
 
 [test-groups.user-manager]
-max-threads = 1
+max-threads = 4
 
 [[profile.default.overrides]]
+filter = "binary(integration)"
+test-group = "user-manager"
+
+# Live profile: the `test-group` override must be repeated here because
+# overrides are per-profile. `#[ignore]`d tests need the CLI flag
+# `--run-ignored=all` (`run-ignored` is CLI-only, not a profile setting):
+# `cargo nextest run -P live --run-ignored=all [...]`.
+[profile.live]
+
+[[profile.live.overrides]]
 filter = "binary(integration)"
 test-group = "user-manager"

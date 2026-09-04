@@ -83,7 +83,7 @@ repos:
     - id: cargo-nextest-release
       name: 'Test (Rust: Release, cargo-nextest)'
       language: system
-      entry: 'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml'
+      entry: 'cargo nextest run --release -P live --run-ignored=all --locked --config-file .auxiliary/configuration/nextest.toml'
       pass_filenames: false
       require_serial: true
       stages: [ 'pre-merge-commit', 'pre-push' ]

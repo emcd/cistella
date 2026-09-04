@@ -19,6 +19,7 @@ fn image_ref() -> String {
     std::env::var("CISTELLA_TEST_IMAGE").unwrap_or_else(|_| "cistella/opencode:example".to_string())
 }
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn transport_harness() {
     if !podman_available() {

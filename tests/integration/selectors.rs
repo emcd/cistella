@@ -4,6 +4,7 @@ use tempfile::TempDir;
 
 use super::helpers::*;
 
+#[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn selectors_ambiguous_and_exclusive() {
     if !systemd_available() {
