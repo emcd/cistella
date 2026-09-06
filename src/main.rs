@@ -54,8 +54,17 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             identity,
             labels,
             image,
+            configuration_directory,
             command,
-        } => conduct_session(&profile, directory, identity, &labels, image, &command),
+        } => conduct_session(
+            &profile,
+            directory,
+            identity,
+            &labels,
+            image,
+            configuration_directory,
+            &command,
+        ),
         Command::Enter {
             id,
             directory,
@@ -230,10 +239,13 @@ fn conduct_session(
     identity: Option<String>,
     labels: &[String],
     image_override: Option<String>,
+    configuration_directory: Option<String>,
     command: &[String],
 ) -> Result<(), cistella::error::CistellaError> {
     use cistella::error::CistellaError;
-    let (prof, digest, profile_name) = Profile::resolve(profile_ref)?;
+    use cistella::profile::ResolutionSource;
+    let source = ResolutionSource::from_host_env(configuration_directory.as_deref())?;
+    let (prof, digest, profile_name) = Profile::resolve_in(profile_ref, &source)?;
     let generic: Vec<(String, String)> = labels
         .iter()
         .map(|a| parse_cli_label(a))

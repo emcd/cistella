@@ -305,3 +305,106 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     assert!(!unit_path(&home, &id).exists(), "gc removes orphan unit");
     assert!(scratch_gone(&id), "gc removes orphan scratch");
 }
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn name_resolves_from_foreign_cwd_live() {
+    // A profile name resolves without a source checkout: the child runs
+    // from a directory containing no `data/profiles`.
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let foreign = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let mut cmd = Command::new(bin());
+    cmd.args([
+        "conduct",
+        "--profile",
+        "default",
+        "--directory",
+        &worktree_str,
+        "--",
+        "sleep",
+        "300",
+    ]);
+    cmd.env("HOME", &home);
+    cmd.env("TERM", "xterm-ghostty");
+    cmd.current_dir(foreign.path());
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut conduct = cmd.spawn().expect("spawn conduct");
+    let stdout = conduct.stdout.take().expect("piped stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let id = loop {
+        use std::io::BufRead as _;
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for id line"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        if let Some(id) = line.trim().strip_prefix("conduct ") {
+            assert!(valid_minted_id(id), "minted id shape: {id}");
+            break id.to_string();
+        }
+    };
+    let mut guard = Guard {
+        id: Some(id.clone()),
+    };
+    wait_active(&id);
+    assert_eq!(unit_label(&home, &id, "cistella.profile"), "default");
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(out.status.success());
+    let _ = conduct.wait();
+    guard.id = None;
+    assert!(scratch_gone(&id));
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn configuration_directory_plumbing_live() {
+    // `--configuration-directory` reaches resolution: a name found only in
+    // the supplied dir conducts with that profile.
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let config = TempDir::new().unwrap();
+    let profiles = config.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("custom.toml"),
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential_surface = \"none\"\n\
+         command = [\"sleep\", \"infinity\"]\n\
+         mounts = []\n",
+    )
+    .unwrap();
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let config_str = config.path().to_string_lossy().to_string();
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        "custom",
+        &worktree_str,
+        &["--configuration-directory", &config_str],
+        &["sleep", "300"],
+        &[],
+    );
+    wait_active(&id);
+    assert_eq!(unit_label(&home, &id, "cistella.profile"), "custom");
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(out.status.success());
+    let _ = conduct.wait();
+    guard.id = None;
+    assert!(scratch_gone(&id));
+}

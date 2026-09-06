@@ -9,6 +9,8 @@
 mod identity;
 #[path = "unit/mount.rs"]
 mod mount;
+#[path = "unit/profile_resolution.rs"]
+mod profile_resolution;
 #[path = "unit/runtime.rs"]
 mod runtime;
 #[path = "unit/version.rs"]

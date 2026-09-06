@@ -19,9 +19,15 @@ pub enum Command {
     /// Mint a session id, create and start the container, exec the
     /// harness argv on the pane PTY, wait, then tear down.
     Conduct {
-        /// Profile name (resolved under `data/profiles/`) or file path.
+        /// Profile name (supplied configuration directory, then XDG with
+        /// seed-if-absent, then baked examples) or file path.
         #[arg(long)]
         profile: String,
+        /// Configuration directory naming `<dir>/profiles/<name>.toml`
+        /// as a closed tier (flag beats `$CISTELLA_CONFIGURATION_DIRECTORY`;
+        /// conduct only).
+        #[arg(long)]
+        configuration_directory: Option<String>,
         /// Host directory mounted at `/work` (optional, defaults to cwd).
         #[arg(long)]
         directory: Option<String>,

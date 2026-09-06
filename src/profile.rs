@@ -4,8 +4,22 @@
 //! harness argv array, the allowlist mount triples, the credential-surface
 //! slot, environment exports, and optional generic labels. The harness
 //! itself is argv after `--` chosen by the caller.
+//!
+//! Name resolution order: explicit filesystem path, then supplied
+//! configuration-directory tiers (`--configuration-directory`, then
+//! `$CISTELLA_CONFIGURATION_DIRECTORY`, each a closed tier), then the XDG
+//! user profiles dir, then the baked-in examples. `data/profiles/*.toml`
+//! are examples compiled into the binary with `include_str!` (the source
+//! dir is the single place to edit them); adding a file there requires
+//! registering it in [`BAKED_PROFILES`]. When a named lookup reaches the
+//! default tier, [`seed_baked_examples`] copies missing baked examples
+//! into the XDG dir (never overwriting user files). There is no
+//! cwd-relative lookup and no development-directory detection: a name
+//! resolves identically from any working directory.
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -84,7 +98,8 @@ impl<'de> Deserialize<'de> for CredentialSurface {
     }
 }
 
-/// Declarative profile loaded from TOML (e.g. `data/profiles/<name>.toml`).
+/// Declarative profile loaded from TOML (a baked example, an XDG user
+/// copy, a configuration-directory file, or an explicit path).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
     /// Image tag or digest, e.g. `localhost/cistella-opencode:example`.
@@ -112,33 +127,211 @@ fn default_container_home() -> String {
     "/home/cistella".to_string()
 }
 
-/// Resolves a profile reference to a file path.
+/// Baked-in profile examples, compiled from `data/profiles/*.toml`.
 ///
-/// A reference containing `/` or ending in `.toml` is a file path;
-/// otherwise it is a profile name resolved under `data/profiles/` relative
-/// to the current directory, falling back to the crate manifest dir.
-fn resolve_profile_path(reference: &str) -> Result<PathBuf> {
+/// The source dir stays the single place to edit examples; the binary
+/// carries them at compile time so names resolve without a source
+/// checkout. Register any new file in this table.
+const BAKED_PROFILES: &[(&str, &str)] = &[
+    (
+        "default",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/profiles/default.toml"
+        )),
+    ),
+    (
+        "opencode",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/profiles/opencode.toml"
+        )),
+    ),
+];
+
+/// Returns the baked example text for a profile name, if one exists.
+fn baked_example(name: &str) -> Option<&'static str> {
+    BAKED_PROFILES
+        .iter()
+        .find_map(|(n, text)| (*n == name).then_some(*text))
+}
+
+/// Name-lookup inputs: supplied closed tiers plus the XDG default tier.
+///
+/// `configuration_directories` holds the `--configuration-directory` flag
+/// value first, then `$CISTELLA_CONFIGURATION_DIRECTORY`; each names
+/// `<dir>/profiles/<name>.toml` and is closed (a missing name errors, no
+/// fallthrough, never seeded). `xdg_profiles_dir` is the default tier
+/// (`${XDG_CONFIG_HOME}/cistella/profiles`, `~/.config` fallback).
+#[derive(Debug, Clone)]
+pub struct ResolutionSource {
+    /// Supplied configuration directories in precedence order.
+    pub configuration_directories: Vec<PathBuf>,
+    /// XDG user profiles directory (seeded from baked examples on reach).
+    pub xdg_profiles_dir: PathBuf,
+}
+
+impl ResolutionSource {
+    /// Builds lookup inputs from explicit parts (tests and callers that
+    /// already resolved the environment).
+    #[must_use]
+    pub fn new(configuration_directories: Vec<PathBuf>, xdg_profiles_dir: PathBuf) -> Self {
+        Self {
+            configuration_directories,
+            xdg_profiles_dir,
+        }
+    }
+
+    /// Builds lookup inputs from the host environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` when neither `XDG_CONFIG_HOME` nor
+    /// `HOME` yields a config base.
+    pub fn from_host_env(configuration_directory: Option<&str>) -> Result<Self> {
+        let mut configuration_directories = Vec::new();
+        if let Some(dir) = configuration_directory.filter(|s| !s.is_empty()) {
+            configuration_directories.push(PathBuf::from(dir));
+        }
+        if let Ok(dir) = std::env::var("CISTELLA_CONFIGURATION_DIRECTORY")
+            && !dir.is_empty()
+        {
+            configuration_directories.push(PathBuf::from(dir));
+        }
+        Ok(Self {
+            configuration_directories,
+            xdg_profiles_dir: xdg_config_base()?.join("cistella/profiles"),
+        })
+    }
+}
+
+/// Returns the XDG config base: `$XDG_CONFIG_HOME`, else `~/.config`.
+fn xdg_config_base() -> Result<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME")
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = std::env::var("HOME")
+        .map_err(|_| CistellaError::Profile("HOME not set for XDG config base".to_string()))?;
+    Ok(PathBuf::from(home).join(".config"))
+}
+
+/// Copies baked examples missing from `dir` (never overwrites user files).
+///
+/// Directory creation plus per-file `create_new` writes make seeding atomic
+/// under races (`AlreadyExists` is tolerated). Written for reuse by a
+/// future `cistella init`; `resolve` is its only caller today.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` when the directory cannot be created
+/// or a missing example cannot be written.
+pub fn seed_baked_examples(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CistellaError::Profile(format!("create {}: {e}", dir.display())))?;
+    for (name, text) in BAKED_PROFILES {
+        let path = dir.join(format!("{name}.toml"));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => file
+                .write_all(text.as_bytes())
+                .map_err(|e| CistellaError::Profile(format!("seed {}: {e}", path.display())))?,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(CistellaError::Profile(format!(
+                    "seed {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolves a profile name against lookup inputs.
+///
+/// A reference containing `/` or ending in `.toml` is a filesystem path
+/// and bypasses every tier (a missing path errors without creating
+/// anything). Otherwise it is a name resolved in order: the first supplied
+/// configuration directory as a closed tier (the flag shadows the env var;
+/// a missing name is a typed error naming the profile, with no fallthrough
+/// and no seeding), then the default tier — seed baked examples into the
+/// XDG dir when reached, then the XDG copy, then the baked example. A name
+/// found nowhere is a typed error naming the profile and every tier
+/// searched.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` if the profile cannot be found, read,
+/// parsed, or validated.
+fn resolve_profile_path(
+    reference: &str,
+    source: &ResolutionSource,
+) -> Result<(PathBuf, ProfileText)> {
     if reference.contains('/') || reference.ends_with(".toml") {
-        return Ok(PathBuf::from(reference));
+        let path = PathBuf::from(reference);
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| CistellaError::Profile(format!("read {}: {e}", path.display())))?;
+        return Ok((path, ProfileText::File(raw)));
     }
-    let file = format!("data/profiles/{reference}.toml");
-    let cwd_path = PathBuf::from(&file);
-    if cwd_path.exists() {
-        return Ok(cwd_path);
+    if let Some(dir) = source.configuration_directories.first() {
+        let path = dir.join("profiles").join(format!("{reference}.toml"));
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => return Ok((path, ProfileText::Named(raw))),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                return Err(CistellaError::Profile(format!(
+                    "profile {reference} not found in configuration directory {} (closed tier, no fallthrough)",
+                    dir.display()
+                )));
+            }
+            Err(e) => {
+                return Err(CistellaError::Profile(format!(
+                    "read {}: {e}",
+                    path.display()
+                )));
+            }
+        }
     }
-    let manifest_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("data/profiles/{reference}.toml"));
-    if manifest_path.exists() {
-        return Ok(manifest_path);
+    seed_baked_examples(&source.xdg_profiles_dir)?;
+    let xdg_path = source.xdg_profiles_dir.join(format!("{reference}.toml"));
+    match std::fs::read_to_string(&xdg_path) {
+        Ok(raw) => return Ok((xdg_path, ProfileText::Named(raw))),
+        Err(e) if e.kind() != ErrorKind::NotFound => {
+            return Err(CistellaError::Profile(format!(
+                "read {}: {e}",
+                xdg_path.display()
+            )));
+        }
+        Err(_) => {}
+    }
+    if let Some(baked) = baked_example(reference) {
+        return Ok((xdg_path, ProfileText::Named(baked.to_string())));
+    }
+    let mut searched = vec![
+        format!("XDG {}", source.xdg_profiles_dir.display()),
+        "baked examples".to_string(),
+    ];
+    if let Some(dir) = source.configuration_directories.first() {
+        searched.insert(0, format!("configuration directory {}", dir.display()));
     }
     Err(CistellaError::Profile(format!(
-        "profile {reference} not found as {file} (cwd) or {} (manifest)",
-        manifest_path.display()
+        "profile {reference} not found (searched {})",
+        searched.join(", ")
     )))
 }
 
+/// Profile text plus whether it came from a named tier or an explicit path.
+enum ProfileText {
+    /// Named-tier text: the registry name is the reference itself.
+    Named(String),
+    /// Explicit-path text: the registry name is the file stem.
+    File(String),
+}
+
 impl Profile {
-    /// Loads a profile by name (`data/profiles/<name>.toml`) or file path.
+    /// Loads a profile by name (configuration directories, then XDG with
+    /// seed-if-absent, then baked examples) or file path, using the host
+    /// environment for lookup inputs and no supplied tiers.
     ///
     /// Returns the profile, the sha256 hex digest of its TOML text, and the
     /// registry name (the reference itself for names, the file stem for
@@ -149,17 +342,35 @@ impl Profile {
     /// Returns `CistellaError::Profile` if the profile cannot be found,
     /// read, parsed, or validated.
     pub fn resolve(reference: &str) -> Result<(Self, String, String)> {
-        let path = resolve_profile_path(reference)?;
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| CistellaError::Profile(format!("read {}: {e}", path.display())))?;
-        let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
-        let name = if reference.contains('/') || reference.ends_with(".toml") {
-            path.file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| reference.to_string())
-        } else {
-            reference.to_string()
+        Self::resolve_in(reference, &ResolutionSource::from_host_env(None)?)
+    }
+
+    /// Loads a profile by name or file path against explicit lookup inputs.
+    ///
+    /// Returns the profile, the sha256 hex digest of its TOML text, and the
+    /// registry name (the reference itself for names, the file stem for
+    /// paths — paths never enter labels).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` if the profile cannot be found,
+    /// read, parsed, or validated.
+    pub fn resolve_in(
+        reference: &str,
+        source: &ResolutionSource,
+    ) -> Result<(Self, String, String)> {
+        let (path, text) = resolve_profile_path(reference, source)?;
+        let (raw, name) = match text {
+            ProfileText::Named(raw) => (raw, reference.to_string()),
+            ProfileText::File(raw) => {
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| reference.to_string());
+                (raw, stem)
+            }
         };
+        let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
         Ok((Self::from_toml(&raw)?, digest, name))
     }
 
