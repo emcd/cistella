@@ -1,2 +1,6 @@
 /scribbles/
 /temporary/
+# Per-host local cistella configuration (e.g. the dogfood profile).
+# Not committed with code; shared, non-host-specific configuration under
+# configuration/ may still be version-controlled.
+/configuration/cistella/profiles/cistella-dev.toml
