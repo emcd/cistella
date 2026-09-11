@@ -24,6 +24,21 @@ impl MountMode {
             Self::Rw => "rw",
         }
     }
+
+    /// Parses a mode flag (`ro`/`rw`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Mount` on anything else.
+    pub fn parse_flag(s: &str) -> Result<Self> {
+        match s {
+            "ro" => Ok(Self::Ro),
+            "rw" => Ok(Self::Rw),
+            other => Err(CistellaError::Mount(format!(
+                "mode must be ro or rw: {other}"
+            ))),
+        }
+    }
 }
 
 /// Single allowlist triple `(host-source, container-target, mode)`.
@@ -35,6 +50,187 @@ pub struct MountTriple {
     pub container_target: String,
     /// Mode.
     pub mode: MountMode,
+}
+
+/// Parses a CLI `--mount <host>:<target>:<mode>` item into a triple.
+///
+/// Structural parse only (three colon-separated parts, non-empty paths,
+/// valid mode); full validation happens in [`validate_mounts`].
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on wrong arity, empty paths, or a bad
+/// mode. Host paths containing `:` cannot be expressed; document, do not
+/// work around.
+///
+/// # Examples
+///
+/// ```
+/// # use cistella::mount::{MountMode, parse_mount_triple};
+/// let t = parse_mount_triple("/data:/data:ro").unwrap();
+/// assert_eq!(t.host_source, "/data");
+/// assert_eq!(t.mode, MountMode::Ro);
+/// ```
+pub fn parse_mount_triple(s: &str) -> Result<MountTriple> {
+    let mut parts = s.split(':');
+    let triple = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(host), Some(target), Some(mode), None) => (host, target, mode),
+        _ => {
+            return Err(CistellaError::Mount(format!(
+                "--mount must be <host>:<target>:<mode>: {s}"
+            )));
+        }
+    };
+    if triple.0.is_empty() || triple.1.is_empty() {
+        return Err(CistellaError::Mount(format!(
+            "--mount host and target must be non-empty: {s}"
+        )));
+    }
+    Ok(MountTriple {
+        host_source: triple.0.to_string(),
+        container_target: triple.1.to_string(),
+        mode: MountMode::parse_flag(triple.2)?,
+    })
+}
+
+/// Parses `--session-directory <host>[:<container>]` into host and target.
+///
+/// The container side defaults to `/work` when omitted.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on an empty host, an empty container
+/// side, or a non-absolute container target. Host absoluteness is checked
+/// by the caller (`canonical_directory`).
+///
+/// # Examples
+///
+/// ```
+/// # use cistella::mount::parse_session_directory;
+/// assert_eq!(
+///     parse_session_directory("/repo").unwrap(),
+///     ("/repo".to_string(), "/work".to_string())
+/// );
+/// assert_eq!(
+///     parse_session_directory("/repo:/repo").unwrap(),
+///     ("/repo".to_string(), "/repo".to_string())
+/// );
+/// ```
+pub fn parse_session_directory(s: &str) -> Result<(String, String)> {
+    let (host, target) = match s.split_once(':') {
+        Some((host, target)) => (host, Some(target)),
+        None => (s, None),
+    };
+    if host.is_empty() {
+        return Err(CistellaError::Mount(format!(
+            "session directory host must be non-empty: {s}"
+        )));
+    }
+    let target = target.unwrap_or("/work");
+    if target.is_empty() {
+        return Err(CistellaError::Mount(format!(
+            "session directory container target must be non-empty: {s}"
+        )));
+    }
+    if !target.starts_with('/') {
+        return Err(CistellaError::Mount(format!(
+            "session directory container target must be absolute: {s}"
+        )));
+    }
+    Ok((host.to_string(), target.to_string()))
+}
+
+/// Unions CLI triples over profile triples for one conduct invocation.
+///
+/// Exact canonical-target matches override (CLI wins); duplicate CLI
+/// targets, CLI triples on the worktree target, and ancestor/descendant
+/// CLI/profile overlap outside the read-only-ancestor rule are typed
+/// errors. The merged list still requires [`validate_mounts`].
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on any of the above collisions.
+///
+/// # Examples
+///
+/// ```
+/// # use cistella::mount::{MountMode, MountTriple, merge_cli_mounts};
+/// # fn triple(h: &str, t: &str, m: MountMode) -> MountTriple {
+/// #     MountTriple { host_source: h.into(), container_target: t.into(), mode: m }
+/// # }
+/// let merged = merge_cli_mounts(
+///     &[triple("/a", "/data", MountMode::Ro)],
+///     &[triple("/b", "/data", MountMode::Rw)],
+///     "/work",
+/// )
+/// .unwrap();
+/// assert_eq!(merged.len(), 1);
+/// assert_eq!(merged[0].host_source, "/b");
+/// ```
+pub fn merge_cli_mounts(
+    profile: &[MountTriple],
+    cli: &[MountTriple],
+    worktree_target: &str,
+) -> Result<Vec<MountTriple>> {
+    let canon_worktree = canonicalize_container_target(worktree_target);
+    let mut seen_cli: Vec<String> = Vec::new();
+    for t in cli {
+        let canon = canonicalize_container_target(&t.container_target);
+        if seen_cli.contains(&canon) {
+            return Err(CistellaError::Mount(format!(
+                "duplicate --mount target: {}",
+                t.container_target
+            )));
+        }
+        seen_cli.push(canon.clone());
+        if canon == canon_worktree {
+            return Err(CistellaError::Mount(format!(
+                "--mount target {} equals the worktree target; use --session-directory",
+                t.container_target
+            )));
+        }
+    }
+    let mut merged: Vec<MountTriple> = profile.to_vec();
+    for t in cli {
+        let canon = canonicalize_container_target(&t.container_target);
+        if let Some(pos) = merged
+            .iter()
+            .position(|p| canonicalize_container_target(&p.container_target) == canon)
+        {
+            merged[pos] = t.clone();
+            continue;
+        }
+        for p in profile {
+            let canon_profile = canonicalize_container_target(&p.container_target);
+            if canon_profile != canon
+                && (is_ancestor_or_equal(&canon_profile, &canon)
+                    || is_ancestor_or_equal(&canon, &canon_profile))
+                && !overlap_allowed(&canon_profile, p.mode, &canon, t.mode)
+            {
+                return Err(CistellaError::Mount(format!(
+                    "--mount {} partially overlaps profile mount {}",
+                    t.container_target, p.container_target
+                )));
+            }
+        }
+        merged.push(t.clone());
+    }
+    Ok(merged)
+}
+
+/// Whether an ancestor/descendant triple pair may stack: the ancestor
+/// triple is read-only (deepest mount wins either way).
+fn overlap_allowed(canon_a: &str, mode_a: MountMode, canon_b: &str, mode_b: MountMode) -> bool {
+    if canon_a == canon_b {
+        return false;
+    }
+    if is_ancestor_or_equal(canon_a, canon_b) {
+        mode_a == MountMode::Ro
+    } else if is_ancestor_or_equal(canon_b, canon_a) {
+        mode_b == MountMode::Ro
+    } else {
+        false
+    }
 }
 
 /// Sensitive container roots that must not be used as target.
@@ -100,21 +296,31 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
         }
     }
 
-    // Pairwise disjointness among triples (after canonicalization).
-    let mut canon_targets: Vec<String> = triples
+    // Pairwise overlap among triples (after canonicalization): exact
+    // duplicates always fail; strict ancestor/descendant pairs stack only
+    // over a read-only ancestor (deepest mount wins).
+    let mut canons: Vec<(&MountTriple, String)> = triples
         .iter()
-        .map(|t| canonicalize_container_target(&t.container_target))
+        .map(|t| (t, canonicalize_container_target(&t.container_target)))
         .collect();
-    // Sort by length for deterministic checks.
-    canon_targets.sort();
-    for i in 0..canon_targets.len() {
-        for j in (i + 1)..canon_targets.len() {
-            if is_ancestor_or_equal(&canon_targets[i], &canon_targets[j])
-                || is_ancestor_or_equal(&canon_targets[j], &canon_targets[i])
+    // Sort by target for deterministic checks.
+    canons.sort_by(|a, b| a.1.cmp(&b.1));
+    for i in 0..canons.len() {
+        for j in (i + 1)..canons.len() {
+            let (ta, ca) = &canons[i];
+            let (tb, cb) = &canons[j];
+            if ca == cb {
+                return Err(CistellaError::Mount(format!(
+                    "duplicate mount target: {}",
+                    ta.container_target
+                )));
+            }
+            if (is_ancestor_or_equal(ca, cb) || is_ancestor_or_equal(cb, ca))
+                && !overlap_allowed(ca, ta.mode, cb, tb.mode)
             {
                 return Err(CistellaError::Mount(format!(
                     "overlapping mounts: {} and {}",
-                    canon_targets[i], canon_targets[j]
+                    ta.container_target, tb.container_target
                 )));
             }
         }
@@ -138,27 +344,59 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
 
     // Canonicalize both sides host-side via longest existing prefix to
     // detect symlink aliasing; spec requires canonicalize before validation.
-    let mut canon_hosts: Vec<PathBuf> = triples
+    // Same stacking rule as container targets: strict host-side overlap is
+    // allowed only over a read-only ancestor; identical host sources stay
+    // an error (ambiguous intent, not stacking).
+    let mut canon_hosts: Vec<(&MountTriple, PathBuf)> = triples
         .iter()
-        .map(|t| canonicalize_host_source(&t.host_source))
+        .map(|t| (t, canonicalize_host_source(&t.host_source)))
         .collect();
-    canon_hosts.sort();
+    canon_hosts.sort_by(|a, b| a.1.cmp(&b.1));
     for i in 0..canon_hosts.len() {
         for j in (i + 1)..canon_hosts.len() {
-            if canon_hosts[i] == canon_hosts[j]
-                || canon_hosts[i].starts_with(&canon_hosts[j])
-                || canon_hosts[j].starts_with(&canon_hosts[i])
+            let (ta, ha) = &canon_hosts[i];
+            let (tb, hb) = &canon_hosts[j];
+            if ha == hb {
+                return Err(CistellaError::Mount(format!(
+                    "overlapping host_sources after canonicalize: {} and {}",
+                    ha.display(),
+                    hb.display()
+                )));
+            }
+            if (ha.starts_with(hb) || hb.starts_with(ha))
+                && !overlap_allowed_host(ta.mode, tb.mode, ha, hb)
             {
                 return Err(CistellaError::Mount(format!(
                     "overlapping host_sources after canonicalize: {} and {}",
-                    canon_hosts[i].display(),
-                    canon_hosts[j].display()
+                    ha.display(),
+                    hb.display()
                 )));
             }
         }
     }
 
     Ok(())
+}
+
+/// Whether a strict host-side ancestor/descendant pair may stack: the
+/// ancestor triple is read-only. PathBuf `starts_with` is
+/// component-wise, so no string-prefix false positives.
+fn overlap_allowed_host(
+    mode_a: MountMode,
+    mode_b: MountMode,
+    host_a: &Path,
+    host_b: &Path,
+) -> bool {
+    if host_a == host_b {
+        return false;
+    }
+    if host_a.starts_with(host_b) {
+        mode_b == MountMode::Ro
+    } else if host_b.starts_with(host_a) {
+        mode_a == MountMode::Ro
+    } else {
+        false
+    }
 }
 
 /// Canonicalizes a container target: cleans `.`, `..`, duplicate slashes

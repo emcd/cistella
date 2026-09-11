@@ -191,3 +191,147 @@ mode = "rw"
 "#;
     assert!(Profile::from_toml(ok).is_ok());
 }
+
+fn triple(host: &str, target: &str, mode: MountMode) -> MountTriple {
+    MountTriple {
+        host_source: host.to_string(),
+        container_target: target.to_string(),
+        mode,
+    }
+}
+
+#[test]
+fn session_directory_pair_defaults_to_work() {
+    use cistella::mount::parse_session_directory;
+    assert_eq!(
+        parse_session_directory("/repo").unwrap(),
+        ("/repo".to_string(), "/work".to_string())
+    );
+    assert_eq!(
+        parse_session_directory("/repo:/repo").unwrap(),
+        ("/repo".to_string(), "/repo".to_string())
+    );
+}
+
+#[test]
+fn session_directory_pair_rejects_bad_sides() {
+    use cistella::mount::parse_session_directory;
+    assert!(parse_session_directory("/repo:").is_err());
+    assert!(parse_session_directory("/repo:relative").is_err());
+    assert!(parse_session_directory(": /work".replace(' ', "").as_str()).is_err());
+}
+
+#[test]
+fn cli_triple_parses_and_rejects() {
+    use cistella::mount::parse_mount_triple;
+    let t = parse_mount_triple("/data:/data:ro").unwrap();
+    assert_eq!(t.host_source, "/data");
+    assert_eq!(t.mode, MountMode::Ro);
+    assert!(parse_mount_triple("/data:/data").is_err());
+    assert!(parse_mount_triple("/data:/data:rw:extra").is_err());
+    assert!(parse_mount_triple("/data:/data:xx").is_err());
+}
+
+#[test]
+fn merge_unions_disjoint_cli_triples() {
+    use cistella::mount::merge_cli_mounts;
+    let merged = merge_cli_mounts(
+        &[triple("/a", "/data", MountMode::Ro)],
+        &[triple("/b", "/extra", MountMode::Rw)],
+        "/work",
+    )
+    .unwrap();
+    assert_eq!(merged.len(), 2);
+}
+
+#[test]
+fn merge_exact_target_override_wins() {
+    use cistella::mount::merge_cli_mounts;
+    let merged = merge_cli_mounts(
+        &[triple("/a", "/data", MountMode::Ro)],
+        &[triple("/b", "/data", MountMode::Rw)],
+        "/work",
+    )
+    .unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].host_source, "/b");
+    assert_eq!(merged[0].mode, MountMode::Rw);
+}
+
+#[test]
+fn merge_rejects_duplicate_cli_targets() {
+    use cistella::mount::merge_cli_mounts;
+    let err = merge_cli_mounts(
+        &[],
+        &[
+            triple("/a", "/dup", MountMode::Ro),
+            triple("/b", "/dup", MountMode::Rw),
+        ],
+        "/work",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("duplicate"));
+}
+
+#[test]
+fn merge_rejects_cli_on_worktree_target() {
+    use cistella::mount::merge_cli_mounts;
+    let err = merge_cli_mounts(&[], &[triple("/a", "/work", MountMode::Ro)], "/work").unwrap_err();
+    assert!(err.to_string().contains("worktree"));
+}
+
+#[test]
+fn merge_rejects_partial_cli_profile_overlap() {
+    use cistella::mount::merge_cli_mounts;
+    // WW nesting across the CLI/profile boundary stays fail-closed.
+    assert!(
+        merge_cli_mounts(
+            &[triple("/a", "/data", MountMode::Rw)],
+            &[triple("/b", "/data/sub", MountMode::Rw)],
+            "/work",
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn merge_allows_ro_ancestor_stacking() {
+    use cistella::mount::merge_cli_mounts;
+    // Profile RO parent, CLI RW child: the dogfood notebook shape.
+    let merged = merge_cli_mounts(
+        &[triple("/notes", "/notes", MountMode::Ro)],
+        &[triple("/notes/cistella", "/notes/cistella", MountMode::Rw)],
+        "/work",
+    )
+    .unwrap();
+    assert_eq!(merged.len(), 2);
+}
+
+#[test]
+fn validation_allows_ro_parent_rw_child() {
+    let parent = triple("/tmp/notes", "/notes", MountMode::Ro);
+    let child = triple("/tmp/notes/cistella", "/notes/cistella", MountMode::Rw);
+    assert!(validate_mounts(&[parent, child], "/home/cistella").is_ok());
+}
+
+#[test]
+fn validation_rejects_ww_nesting() {
+    let parent = triple("/tmp/a", "/data", MountMode::Rw);
+    let child = triple("/tmp/a/sub", "/data/sub", MountMode::Ro);
+    assert!(validate_mounts(&[parent, child], "/home/cistella").is_err());
+}
+
+#[test]
+fn validation_rejects_duplicate_targets() {
+    let a = triple("/tmp/a", "/dup", MountMode::Ro);
+    let b = triple("/tmp/b", "/dup", MountMode::Ro);
+    let err = validate_mounts(&[a, b], "/home/cistella").unwrap_err();
+    assert!(err.to_string().contains("duplicate"));
+}
+
+#[test]
+fn validation_allows_ro_ro_stacking() {
+    let parent = triple("/tmp/a", "/data", MountMode::Ro);
+    let child = triple("/tmp/a/sub", "/data/sub", MountMode::Ro);
+    assert!(validate_mounts(&[parent, child], "/home/cistella").is_ok());
+}

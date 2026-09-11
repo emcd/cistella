@@ -50,19 +50,21 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
     match cli.command {
         Command::Conduct {
             profile,
-            directory,
+            session_directory,
             identity,
             labels,
             image,
             configuration_directory,
+            mounts,
             command,
         } => conduct_session(
             &profile,
-            directory,
+            session_directory,
             identity,
             &labels,
             image,
             configuration_directory,
+            &mounts,
             &command,
         ),
         Command::Enter {
@@ -185,7 +187,7 @@ fn select_exact(
 
 /// Canonicalizes a host directory via longest existing prefix.
 ///
-/// `--directory` defaults to the caller's cwd; both conduct-time and
+/// `--session-directory` host defaults to the caller's cwd; both conduct-time and
 /// selector-time canonicalize the same way so equality matches.
 fn canonical_directory(dir: &str) -> Result<String, cistella::error::CistellaError> {
     if !dir.starts_with('/') {
@@ -198,7 +200,7 @@ fn canonical_directory(dir: &str) -> Result<String, cistella::error::CistellaErr
         .to_string())
 }
 
-/// Returns the cwd as a string for the `--directory` default.
+/// Returns the cwd as a string for the `--session-directory` host default.
 fn cwd_string() -> Result<String, cistella::error::CistellaError> {
     std::env::current_dir()
         .map_err(|e| cistella::error::CistellaError::Runtime(format!("cwd: {e}")))
@@ -233,13 +235,18 @@ fn exit_with_status(status: std::process::ExitStatus) -> ! {
 }
 
 /// Implements `conduct`: mint, install under lock, start, exec, teardown.
+///
+/// Eight parameters mirror the conduct CLI surface one-to-one; bundling
+/// them would only move the fields.
+#[allow(clippy::too_many_arguments)]
 fn conduct_session(
     profile_ref: &str,
-    directory: Option<String>,
+    session_directory: Option<String>,
     identity: Option<String>,
     labels: &[String],
     image_override: Option<String>,
     configuration_directory: Option<String>,
+    cli_mounts: &[String],
     command: &[String],
 ) -> Result<(), cistella::error::CistellaError> {
     use cistella::error::CistellaError;
@@ -253,11 +260,13 @@ fn conduct_session(
     let image_input = image_override.as_deref().unwrap_or(&prof.image);
     // Never pull implicitly: unresolvable tags are typed refusals.
     let image = resolve_image_digest(image_input)?;
-    let directory_raw = match directory {
+    let directory_raw = match session_directory {
         Some(d) => d,
         None => cwd_string()?,
     };
-    let directory = canonical_directory(&directory_raw)?;
+    let (directory_host, worktree_target) =
+        cistella::mount::parse_session_directory(&directory_raw)?;
+    let directory = canonical_directory(&directory_host)?;
     let identity = identity.unwrap_or_else(default_identity);
     let argv: Vec<String> = if command.is_empty() {
         prof.command.clone().ok_or_else(|| {
@@ -282,9 +291,15 @@ fn conduct_session(
     let mut triples = prof.mounts.clone();
     triples.push(MountTriple {
         host_source: directory,
-        container_target: "/work".to_string(),
+        container_target: worktree_target.clone(),
         mode: MountMode::Rw,
     });
+    let cli_triples: Vec<MountTriple> = cli_mounts
+        .iter()
+        .map(|a| cistella::mount::parse_mount_triple(a))
+        .collect::<Result<_, _>>()?;
+    let mut triples = cistella::mount::merge_cli_mounts(&triples, &cli_triples, &worktree_target)?;
+    cistella::mount::validate_mounts(&triples, &prof.container_home)?;
     // Per-session scratch (XDG path, `/tmp` fallback; Label= tracks the id).
     let scratch_host = cistella::lock::scratch_dir(&id)
         .to_string_lossy()

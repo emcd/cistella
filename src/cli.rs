@@ -3,7 +3,8 @@
 //! All-Latinate verb slate: `conduct` owns the session lifetime,
 //! `enter` provides companion entry, `survey` lists, `inspect` shows
 //! post-mortem, `terminate` tears down from outside, `gc` reaps orphans,
-//! `check` runs host preflight. No aliases.
+//! `check` runs host preflight. No aliases on verbs; `--cwd` is the sole
+//! flag alias (hidden) for `--session-directory`.
 
 use clap::{Parser, Subcommand};
 
@@ -28,9 +29,15 @@ pub enum Command {
         /// conduct only).
         #[arg(long)]
         configuration_directory: Option<String>,
-        /// Host directory mounted at `/work` (optional, defaults to cwd).
-        #[arg(long)]
-        directory: Option<String>,
+        /// Session worktree `<host>[:<container>]` (host directory
+        /// mounted at the container target, default `/work`; optional,
+        /// host defaults to cwd).
+        #[arg(long, alias = "cwd")]
+        session_directory: Option<String>,
+        /// Extra mount triple `<host>:<target>:<mode>` (repeatable; exact
+        /// profile-target matches override, partial overlaps fail).
+        #[arg(long = "mount")]
+        mounts: Vec<String>,
         /// Identity label (not a credential selector).
         #[arg(long)]
         identity: Option<String>,

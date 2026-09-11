@@ -93,7 +93,13 @@ pub fn spawn_conduct_full(
     envs: &[(&str, &str)],
 ) -> (Child, String, Guard) {
     let mut cmd = Command::new(bin());
-    cmd.args(["conduct", "--profile", profile, "--directory", worktree]);
+    cmd.args([
+        "conduct",
+        "--profile",
+        profile,
+        "--session-directory",
+        worktree,
+    ]);
     cmd.args(extra);
     cmd.arg("--");
     cmd.args(argv);
