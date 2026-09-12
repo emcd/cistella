@@ -407,7 +407,8 @@ fn conduct_session(
     drop(guard);
     println!("conduct {id}");
     // Own the harness lifetime on the pane PTY; traps SIGHUP/SIGTERM.
-    let status = exec_harness(&container_name, &argv);
+    // The session runs in its worktree target (validated absolute above).
+    let status = exec_harness(&container_name, &argv, &worktree_target);
     // Shared teardown converges with `terminate` from another pane: the
     // unit may already be gone, which teardown tolerates via not-found.
     // A real teardown failure (residue remains) fails the invocation even
@@ -497,8 +498,8 @@ enum HarnessEnd {
 /// Conduct-level traps must already be installed by the caller
 /// (`conduct_session` installs before any residue exists); the child
 /// resets to default in `pre_exec` so it still dies with the pane.
-fn exec_harness(container: &str, argv: &[String]) -> HarnessEnd {
-    let args = cistella::transport::exec_args(container, argv);
+fn exec_harness(container: &str, argv: &[String], workdir: &str) -> HarnessEnd {
+    let args = cistella::transport::exec_harness_args(container, workdir, argv);
     let mut child = match unsafe {
         std::process::Command::new("podman")
             .args(&args)

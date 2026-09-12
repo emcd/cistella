@@ -42,6 +42,25 @@ pub fn exec_args(container: &str, command: &[String]) -> Vec<String> {
     args
 }
 
+/// Builds `podman exec -i -t --workdir <target>` args for the conduct
+/// harness: the session runs in its worktree target, not the image
+/// default. Companion `enter` keeps plain [`exec_args`] (operator's
+/// shell, operator's cwd).
+#[must_use]
+pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> Vec<String> {
+    let mut args = vec!["exec".to_string()];
+    args.extend(env_forward_args());
+    args.extend([
+        "-i".to_string(),
+        "-t".to_string(),
+        "--workdir".to_string(),
+        workdir.to_string(),
+        container.to_string(),
+    ]);
+    args.extend(command.iter().cloned());
+    args
+}
+
 /// Builds `podman run -d --userns=keep-id --label ...` args for the spike.
 ///
 /// Driver's `run` generates a Quadlet unit instead; this helper is for the

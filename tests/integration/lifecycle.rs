@@ -408,3 +408,44 @@ fn configuration_directory_plumbing_live() {
     guard.id = None;
     assert!(scratch_gone(&id));
 }
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn harness_runs_in_worktree_target_live() {
+    // The session directory is a working directory, not just a mount:
+    // the harness starts with cwd at the container target.
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let pair = format!("{worktree_str}:{worktree_str}");
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            "default",
+            "--session-directory",
+            &pair,
+            "--",
+            "pwd",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .collect();
+    assert!(
+        lines.first().is_some_and(|l| l.starts_with("conduct ")),
+        "id line first: {lines:?}"
+    );
+    assert_eq!(lines.get(1), Some(&worktree_str), "harness cwd: {lines:?}");
+}

@@ -256,3 +256,20 @@ fn resolve_exact_rejects_mixed_and_ambiguous() {
     let solo = vec![test_record("aaa111", "/tmp/a")];
     assert!(resolve_exact(&solo, None, None, &labels).is_ok());
 }
+
+#[test]
+fn harness_exec_pins_workdir_before_container() {
+    let args = cistella::transport::exec_harness_args(
+        "cistella-abc",
+        "/home/me/src/cistella",
+        &["true".to_string()],
+    );
+    let workdir = args
+        .iter()
+        .position(|a| a == "--workdir")
+        .expect("workdir flag");
+    assert_eq!(args[workdir + 1], "/home/me/src/cistella");
+    assert_eq!(args[workdir + 2], "cistella-abc");
+    assert!(args.contains(&"-i".to_string()));
+    assert!(args.contains(&"-t".to_string()));
+}
