@@ -56,6 +56,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             image,
             configuration_directory,
             mounts,
+            project_name,
             command,
         } => conduct_session(
             &profile,
@@ -65,6 +66,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             image,
             configuration_directory,
             &mounts,
+            project_name,
             &command,
         ),
         Command::Enter {
@@ -236,7 +238,7 @@ fn exit_with_status(status: std::process::ExitStatus) -> ! {
 
 /// Implements `conduct`: mint, install under lock, start, exec, teardown.
 ///
-/// Eight parameters mirror the conduct CLI surface one-to-one; bundling
+/// Nine parameters mirror the conduct CLI surface one-to-one; bundling
 /// them would only move the fields.
 #[allow(clippy::too_many_arguments)]
 fn conduct_session(
@@ -247,19 +249,12 @@ fn conduct_session(
     image_override: Option<String>,
     configuration_directory: Option<String>,
     cli_mounts: &[String],
+    project_name_flag: Option<String>,
     command: &[String],
 ) -> Result<(), cistella::error::CistellaError> {
     use cistella::error::CistellaError;
     use cistella::profile::ResolutionSource;
     let source = ResolutionSource::from_host_env(configuration_directory.as_deref())?;
-    let (prof, digest, profile_name) = Profile::resolve_in(profile_ref, &source)?;
-    let generic: Vec<(String, String)> = labels
-        .iter()
-        .map(|a| parse_cli_label(a))
-        .collect::<Result<_, _>>()?;
-    let image_input = image_override.as_deref().unwrap_or(&prof.image);
-    // Never pull implicitly: unresolvable tags are typed refusals.
-    let image = resolve_image_digest(image_input)?;
     let directory_raw = match session_directory {
         Some(d) => d,
         None => cwd_string()?,
@@ -267,6 +262,23 @@ fn conduct_session(
     let (directory_host, worktree_target) =
         cistella::mount::parse_session_directory(&directory_raw)?;
     let directory = canonical_directory(&directory_host)?;
+    // Project name feeds `{{project-name}}` templates: explicit flag wins,
+    // otherwise the canonical directory basename, derived lazily at
+    // expansion. Computed before resolution; nothing derives from the
+    // working directory by accident.
+    use cistella::profile::ProjectName;
+    let project = match &project_name_flag {
+        Some(name) => Some(ProjectName::Explicit(name)),
+        None => Some(ProjectName::DirectoryDefault(&directory)),
+    };
+    let (prof, digest, profile_name) = Profile::resolve_in(profile_ref, &source, project)?;
+    let generic: Vec<(String, String)> = labels
+        .iter()
+        .map(|a| parse_cli_label(a))
+        .collect::<Result<_, _>>()?;
+    let image_input = image_override.as_deref().unwrap_or(&prof.image);
+    // Never pull implicitly: unresolvable tags are typed refusals.
+    let image = resolve_image_digest(image_input)?;
     let identity = identity.unwrap_or_else(default_identity);
     let argv: Vec<String> = if command.is_empty() {
         prof.command.clone().ok_or_else(|| {

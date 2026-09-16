@@ -38,6 +38,10 @@ pub enum Command {
         /// profile-target matches override, partial overlaps fail).
         #[arg(long = "mount")]
         mounts: Vec<String>,
+        /// Project name for `{{project-name}}` templates (defaults to the
+        /// basename of the canonical session directory).
+        #[arg(long)]
+        project_name: Option<String>,
         /// Identity label (not a credential selector).
         #[arg(long)]
         identity: Option<String>,

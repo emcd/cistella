@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use cistella::profile::{Profile, ResolutionSource};
+use cistella::profile::{Profile, ProjectName, ResolutionSource};
 
 fn minimal_toml(image: &str) -> String {
     format!("image = \"{image}\"\ncredential_surface = \"none\"\nmounts = []\n")
@@ -31,7 +31,7 @@ fn fresh_source(xdg_base: &TempDir) -> (ResolutionSource, PathBuf) {
 fn baked_name_resolves_and_seeds() {
     let xdg_base = TempDir::new().unwrap();
     let (source, xdg) = fresh_source(&xdg_base);
-    let (prof, digest, name) = Profile::resolve_in("default", &source).unwrap();
+    let (prof, digest, name) = Profile::resolve_in("default", &source, None).unwrap();
     assert_eq!(name, "default");
     // Self-consistent with the seeded copy rather than hardcoded example
     // strings, so editing `data/profiles/default.toml` does not break this
@@ -54,7 +54,7 @@ fn xdg_copy_wins_over_baked_and_survives_seed() {
     let custom = "localhost/custom:mine";
     write_profile(&xdg, "opencode", custom);
     let before = std::fs::read(xdg.join("opencode.toml")).unwrap();
-    let (prof, _digest, name) = Profile::resolve_in("opencode", &source).unwrap();
+    let (prof, _digest, name) = Profile::resolve_in("opencode", &source, None).unwrap();
     assert_eq!(name, "opencode");
     assert_eq!(prof.image, custom);
     assert_eq!(
@@ -90,7 +90,7 @@ fn flag_dir_wins_over_env_dir_and_xdg() {
         ],
         source.xdg_profiles_dir,
     );
-    let (prof, _, _) = Profile::resolve_in("custom", &source).unwrap();
+    let (prof, _, _) = Profile::resolve_in("custom", &source, None).unwrap();
     assert_eq!(prof.image, "localhost/flag:1");
     // With only the env dir supplied, it wins over XDG.
     let source = ResolutionSource::new(
@@ -103,7 +103,7 @@ fn flag_dir_wins_over_env_dir_and_xdg() {
         "custom",
         "localhost/xdg:1",
     );
-    let (prof, _, _) = Profile::resolve_in("custom", &source).unwrap();
+    let (prof, _, _) = Profile::resolve_in("custom", &source, None).unwrap();
     assert_eq!(prof.image, "localhost/env:1");
 }
 
@@ -130,7 +130,7 @@ fn flag_dir_miss_shadows_env_and_writes_nothing() {
         ],
         xdg.clone(),
     );
-    let err = Profile::resolve_in("custom", &source).unwrap_err();
+    let err = Profile::resolve_in("custom", &source, None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("custom"), "error names the profile: {msg}");
     assert!(!xdg.exists(), "closed miss writes nothing to XDG");
@@ -144,7 +144,7 @@ fn supplied_closed_miss_never_falls_through_to_baked() {
     std::fs::create_dir_all(supplied_base.path().join("profiles")).unwrap();
     let source = ResolutionSource::new(vec![supplied_base.path().to_path_buf()], xdg.clone());
     // `default` is baked, but the supplied tier is closed.
-    let err = Profile::resolve_in("default", &source).unwrap_err();
+    let err = Profile::resolve_in("default", &source, None).unwrap_err();
     assert!(err.to_string().contains("default"));
     assert!(!xdg.exists(), "closed tier never seeds");
 }
@@ -153,7 +153,7 @@ fn supplied_closed_miss_never_falls_through_to_baked() {
 fn unknown_name_errors_and_still_seeds_baked() {
     let xdg_base = TempDir::new().unwrap();
     let (source, xdg) = fresh_source(&xdg_base);
-    let err = Profile::resolve_in("nope", &source).unwrap_err();
+    let err = Profile::resolve_in("nope", &source, None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("nope"), "error names the profile: {msg}");
     assert!(msg.contains("baked"), "error lists tiers searched: {msg}");
@@ -178,7 +178,8 @@ fn explicit_path_bypasses_every_tier() {
     );
     let path = write_profile(work.path(), "custom", "localhost/explicit:1");
     let source = ResolutionSource::new(vec![supplied_base.path().to_path_buf()], xdg.clone());
-    let (prof, _digest, name) = Profile::resolve_in(&path.to_string_lossy(), &source).unwrap();
+    let (prof, _digest, name) =
+        Profile::resolve_in(&path.to_string_lossy(), &source, None).unwrap();
     assert_eq!(prof.image, "localhost/explicit:1");
     assert_eq!(name, "custom", "registry name is the file stem");
     assert!(!xdg.exists(), "explicit paths never seed");
@@ -191,7 +192,7 @@ fn explicit_missing_path_errors_without_scaffolding() {
     let xdg = xdg_base.path().join("xdg-profiles");
     let source = ResolutionSource::new(Vec::new(), xdg.clone());
     let missing = work.path().join("gone.toml");
-    let err = Profile::resolve_in(&missing.to_string_lossy(), &source).unwrap_err();
+    let err = Profile::resolve_in(&missing.to_string_lossy(), &source, None).unwrap_err();
     assert!(err.to_string().contains("gone.toml"));
     assert!(!xdg.exists(), "explicit miss creates nothing");
 }
@@ -217,7 +218,7 @@ fn env_tier_end_to_end() {
             source.xdg_profiles_dir, xdg,
             "XDG_CONFIG_HOME honored for the default tier"
         );
-        Profile::resolve_in("custom", &source)
+        Profile::resolve_in("custom", &source, None)
     })();
     unsafe {
         match old_config_dir {
@@ -246,4 +247,223 @@ fn from_host_env_puts_flag_first() {
         Some(flag.path()),
         "flag leads the precedence list"
     );
+}
+
+fn template_toml(host: &str, target: &str) -> String {
+    format!(
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential_surface = \"none\"\n\
+         container_home = \"/home/cistella\"\n\
+         command = [\"run\", \"{{{{project-name}}}}\"]\n\
+         [[mounts]]\n\
+         host_source = \"{host}\"\n\
+         container_target = \"{target}\"\n\
+         mode = \"rw\"\n"
+    )
+}
+
+fn resolve_template_text(
+    toml: &str,
+    project: Option<ProjectName<'_>>,
+) -> Result<(cistella::profile::Profile, String, String), cistella::error::CistellaError> {
+    let work = TempDir::new().unwrap();
+    let path = work.path().join("tmpl.toml");
+    std::fs::write(&path, toml).unwrap();
+    let xdg_base = TempDir::new().unwrap();
+    let source = ResolutionSource::new(Vec::new(), xdg_base.path().join("xdg"));
+    // Synchronous resolution completes before the TempDirs drop.
+    Profile::resolve_in(&path.to_string_lossy(), &source, project)
+}
+
+#[test]
+fn default_project_name_locks_basename() {
+    use cistella::profile::default_project_name;
+    // QA worktree-clone lock: basename, not notebook key.
+    assert_eq!(
+        default_project_name("/home/me/src/CLONES/cistella/qa").unwrap(),
+        "qa"
+    );
+    assert_eq!(default_project_name("/repo").unwrap(), "repo");
+    assert!(default_project_name("/").is_err());
+}
+
+#[test]
+fn templates_expand_on_both_sides_and_argv() {
+    let toml = template_toml(
+        "/data/{{project-name}}",
+        "{{container-home}}/{{project-name}}",
+    );
+    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("qa"))).unwrap();
+    assert_eq!(prof.mounts[0].host_source, "/data/qa");
+    assert_eq!(prof.mounts[0].container_target, "/home/cistella/qa");
+    assert_eq!(
+        prof.command.unwrap(),
+        vec!["run".to_string(), "qa".to_string()]
+    );
+}
+
+#[test]
+fn project_override_beats_basename_default() {
+    // QA-clone shape: directory says `qa`, flag says `cistella`.
+    let toml = template_toml("/notes/{{project-name}}", "/notes/{{project-name}}");
+    let (prof, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("cistella"))).unwrap();
+    assert_eq!(prof.mounts[0].host_source, "/notes/cistella");
+}
+
+#[test]
+fn host_home_template_reads_home() {
+    // Only mutates HOME-adjacent reads through the standard env; no other
+    // test reads these template paths, and HOME itself is untouched.
+    let toml = template_toml("{{host-home}}/.config/x", "/x");
+    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap();
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(prof.mounts[0].host_source, format!("{home}/.config/x"));
+}
+
+#[test]
+fn unknown_template_fails_closed() {
+    let toml = template_toml("/data/{{nosuch}}", "/x");
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    assert!(err.to_string().contains("nosuch"));
+}
+
+#[test]
+fn template_without_context_fails_closed() {
+    let toml = template_toml("/data/{{project-name}}", "/x");
+    let err = resolve_template_text(&toml, None).unwrap_err();
+    assert!(err.to_string().contains("project context"));
+    // Literal profiles still resolve without context.
+    let plain = minimal_toml("localhost/cistella/opencode:example");
+    let work = TempDir::new().unwrap();
+    let path = work.path().join("plain.toml");
+    std::fs::write(&path, plain).unwrap();
+    let xdg = TempDir::new().unwrap();
+    let source = ResolutionSource::new(Vec::new(), xdg.path().join("xdg"));
+    assert!(Profile::resolve_in(&path.to_string_lossy(), &source, None).is_ok());
+}
+
+#[test]
+fn container_home_template_rejected() {
+    let toml = "image = \"localhost/cistella/opencode:example\"\n\
+credential_surface = \"none\"\n\
+container_home = \"/home/{{host-home}}\"\n\
+mounts = []\n";
+    let err = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    assert!(err.to_string().contains("container_home"));
+}
+
+#[test]
+fn bad_project_charset_rejected_never_sanitized() {
+    let toml = template_toml("/data/{{project-name}}", "/x");
+    for bad in ["", "../x", "/abs", "a=b", "a b"] {
+        let err = resolve_template_text(&toml, Some(ProjectName::Explicit(bad))).unwrap_err();
+        assert!(err.to_string().contains("project name"), "for {bad:?}");
+    }
+    // Dots and dashes are legal (agentmux parity).
+    let (prof, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("my.proj-1"))).unwrap();
+    assert_eq!(prof.mounts[0].host_source, "/data/my.proj-1");
+}
+
+#[test]
+fn adjacent_templates_expand_without_rescan() {
+    // Single-pass proof by construction: adjacent spans each expand once;
+    // substituted text is never re-examined (see expand_value).
+    let toml = template_toml("/{{project-name}}/{{project-name}}", "/x");
+    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("qa"))).unwrap();
+    assert_eq!(prof.mounts[0].host_source, "/qa/qa");
+    // NOTE: a hostile-$HOME rescan test is deliberately absent: HOME is
+    // process-global and mutating it races parallel tests (e.g. the `~`
+    // expansion test). The scanner indexes forward over output it just
+    // wrote, so rescanning is structurally impossible.
+}
+
+#[test]
+fn spaced_project_name_ok_without_templates() {
+    // Lazy charset validation: template-free profiles never consult the
+    // name, so spaced session directories keep working (live parity:
+    // spaced_directory_conduct).
+    let toml = minimal_toml("localhost/cistella/opencode:example");
+    let work = TempDir::new().unwrap();
+    let path = work.path().join("plain.toml");
+    std::fs::write(&path, toml).unwrap();
+    let xdg = TempDir::new().unwrap();
+    let source = ResolutionSource::new(Vec::new(), xdg.path().join("xdg"));
+    let (prof, _, _) = Profile::resolve_in(
+        &path.to_string_lossy(),
+        &source,
+        Some(ProjectName::Explicit("with space")),
+    )
+    .unwrap();
+    assert_eq!(prof.image, "localhost/cistella/opencode:example");
+}
+
+#[test]
+fn container_home_expands_canonical_not_raw() {
+    // Finding 1: {{container-home}} is the canonical home even when the
+    // literal form traverses.
+    let toml = "image = \"localhost/cistella/opencode:example\"\n\
+credential_surface = \"none\"\n\
+container_home = \"/home/cistella/../other\"\n\
+[[mounts]]\n\
+host_source = \"/data\"\n\
+container_target = \"{{container-home}}/x\"\n\
+mode = \"ro\"\n";
+    let (prof, _, _) = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap();
+    assert_eq!(prof.home(), "/home/other");
+    assert_eq!(prof.mounts[0].container_target, "/home/other/x");
+}
+
+#[test]
+fn unknown_templates_outrank_context_requirements() {
+    // Finding 2: exact span recognition — lookalike names report unknown
+    // before charset, HOME, or context requirements.
+    let lookalike = template_toml("/data/{{not-project-name}}", "/x");
+    let err = resolve_template_text(&lookalike, Some(ProjectName::Explicit("p"))).unwrap_err();
+    assert!(err.to_string().contains("unknown template"), "{err}");
+    let lookalike = template_toml("/data/{{not-host-home}}", "/x");
+    let err = resolve_template_text(&lookalike, Some(ProjectName::Explicit("p"))).unwrap_err();
+    assert!(err.to_string().contains("unknown template"), "{err}");
+    let unknown = template_toml("/data/{{nosuch}}", "/x");
+    let err = resolve_template_text(&unknown, None).unwrap_err();
+    assert!(err.to_string().contains("unknown template"), "{err}");
+}
+
+#[test]
+fn root_directory_default_is_lazy() {
+    // Finding 3: template-free profiles never derive the basename, so a
+    // root session directory resolves; template-bearing ones fail with
+    // the basename error (not a generic failure).
+    let plain = minimal_toml("localhost/cistella/opencode:example");
+    let work = TempDir::new().unwrap();
+    let path = work.path().join("plain.toml");
+    std::fs::write(&path, plain).unwrap();
+    let xdg = TempDir::new().unwrap();
+    let source = ResolutionSource::new(Vec::new(), xdg.path().join("xdg"));
+    assert!(
+        Profile::resolve_in(
+            &path.to_string_lossy(),
+            &source,
+            Some(ProjectName::DirectoryDefault("/")),
+        )
+        .is_ok()
+    );
+    let toml = template_toml("/data/{{project-name}}", "/x");
+    let err = resolve_template_text(&toml, Some(ProjectName::DirectoryDefault("/"))).unwrap_err();
+    assert!(err.to_string().contains("basename"), "{err}");
+}
+
+#[test]
+fn directory_default_basename_validates_charset() {
+    // Tier-2: derived basenames face the same charset gate as explicit
+    // names once a {{project-name}} span expands; template-free profiles
+    // stay lazy (see root_directory_default_is_lazy).
+    let toml = template_toml("/data/{{project-name}}", "/x");
+    let err = resolve_template_text(
+        &toml,
+        Some(ProjectName::DirectoryDefault("/repo/with space")),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("project name"), "{err}");
 }

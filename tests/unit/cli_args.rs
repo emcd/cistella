@@ -56,6 +56,16 @@ fn mount_flag_is_repeatable() {
 }
 
 #[test]
+fn project_name_flag_reaches_conduct() {
+    match conduct(&["--profile", "x", "--project-name", "qa"]) {
+        Command::Conduct { project_name, .. } => {
+            assert_eq!(project_name.as_deref(), Some("qa"));
+        }
+        other => panic!("expected conduct, got {other:?}"),
+    }
+}
+
+#[test]
 fn selectors_keep_directory() {
     match Cli::try_parse_from(["cistella", "enter", "--directory", "/repo", "--", "sh"])
         .unwrap()

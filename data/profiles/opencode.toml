@@ -6,15 +6,15 @@ command = ["opencode"]
 
 [[mounts]]
 host_source = "~/.config/opencode"
-container_target = "/home/cistella/.config/opencode"
+container_target = "{{container-home}}/.config/opencode"
 mode = "ro"
 
 [[mounts]]
 host_source = "~/.local/share/opencode"
-container_target = "/home/cistella/.local/share/opencode"
+container_target = "{{container-home}}/.local/share/opencode"
 mode = "rw"
 
 [[mounts]]
 host_source = "~/.local/state/opencode"
-container_target = "/home/cistella/.local/state/opencode"
+container_target = "{{container-home}}/.local/state/opencode"
 mode = "rw"

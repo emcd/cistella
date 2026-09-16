@@ -342,22 +342,30 @@ impl Profile {
     /// Returns `CistellaError::Profile` if the profile cannot be found,
     /// read, parsed, or validated.
     pub fn resolve(reference: &str) -> Result<(Self, String, String)> {
-        Self::resolve_in(reference, &ResolutionSource::from_host_env(None)?)
+        Self::resolve_in(reference, &ResolutionSource::from_host_env(None)?, None)
     }
 
-    /// Loads a profile by name or file path against explicit lookup inputs.
+    /// Loads a profile by name or file path against explicit lookup inputs
+    /// and an optional project name for template expansion.
     ///
     /// Returns the profile, the sha256 hex digest of its TOML text, and the
     /// registry name (the reference itself for names, the file stem for
     /// paths — paths never enter labels).
     ///
+    /// `project` is `Some` on the conduct path (explicit flag or directory
+    /// default, both validated lazily at expansion) and `None` for
+    /// context-free callers: template-free profiles resolve literally,
+    /// template-bearing profiles are a typed error. Nothing derives from
+    /// the working directory outside conduct.
+    ///
     /// # Errors
     ///
     /// Returns `CistellaError::Profile` if the profile cannot be found,
-    /// read, parsed, or validated.
+    /// read, parsed, expanded, or validated.
     pub fn resolve_in(
         reference: &str,
         source: &ResolutionSource,
+        project: Option<ProjectName<'_>>,
     ) -> Result<(Self, String, String)> {
         let (path, text) = resolve_profile_path(reference, source)?;
         let (raw, name) = match text {
@@ -371,7 +379,9 @@ impl Profile {
             }
         };
         let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
-        Ok((Self::from_toml(&raw)?, digest, name))
+        let mut profile = parse_profile(&raw)?;
+        expand_templates(&mut profile, project)?;
+        Ok((validate_profile(profile)?, digest, name))
     }
 
     /// Loads a profile from a TOML file.
@@ -392,113 +402,14 @@ impl Profile {
         format!("{:x}", Sha256::digest(text.as_bytes()))
     }
 
-    /// Parses TOML text into a validated profile.
+    /// Parses TOML text into a validated profile (literal: no template
+    /// expansion — use resolution for template-bearing profiles).
     ///
     /// # Errors
     ///
     /// Returns `CistellaError::Profile` on parse or validation failure.
     pub fn from_toml(text: &str) -> Result<Self> {
-        let mut profile: Self =
-            toml::from_str(text).map_err(|e| CistellaError::Profile(format!("parse: {e}")))?;
-        if profile.image.trim().is_empty() {
-            return Err(CistellaError::Profile("image is required".to_string()));
-        }
-        for ch in ["\n", "\r", "\0"] {
-            if profile.image.contains(ch) {
-                return Err(CistellaError::Profile(
-                    "image must not contain control characters".to_string(),
-                ));
-            }
-        }
-        if let Some(command) = &profile.command {
-            if command.is_empty() {
-                return Err(CistellaError::Profile(
-                    "command must be a non-empty argv array".to_string(),
-                ));
-            }
-            for arg in command {
-                if arg.contains('\n') || arg.contains('\r') || arg.contains('\0') {
-                    return Err(CistellaError::Profile(
-                        "command argv must not contain control characters".to_string(),
-                    ));
-                }
-            }
-        }
-        for (key, value) in &profile.labels {
-            validate_generic_label(key, value).map_err(CistellaError::Profile)?;
-        }
-        // Expand a leading `~` in host sources so shipped profiles stay
-        // portable across seats (`~/.config/opencode`, never bare `~`).
-        for triple in &mut profile.mounts {
-            if triple.host_source == "~" || triple.host_source.starts_with("~/") {
-                let home = std::env::var("HOME").map_err(|_| {
-                    CistellaError::Profile("HOME not set for ~ expansion".to_string())
-                })?;
-                triple.host_source = format!("{home}{}", &triple.host_source[1..]);
-            }
-        }
-        // credential_surface is required and validated by Deserialize; `None` is explicitly allowed.
-        if profile.container_home.trim().is_empty() {
-            profile.container_home = default_container_home();
-        }
-        if !profile.container_home.starts_with('/') {
-            return Err(CistellaError::Profile(
-                "container_home must be absolute".to_string(),
-            ));
-        }
-        let canon_home = canonicalize_container_target(&profile.container_home);
-        // container_home is not a triple but must not be a sensitive root or traversal to one.
-        if canon_home == "/" {
-            return Err(CistellaError::Profile(
-                "container_home must not be /".to_string(),
-            ));
-        }
-        for root in ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64"] {
-            if canon_home == root || canon_home.starts_with(&format!("{root}/")) {
-                return Err(CistellaError::Profile(format!(
-                    "container_home at or above sensitive root {root}: {} (canonical {canon_home})",
-                    profile.container_home
-                )));
-            }
-        }
-        // Update to canonical form for rendering (prevents Tmpfs= injection via traversal)
-        profile.container_home = canon_home;
-        // Quadlet injection guard: no newlines/control in container_home/env keys/values, and strict charset
-        for ch in ["\n", "\r", "\0"] {
-            if profile.container_home.contains(ch) {
-                return Err(CistellaError::Profile(
-                    "container_home must not contain control characters".to_string(),
-                ));
-            }
-        }
-        for (k, v) in &profile.env {
-            if k.contains('\n') || k.contains('\r') || v.contains('\n') || v.contains('\r') {
-                return Err(CistellaError::Profile(format!(
-                    "env key/value must not contain newlines: {k}"
-                )));
-            }
-            if k.is_empty()
-                || !k
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
-                || !k
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-            {
-                return Err(CistellaError::Profile(format!(
-                    "env key must match [A-Z_][A-Z0-9_]*: {k}"
-                )));
-            }
-        }
-        // HOME is derived from container_home, not freely overridden via env.
-        if profile.env.contains_key("HOME") {
-            return Err(CistellaError::Profile(
-                "HOME must not be set in env; derived from container_home".to_string(),
-            ));
-        }
-        validate_mounts(&profile.mounts, &profile.container_home)?;
-        Ok(profile)
+        validate_profile(parse_profile(text)?)
     }
 
     /// Returns the derived HOME value.
@@ -507,6 +418,393 @@ impl Profile {
         &self.container_home
     }
 }
+/// Parses TOML text plus leading-`~` expansion, without validation or
+/// template expansion.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on parse failure or missing `HOME`
+/// for `~` expansion.
+fn parse_profile(text: &str) -> Result<Profile> {
+    let mut profile: Profile =
+        toml::from_str(text).map_err(|e| CistellaError::Profile(format!("parse: {e}")))?;
+    // Expand a leading `~` in host sources so shipped profiles stay
+    // portable across seats (`~/.config/opencode`, never bare `~`).
+    for triple in &mut profile.mounts {
+        if triple.host_source == "~" || triple.host_source.starts_with("~/") {
+            let home = std::env::var("HOME")
+                .map_err(|_| CistellaError::Profile("HOME not set for ~ expansion".to_string()))?;
+            triple.host_source = format!("{home}{}", &triple.host_source[1..]);
+        }
+    }
+    Ok(profile)
+}
 
+/// Validates a parsed profile: literal text or template-expanded values.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on any validation failure.
+fn validate_profile(mut profile: Profile) -> Result<Profile> {
+    if profile.image.trim().is_empty() {
+        return Err(CistellaError::Profile("image is required".to_string()));
+    }
+    for ch in ["\n", "\r", "\0"] {
+        if profile.image.contains(ch) {
+            return Err(CistellaError::Profile(
+                "image must not contain control characters".to_string(),
+            ));
+        }
+    }
+    if let Some(command) = &profile.command {
+        if command.is_empty() {
+            return Err(CistellaError::Profile(
+                "command must be a non-empty argv array".to_string(),
+            ));
+        }
+        for arg in command {
+            if arg.contains('\n') || arg.contains('\r') || arg.contains('\0') {
+                return Err(CistellaError::Profile(
+                    "command argv must not contain control characters".to_string(),
+                ));
+            }
+        }
+    }
+    for (key, value) in &profile.labels {
+        validate_generic_label(key, value).map_err(CistellaError::Profile)?;
+    }
+    // credential_surface is required and validated by Deserialize; `None` is explicitly allowed.
+    profile.container_home = normalize_container_home(&profile.container_home)?;
+    let canon_home = profile.container_home.clone();
+    // container_home is not a triple but must not be a sensitive root or traversal to one.
+    if canon_home == "/" {
+        return Err(CistellaError::Profile(
+            "container_home must not be /".to_string(),
+        ));
+    }
+    for root in ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64"] {
+        if canon_home == root || canon_home.starts_with(&format!("{root}/")) {
+            return Err(CistellaError::Profile(format!(
+                "container_home at or above sensitive root {root}: {} (canonical {canon_home})",
+                profile.container_home
+            )));
+        }
+    }
+    // Update to canonical form for rendering (prevents Tmpfs= injection via traversal)
+    profile.container_home = canon_home;
+    // Quadlet injection guard: no newlines/control in container_home/env keys/values, and strict charset
+    for ch in ["\n", "\r", "\0"] {
+        if profile.container_home.contains(ch) {
+            return Err(CistellaError::Profile(
+                "container_home must not contain control characters".to_string(),
+            ));
+        }
+    }
+    for (k, v) in &profile.env {
+        if k.contains('\n') || k.contains('\r') || v.contains('\n') || v.contains('\r') {
+            return Err(CistellaError::Profile(format!(
+                "env key/value must not contain newlines: {k}"
+            )));
+        }
+        if k.is_empty()
+            || !k
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+            || !k
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(CistellaError::Profile(format!(
+                "env key must match [A-Z_][A-Z0-9_]*: {k}"
+            )));
+        }
+    }
+    // HOME is derived from container_home, not freely overridden via env.
+    if profile.env.contains_key("HOME") {
+        return Err(CistellaError::Profile(
+            "HOME must not be set in env; derived from container_home".to_string(),
+        ));
+    }
+    validate_mounts(&profile.mounts, &profile.container_home)?;
+    Ok(profile)
+}
+
+/// Default project name: basename of the canonical session directory.
+///
+/// Conduct calls this after canonicalization when `--project-name` is
+/// absent; agentmux agrees on the same default, so both sides match with
+/// no flags.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` when the directory has no basename
+/// (e.g. filesystem root).
+///
+/// # Examples
+///
+/// ```
+/// # use cistella::profile::default_project_name;
+/// assert_eq!(
+///     default_project_name("/home/me/src/CLONES/cistella/qa").unwrap(),
+///     "qa"
+/// );
+/// ```
+pub fn default_project_name(directory: &str) -> Result<String> {
+    std::path::Path::new(directory)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| {
+            CistellaError::Profile(format!(
+                "project name needs a directory basename: {directory}"
+            ))
+        })
+}
+
+/// Normalizes `container_home` before any canonicalization or derivation:
+/// default-if-empty, template rejection, absolute-path check, then
+/// canonicalization. Shared by literal validation and template expansion
+/// so both paths reject `{{...}}` identically.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on empty-after-default impossibility
+/// (unreachable), template syntax, or non-absolute paths.
+fn normalize_container_home(home: &str) -> Result<String> {
+    let home = if home.trim().is_empty() {
+        default_container_home()
+    } else {
+        home.to_string()
+    };
+    if home.contains("{{") {
+        return Err(CistellaError::Profile(
+            "container_home must not contain templates".to_string(),
+        ));
+    }
+    if !home.starts_with('/') {
+        return Err(CistellaError::Profile(
+            "container_home must be absolute".to_string(),
+        ));
+    }
+    Ok(canonicalize_container_target(&home))
+}
+
+/// Template names expanded in mounts and command argv.
+const TEMPLATE_CONTAINER_HOME: &str = "container-home";
+const TEMPLATE_HOST_HOME: &str = "host-home";
+const TEMPLATE_PROJECT_NAME: &str = "project-name";
+
+/// Validates a project name before expansion: non-empty ASCII
+/// alphanumeric plus `-_.` (agentmux precedent). Rejection, never
+/// sanitization — sanitizing could silently mount the wrong tree.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on empty or out-of-charset names.
+fn validate_project_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(CistellaError::Profile(format!(
+            "project name must match [A-Za-z0-9-_.]+: {name}"
+        )));
+    }
+    Ok(())
+}
+
+/// Expands `{{...}}` templates in mount triples and command argv.
+///
+/// `project_name` is `Some` on the conduct path and `None` for
+/// context-free callers: with `None`, template-free profiles pass
+/// through and template-bearing profiles are a typed error (nothing
+/// derives from the working directory outside conduct).
+///
+/// Single pass, no rescan: substituted values are never re-examined, so
+/// brace-shaped values stay literal text. `container_home` itself must
+/// be template-free (expansion needs the canonical home first).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on unknown template names, missing
+/// project context, bad project charset, missing `HOME`, or templates
+/// in `container_home`.
+/// Project-name input for template expansion.
+#[derive(Debug, Clone, Copy)]
+pub enum ProjectName<'a> {
+    /// Explicit `--project-name` flag value.
+    Explicit(&'a str),
+    /// Derive from the canonical session directory basename, lazily —
+    /// only when a `{{project-name}}` span actually expands, so
+    /// template-free sessions never pay for (or fail on) derivation.
+    DirectoryDefault(&'a str),
+}
+
+/// Expands `{{...}}` templates in mount triples and command argv.
+///
+/// `project` is `Some` on the conduct path and `None` for context-free
+/// callers: with `None`, template-free profiles pass through and
+/// template-bearing profiles are a typed error (nothing derives from
+/// the working directory outside conduct).
+///
+/// Order: normalize `container_home` (default-if-empty, template
+/// rejection, canonicalization) so `{{container-home}}` is always the
+/// canonical home; then recognize every span exactly (unknown and
+/// unterminated spans error before any context, `HOME`, or charset
+/// requirement); then resolve values lazily; then substitute in a
+/// single pass with no rescan, so brace-shaped values stay literal.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on templates in `container_home`,
+/// unknown or unterminated spans, missing project context, bad project
+/// charset, or missing `HOME`.
+fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Result<()> {
+    profile.container_home = normalize_container_home(&profile.container_home)?;
+    // Exact span recognition across every value first: unknown and
+    // unterminated spans outrank context, HOME, and charset errors.
+    let mut names: Vec<String> = Vec::new();
+    for value in template_values(profile) {
+        for part in split_spans(value)? {
+            if let Part::Name(name) = part
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+    }
+    for name in &names {
+        if !is_known_template(name) {
+            return Err(CistellaError::Profile(format!(
+                "unknown template {{{name}}}"
+            )));
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    let Some(project) = project else {
+        return Err(CistellaError::Profile(
+            "template requires project context".to_string(),
+        ));
+    };
+    let host_home = if names.iter().any(|n| n == TEMPLATE_HOST_HOME) {
+        Some(std::env::var("HOME").map_err(|_| {
+            CistellaError::Profile("HOME not set for template expansion".to_string())
+        })?)
+    } else {
+        None
+    };
+    let project_value = match project {
+        ProjectName::Explicit(name) => {
+            if names.iter().any(|n| n == TEMPLATE_PROJECT_NAME) {
+                validate_project_name(name)?;
+            }
+            name.to_string()
+        }
+        ProjectName::DirectoryDefault(directory) => {
+            if names.iter().any(|n| n == TEMPLATE_PROJECT_NAME) {
+                let derived = default_project_name(directory)?;
+                validate_project_name(&derived)?;
+                derived
+            } else {
+                String::new()
+            }
+        }
+    };
+    let values = [
+        (TEMPLATE_CONTAINER_HOME, profile.container_home.clone()),
+        (TEMPLATE_HOST_HOME, host_home.unwrap_or_default()),
+        (TEMPLATE_PROJECT_NAME, project_value),
+    ];
+    for triple in &mut profile.mounts {
+        triple.host_source = substitute(&triple.host_source, &values)?;
+        triple.container_target = substitute(&triple.container_target, &values)?;
+    }
+    if let Some(command) = &mut profile.command {
+        for arg in command {
+            *arg = substitute(arg, &values)?;
+        }
+    }
+    Ok(())
+}
+
+/// All template-bearing texts in a profile (triples both sides, argv).
+fn template_values(profile: &Profile) -> Vec<&str> {
+    let mut out = Vec::new();
+    for triple in &profile.mounts {
+        out.push(triple.host_source.as_str());
+        out.push(triple.container_target.as_str());
+    }
+    if let Some(command) = &profile.command {
+        out.extend(command.iter().map(String::as_str));
+    }
+    out
+}
+
+/// Whether a name is a known template.
+fn is_known_template(name: &str) -> bool {
+    matches!(
+        name,
+        TEMPLATE_CONTAINER_HOME | TEMPLATE_HOST_HOME | TEMPLATE_PROJECT_NAME
+    )
+}
+
+/// One parsed piece of a template-bearing value.
+enum Part<'a> {
+    /// Literal text, copied verbatim.
+    Lit(&'a str),
+    /// Template name (trimmed), resolved from the value table.
+    Name(String),
+}
+
+/// Splits a value into literal and template parts (exact `{{name}}`
+/// spans; substituted output is never re-scanned by callers).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on unterminated spans.
+fn split_spans(value: &str) -> Result<Vec<Part<'_>>> {
+    let mut parts = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("{{") {
+        if start > 0 {
+            parts.push(Part::Lit(&rest[..start]));
+        }
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            return Err(CistellaError::Profile(format!(
+                "unterminated template: {value}"
+            )));
+        };
+        parts.push(Part::Name(after[..end].trim().to_string()));
+        rest = &after[end + 2..];
+    }
+    if !rest.is_empty() {
+        parts.push(Part::Lit(rest));
+    }
+    Ok(parts)
+}
+
+/// Substitutes known names into a value (all names pre-validated by the
+/// recognition pass; single pass, no rescan).
+fn substitute(value: &str, values: &[(&str, String)]) -> Result<String> {
+    let mut out = String::with_capacity(value.len());
+    for part in split_spans(value)? {
+        match part {
+            Part::Lit(lit) => out.push_str(lit),
+            Part::Name(name) => {
+                let Some((_, replacement)) = values.iter().find(|(n, _)| *n == name) else {
+                    return Err(CistellaError::Profile(format!(
+                        "unknown template {{{name}}}: {value}"
+                    )));
+                };
+                out.push_str(replacement);
+            }
+        }
+    }
+    Ok(out)
+}
 /// Re-export for doc links.
 pub use crate::mount::MountTriple as ProfileMountTriple;

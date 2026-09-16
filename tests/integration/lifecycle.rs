@@ -449,3 +449,93 @@ fn harness_runs_in_worktree_target_live() {
     );
     assert_eq!(lines.get(1), Some(&worktree_str), "harness cwd: {lines:?}");
 }
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn project_name_template_live() {
+    // Templates resolve end to end: explicit flag and directory-basename
+    // default both land the mount at the expanded target.
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let config = TempDir::new().unwrap();
+    let profiles = config.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("tmpl.toml"),
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential_surface = \"none\"\n\
+         command = [\"sleep\", \"infinity\"]\n\
+         [[mounts]]\n\
+         host_source = \"/tmp\"\n\
+         container_target = \"/tmpl-{{project-name}}\"\n\
+         mode = \"ro\"\n",
+    )
+    .unwrap();
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let config_str = config.path().to_string_lossy().to_string();
+    // Harness target is fixed text; the flag selects which project fills it.
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            "tmpl",
+            "--configuration-directory",
+            &config_str,
+            "--session-directory",
+            &worktree_str,
+            "--project-name",
+            "QAPROJECT",
+            "--",
+            "ls",
+            "-d",
+            "/tmpl-QAPROJECT",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "explicit project: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("/tmpl-QAPROJECT"),
+        "mount landed at expanded target"
+    );
+    // Basename default: tempdir file name fills the template.
+    let basename = worktree
+        .path()
+        .file_name()
+        .expect("tempdir basename")
+        .to_string_lossy()
+        .to_string();
+    let target = format!("/tmpl-{basename}");
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            "tmpl",
+            "--configuration-directory",
+            &config_str,
+            "--session-directory",
+            &worktree_str,
+            "--",
+            "ls",
+            "-d",
+            &target,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "basename default: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(&target),
+        "mount landed at basename target"
+    );
+}

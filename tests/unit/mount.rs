@@ -335,3 +335,18 @@ fn validation_allows_ro_ro_stacking() {
     let child = triple("/tmp/a/sub", "/data/sub", MountMode::Ro);
     assert!(validate_mounts(&[parent, child], "/home/cistella").is_ok());
 }
+
+#[test]
+fn profile_from_toml_rejects_container_home_template() {
+    // Literal API upholds the same rejection as resolution: template
+    // syntax in container_home fails before canonicalization, even in
+    // absolute-path form.
+    let bad = r#"
+image = "localhost/cistella/opencode:example"
+credential_surface = "none"
+container_home = "/home/{{host-home}}"
+mounts = []
+"#;
+    let err = Profile::from_toml(bad).unwrap_err();
+    assert!(err.to_string().contains("templates"));
+}
