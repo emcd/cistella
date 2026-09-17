@@ -668,8 +668,15 @@ fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Resu
     // unterminated spans outrank context, HOME, and charset errors.
     let mut names: Vec<String> = Vec::new();
     for (field, value) in template_values(profile) {
-        let parts =
-            split_spans(value).map_err(|e| CistellaError::Profile(format!("{e} in {field}")))?;
+        // Unwrap the inner Profile string: interpolating the error would
+        // double the `profile:` display prefix.
+        let parts = split_spans(value).map_err(|e| {
+            let inner = match e {
+                CistellaError::Profile(msg) => msg,
+                other => other.to_string(),
+            };
+            CistellaError::Profile(format!("{inner} in {field}"))
+        })?;
         for part in parts {
             if let Part::Name(name) = part
                 && !names.contains(&name)
@@ -693,8 +700,13 @@ fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Resu
     // here), but the substitution loop below deliberately iterates
     // values only — keys are scan-only by design, not by omission.
     for key in profile.labels.keys() {
-        let parts =
-            split_spans(key).map_err(|e| CistellaError::Profile(format!("{e} in label key")))?;
+        let parts = split_spans(key).map_err(|e| {
+            let inner = match e {
+                CistellaError::Profile(msg) => msg,
+                other => other.to_string(),
+            };
+            CistellaError::Profile(format!("{inner} in label key"))
+        })?;
         for part in parts {
             if let Part::Name(name) = part {
                 return Err(CistellaError::Profile(format!(

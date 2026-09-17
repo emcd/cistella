@@ -563,6 +563,10 @@ fn unterminated_span_hides_env_secret() {
     let msg = err.to_string();
     assert!(!msg.contains("SENTINEL"), "secret leaked: {msg}");
     assert!(msg.contains("env value"), "field named: {msg}");
+    assert!(
+        !msg.contains("profile: profile:"),
+        "doubled display prefix: {msg}"
+    );
 }
 
 #[test]
