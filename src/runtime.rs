@@ -144,7 +144,7 @@ pub fn resolve_image_digest(image: &str) -> Result<String> {
 /// prevent Quadlet directive injection (`\n`/`\r`/`\0` rejected).
 ///
 /// Quadlet manpage: `Container` section with `Image`, `ContainerName`,
-/// `Label`, `Volume`, `Environment`, `UserNS`.
+/// `Label`, `Volume`, `Environment`, `UserNS`, `RunInit`.
 ///
 /// # Errors
 ///
@@ -214,6 +214,13 @@ pub fn generate_quadlet_unit(
     out.push_str(&format!("Image={}\n", escape_percent(&session.image)));
     out.push_str(&format!("ContainerName={}\n", session.container_name()));
     out.push_str("UserNS=keep-id\n");
+    // tini as PID 1 via the declarative key: forwards SIGTERM to
+    // `sleep infinity` (bare PID 1 ignores it by default disposition,
+    // stalling stop for the full StopTimeout before the SIGKILL fallback)
+    // and reaps zombies. Validated against this fleet's Quadlet
+    // (podman 4.9.3): the generator accepts `RunInit`, PID 1 arrives as
+    // `podman-init`, stop completes in ~0.25 s.
+    out.push_str("RunInit=true\n");
     // Generic labels first, driver-owned `cistella.*` last as defense in
     // depth: only the driver emits the reserved prefix.
     for (key, value) in generic_labels {

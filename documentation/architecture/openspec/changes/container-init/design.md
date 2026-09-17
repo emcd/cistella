@@ -16,7 +16,7 @@ Each session's Quadlet `.container` unit runs `Exec=sleep infinity` as container
 
 ## Decisions
 
-- **Emit `Init=true` in the `[Container]` section, next to `UserNS=keep-id`.** Quadlet translates it to `podman run --init` (tini as PID 1), which forwards SIGTERM to `sleep` and reaps zombies. Alternative considered: wrapping the Exec command in an init binary (`tini sleep infinity`) — rejected because it would require the init binary inside every image, dragging PC Setup-owned image contents into a driver fix. Alternative considered: a `pre-stop` that execs a kill — racy and redundant once PID 1 handles signals.
+- **Emit `RunInit=true` in the `[Container]` section, next to `UserNS=keep-id`.** Quadlet translates it to `podman run --init` (tini as PID 1), which forwards SIGTERM to `sleep` and reaps zombies. Validated live against this fleet's Quadlet (podman 4.9.3): the generator accepts the key (an earlier probe using the wrong key name, `Init`, was rejected — that rejection said nothing about `RunInit`), PID 1 arrives as `podman-init`, and stop completes in ~0.25 s. Alternative considered: `PodmanArgs=--init` passthrough — verified working but kept only as a fallback spelling; the declarative key is preferred and proven. Alternative considered: wrapping the Exec command in an init binary (`tini sleep infinity`) — rejected because it would require the init binary inside every image, dragging PC Setup-owned image contents into a driver fix. Alternative considered: a `pre-stop` that execs a kill — racy and redundant once PID 1 handles signals.
 - **Keep the default `StopTimeout`.** With forwarding working, stop completes in ~1 s; the 10 s default then only binds genuinely wedged processes, where SIGKILL fallback is exactly what we want. Lowering it would buy nothing measurable and would trim grace from the one path that might need it.
 - **No `SuccessExitStatus` change.** The clean path already ends in 143 (`sleep` on SIGTERM), which the unit already accepts. 137 disappears rather than being tolerated.
 - **Timing regression bounds the stop phase at 5 s.** Old behavior was deterministically 10.0 s+; new behavior ~1 s; 5 s leaves 5× headroom against a loaded host while still catching any return of the hang. The assertion measures stop/teardown only, not full `conduct`, to avoid harness runtime in the bound.
@@ -29,8 +29,8 @@ Each session's Quadlet `.container` unit runs `Exec=sleep infinity` as container
 
 ## Migration Plan
 
-None required. New `conduct` invocations emit the new unit; in-flight sessions are untouched. Rollback is removing the `Init=true` emission.
+None required. New `conduct` invocations emit the new unit; in-flight sessions are untouched. Rollback is removing the `RunInit=true` emission.
 
 ## Open Questions
 
-None. The mechanism (`Init=true` → `--init` → tini) is documented Quadlet/podman behavior, already proven by the dogfood journal evidence showing where the 10 s goes.
+None. The mechanism (`RunInit=true` → `--init` → tini) is documented Quadlet/podman behavior, validated live on this fleet's podman 4.9.3, on top of the dogfood journal evidence showing where the 10 s goes.

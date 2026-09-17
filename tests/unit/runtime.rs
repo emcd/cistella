@@ -60,6 +60,26 @@ fn quadlet_uses_tmpfs_key() {
 }
 
 #[test]
+fn quadlet_runs_container_under_init() {
+    let sess = test_session();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[]).unwrap();
+    // Scoped to the [Container] section: tini as PID 1 forwards SIGTERM
+    // to `sleep infinity` (bare PID 1 ignores it, stalling stop for the
+    // full StopTimeout) and reaps zombies.
+    let container = unit
+        .split("[Container]")
+        .nth(1)
+        .expect("Container section")
+        .split("[Service]")
+        .next()
+        .expect("Service section follows");
+    assert!(
+        container.lines().any(|l| l == "RunInit=true"),
+        "RunInit=true missing from [Container], got {unit}"
+    );
+}
+
+#[test]
 fn quadlet_labels_present() {
     let sess = test_session();
     let unit = generate_quadlet_unit(&sess, &[], &[], &[]).unwrap();

@@ -4,7 +4,7 @@ Every session teardown currently pays a ~10 s tax that has nothing to do with ci
 
 ## What Changes
 
-- Generated Quadlet `.container` units gain `Init=true` in the `[Container]` section, so the container runs under tini: SIGTERM is forwarded to the sleep process and zombies are reaped.
+- Generated Quadlet `.container` units gain `RunInit=true` in the `[Container]` section, so the container runs under tini: SIGTERM is forwarded to the sleep process and zombies are reaped.
 - Stop path becomes effectively instant (SIGTERM → sleep exits 143, already covered by the existing `SuccessExitStatus=143`); the SIGKILL fallback and 137 journal noise disappear.
 - A live timing regression asserts teardown completes well under the old 10 s hang, so the behavior cannot silently regress.
 - `StopTimeout` stays at the podman default: with signal forwarding working, teardown needs no grace beyond the default, and wedged processes still get the SIGKILL fallback. Recorded as a considered non-change.
@@ -17,7 +17,7 @@ None.
 
 ### Modified Capabilities
 
-- `runtime`: the generated Quadlet unit contract gains `Init=true`; the teardown observable changes from "~10 s stop ending in SIGKILL/137" to "prompt stop ending in 143".
+- `runtime`: the generated Quadlet unit contract gains `RunInit=true`; the teardown observable changes from "~10 s stop ending in SIGKILL/137" to "prompt stop ending in 143".
 
 ## Impact
 

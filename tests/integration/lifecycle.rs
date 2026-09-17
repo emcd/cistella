@@ -1,7 +1,7 @@
 //! Core conduct lifecycle: mint, attached terminate, orphan reap.
 
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -538,4 +538,82 @@ fn project_name_template_live() {
         String::from_utf8_lossy(&out.stdout).contains(&target),
         "mount landed at basename target"
     );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn terminate_stops_promptly_without_sigkill() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+
+    let (mut conduct, id, mut guard) = spawn_conduct(&home, &worktree_str, &[]);
+    wait_active(&id);
+    let service = format!("cistella-{id}.service");
+
+    // Init-forwarded SIGTERM stops the container in ~1 s; without init
+    // podman waits out the full 10 s StopTimeout before SIGKILL. Stop is
+    // issued here rather than via `terminate` so the service result can be
+    // read machine-readable before teardown removes the unit.
+    let start = Instant::now();
+    let stop = Command::new("systemctl")
+        .args(["--user", "stop", &service])
+        .output()
+        .expect("systemctl stop");
+    let elapsed = start.elapsed();
+    assert!(
+        stop.status.success(),
+        "stop: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "stop took {elapsed:?}: SIGTERM was not forwarded (--init missing?)"
+    );
+    let show = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "-p",
+            "ActiveState",
+            "-p",
+            "Result",
+            "-p",
+            "ExecMainCode",
+            "-p",
+            "ExecMainStatus",
+            &service,
+        ])
+        .output()
+        .expect("systemctl show");
+    let show_txt = String::from_utf8_lossy(&show.stdout).to_string();
+    assert!(
+        show_txt.contains("ActiveState=inactive"),
+        "service inactive: {show_txt}"
+    );
+    assert!(
+        show_txt.contains("Result=success"),
+        "clean result, not exit-code: {show_txt}"
+    );
+    assert!(
+        show_txt.contains("ExecMainCode=1"),
+        "main process exited (1), not signaled (2): {show_txt}"
+    );
+    assert!(
+        show_txt.contains("ExecMainStatus=143"),
+        "sleep exited 143 on forwarded SIGTERM, not 137: {show_txt}"
+    );
+
+    // The harness exec ends with the stopped container, so the attached
+    // conduct runs shared teardown itself: unit file and scratch converge
+    // away with no separate terminate needed.
+    let status = conduct.wait().expect("conduct reaped");
+    eprintln!("conduct end: {status:?}");
+    guard.id = None;
+    assert!(!unit_path(&home, &id).exists(), "no unit residue");
+    assert!(scratch_gone(&id), "no scratch residue");
 }
