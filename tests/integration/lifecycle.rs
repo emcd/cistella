@@ -617,3 +617,84 @@ fn terminate_stops_promptly_without_sigkill() {
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
     assert!(scratch_gone(&id), "no scratch residue");
 }
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn template_env_and_labels_resolve_live() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let home_var = std::env::var("HOME").expect("HOME set");
+
+    // Profile bearing templates in env values and labels values. The
+    // harness prints its environment: this is the assertion the original
+    // template verification skipped (it checked mounts only).
+    let profile = worktree.path().join("tmpl-env.toml");
+    std::fs::write(
+        &profile,
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential_surface = \"none\"\n\
+         container_home = \"/home/cistella\"\n\
+         mounts = []\n\
+         [env]\n\
+         PROBE_ALL = \"{{container-home}}/.config:{{host-home}}/.x:{{project-name}}\"\n\
+         [labels]\n\
+         \"tmpl.tag\" = \"{{project-name}}-{{container-home}}\"\n",
+    )
+    .unwrap();
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile.to_string_lossy(),
+        &worktree_str,
+        &["--identity", "alice", "--project-name", "liveproj"],
+        &["sleep", "300"],
+        &[],
+    );
+    wait_active(&id);
+    let container = format!("cistella-{id}");
+
+    // Harness-observed environment shows substituted values.
+    let env_out = Command::new("podman")
+        .args(["exec", &container, "sh", "-c", "echo $PROBE_ALL"])
+        .output()
+        .expect("podman exec env");
+    assert!(env_out.status.success(), "podman exec env");
+    let observed = String::from_utf8_lossy(&env_out.stdout).trim().to_string();
+    assert_eq!(
+        observed,
+        format!("/home/cistella/.config:{home_var}/.x:liveproj"),
+        "env templates resolved in-container"
+    );
+    // No literal span text survives anywhere in the environment.
+    let all_out = Command::new("podman")
+        .args(["exec", &container, "sh", "-c", "env"])
+        .output()
+        .expect("podman exec env dump");
+    let all_txt = String::from_utf8_lossy(&all_out.stdout).to_string();
+    assert!(
+        !all_txt.contains("{{"),
+        "no literal spans in environment: {all_txt}"
+    );
+
+    // Template label value round-trips through the running container.
+    assert_eq!(
+        podman_label(&container, "tmpl.tag"),
+        "liveproj-/home/cistella",
+        "label templates resolved on container"
+    );
+
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = conduct.wait();
+    guard.id = None;
+    assert!(!unit_path(&home, &id).exists(), "no unit residue");
+    assert!(scratch_gone(&id), "no scratch residue");
+}

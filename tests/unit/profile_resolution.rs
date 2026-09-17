@@ -467,3 +467,109 @@ fn directory_default_basename_validates_charset() {
     .unwrap_err();
     assert!(err.to_string().contains("project name"), "{err}");
 }
+
+fn env_labels_toml(env_value: &str, label_key: &str, label_value: &str) -> String {
+    format!(
+        "{}\n[env]\nPROBE = \"{env_value}\"\n[labels]\n\"{label_key}\" = \"{label_value}\"\n",
+        template_toml("/data", "/x")
+    )
+}
+
+#[test]
+fn env_values_expand_templates() {
+    let toml = env_labels_toml(
+        "{{container-home}}/.config:{{host-home}}/.x:{{project-name}}",
+        "plain",
+        "v",
+    );
+    let home = std::env::var("HOME").unwrap();
+    let (profile, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap();
+    assert_eq!(
+        profile.env.get("PROBE").map(String::as_str),
+        Some(format!("/home/cistella/.config:{home}/.x:proj").as_str())
+    );
+}
+
+#[test]
+fn labels_values_expand_templates() {
+    let toml = env_labels_toml("v", "tag", "{{project-name}}-{{container-home}}");
+    let (profile, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap();
+    assert_eq!(
+        profile.labels.get("tag").map(String::as_str),
+        Some("proj-/home/cistella")
+    );
+}
+
+#[test]
+fn unknown_template_in_env_errors() {
+    let toml = env_labels_toml("{{bogus}}", "plain", "v");
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    assert!(err.to_string().contains("unknown template"), "{err}");
+}
+
+#[test]
+fn unterminated_span_in_labels_errors() {
+    let toml = env_labels_toml("v", "plain", "{{container-home");
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    assert!(err.to_string().contains("unterminated"), "{err}");
+}
+
+#[test]
+fn template_in_label_key_errors() {
+    let toml = env_labels_toml("v", "{{project-name}}", "v");
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    assert!(err.to_string().contains("label key"), "{err}");
+}
+
+#[test]
+fn brace_shaped_env_stays_literal_without_context() {
+    // Single braces are not spans: template-free profiles pass through
+    // with no project context, env and labels included. Built without
+    // the command-argv span that template_toml carries.
+    let toml = [
+        "image = \"localhost/cistella/opencode:example\"",
+        "credential_surface = \"none\"",
+        "container_home = \"/home/cistella\"",
+        "[[mounts]]",
+        "host_source = \"/data\"",
+        "container_target = \"/x\"",
+        "mode = \"rw\"",
+        "[env]",
+        "PROBE = \"{not-a-span}\"",
+        "[labels]",
+        "plain = \"(also-literal)\"",
+        "",
+    ]
+    .join("\n");
+    let (profile, _, _) = resolve_template_text(&toml, None).unwrap();
+    assert_eq!(
+        profile.env.get("PROBE").map(String::as_str),
+        Some("{not-a-span}")
+    );
+    assert_eq!(
+        profile.labels.get("plain").map(String::as_str),
+        Some("(also-literal)")
+    );
+}
+
+#[test]
+fn unterminated_span_hides_env_secret() {
+    // Tier-2: diagnostics name the field, never the raw value — env
+    // values may carry credentials that must not reach stderr/logs.
+    let toml = env_labels_toml("sk-live-SENTINEL-9f8{{", "plain", "v");
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let msg = err.to_string();
+    assert!(!msg.contains("SENTINEL"), "secret leaked: {msg}");
+    assert!(msg.contains("env value"), "field named: {msg}");
+}
+
+#[test]
+fn unterminated_span_hides_label_secret() {
+    let toml = env_labels_toml("v", "plain", "tok-SENTINEL-77{{");
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let msg = err.to_string();
+    assert!(!msg.contains("SENTINEL"), "secret leaked: {msg}");
+    assert!(msg.contains("label value"), "field named: {msg}");
+}

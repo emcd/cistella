@@ -614,7 +614,8 @@ fn validate_project_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Expands `{{...}}` templates in mount triples and command argv.
+/// Expands `{{...}}` templates in mount triples, command argv, env
+/// values, and labels values.
 ///
 /// `project_name` is `Some` on the conduct path and `None` for
 /// context-free callers: with `None`, template-free profiles pass
@@ -641,7 +642,8 @@ pub enum ProjectName<'a> {
     DirectoryDefault(&'a str),
 }
 
-/// Expands `{{...}}` templates in mount triples and command argv.
+/// Expands `{{...}}` templates in mount triples, command argv, env
+/// values, and labels values.
 ///
 /// `project` is `Some` on the conduct path and `None` for context-free
 /// callers: with `None`, template-free profiles pass through and
@@ -665,8 +667,10 @@ fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Resu
     // Exact span recognition across every value first: unknown and
     // unterminated spans outrank context, HOME, and charset errors.
     let mut names: Vec<String> = Vec::new();
-    for value in template_values(profile) {
-        for part in split_spans(value)? {
+    for (field, value) in template_values(profile) {
+        let parts =
+            split_spans(value).map_err(|e| CistellaError::Profile(format!("{e} in {field}")))?;
+        for part in parts {
             if let Part::Name(name) = part
                 && !names.contains(&name)
             {
@@ -679,6 +683,24 @@ fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Resu
             return Err(CistellaError::Profile(format!(
                 "unknown template {{{name}}}"
             )));
+        }
+    }
+    // Label keys never expand (keys are lookup dimensions; expanding them
+    // would destabilize matching), so any span there is a typed error.
+    // Env keys need no handling: `[A-Z_][A-Z0-9_]*` cannot contain braces.
+    // NOTE on the scan/substitute asymmetry: label keys appear in
+    // `template_values()` so their spans are recognized (and rejected
+    // here), but the substitution loop below deliberately iterates
+    // values only — keys are scan-only by design, not by omission.
+    for key in profile.labels.keys() {
+        let parts =
+            split_spans(key).map_err(|e| CistellaError::Profile(format!("{e} in label key")))?;
+        for part in parts {
+            if let Part::Name(name) = part {
+                return Err(CistellaError::Profile(format!(
+                    "template {{{name}}} in label key"
+                )));
+            }
         }
     }
     if names.is_empty() {
@@ -727,19 +749,47 @@ fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Resu
             *arg = substitute(arg, &values)?;
         }
     }
+    for value in profile.env.values_mut() {
+        *value = substitute(value, &values)?;
+    }
+    for value in profile.labels.values_mut() {
+        *value = substitute(value, &values)?;
+    }
     Ok(())
 }
 
-/// All template-bearing texts in a profile (triples both sides, argv).
-fn template_values(profile: &Profile) -> Vec<&str> {
+/// All template-bearing texts in a profile as (field, text) pairs:
+/// triples both sides, argv, env values, labels values, and labels keys
+/// (keys are scanned for fail-closed rejection, never substituted).
+/// The field label exists so diagnostics can name the offense without
+/// echoing the raw value (env values may carry secrets).
+fn template_values(profile: &Profile) -> Vec<(&str, &str)> {
     let mut out = Vec::new();
     for triple in &profile.mounts {
-        out.push(triple.host_source.as_str());
-        out.push(triple.container_target.as_str());
+        out.push(("mount host_source", triple.host_source.as_str()));
+        out.push(("mount container_target", triple.container_target.as_str()));
     }
     if let Some(command) = &profile.command {
-        out.extend(command.iter().map(String::as_str));
+        out.extend(command.iter().map(|a| ("command argv", String::as_str(a))));
     }
+    out.extend(
+        profile
+            .env
+            .values()
+            .map(|v| ("env value", String::as_str(v))),
+    );
+    out.extend(
+        profile
+            .labels
+            .values()
+            .map(|v| ("label value", String::as_str(v))),
+    );
+    out.extend(
+        profile
+            .labels
+            .keys()
+            .map(|k| ("label key", String::as_str(k))),
+    );
     out
 }
 
@@ -762,6 +812,9 @@ enum Part<'a> {
 /// Splits a value into literal and template parts (exact `{{name}}`
 /// spans; substituted output is never re-scanned by callers).
 ///
+/// The unterminated-span diagnostic carries a byte offset, never the
+/// raw value: callers add field context, and env values may be secrets.
+///
 /// # Errors
 ///
 /// Returns `CistellaError::Profile` on unterminated spans.
@@ -774,8 +827,9 @@ fn split_spans(value: &str) -> Result<Vec<Part<'_>>> {
         }
         let after = &rest[start + 2..];
         let Some(end) = after.find("}}") else {
+            let offset = value.len() - rest.len() + start;
             return Err(CistellaError::Profile(format!(
-                "unterminated template: {value}"
+                "unterminated template span at byte {offset}"
             )));
         };
         parts.push(Part::Name(after[..end].trim().to_string()));
@@ -796,8 +850,10 @@ fn substitute(value: &str, values: &[(&str, String)]) -> Result<String> {
             Part::Lit(lit) => out.push_str(lit),
             Part::Name(name) => {
                 let Some((_, replacement)) = values.iter().find(|(n, _)| *n == name) else {
+                    // No raw value: names are bounded identifiers, but the
+                    // surrounding text may be secret (see split_spans).
                     return Err(CistellaError::Profile(format!(
-                        "unknown template {{{name}}}: {value}"
+                        "unknown template {{{name}}}"
                     )));
                 };
                 out.push_str(replacement);
