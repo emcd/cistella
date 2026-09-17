@@ -214,7 +214,8 @@ pub fn generate_quadlet_unit(
     out.push_str(&format!("Image={}\n", escape_percent(&session.image)));
     out.push_str(&format!("ContainerName={}\n", session.container_name()));
     out.push_str("UserNS=keep-id\n");
-    // tini as PID 1 via the declarative key: forwards SIGTERM to
+    // Podman's minimal init as PID 1 via the declarative key (observed
+    // as `podman-init`): forwards SIGTERM to
     // `sleep infinity` (bare PID 1 ignores it by default disposition,
     // stalling stop for the full StopTimeout before the SIGKILL fallback)
     // and reaps zombies. Validated against this fleet's Quadlet

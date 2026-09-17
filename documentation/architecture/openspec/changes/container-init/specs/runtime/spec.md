@@ -10,7 +10,7 @@ The driver SHALL manage one disposable container per session with labels `cistel
 - **THEN** the stop completes in under 5 seconds and `systemctl show` reports `ActiveState=inactive`, `Result=success`, `ExecMainCode=1` (exited, not signaled), `ExecMainStatus=143` — the sleep process exited on forwarded SIGTERM, with no SIGKILL fallback
 
 ### Requirement: Quadlet supervision
-The driver SHALL use Quadlet systemd user units for long-lived supervision, not `podman generate systemd`. Units are `cistella-<id>.container` (no harness in name), `UserNS=keep-id`, `RunInit=true` (tini as PID 1: SIGTERM forwarded to the sleep process, zombies reaped), `Tmpfs=<canonical container_home>`, `SuccessExitStatus=143`.
+The driver SHALL use Quadlet systemd user units for long-lived supervision, not `podman generate systemd`. Units are `cistella-<id>.container` (no harness in name), `UserNS=keep-id`, `RunInit=true` (podman's minimal init as PID 1: SIGTERM forwarded to the sleep process, zombies reaped), `Tmpfs=<canonical container_home>`, `SuccessExitStatus=143`.
 
 #### Scenario: Init passthrough present in generated unit
 - **WHEN** a session unit is generated

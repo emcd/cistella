@@ -63,7 +63,7 @@ fn quadlet_uses_tmpfs_key() {
 fn quadlet_runs_container_under_init() {
     let sess = test_session();
     let unit = generate_quadlet_unit(&sess, &[], &[], &[]).unwrap();
-    // Scoped to the [Container] section: tini as PID 1 forwards SIGTERM
+    // Scoped to the [Container] section: podman's minimal init as PID 1 forwards SIGTERM
     // to `sleep infinity` (bare PID 1 ignores it, stalling stop for the
     // full StopTimeout) and reaps zombies.
     let container = unit
