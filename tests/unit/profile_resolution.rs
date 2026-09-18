@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use cistella::profile::{Profile, ProjectName, ResolutionSource};
 
 fn minimal_toml(image: &str) -> String {
-    format!("image = \"{image}\"\ncredential_surface = \"none\"\nmounts = []\n")
+    format!("image = \"{image}\"\ncredential-surface = \"none\"\nmounts = []\n")
 }
 
 fn write_profile(dir: &Path, name: &str, image: &str) -> PathBuf {
@@ -252,12 +252,12 @@ fn from_host_env_puts_flag_first() {
 fn template_toml(host: &str, target: &str) -> String {
     format!(
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential_surface = \"none\"\n\
-         container_home = \"/home/cistella\"\n\
+         credential-surface = \"none\"\n\
+         container-home = \"/home/cistella\"\n\
          command = [\"run\", \"{{{{project-name}}}}\"]\n\
          [[mounts]]\n\
-         host_source = \"{host}\"\n\
-         container_target = \"{target}\"\n\
+         host-source = \"{host}\"\n\
+         container-target = \"{target}\"\n\
          mode = \"rw\"\n"
     )
 }
@@ -346,11 +346,11 @@ fn template_without_context_fails_closed() {
 #[test]
 fn container_home_template_rejected() {
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential_surface = \"none\"\n\
-container_home = \"/home/{{host-home}}\"\n\
+credential-surface = \"none\"\n\
+container-home = \"/home/{{host-home}}\"\n\
 mounts = []\n";
     let err = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap_err();
-    assert!(err.to_string().contains("container_home"));
+    assert!(err.to_string().contains("container-home"));
 }
 
 #[test]
@@ -404,11 +404,11 @@ fn container_home_expands_canonical_not_raw() {
     // Finding 1: {{container-home}} is the canonical home even when the
     // literal form traverses.
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential_surface = \"none\"\n\
-container_home = \"/home/cistella/../other\"\n\
+credential-surface = \"none\"\n\
+container-home = \"/home/cistella/../other\"\n\
 [[mounts]]\n\
-host_source = \"/data\"\n\
-container_target = \"{{container-home}}/x\"\n\
+host-source = \"/data\"\n\
+container-target = \"{{container-home}}/x\"\n\
 mode = \"ro\"\n";
     let (prof, _, _) = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap();
     assert_eq!(prof.home(), "/home/other");
@@ -470,7 +470,7 @@ fn directory_default_basename_validates_charset() {
 
 fn env_labels_toml(env_value: &str, label_key: &str, label_value: &str) -> String {
     format!(
-        "{}\n[env]\nPROBE = \"{env_value}\"\n[labels]\n\"{label_key}\" = \"{label_value}\"\n",
+        "{}\n[environment]\nPROBE = \"{env_value}\"\n[labels]\n\"{label_key}\" = \"{label_value}\"\n",
         template_toml("/data", "/x")
     )
 }
@@ -486,7 +486,7 @@ fn env_values_expand_templates() {
     let (profile, _, _) =
         resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap();
     assert_eq!(
-        profile.env.get("PROBE").map(String::as_str),
+        profile.environment.get("PROBE").map(String::as_str),
         Some(format!("/home/cistella/.config:{home}/.x:proj").as_str())
     );
 }
@@ -530,13 +530,13 @@ fn brace_shaped_env_stays_literal_without_context() {
     // the command-argv span that template_toml carries.
     let toml = [
         "image = \"localhost/cistella/opencode:example\"",
-        "credential_surface = \"none\"",
-        "container_home = \"/home/cistella\"",
+        "credential-surface = \"none\"",
+        "container-home = \"/home/cistella\"",
         "[[mounts]]",
-        "host_source = \"/data\"",
-        "container_target = \"/x\"",
+        "host-source = \"/data\"",
+        "container-target = \"/x\"",
         "mode = \"rw\"",
-        "[env]",
+        "[environment]",
         "PROBE = \"{not-a-span}\"",
         "[labels]",
         "plain = \"(also-literal)\"",
@@ -545,7 +545,7 @@ fn brace_shaped_env_stays_literal_without_context() {
     .join("\n");
     let (profile, _, _) = resolve_template_text(&toml, None).unwrap();
     assert_eq!(
-        profile.env.get("PROBE").map(String::as_str),
+        profile.environment.get("PROBE").map(String::as_str),
         Some("{not-a-span}")
     );
     assert_eq!(

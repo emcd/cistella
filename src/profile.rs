@@ -101,6 +101,7 @@ impl<'de> Deserialize<'de> for CredentialSurface {
 /// Declarative profile loaded from TOML (a baked example, an XDG user
 /// copy, a configuration-directory file, or an explicit path).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Profile {
     /// Image tag or digest, e.g. `localhost/cistella-opencode:example`.
     pub image: String,
@@ -111,7 +112,7 @@ pub struct Profile {
     pub command: Option<Vec<String>>,
     /// Env exports inside the container.
     #[serde(default)]
-    pub env: HashMap<String, String>,
+    pub environment: HashMap<String, String>,
     /// Credential surface slot; `none` mounts nothing, `ssh_agent` mounts per-identity socket RO.
     pub credential_surface: CredentialSurface,
     /// Single distinguished writable session-home root.
@@ -479,13 +480,13 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
     // container_home is not a triple but must not be a sensitive root or traversal to one.
     if canon_home == "/" {
         return Err(CistellaError::Profile(
-            "container_home must not be /".to_string(),
+            "container-home must not be /".to_string(),
         ));
     }
     for root in ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64"] {
         if canon_home == root || canon_home.starts_with(&format!("{root}/")) {
             return Err(CistellaError::Profile(format!(
-                "container_home at or above sensitive root {root}: {} (canonical {canon_home})",
+                "container-home at or above sensitive root {root}: {} (canonical {canon_home})",
                 profile.container_home
             )));
         }
@@ -496,11 +497,11 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
     for ch in ["\n", "\r", "\0"] {
         if profile.container_home.contains(ch) {
             return Err(CistellaError::Profile(
-                "container_home must not contain control characters".to_string(),
+                "container-home must not contain control characters".to_string(),
             ));
         }
     }
-    for (k, v) in &profile.env {
+    for (k, v) in &profile.environment {
         if k.contains('\n') || k.contains('\r') || v.contains('\n') || v.contains('\r') {
             return Err(CistellaError::Profile(format!(
                 "env key/value must not contain newlines: {k}"
@@ -521,7 +522,7 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
         }
     }
     // HOME is derived from container_home, not freely overridden via env.
-    if profile.env.contains_key("HOME") {
+    if profile.environment.contains_key("HOME") {
         return Err(CistellaError::Profile(
             "HOME must not be set in env; derived from container_home".to_string(),
         ));
@@ -578,12 +579,12 @@ fn normalize_container_home(home: &str) -> Result<String> {
     };
     if home.contains("{{") {
         return Err(CistellaError::Profile(
-            "container_home must not contain templates".to_string(),
+            "container-home must not contain templates".to_string(),
         ));
     }
     if !home.starts_with('/') {
         return Err(CistellaError::Profile(
-            "container_home must be absolute".to_string(),
+            "container-home must be absolute".to_string(),
         ));
     }
     Ok(canonicalize_container_target(&home))
@@ -761,7 +762,7 @@ fn expand_templates(profile: &mut Profile, project: Option<ProjectName>) -> Resu
             *arg = substitute(arg, &values)?;
         }
     }
-    for value in profile.env.values_mut() {
+    for value in profile.environment.values_mut() {
         *value = substitute(value, &values)?;
     }
     for value in profile.labels.values_mut() {
@@ -786,7 +787,7 @@ fn template_values(profile: &Profile) -> Vec<(&str, &str)> {
     }
     out.extend(
         profile
-            .env
+            .environment
             .values()
             .map(|v| ("env value", String::as_str(v))),
     );

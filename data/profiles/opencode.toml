@@ -1,20 +1,20 @@
 # Canonical OpenCode profile: shared state RW, config RO, directory at /work.
 image = "localhost/cistella/opencode:example"
-credential_surface = "none"
-container_home = "/home/cistella"
+credential-surface = "none"
+container-home = "/home/cistella"
 command = ["opencode"]
 
 [[mounts]]
-host_source = "~/.config/opencode"
-container_target = "{{container-home}}/.config/opencode"
+host-source = "~/.config/opencode"
+container-target = "{{container-home}}/.config/opencode"
 mode = "ro"
 
 [[mounts]]
-host_source = "~/.local/share/opencode"
-container_target = "{{container-home}}/.local/share/opencode"
+host-source = "~/.local/share/opencode"
+container-target = "{{container-home}}/.local/share/opencode"
 mode = "rw"
 
 [[mounts]]
-host_source = "~/.local/state/opencode"
-container_target = "{{container-home}}/.local/state/opencode"
+host-source = "~/.local/state/opencode"
+container-target = "{{container-home}}/.local/state/opencode"
 mode = "rw"

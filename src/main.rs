@@ -327,7 +327,11 @@ fn conduct_session(
     let ssh_args = cistella::identity::ssh_agent_volume_args(&prof);
     // ssh_args is mixed ["--volume", "sock:sock:ro", "-e", "SSH_AUTH_SOCK=..."]; split for Quadlet
     let mut all_volumes = volumes;
-    let mut env_extra: Vec<String> = prof.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    let mut env_extra: Vec<String> = prof
+        .environment
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
     let mut i = 0;
     while i + 1 < ssh_args.len() {
         let flag = &ssh_args[i];

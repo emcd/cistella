@@ -222,11 +222,11 @@ fn environment_values_verbatim() {
     std::fs::write(
         &profile,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential_surface = \"none\"\n\
-         container_home = \"/home/cistella\"\n\
+         credential-surface = \"none\"\n\
+         container-home = \"/home/cistella\"\n\
          command = [\"sleep\", \"300\"]\n\
          mounts = []\n\
-         [env]\n\
+         [environment]\n\
          EDGE = \"a=b c\\\"d'e 100% %h\"\n",
     )
     .unwrap();

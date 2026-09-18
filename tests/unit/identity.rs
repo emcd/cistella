@@ -13,7 +13,7 @@ fn none_mounts_nothing_even_with_ambient_sock() {
     let prof = Profile::from_toml(
         r#"
 image = "localhost/cistella/opencode:example"
-credential_surface = "none"
+credential-surface = "none"
 mounts = []
 "#,
     )
@@ -34,7 +34,7 @@ fn agent_mounts_ro_from_profile() {
     let toml = format!(
         r#"
 image = "localhost/cistella/opencode:example"
-credential_surface = {{ ssh_agent = "{}" }}
+credential-surface = {{ ssh_agent = "{}" }}
 mounts = []
 "#,
         sock.display()
@@ -51,9 +51,9 @@ fn rejects_github_token_in_env() {
     let prof = Profile::from_toml(
         r#"
 image = "localhost/cistella/opencode:example"
-credential_surface = "none"
+credential-surface = "none"
 mounts = []
-[env]
+[environment]
 GITHUB_TOKEN = "secret"
 "#,
     )

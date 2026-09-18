@@ -95,7 +95,7 @@ fn conduct_exit_passthrough_and_mint() {
     let profile = worktree.path().join("missing.toml");
     std::fs::write(
         &profile,
-        "image = \"localhost/cistella/missing:example\"\ncredential_surface = \"none\"\n",
+        "image = \"localhost/cistella/missing:example\"\ncredential-surface = \"none\"\n",
     )
     .unwrap();
     let out = run_cistella(
@@ -383,7 +383,7 @@ fn configuration_directory_plumbing_live() {
     std::fs::write(
         profiles.join("custom.toml"),
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential_surface = \"none\"\n\
+         credential-surface = \"none\"\n\
          command = [\"sleep\", \"infinity\"]\n\
          mounts = []\n",
     )
@@ -465,11 +465,11 @@ fn project_name_template_live() {
     std::fs::write(
         profiles.join("tmpl.toml"),
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential_surface = \"none\"\n\
+         credential-surface = \"none\"\n\
          command = [\"sleep\", \"infinity\"]\n\
          [[mounts]]\n\
-         host_source = \"/tmp\"\n\
-         container_target = \"/tmpl-{{project-name}}\"\n\
+         host-source = \"/tmp\"\n\
+         container-target = \"/tmpl-{{project-name}}\"\n\
          mode = \"ro\"\n",
     )
     .unwrap();
@@ -637,10 +637,10 @@ fn template_env_and_labels_resolve_live() {
     std::fs::write(
         &profile,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential_surface = \"none\"\n\
-         container_home = \"/home/cistella\"\n\
+         credential-surface = \"none\"\n\
+         container-home = \"/home/cistella\"\n\
          mounts = []\n\
-         [env]\n\
+         [environment]\n\
          PROBE_ALL = \"{{container-home}}/.config:{{host-home}}/.x:{{project-name}}\"\n\
          [labels]\n\
          \"tmpl.tag\" = \"{{project-name}}-{{container-home}}\"\n",

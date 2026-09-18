@@ -4,7 +4,7 @@ The profile schema grew with truncated and snake_case TOML spellings (`[env]`, `
 
 ## What Changes
 
-- **BREAKING** Table `[env]` → `[environment]` (serde rename; Rust field names unchanged).
+- **BREAKING** Table `[env]` → `[environment]` (Rust field renamed to match; all `profile.env` references updated).
 - **BREAKING** Hyphenated TOML keys via serde `rename_all`: `credential-surface`, `container-home`, `host-source`, `container-target` (top-level and triple keys alike; Rust fields unchanged).
 - Both renames land in one change with a single migration note, so profiles break exactly once: rename keys in place, no semantic change.
 - Baked examples (`data/profiles/*.toml`), all test-fixture TOML, and the dogfood profiles (dev draft, XDG `opencode`) move to the new spellings in the same change.
@@ -19,6 +19,8 @@ None.
 ### Modified Capabilities
 
 - `mounts`: the profile-schema requirement's spellings change (`[environment]`, hyphenated keys); the migration note is part of the requirement text.
+- `identity`: `credential_surface` spellings in prose/examples change to `credential-surface`.
+- `runtime`: prose references to the profile field change to the `container-home` key spelling.
 
 ## Impact
 

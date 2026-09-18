@@ -43,6 +43,7 @@ impl MountMode {
 
 /// Single allowlist triple `(host-source, container-target, mode)`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct MountTriple {
     /// Host path.
     pub host_source: String,
