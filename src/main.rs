@@ -416,6 +416,34 @@ fn conduct_session(
         }
         return Err(e);
     }
+    // Mountpoint preparation runs under the creation-window lock, before
+    // the harness attaches. Authorization consumes the canonical emitted
+    // volume targets (profile/CLI/session/scratch/credential volumes
+    // alike), so no mount prefix escapes on spelling; candidates are
+    // seeded from user mounts only (profile/CLI/session), so internal
+    // primitives never trigger ownership changes to system ancestors.
+    // Failures use the lock-held teardown form while the guard is still
+    // live (re-acquiring the held lock would deadlock the no-residue
+    // path); the residue decision is made before the drop.
+    let volume_targets = cistella::mount::volume_targets(&all_volumes);
+    let sources =
+        cistella::mount::preparation_sources(&prof.mounts, &cli_triples, &worktree_target);
+    if let Err(e) = cistella::prepare::prepare_mountpoints(
+        &container_name,
+        &sources,
+        &volume_targets,
+        prof.home(),
+    ) {
+        let teardown_result = cistella::runtime::teardown_inner(&container_name, &id);
+        let residue_ok = cistella::runtime::residue_gone(&container_name, &id);
+        drop(guard);
+        if let Err(teardown_err) = teardown_result
+            && !residue_ok
+        {
+            return Err(teardown_err);
+        }
+        return Err(e);
+    }
     if let Some(signum) = pending_signal() {
         drop(guard);
         abort_startup(&container_name, &id, signum, true);

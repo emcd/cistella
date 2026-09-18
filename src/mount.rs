@@ -469,6 +469,51 @@ pub fn podman_volume_args(
     args
 }
 
+/// Container-side targets of every emitted `--volume` entry.
+///
+/// Single source of truth for what podman actually mounts: profile, CLI,
+/// session-directory, scratch, and credential-surface volumes alike, with
+/// container targets in emitted (canonicalized) form — so authorization
+/// downstream can never miss a mount prefix whose profile spelling was
+/// noncanonical. The tmpfs session home has no volume entry and is
+/// handled separately by callers.
+#[must_use]
+pub fn volume_targets(volumes: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < volumes.len() {
+        if volumes[i] == "--volume"
+            && let Some(target) = volumes[i + 1].split(':').nth(1)
+        {
+            out.push(canonicalize_container_target(target));
+        }
+        i += 2;
+    }
+    out
+}
+
+/// Candidate-source targets for preparation: profile, CLI, and session
+/// triples, canonicalized. Scratch and credential-surface volumes are
+/// internal primitives, not user mounts: they contribute to the
+/// authorization/exclusion set (via `volume_targets`) but never seed
+/// candidates — so internal mounts cannot trigger ownership changes to
+/// shallow system ancestors like `/run` or `/tmp`.
+#[must_use]
+pub fn preparation_sources(
+    mounts: &[MountTriple],
+    cli: &[MountTriple],
+    session_target: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in mounts.iter().chain(cli.iter()) {
+        out.push(canonicalize_container_target(&t.container_target));
+    }
+    out.push(canonicalize_container_target(session_target));
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Canonicalizes host path via longest existing prefix, mirroring
 /// `dispositor::assert_disjoint_roots` precedent.
 #[must_use]

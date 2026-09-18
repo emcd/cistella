@@ -293,3 +293,124 @@ fn harness_exec_pins_workdir_before_container() {
     assert!(args.contains(&"-i".to_string()));
     assert!(args.contains(&"-t".to_string()));
 }
+
+use cistella::prepare::{preparation_authorized, preparation_candidates};
+
+fn targets(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn preparation_candidates_walk_and_dedupe() {
+    // Multi-level chain unions ancestors, sorted, de-duplicated; the
+    // walk stops at the tmpfs home, so /home is not a candidate.
+    let got = preparation_candidates(
+        &targets(&["/home/cistella/.config/deep/nest"]),
+        "/home/cistella",
+    );
+    assert_eq!(
+        got,
+        vec!["/home/cistella/.config", "/home/cistella/.config/deep"]
+    );
+}
+
+#[test]
+fn preparation_candidates_exclude_mountpoints_and_root() {
+    // Targets, the tmpfs home itself, and `/` never appear; nested
+    // triples share segments without crossing each other's mount roots.
+    let got = preparation_candidates(
+        &targets(&["/work/x", "/work/x/y", "/home/cistella/.config/agentmux"]),
+        "/home/cistella",
+    );
+    assert!(!got.contains(&"/".to_string()), "root excluded: {got:?}");
+    assert!(
+        !got.contains(&"/work/x".to_string()),
+        "mount root excluded: {got:?}"
+    );
+    assert!(
+        !got.contains(&"/work/x/y".to_string()),
+        "mount root excluded: {got:?}"
+    );
+    assert!(
+        !got.contains(&"/home/cistella".to_string()),
+        "tmpfs home root excluded: {got:?}"
+    );
+    assert!(
+        got.contains(&"/work".to_string()),
+        "container-local ancestor kept: {got:?}"
+    );
+    assert!(
+        got.contains(&"/home/cistella/.config".to_string()),
+        "beneath-home kept: {got:?}"
+    );
+}
+
+#[test]
+fn preparation_candidates_drop_beneath_bind() {
+    // A candidate beneath a known bind target is dropped lexically; the
+    // runtime proof handles what strings cannot (symlinks).
+    let got = preparation_candidates(&targets(&["/tree", "/tree/deep/leaf"]), "/home/cistella");
+    assert!(
+        !got.iter().any(|p| p == "/tree/deep"),
+        "beneath-bind dropped: {got:?}"
+    );
+}
+
+#[test]
+fn preparation_authorized_binds_win() {
+    let binds = targets(&["/work", "/tree"]);
+    assert!(!preparation_authorized("/", &binds), "root denied");
+    assert!(
+        !preparation_authorized("/work", &binds),
+        "mount root denied"
+    );
+    assert!(
+        !preparation_authorized("/work/deep", &binds),
+        "beneath-bind denied"
+    );
+    assert!(
+        !preparation_authorized("/tree/deep", &binds),
+        "nested-RO descendant denied"
+    );
+    assert!(
+        preparation_authorized("/home/cistella/.config", &binds),
+        "tmpfs-home descendant eligible"
+    );
+    assert!(
+        preparation_authorized("/home/me/stray", &binds),
+        "container-local overlay path eligible"
+    );
+}
+
+#[test]
+fn preparation_authorized_home_nested_bind_denied() {
+    // Tmpfs lexical origin never overrides a resolved bind mount: a home
+    // subtree containing a bind denies beneath that bind.
+    let binds = targets(&["/home/cistella/data"]);
+    assert!(
+        !preparation_authorized("/home/cistella/data/deep", &binds),
+        "bind wins over home origin"
+    );
+    assert!(
+        preparation_authorized("/home/cistella/.config", &binds),
+        "plain home subtree still eligible"
+    );
+}
+
+#[test]
+fn preparation_authorized_resolved_binds_win_over_lexical() {
+    // Image-baked alias: bind target reads `/alias/data` lexically but
+    // resolves to `/actual/data`. Authorization compares
+    // resolved-against-resolved, so a candidate under the resolved bind
+    // is denied even though no lexical string matches it.
+    let lexical = targets(&["/alias/data"]);
+    let resolved = targets(&["/actual/data"]);
+    assert!(
+        !cistella::prepare::preparation_authorized("/actual/data/deep", &resolved),
+        "resolved bind denies"
+    );
+    assert!(
+        cistella::prepare::preparation_authorized("/actual/data/deep", &lexical),
+        "lexical comparison would allow — this is the gap resolved binds close"
+    );
+}

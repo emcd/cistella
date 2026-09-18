@@ -11,6 +11,7 @@ pub mod identity;
 pub mod lock;
 pub mod mount;
 pub mod preflight;
+pub mod prepare;
 pub mod profile;
 pub mod registry;
 pub mod runtime;

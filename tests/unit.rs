@@ -11,6 +11,8 @@ mod cli_args;
 mod identity;
 #[path = "unit/mount.rs"]
 mod mount;
+#[path = "unit/prepare.rs"]
+mod prepare;
 #[path = "unit/profile_resolution.rs"]
 mod profile_resolution;
 #[path = "unit/runtime.rs"]

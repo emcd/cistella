@@ -6,6 +6,8 @@ mod helpers;
 mod labels;
 #[path = "integration/lifecycle.rs"]
 mod lifecycle;
+#[path = "integration/mountprep.rs"]
+mod mountprep;
 #[path = "integration/selectors.rs"]
 mod selectors;
 #[path = "integration/signals.rs"]
