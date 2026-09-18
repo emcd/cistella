@@ -4,11 +4,11 @@
 TBD - created by archiving change add-cistella-driver. Update Purpose after archive.
 ## Requirements
 ### Requirement: Per-identity signing via SSH agent (sign-only is key registration + absence)
-The driver SHALL mount a per-identity `AF_UNIX` SSH agent socket read-only when `credential_surface = {ssh_agent="/run/.../seat.sock"}` and SHALL set `SSH_AUTH_SOCK` inside the container; `credential_surface = "none"` mounts nothing. Sign-only SHALL be enforced by GitHub key registration (key type `Signing` refuses auth) plus absence of any auth-registered credential; the socket itself is a normal agent. Identity is `cistella.identity` label (renamed from `cistella.seat`, not credential selector; credential surface remains profile-driven, Phase 2 binds identity to credential, S2) and `cistella.command` label records argv actually executed (renamed from `cistella.harness`).
 
-#### Scenario: Signing works, auth does not
-- **WHEN** container runs `ssh-add -l` and `git commit -S -m "review"` with the per-seat key (registered on GitHub as `Signing`)
-- **THEN** `ssh-add -l` lists the key and `git commit -S` succeeds, while an `ssh` auth attempt would be refused server-side for that key type and no auth-registered key exists in the container
+The driver SHALL mount a per-identity `AF_UNIX` SSH agent socket read-only when `credential-surface = {ssh_agent="/run/.../seat.sock"}` and SHALL set `SSH_AUTH_SOCK` inside the container; `credential-surface = "none"` mounts nothing. Sign-only SHALL be enforced by GitHub key registration (key type `Signing` refuses auth) plus absence of any auth-registered credential; the socket itself is a normal agent. Identity is `cistella.identity` label (renamed from `cistella.seat`, not credential selector; credential surface remains profile-driven, Phase 2 binds identity to credential, S2) and `cistella.command` label records argv actually executed (renamed from `cistella.harness`).
+#### Scenario: Hyphenated credential-surface key parses
+- **WHEN** a profile sets `credential-surface = "none"` or `credential-surface = { ssh_agent = "/run/seat.sock" }`
+- **THEN** resolution succeeds with the pre-rename spellings failing closed at parse time
 
 ### Requirement: Allowed signers verification
 The driver SHALL provision `allowed_signers` and SHALL verify a signed review commit host-side against the seat's public key.
