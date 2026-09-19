@@ -312,6 +312,20 @@ fn conduct_session(
         .collect::<Result<_, _>>()?;
     let mut triples = cistella::mount::merge_cli_mounts(&triples, &cli_triples, &worktree_target)?;
     cistella::mount::validate_mounts(&triples, &prof.container_home)?;
+    // Nested-under-RO availability preflight: admitted topologies start
+    // only when the intermediate chain pre-exists in the RO ancestor's
+    // host source. Runs after validation, before scratch creation or
+    // unit install — a refusal leaves literally no residue.
+    for check in cistella::mount::nested_ro_checks(&triples) {
+        if let Some(missing) = cistella::mount::nested_ro_missing(&check) {
+            return Err(CistellaError::Mount(format!(
+                "nested mount {} under read-only {}: missing {}",
+                check.descendant,
+                check.ancestor,
+                missing.display()
+            )));
+        }
+    }
     // Per-session scratch (XDG path, `/tmp` fallback; Label= tracks the id).
     let scratch_host = cistella::lock::scratch_dir(&id)
         .to_string_lossy()

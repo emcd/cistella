@@ -330,3 +330,248 @@ fn mountpoint_prepare_timeout_fails_closed() {
         String::from_utf8_lossy(&survey.stdout)
     );
 }
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn nested_ro_preexisting_chain_succeeds() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    // Full intermediate chain pre-exists in the RO source: preflight
+    // passes, child is writable, parent stays RO.
+    let tree = TempDir::new().unwrap();
+    let leaf_host = TempDir::new().unwrap();
+    // Full chain including the leaf pre-exists in the RO source: neither
+    // podman nor runc creates mountpoints inside a read-only parent.
+    std::fs::create_dir_all(tree.path().join("deep").join("leaf")).unwrap();
+    let profile = worktree.path().join("tmpl-pre.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [[mounts]]\n\
+             host-source = \"{}\"\n\
+             container-target = \"/tree\"\n\
+             mode = \"ro\"\n\
+             [[mounts]]\n\
+             host-source = \"{}\"\n\
+             container-target = \"/tree/deep/leaf\"\n\
+             mode = \"rw\"\n",
+            tree.path().to_string_lossy(),
+            leaf_host.path().to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "sh",
+            "-c",
+            "touch /tree/deep/leaf/ok && echo LEAF_OK; \
+             touch /tree/parent-write 2>/dev/null && echo PARENT_UNEXPECTED || echo PARENT_RO",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success() && stdout.contains("LEAF_OK"),
+        "preexisting nested chain conducts: {} {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("PARENT_RO"), "parent stays RO: {stdout}");
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn nested_ro_missing_chain_refuses_pre_mutation() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    // Intermediate link absent in the RO source: conduct refuses with a
+    // typed error naming both sides, before unit file or scratch exist.
+    let tree = TempDir::new().unwrap();
+    let leaf_host = TempDir::new().unwrap();
+    let profile = worktree.path().join("tmpl-miss.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [[mounts]]\n\
+             host-source = \"{}\"\n\
+             container-target = \"/tree\"\n\
+             mode = \"ro\"\n\
+             [[mounts]]\n\
+             host-source = \"{}\"\n\
+             container-target = \"/tree/deep/leaf\"\n\
+             mode = \"rw\"\n",
+            tree.path().to_string_lossy(),
+            leaf_host.path().to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "true",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success(), "missing chain must refuse");
+    assert!(
+        stderr.contains("/tree") && stderr.contains("read-only"),
+        "typed error names ancestor: {stderr}"
+    );
+    // No-residue proof is directory-scoped, not registry-wide: the
+    // refused conduct never mints an id, so survey for this worktree must
+    // show no session — immune to concurrent tests' unit files.
+    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    assert!(
+        !String::from_utf8_lossy(&survey.stdout).contains("cistella-"),
+        "no residue session for refused conduct: {}",
+        String::from_utf8_lossy(&survey.stdout)
+    );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn nested_ro_session_dogfood_shape_passes() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    // The dogfood shape: session-directory target nested under an RO
+    // profile triple, intermediates pre-existing on the host. Preflight
+    // passes and the session conducts.
+    let ro_base = TempDir::new().unwrap();
+    std::fs::create_dir_all(ro_base.path().join("proj/sub")).unwrap();
+    let profile = ro_base.path().join("tmpl-dog.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [[mounts]]\n\
+             host-source = \"{}\"\n\
+             container-target = \"/base\"\n\
+             mode = \"ro\"\n",
+            ro_base.path().to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    let home = home_dir();
+    let session = ro_base.path().join("proj/sub");
+    let session_str = session.to_string_lossy().to_string();
+    let pair = format!("{session_str}:/base/proj/sub");
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &pair,
+            "--identity",
+            "alice",
+            "--",
+            "sh",
+            "-c",
+            "pwd && echo DOGFOOD_OK",
+        ],
+    );
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("DOGFOOD_OK"),
+        "dogfood shape conducts: {} {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn nested_ro_symlinked_source_resolves() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    // Ancestor host source behind a symlink: canonicalization supplies
+    // the resolved namespace and the preexisting chain passes.
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let real = TempDir::new().unwrap();
+    std::fs::create_dir_all(real.path().join("deep").join("leaf")).unwrap();
+    let linkdir = TempDir::new().unwrap();
+    std::os::unix::fs::symlink(real.path(), linkdir.path().join("alias")).unwrap();
+    let leaf_host = TempDir::new().unwrap();
+    let profile = worktree.path().join("tmpl-sym.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [[mounts]]\n\
+             host-source = \"{}/alias\"\n\
+             container-target = \"/tree\"\n\
+             mode = \"ro\"\n\
+             [[mounts]]\n\
+             host-source = \"{}\"\n\
+             container-target = \"/tree/deep/leaf\"\n\
+             mode = \"rw\"\n",
+            linkdir.path().to_string_lossy(),
+            leaf_host.path().to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "sh",
+            "-c",
+            "touch /tree/deep/leaf/ok && echo SYMLINK_OK",
+        ],
+    );
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("SYMLINK_OK"),
+        "symlinked source resolves: {} {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

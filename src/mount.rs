@@ -514,6 +514,90 @@ pub fn preparation_sources(
     out
 }
 
+/// One nested-under-RO availability check: descendant target, nearest
+/// RO ancestor target, and the translated host destination chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestedRoCheck {
+    /// Canonical descendant container target.
+    pub descendant: String,
+    /// Canonical RO ancestor container target supplying the namespace.
+    pub ancestor: String,
+    /// Canonical host source of the ancestor (walk starts here).
+    pub ancestor_source: PathBuf,
+    /// Canonical host destination chain (ancestor source + suffix).
+    pub host_path: PathBuf,
+}
+
+/// Computes nested-under-RO availability checks over canonical triples.
+///
+/// For each triple strictly beneath an RO ancestor, selects the deepest
+/// qualifying RO ancestor (by canonical target depth — the mount that
+/// will actually supply the destination namespace) and translates the
+/// relative suffix onto the ancestor's canonical host source. Triples
+/// with no RO ancestor yield nothing: the preflight is silent on
+/// non-RO chains regardless of host existence.
+#[must_use]
+pub fn nested_ro_checks(triples: &[MountTriple]) -> Vec<NestedRoCheck> {
+    let canons: Vec<(String, PathBuf, MountMode)> = triples
+        .iter()
+        .map(|t| {
+            (
+                canonicalize_container_target(&t.container_target),
+                canonicalize_host_source(&t.host_source),
+                t.mode,
+            )
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (target, _, _) in &canons {
+        // Deepest RO ancestor wins; ties impossible (distinct targets).
+        let mut best: Option<(&str, &PathBuf)> = None;
+        for (ancestor, host, mode) in &canons {
+            if *mode != MountMode::Ro || ancestor == target {
+                continue;
+            }
+            if is_ancestor_or_equal(ancestor, target)
+                && best.is_none_or(|(b, _)| ancestor.len() > b.len())
+            {
+                best = Some((ancestor, host));
+            }
+        }
+        if let Some((ancestor, host)) = best {
+            let suffix = target[ancestor.len()..].trim_start_matches('/');
+            let host_path = host.join(suffix);
+            out.push(NestedRoCheck {
+                descendant: target.clone(),
+                ancestor: ancestor.to_string(),
+                ancestor_source: host.clone(),
+                host_path,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.descendant.cmp(&b.descendant));
+    out
+}
+
+/// Verifies one translated chain: every component from the ancestor
+/// source down through the full destination must exist as a directory —
+/// including the final mountpoint itself, which neither podman
+/// pre-creates nor runc can mkdir inside a read-only parent (proven:
+/// `mkdirat .../merged/tree/deep/leaf: read-only file system`).
+/// Returns the first offending path, if any.
+#[must_use]
+pub fn nested_ro_missing(check: &NestedRoCheck) -> Option<PathBuf> {
+    let Ok(suffix) = check.host_path.strip_prefix(&check.ancestor_source) else {
+        return Some(check.host_path.clone());
+    };
+    let mut cur = check.ancestor_source.clone();
+    for comp in suffix.components() {
+        cur.push(comp);
+        if !cur.is_dir() {
+            return Some(cur);
+        }
+    }
+    None
+}
+
 /// Canonicalizes host path via longest existing prefix, mirroring
 /// `dispositor::assert_disjoint_roots` precedent.
 #[must_use]

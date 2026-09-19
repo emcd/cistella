@@ -350,3 +350,99 @@ mounts = []
     let err = Profile::from_toml(bad).unwrap_err();
     assert!(err.to_string().contains("templates"));
 }
+
+use cistella::mount::{nested_ro_checks, nested_ro_missing};
+
+#[test]
+fn nested_ro_selects_deepest_ancestor_and_translates() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ro_base = dir.path().join("ro");
+    let child = dir.path().join("child");
+    std::fs::create_dir_all(child.join("deep")).unwrap();
+    let triples = vec![
+        triple(ro_base.to_str().unwrap(), "/tree", MountMode::Ro),
+        triple(child.to_str().unwrap(), "/tree/deep/leaf", MountMode::Rw),
+        triple("/data", "/data", MountMode::Rw),
+    ];
+    let checks = nested_ro_checks(&triples);
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].descendant, "/tree/deep/leaf");
+    assert_eq!(checks[0].ancestor, "/tree");
+    // Translated onto the ancestor source, not the descendant's own.
+    // Full chain including the leaf must pre-exist: neither podman nor
+    // runc creates mountpoints inside a read-only parent.
+    assert_eq!(checks[0].host_path, ro_base.join("deep").join("leaf"));
+    assert!(nested_ro_missing(&checks[0]).is_some(), "chain absent");
+    std::fs::create_dir_all(ro_base.join("deep").join("leaf")).unwrap();
+    assert!(nested_ro_missing(&checks[0]).is_none(), "chain complete");
+}
+
+#[test]
+fn nested_ro_deepest_of_two_ro_ancestors_wins() {
+    // Two nested RO ancestors: the deepest supplies the namespace, so a
+    // chain complete under the outer ancestor but missing under the inner
+    // one still refuses (and vice versa).
+    let dir = tempfile::TempDir::new().unwrap();
+    let outer = dir.path().join("outer");
+    let inner = dir.path().join("outer").join("inner");
+    std::fs::create_dir_all(inner.join("leaf")).unwrap();
+    let triples = vec![
+        triple(outer.to_str().unwrap(), "/tree", MountMode::Ro),
+        triple(inner.to_str().unwrap(), "/tree/inner", MountMode::Ro),
+        triple("/elsewhere", "/tree/inner/leaf", MountMode::Rw),
+    ];
+    let checks = nested_ro_checks(&triples);
+    assert_eq!(checks.len(), 2, "{checks:?}");
+    // The middle triple is itself a descendant of the outer RO ancestor.
+    assert_eq!(checks[0].descendant, "/tree/inner");
+    assert_eq!(checks[0].ancestor, "/tree");
+    // The leaf answers to the deepest RO ancestor, not the outer one.
+    assert_eq!(checks[1].descendant, "/tree/inner/leaf");
+    assert_eq!(checks[1].ancestor, "/tree/inner");
+    assert_eq!(checks[1].host_path, inner.join("leaf"));
+    assert!(nested_ro_missing(&checks[1]).is_none());
+}
+
+#[test]
+fn nested_ro_file_where_dir_must_be_refuses() {
+    // A regular file where a directory must be pins the is_dir discipline.
+    let dir = tempfile::TempDir::new().unwrap();
+    let ro_base = dir.path().join("ro");
+    std::fs::create_dir_all(&ro_base).unwrap();
+    std::fs::write(ro_base.join("blocker"), "file").unwrap();
+    let triples = vec![
+        triple(ro_base.to_str().unwrap(), "/tree", MountMode::Ro),
+        triple("/elsewhere", "/tree/blocker/leaf", MountMode::Rw),
+    ];
+    let checks = nested_ro_checks(&triples);
+    assert_eq!(checks.len(), 1);
+    assert_eq!(nested_ro_missing(&checks[0]), Some(ro_base.join("blocker")));
+}
+
+#[test]
+fn nested_ro_silent_without_ro_ancestor() {
+    // Non-RO chains never yield checks regardless of host existence —
+    // the preflight is silent outside nested-under-RO.
+    let triples = vec![
+        triple("/a", "/x", MountMode::Rw),
+        triple("/b", "/x/deep/nest", MountMode::Rw),
+    ];
+    assert!(nested_ro_checks(&triples).is_empty());
+}
+
+#[test]
+fn nested_ro_missing_names_first_offender() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ro_base = dir.path().join("ro");
+    std::fs::create_dir_all(ro_base.join("present")).unwrap();
+    let triples = vec![
+        triple(ro_base.to_str().unwrap(), "/tree", MountMode::Ro),
+        triple("/elsewhere", "/tree/present/absent/deep", MountMode::Rw),
+    ];
+    let checks = nested_ro_checks(&triples);
+    assert_eq!(checks.len(), 1);
+    assert_eq!(
+        nested_ro_missing(&checks[0]),
+        Some(ro_base.join("present").join("absent"))
+    );
+}
