@@ -57,6 +57,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             configuration_directory,
             mounts,
             project_name,
+            supplements,
             command,
         } => conduct_session(
             &profile,
@@ -67,6 +68,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             configuration_directory,
             &mounts,
             project_name,
+            &supplements,
             &command,
         ),
         Command::Enter {
@@ -238,7 +240,7 @@ fn exit_with_status(status: std::process::ExitStatus) -> ! {
 
 /// Implements `conduct`: mint, install under lock, start, exec, teardown.
 ///
-/// Nine parameters mirror the conduct CLI surface one-to-one; bundling
+/// Ten parameters mirror the conduct CLI surface one-to-one; bundling
 /// them would only move the fields.
 #[allow(clippy::too_many_arguments)]
 fn conduct_session(
@@ -250,6 +252,7 @@ fn conduct_session(
     configuration_directory: Option<String>,
     cli_mounts: &[String],
     project_name_flag: Option<String>,
+    supplement_args: &[String],
     command: &[String],
 ) -> Result<(), cistella::error::CistellaError> {
     use cistella::error::CistellaError;
@@ -262,16 +265,24 @@ fn conduct_session(
     let (directory_host, worktree_target) =
         cistella::mount::parse_session_directory(&directory_raw)?;
     let directory = canonical_directory(&directory_host)?;
-    // Project name feeds `{{project-name}}` templates: explicit flag wins,
-    // otherwise the canonical directory basename, derived lazily at
-    // expansion. Computed before resolution; nothing derives from the
+    // Project name feeds `{{core:project-name}}` templates: explicit flag
+    // wins, otherwise the canonical directory basename, derived lazily
+    // at expansion. Computed before resolution; nothing derives from the
     // working directory by accident.
-    use cistella::profile::ProjectName;
+    use cistella::profile::{ProjectName, Supplements, parse_supplement_arg};
     let project = match &project_name_flag {
         Some(name) => Some(ProjectName::Explicit(name)),
         None => Some(ProjectName::DirectoryDefault(&directory)),
     };
-    let (prof, digest, profile_name) = Profile::resolve_in(profile_ref, &source, project)?;
+    // Supplements feed `{{supplement:*}}` templates: parsed and key-checked
+    // here, resolved lazily at expansion (unreferenced names never read).
+    let mut pairs = Vec::with_capacity(supplement_args.len());
+    for arg in supplement_args {
+        pairs.push(parse_supplement_arg(arg)?);
+    }
+    let supplements = Supplements::from_pairs(pairs);
+    let (prof, digest, profile_name) =
+        Profile::resolve_in(profile_ref, &source, project, &supplements)?;
     let generic: Vec<(String, String)> = labels
         .iter()
         .map(|a| parse_cli_label(a))

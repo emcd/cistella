@@ -1,20 +1,22 @@
 # Canonical OpenCode profile: shared state RW, config RO, directory at /work.
+# container-home resolves from host HOME (portability showcase); all
+# spans are context-qualified (core:, supplement:, environment:).
 image = "localhost/cistella/opencode:example"
 credential-surface = "none"
-container-home = "/home/cistella"
+container-home = "{{environment:HOME}}"
 command = ["opencode"]
 
 [[mounts]]
 host-source = "~/.config/opencode"
-container-target = "{{container-home}}/.config/opencode"
+container-target = "{{core:container-home}}/.config/opencode"
 mode = "ro"
 
 [[mounts]]
 host-source = "~/.local/share/opencode"
-container-target = "{{container-home}}/.local/share/opencode"
+container-target = "{{core:container-home}}/.local/share/opencode"
 mode = "rw"
 
 [[mounts]]
 host-source = "~/.local/state/opencode"
-container-target = "{{container-home}}/.local/state/opencode"
+container-target = "{{core:container-home}}/.local/state/opencode"
 mode = "rw"

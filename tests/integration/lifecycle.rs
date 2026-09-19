@@ -469,7 +469,7 @@ fn project_name_template_live() {
          command = [\"sleep\", \"infinity\"]\n\
          [[mounts]]\n\
          host-source = \"/tmp\"\n\
-         container-target = \"/tmpl-{{project-name}}\"\n\
+         container-target = \"/tmpl-{{core:project-name}}\"\n\
          mode = \"ro\"\n",
     )
     .unwrap();
@@ -641,9 +641,9 @@ fn template_env_and_labels_resolve_live() {
          container-home = \"/home/cistella\"\n\
          mounts = []\n\
          [environment]\n\
-         PROBE_ALL = \"{{container-home}}/.config:{{host-home}}/.x:{{project-name}}\"\n\
+         PROBE_ALL = \"{{core:container-home}}/.config:{{core:host-home}}/.x:{{core:project-name}}\"\n\
          [labels]\n\
-         \"tmpl.tag\" = \"{{project-name}}-{{container-home}}\"\n",
+         \"tmpl.tag\" = \"{{core:project-name}}-{{core:container-home}}\"\n",
     )
     .unwrap();
     let (mut conduct, id, mut guard) = spawn_conduct_full(
@@ -685,6 +685,111 @@ fn template_env_and_labels_resolve_live() {
         podman_label(&container, "tmpl.tag"),
         "liveproj-/home/cistella",
         "label templates resolved on container"
+    );
+
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = conduct.wait();
+    guard.id = None;
+    assert!(!unit_path(&home, &id).exists(), "no unit residue");
+    assert!(scratch_gone(&id), "no scratch residue");
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn template_namespaces_resolve_live() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let home_var = std::env::var("HOME").expect("HOME set");
+
+    // Supplement, environment, and early-home coverage: the profile takes
+    // container-home from host HOME, a supplement-fed mount target, and
+    // supplement/environment spans in env values and labels.
+    let profile = worktree.path().join("tmpl-ns.toml");
+    std::fs::write(
+        &profile,
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential-surface = \"none\"\n\
+         container-home = \"{{environment:HOME}}\"\n\
+         [[mounts]]\n\
+         host-source = \"/tmp\"\n\
+         container-target = \"/ns-{{supplement:dataset}}\"\n\
+         mode = \"ro\"\n\
+         [environment]\n\
+         PROBE_NS = \"{{supplement:dataset}}@{{environment:HOME}}\"\n\
+         [labels]\n\
+         \"ns.tag\" = \"{{core:project-name}}-{{supplement:dataset}}\"\n",
+    )
+    .unwrap();
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile.to_string_lossy(),
+        &worktree_str,
+        &[
+            "--identity",
+            "alice",
+            "--project-name",
+            "livenproj",
+            "--supplement",
+            "dataset=livedata",
+        ],
+        &["sleep", "300"],
+        &[],
+    );
+    wait_active(&id);
+    let container = format!("cistella-{id}");
+
+    // Early-home showcase: container HOME equals host HOME.
+    let home_out = Command::new("podman")
+        .args(["exec", &container, "sh", "-c", "echo $HOME"])
+        .output()
+        .expect("podman exec home");
+    assert!(home_out.status.success(), "podman exec home");
+    assert_eq!(
+        String::from_utf8_lossy(&home_out.stdout).trim(),
+        home_var,
+        "container-home from host HOME"
+    );
+    // Supplement and environment spans resolve in-container.
+    let env_out = Command::new("podman")
+        .args(["exec", &container, "sh", "-c", "echo $PROBE_NS"])
+        .output()
+        .expect("podman exec env");
+    assert!(env_out.status.success(), "podman exec env");
+    assert_eq!(
+        String::from_utf8_lossy(&env_out.stdout).trim(),
+        format!("livedata@{home_var}"),
+        "supplement/environment templates resolved in-container"
+    );
+    // Supplement-fed mount target and label round-trip.
+    let mount_out = Command::new("podman")
+        .args([
+            "exec",
+            &container,
+            "sh",
+            "-c",
+            "test -d /ns-livedata && echo yes",
+        ])
+        .output()
+        .expect("podman exec mount");
+    assert_eq!(
+        String::from_utf8_lossy(&mount_out.stdout).trim(),
+        "yes",
+        "supplement mount target exists"
+    );
+    assert_eq!(
+        podman_label(&container, "ns.tag"),
+        "livenproj-livedata",
+        "supplement label resolved on container"
     );
 
     let out = run_cistella(&home, &["terminate", &id]);
