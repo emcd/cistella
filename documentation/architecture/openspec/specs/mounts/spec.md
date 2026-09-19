@@ -14,3 +14,61 @@ The driver SHALL resolve a profile reference as follows: a reference containing 
 #### Scenario: Migration note
 - **WHEN** an operator upgrades with pre-rename seeded XDG copies
 - **THEN** the migration note maps every old key to its new spelling and gives the re-seed path (delete the seeded file; the next conduct re-seeds the new example)
+
+### Requirement: Allowlist-only mount triples with env exports and explicit HOME
+The driver SHALL accept only an allowlist of explicit `(host-source, container-target, mode RO/RW)` triples from the profile plus zero or more `--mount <host>:<target>:<mode>` CLI triples (conduct only), and SHALL export matching env vars (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, etc.) inside the container. `HOME` SHALL be set explicitly by the driver from `container-home` (canonical), not ambient. The `directory` worktree mount is `host_directory:container-target:rw` where the container target comes from `--session-directory <host>[:<container>]` (hidden alias `--cwd`; default `/work` when the container side is omitted). CLI triples undergo the same validation as profile triples; a CLI triple with the exact canonical target of a profile triple overrides it, while ancestor/descendant CLI/profile overlap outside the RO-ancestor rule is a typed error.
+
+#### Scenario: Directory pair form mounts worktree at host path
+- **WHEN** `conduct --session-directory /home/me/src/cistella:/home/me/src/cistella --profile <path>` runs
+- **THEN** the worktree mounts RW at its canonical host path inside, `cistella.directory` still records the canonical host dir, and omitting `:<container>` mounts at `/work` as before
+
+#### Scenario: Session directory rename with cwd alias
+- **WHEN** `conduct --cwd /home/me/src/cistella` runs (alias of `--session-directory`)
+- **THEN** the session conducts identically to the spelled-out flag; `--help` lists only `--session-directory`
+
+#### Scenario: CLI mount triple unions with profile mounts
+- **WHEN** `conduct --mount /home/me/Dropbox/Notes/cistella:/home/me/Dropbox/Notes/cistella:rw` runs with a profile that has no overlapping triple
+- **THEN** the session starts with both the profile triples and the CLI triple mounted
+
+#### Scenario: CLI mount with exact profile target overrides it
+- **WHEN** a `--mount` triple has the same canonicalized container target as a profile triple
+- **THEN** the CLI triple (source and mode) wins for the session, mirroring the CLI-wins label rule
+
+#### Scenario: CLI mount partially overlapping profile mount fails closed
+- **WHEN** a `--mount` triple is the ancestor or descendant (outside the RO-ancestor rule) of a profile triple's canonicalized container target
+- **THEN** validation fails before any container is created
+
+#### Scenario: Duplicate CLI mount triples fail closed
+- **WHEN** two `--mount` triples share the same canonicalized container target
+- **THEN** validation fails before any container is created (no last-wins)
+
+#### Scenario: CLI mount on the worktree target fails closed
+- **WHEN** a `--mount` triple's canonicalized container target equals the session-directory worktree target
+- **THEN** validation fails before any container is created; the `--session-directory` pair form stays the only worktree-target knob
+
+#### Scenario: Opencode profile (canonical)
+- **WHEN** profile selects `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`, directory at `/work`, per-session scratch (`XDG_RUNTIME_DIR/cistella/<id>` with fallback `/tmp/cistella-<id>`, `Label=cistella.id`), and the seat's configured notebook repositories RW with config RO
+- **THEN** only those paths are mounted, each as its triple, and env vars (`HOME`, `XDG_*`) point at the container targets
+
+#### Scenario: HOME explicitly set
+- **WHEN** `conduct` starts a session with `container-home = "/home/cistella"` and without host `HOME` forwarded
+- **THEN** `echo $HOME` inside is `/home/cistella` as set by the driver from `container-home` and `opencode --version` does not attempt `mkdir '/.local'`
+
+#### Scenario: No parent mount
+- **WHEN** a profile does not list a parent directory
+- **THEN** no sibling paths are visible inside the container (no masking needed)
+
+### Requirement: Mount validation (canonicalize, reject unsafe/colliding, two-tier topology)
+The driver SHALL canonicalize both sides of every mount triple and `container-home` before validation (longest existing prefix, `..` cleaning, `dispositor` precedent) and SHALL reject any profile where `container-home` or a container-target is at or above sensitive roots (`/`, `/etc`, etc.), where two triples overlap (one is ancestor of the other) except a descendant triple over a read-only ancestor (deepest mount wins, mounted in depth order), or where a triple shadows session-home (`container-target` ancestor-or-equal of `container-home`). Triples MAY nest under the single distinguished writable session-home root at the explicit `HOME` (e.g., `/home/cistella` as `Tmpfs`, declared via `container-home`), which is a driver primitive, not a triple and not subject to peer-disjointness. Mount ordering: session-home first, then triples by path depth. `host-source`/`container-target` with `=`/`\n`/`\0` SHALL be rejected (Quadlet injection, M4).
+
+#### Scenario: Read-only parent with writable child stacks
+- **WHEN** a profile (plus CLI triples) mounts `~/Dropbox/Notes` RO and `~/Dropbox/Notes/cistella` RW
+- **THEN** validation succeeds, the parent mounts first and the child over it, and the project repo is writable while siblings stay read-only
+
+#### Scenario: Writable overlapping mounts still rejected
+- **WHEN** two triples overlap and the ancestor is RW, or either triple shadows session-home
+- **THEN** validation fails with `overlapping mounts` or the session-home error before any container is created
+
+#### Scenario: Canonicalize and reject overlap
+- **WHEN** a profile contains `host-source` `/tmp/link` (symlink to `/home/me/src`) and `container-target` `/work` + `container-target` `/work/src` overlap, or `container-home` `/home/cistella/../../etc`
+- **THEN** validation fails with `overlapping mounts` or `sensitive root` before any container is created
