@@ -2,7 +2,7 @@
 name = "cistella"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 default-run = "cistella"
 description = "External driver for Agentmux agent development containers"
 license = "Apache-2.0"
@@ -12,6 +12,7 @@ keywords = [ "agentmux", "containers", "podman", "agent", "devcontainers" ]
 categories = [ "command-line-utilities", "development-tools" ]
 include = [
     "/src/**",
+    "/data/**",
     "/Cargo.toml",
     "/Cargo.lock",
     "/README.md",

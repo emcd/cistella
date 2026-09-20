@@ -1,0 +1,102 @@
+name: qa
+
+on:
+  pull_request:
+    branches: ['*']
+  push:
+    branches: ['master', 'release-*']
+  workflow_dispatch: {}
+
+jobs:
+
+  initialize:
+    uses: ./.github/workflows/core--initializer.yaml
+
+  lint:
+    needs: [initialize]
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        # System-language hooks (cargo fmt/clippy, linecheck built from
+        # source) need a toolchain before pre-commit runs.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+          components: rustfmt, clippy
+
+      - name: Install linecheck
+        # Pinned to the same version this project develops against locally.
+        # `linecheck` is not a repository dependency (it is not a runtime
+        # dependency of the crate and is not in `Cargo.toml`), so the host
+        # runner must install it explicitly. Bumping the version is a workflow
+        # edit, intentionally separate from a hook change, so a binary
+        # upgrade does not silently widen enforcement.
+        run: cargo install linecheck --locked --version 1.2.1
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit hooks
+        # CI runs the SAME pre-commit config developers run locally
+        # (`.auxiliary/configuration/pre-commit.yaml`), so the workflow
+        # never drifts from the hooks. This replaces the previously
+        # explicit fmt/clippy/linecheck/fast-test steps, which duplicated
+        # every flags change in two places. Runs once (not per matrix
+        # element): every hook here is platform-independent, and the
+        # matrix test job below carries the platform signal. The test
+        # job stays explicit (matrix + env need native steps). Skips the
+        # fast test hook: the matrix test job below runs the full suite
+        # (live profile includes the fast tests), so each suite runs
+        # exactly once.
+        env:
+          SKIP: 'cargo-nextest'
+        run: pre-commit run --all-files --config .auxiliary/configuration/pre-commit.yaml
+
+      - name: Verify Published Package
+        # Packages and compiles the extracted crate, catching files omitted by
+        # Cargo.toml's explicit include allowlist before a release tag does.
+        run: cargo package
+
+  test:
+    needs: [initialize, lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test (live profile)
+        # Runs the FULL suite including the live tier (`-P live
+        # --run-ignored=all`), mirroring the pre-push hook. Whether
+        # hosted runners can actually satisfy it (systemd user manager
+        # plus rootless Podman) is unproven: systemd-guarded tests skip
+        # where no user manager answers, and podman absence may fail
+        # unguarded tests outright. Until the hosted experiment proves
+        # out, the authoritative live gate stays the host pre-push hook
+        # (self-hosted runner tracked in todos/27) — a green CI run
+        # must never be mistaken for live coverage there.
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
