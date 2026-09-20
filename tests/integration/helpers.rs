@@ -124,12 +124,17 @@ pub fn spawn_conduct_full(
         .spawn()
         .expect("spawn conduct");
     let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
     let mut reader = BufReader::new(stdout);
     let deadline = Instant::now() + Duration::from_secs(60);
     let id = loop {
         if Instant::now() > deadline {
             let _ = child.kill();
-            panic!("timed out waiting for conduct id line");
+            let _ = child.wait();
+            panic!(
+                "timed out waiting for conduct id line; conduct stderr: {}",
+                drain_stderr(stderr)
+            );
         }
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -151,6 +156,42 @@ pub fn spawn_conduct_full(
     // Hand the reader back so the pipe stays drained; sleep outputs nothing.
     let _ = reader;
     (child, id.clone(), Guard { id: Some(id) })
+}
+
+/// Best-effort drain of a dead child's stderr for timeout diagnostics.
+/// Nonblocking via `fcntl` (pipes inherited by grandchildren must never
+/// block the panic path). Output is capped; partial reads are fine.
+fn drain_stderr(stderr: std::process::ChildStderr) -> String {
+    use std::io::Read as _;
+    use std::os::unix::io::AsRawFd as _;
+    let mut collected = Vec::new();
+    let mut buf = [0u8; 4096];
+    let mut stderr = stderr;
+    // Best effort only: ignore setup failure and read what is there.
+    if let Ok(flags) = nix::fcntl::fcntl(stderr.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+        let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
+        oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+        let _ = nix::fcntl::fcntl(stderr.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags));
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match stderr.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                collected.extend_from_slice(&buf[..n]);
+                if collected.len() > 8192 {
+                    break;
+                }
+            }
+            Err(_) => {
+                if Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    String::from_utf8_lossy(&collected).trim().to_string()
 }
 
 pub fn wait_active(id: &str) {
