@@ -54,6 +54,29 @@ jobs:
         with:
           tool: cargo-nextest@0.9
 
+      - name: Enable systemd lingering
+        # Live sessions run under the runner user's systemd user
+        # manager; lingering starts it without an active login.
+        # (Same runner setup as the qa workflow.)
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Install Podman
+        # Rootless sessions need the engine plus subordinate-ID tooling.
+        run: sudo apt-get update && sudo apt-get install -y podman uidmap
+
+      - name: Verify session prerequisites
+        # Fails the job early with a readable error when the runner
+        # cannot host sessions, instead of one 60s timeout per test.
+        run: |
+          set -eu
+          podman --version
+          systemctl --user is-system-running --wait
+
+      - name: Build example images
+        # Live tests conduct against `localhost/cistella/opencode:example`
+        # and refuse to pull implicitly: the image must exist locally.
+        run: ./data/dockerfiles/validate.sh
+
       - name: Test (live profile)
         # Same live-tier caveat as the qa workflow: hosted runners are
         # unproven ground for systemd user sessions plus rootless
