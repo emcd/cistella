@@ -1,12 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/tupe12334/linecheck/main/schema/linecheck.schema.json
 
 rules:
-  - pattern: "src/bin/terminal-spike.rs"
-    warn: 1000
-    warn_message: "Spike is large; will be folded into driver and removed."
-    error: 1500
-    error_message: "Spike exceeds even generous limit; please split."
-
   - pattern: "**/*.rs"
     warn: 800
     warn_message: "Approaching lines limit; please consider separating concerns."
