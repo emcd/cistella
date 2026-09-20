@@ -21,6 +21,7 @@ fn signal_during_startup_tears_down() {
     let worktree = TempDir::new().unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
+    let fixture = fixture_profile("default.toml");
     let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
     let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
         .map(|r| {
@@ -34,7 +35,7 @@ fn signal_during_startup_tears_down() {
         .args([
             "conduct",
             "--profile",
-            "default",
+            fixture.as_str(),
             "--session-directory",
             &worktree_str,
             "--identity",
@@ -82,6 +83,7 @@ fn terminate_races_creation_waits() {
     let worktree = TempDir::new().unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
+    let fixture = fixture_profile("default.toml");
     let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
     let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
         .map(|r| {
@@ -95,7 +97,7 @@ fn terminate_races_creation_waits() {
         .args([
             "conduct",
             "--profile",
-            "default",
+            fixture.as_str(),
             "--session-directory",
             &worktree_str,
             "--identity",

@@ -77,10 +77,19 @@ impl Drop for Guard {
     }
 }
 
+/// Filesystem fixture profile path (`tests/data/profiles/`): live
+/// tests must never resolve baked names, so conducts take explicit
+/// fixture paths (compile-time absolute, independent of test cwd).
+#[must_use]
+pub fn fixture_profile(name: &str) -> String {
+    format!("{}/tests/data/profiles/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
 /// Spawns `conduct -- sleep 300` in the background and returns the child
 /// plus the minted id from its first stdout line.
 pub fn spawn_conduct(home: &str, worktree: &str, extra: &[&str]) -> (Child, String, Guard) {
-    spawn_conduct_full(home, "default", worktree, extra, &["sleep", "300"], &[])
+    let profile = fixture_profile("default.toml");
+    spawn_conduct_full(home, &profile, worktree, extra, &["sleep", "300"], &[])
 }
 
 /// Spawns `conduct` with explicit profile, harness argv, and environment.

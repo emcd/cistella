@@ -17,6 +17,7 @@ fn conduct_exit_passthrough_and_mint() {
     let worktree = TempDir::new().unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
+    let fixture = fixture_profile("default.toml");
     let _guard = Guard::empty();
 
     // Harness exit 42 passes through conduct.
@@ -25,7 +26,7 @@ fn conduct_exit_passthrough_and_mint() {
         &[
             "conduct",
             "--profile",
-            "default",
+            fixture.as_str(),
             "--session-directory",
             &worktree_str,
             "--identity",
@@ -61,7 +62,7 @@ fn conduct_exit_passthrough_and_mint() {
         &[
             "conduct",
             "--profile",
-            "default",
+            fixture.as_str(),
             "--session-directory",
             &worktree_str,
             "--identity",
@@ -122,7 +123,7 @@ fn conduct_exit_passthrough_and_mint() {
         &[
             "conduct",
             "--profile",
-            "default",
+            fixture.as_str(),
             "--session-directory",
             &worktree_str,
             "--",
@@ -319,11 +320,12 @@ fn name_resolves_from_foreign_cwd_live() {
     let worktree = TempDir::new().unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
+    let fixture = fixture_profile("default.toml");
     let mut cmd = Command::new(bin());
     cmd.args([
         "conduct",
         "--profile",
-        "default",
+        fixture.as_str(),
         "--session-directory",
         &worktree_str,
         "--",
@@ -421,13 +423,14 @@ fn harness_runs_in_worktree_target_live() {
     let worktree = TempDir::new().unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
+    let fixture = fixture_profile("default.toml");
     let pair = format!("{worktree_str}:{worktree_str}");
     let out = run_cistella(
         &home,
         &[
             "conduct",
             "--profile",
-            "default",
+            fixture.as_str(),
             "--session-directory",
             &pair,
             "--",

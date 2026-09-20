@@ -31,20 +31,19 @@ fn fresh_source(xdg_base: &TempDir) -> (ResolutionSource, PathBuf) {
 fn baked_name_resolves_and_seeds() {
     let xdg_base = TempDir::new().unwrap();
     let (source, xdg) = fresh_source(&xdg_base);
-    let (prof, digest, name) =
-        Profile::resolve_in("default", &source, None, &Supplements::default()).unwrap();
-    assert_eq!(name, "default");
-    // Self-consistent with the seeded copy rather than hardcoded example
-    // strings, so editing `data/profiles/default.toml` does not break this
-    // without breaking behavior; only the baked name itself is pinned.
-    let seeded = std::fs::read_to_string(xdg.join("default.toml")).unwrap();
+    // The baked example bears templates, so resolution needs project
+    // context; `HOME` is allowlisted and resolves from the test env.
+    let (prof, digest, name) = Profile::resolve_in(
+        "opencode",
+        &source,
+        Some(ProjectName::Explicit("p")),
+        &Supplements::default(),
+    )
+    .unwrap();
+    assert_eq!(name, "opencode");
+    let seeded = std::fs::read_to_string(xdg.join("opencode.toml")).unwrap();
     assert_eq!(digest, Profile::digest_of(&seeded));
-    let seeded_profile = Profile::from_toml(&seeded).unwrap();
-    assert_eq!(prof.image, seeded_profile.image);
-    assert!(
-        xdg.join("opencode.toml").exists(),
-        "all baked examples seed"
-    );
+    assert_eq!(prof.image, "localhost/cistella/opencode:example");
 }
 
 #[test]
@@ -64,9 +63,12 @@ fn xdg_copy_wins_over_baked_and_survives_seed() {
         before,
         "seed never overwrites user files"
     );
-    assert!(
-        xdg.join("default.toml").exists(),
-        "missing baked still seeds"
+    // `opencode` is the sole baked example (the `default` fixture moved
+    // to `tests/data/`): with the name shadowed, nothing new seeds.
+    assert_eq!(
+        std::fs::read_dir(&xdg).unwrap().count(),
+        1,
+        "user copy wins and nothing else seeds"
     );
 }
 
@@ -125,7 +127,7 @@ fn flag_dir_miss_shadows_env_and_writes_nothing() {
         "localhost/env:1",
     );
     // Setup creates the env profiles dir above; flag dir exists but lacks
-    // the name, XDG holds a copy, and baked holds `default` — all must lose
+    // the name, XDG holds a copy, and baked holds `opencode` — all must lose
     // to the closed flag tier.
     let source = ResolutionSource::new(
         vec![
@@ -147,9 +149,9 @@ fn supplied_closed_miss_never_falls_through_to_baked() {
     let xdg = xdg_base.path().join("xdg-profiles");
     std::fs::create_dir_all(supplied_base.path().join("profiles")).unwrap();
     let source = ResolutionSource::new(vec![supplied_base.path().to_path_buf()], xdg.clone());
-    // `default` is baked, but the supplied tier is closed.
-    let err = Profile::resolve_in("default", &source, None, &Supplements::default()).unwrap_err();
-    assert!(err.to_string().contains("default"));
+    // `opencode` is baked, but the supplied tier is closed.
+    let err = Profile::resolve_in("opencode", &source, None, &Supplements::default()).unwrap_err();
+    assert!(err.to_string().contains("opencode"));
     assert!(!xdg.exists(), "closed tier never seeds");
 }
 
@@ -162,7 +164,7 @@ fn unknown_name_errors_and_still_seeds_baked() {
     assert!(msg.contains("nope"), "error names the profile: {msg}");
     assert!(msg.contains("baked"), "error lists tiers searched: {msg}");
     assert!(
-        xdg.join("default.toml").exists(),
+        xdg.join("opencode.toml").exists(),
         "reaching the default tier seeds even on miss"
     );
 }

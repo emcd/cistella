@@ -136,23 +136,17 @@ fn default_container_home() -> String {
 ///
 /// The source dir stays the single place to edit examples; the binary
 /// carries them at compile time so names resolve without a source
-/// checkout. Register any new file in this table.
-const BAKED_PROFILES: &[(&str, &str)] = &[
-    (
-        "default",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/profiles/default.toml"
-        )),
-    ),
-    (
-        "opencode",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/profiles/opencode.toml"
-        )),
-    ),
-];
+/// checkout. Register any new file in this table. Live tests never use
+/// baked names: their fixtures come from `tests/data/profiles/` as
+/// explicit paths. Seeding still never overwrites user files, so
+/// shrinking this table modifies no existing checkout.
+const BAKED_PROFILES: &[(&str, &str)] = &[(
+    "opencode",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/data/profiles/opencode.toml"
+    )),
+)];
 
 /// Returns the baked example text for a profile name, if one exists.
 fn baked_example(name: &str) -> Option<&'static str> {

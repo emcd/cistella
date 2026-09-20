@@ -97,6 +97,7 @@ fn command_label_edge_round_trip_live() {
     let worktree = TempDir::new().unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
+    let fixture = fixture_profile("default.toml");
     // `%h`/`%%` must survive as literals: systemd expands bare specifiers
     // at start time, so the driver doubles them in the unit.
     let script = "echo \"a=b c'd 100% %h %%\" > /tmp/edge_probe; sleep 60";
@@ -105,7 +106,7 @@ fn command_label_edge_round_trip_live() {
 
     let (mut conduct, id, mut guard) = spawn_conduct_full(
         &home,
-        "default",
+        fixture.as_str(),
         &worktree_str,
         &["--identity", "alice"],
         &argv,
