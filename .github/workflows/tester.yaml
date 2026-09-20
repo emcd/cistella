@@ -101,6 +101,13 @@ jobs:
           podman --version
           systemctl --user is-system-running --wait
 
+      - name: Build example images
+        # Live tests conduct against `localhost/cistella/opencode:example`
+        # and refuse to pull implicitly: the image must exist locally.
+        # `validate.sh` builds each example and verifies baked terminfo
+        # plus harness discovery (same script maintainers run).
+        run: ./data/dockerfiles/validate.sh
+
       - name: Build
         run: cargo build --release --locked
 
