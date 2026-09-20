@@ -47,7 +47,7 @@ The driver SHALL resolve a profile reference as follows: a reference containing 
 - **WHEN** `container-home` contains a `{{core:*}}` span
 - **THEN** resolution fails with a typed cycle error before any lookup
 ### Requirement: Allowlist-only mount triples with env exports and explicit HOME
-The driver SHALL accept only an allowlist of explicit `(host-source, container-target, mode RO/RW)` triples from the profile plus zero or more `--mount <host>:<target>:<mode>` CLI triples (conduct only), and SHALL export matching env vars (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, etc.) inside the container. `HOME` SHALL be set explicitly by the driver from `container-home` (canonical), not ambient. The `directory` worktree mount is `host_directory:container-target:rw` where the container target comes from `--session-directory <host>[:<container>]` (hidden alias `--cwd`; default `/work` when the container side is omitted). CLI triples undergo the same validation as profile triples; a CLI triple with the exact canonical target of a profile triple overrides it, while ancestor/descendant CLI/profile overlap outside the RO-ancestor rule is a typed error.
+The driver SHALL accept only an allowlist of explicit `(host-source, container-target, mode RO/RW)` triples from the profile plus zero or more `--mount <host>:<target>:<mode>` CLI triples (conduct only), and SHALL export matching env vars (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, etc.) inside the container. `HOME` SHALL be set explicitly by the driver from `container-home` (canonical), not ambient. The `directory` worktree mount is `host_directory:container-target:rw` where the container target comes from `--session-directory <host>[:<container>]` (hidden alias `--cwd`; default `/work` when the container side is omitted). CLI triples undergo the same validation as profile triples; a CLI triple with the exact canonical target of a profile triple overrides it, while exact-target CLI/profile collisions are typed errors; strict ancestor/descendant nesting stacks (deepest mount wins, parent-first order).
 
 #### Scenario: Directory pair form mounts worktree at host path
 - **WHEN** `conduct --session-directory /home/me/src/cistella:/home/me/src/cistella --profile <path>` runs
@@ -90,19 +90,23 @@ The driver SHALL accept only an allowlist of explicit `(host-source, container-t
 - **THEN** no sibling paths are visible inside the container (no masking needed)
 
 ### Requirement: Mount validation (canonicalize, reject unsafe/colliding, two-tier topology)
-The driver SHALL canonicalize both sides of every mount triple and `container-home` before validation (longest existing prefix, `..` cleaning, `dispositor` precedent) and SHALL reject any profile where `container-home` or a container-target is at or above sensitive roots (`/`, `/etc`, etc.), where two triples overlap (one is ancestor of the other) except a descendant triple over a read-only ancestor (deepest mount wins, mounted in depth order), or where a triple shadows session-home (`container-target` ancestor-or-equal of `container-home`). Triples MAY nest under the single distinguished writable session-home root at the explicit `HOME` (e.g., `/home/cistella` as `Tmpfs`, declared via `container-home`), which is a driver primitive, not a triple and not subject to peer-disjointness. Mount ordering: session-home first, then triples by path depth. `host-source`/`container-target` with `=`/`\n`/`\0` SHALL be rejected (Quadlet injection, M4).
+The driver SHALL canonicalize both sides of every mount triple and `container-home` before validation (longest existing prefix, `..` cleaning, `dispositor` precedent) and SHALL reject any profile where `container-home` or a container-target is at or above sensitive roots (`/`, `/etc`, etc.), where two triples share an exact canonical target, or where a triple shadows session-home (`container-target` ancestor-or-equal of `container-home`). Strict ancestor/descendant triples always stack (deepest mount wins, mounted in depth order: parents before children). Nesting under read-only ancestors additionally requires the nested-ro preflight (preexisting host chain, typed refusal otherwise); nesting under read-write ancestors proceeds by `mkdir` through the parent. Triples MAY nest under the single distinguished writable session-home root at the explicit `HOME` (e.g., `/home/cistella` as `Tmpfs`, declared via `container-home`), which is a driver primitive, not a triple and not subject to peer-disjointness. Mount ordering: session-home first, then triples by path depth. `host-source`/`container-target` with `=`/`\n`/`\0` SHALL be rejected (Quadlet injection, M4).
 
 #### Scenario: Read-only parent with writable child stacks
 - **WHEN** a profile (plus CLI triples) mounts `~/Dropbox/Notes` RO and `~/Dropbox/Notes/cistella` RW
 - **THEN** validation succeeds, the parent mounts first and the child over it, and the project repo is writable while siblings stay read-only
 
-#### Scenario: Writable overlapping mounts still rejected
-- **WHEN** two triples overlap and the ancestor is RW, or either triple shadows session-home
-- **THEN** validation fails with `overlapping mounts` or the session-home error before any container is created
+#### Scenario: Read-write nesting stacks in any mode combination
+- **WHEN** triples nest in RW-under-RW, RO-under-RW, or RO-under-RO combinations (e.g. a wholesale `~/src` RW ancestor with a pair-form worktree beneath it)
+- **THEN** validation succeeds and podman mounts parents before children; only exact duplicate targets refuse
 
-#### Scenario: Canonicalize and reject overlap
-- **WHEN** a profile contains `host-source` `/tmp/link` (symlink to `/home/me/src`) and `container-target` `/work` + `container-target` `/work/src` overlap, or `container-home` `/home/cistella/../../etc`
-- **THEN** validation fails with `overlapping mounts` or `sensitive root` before any container is created
+#### Scenario: Exact duplicate targets still rejected
+- **WHEN** two triples share a canonical target, or either triple shadows session-home
+- **THEN** validation fails with `duplicate mount target` or the session-home error before any container is created
+
+#### Scenario: Canonicalize and reject unsafe targets
+- **WHEN** a profile contains `host-source` `/tmp/link` (symlink to `/home/me/src`) with an identical canonical source elsewhere, or `container-home` `/home/cistella/../../etc`
+- **THEN** validation fails with `overlapping host_sources` (identical canonical sources stay refused) or `sensitive root` before any container is created
 
 ### Requirement: Nested-under-RO availability preflight
 Overlap validation admits descendant triples over read-only ancestors (deepest mount wins); the OCI runtime honors them only when the full destination chain including the final mountpoint pre-exists in the ancestor's host source (preexists rule: the child bind resolves through the mounted parent against the host tree, so a missing link fails `mkdirat` inside the RO mount). After mount merge and canonicalization, before unit or scratch creation, `conduct` SHALL translate each descendant-under-RO container suffix onto its nearest already-ordered RO ancestor's canonical host source and require every chain component including the final mountpoint to exist as a directory; a missing link or wrong type is a typed error naming the RO ancestor and the missing translated host path, leaving no residue. Runc remains authoritative for host-tree races with existing fail-closed teardown covering them.

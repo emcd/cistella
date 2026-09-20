@@ -27,7 +27,10 @@ container-home = "/home/cistella/../../etc"
 }
 
 #[test]
-fn rejects_overlap() {
+fn allows_rw_under_rw_stacking() {
+    // RW-under-RW nests: podman mounts parent-first (volume args sort
+    // shallower-first) and mkdir works through RW parents. Deepest
+    // mount wins.
     let a = MountTriple {
         host_source: "/tmp/a".to_string(),
         container_target: "/work".to_string(),
@@ -38,7 +41,19 @@ fn rejects_overlap() {
         container_target: "/work/src".to_string(),
         mode: MountMode::Rw,
     };
-    assert!(validate_mounts(&[a, b], "/home/cistella").is_err());
+    assert!(validate_mounts(&[a, b], "/home/cistella").is_ok());
+    // Declaration order is irrelevant: child-first still stacks.
+    let a = MountTriple {
+        host_source: "/tmp/a".to_string(),
+        container_target: "/work".to_string(),
+        mode: MountMode::Rw,
+    };
+    let b = MountTriple {
+        host_source: "/tmp/b".to_string(),
+        container_target: "/work/src".to_string(),
+        mode: MountMode::Rw,
+    };
+    assert!(validate_mounts(&[b, a], "/home/cistella").is_ok());
 }
 
 #[test]
@@ -80,6 +95,27 @@ fn rejects_canonicalized_overlap_host() {
     };
     // Same canonical host after symlink resolution → overlapping host_sources
     assert!(validate_mounts(&[a, b], "/home/cistella").is_err());
+}
+
+#[test]
+fn volume_args_mount_parent_before_child() {
+    // Implementation half of the stacking contract (validation half is
+    // `allows_rw_under_rw_stacking`): child-first declaration still
+    // emits the parent `--volume` first, so podman never mounts a
+    // child onto a path the parent mount would shadow.
+    let parent = triple("/tmp/a", "/data", MountMode::Rw);
+    let child = triple("/tmp/a/sub", "/data/sub", MountMode::Rw);
+    let args = podman_volume_args(&[child, parent], "/home/cistella", None);
+    let volumes: Vec<&str> = args
+        .windows(2)
+        .filter(|w| w[0] == "--volume")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(
+        volumes,
+        vec!["/tmp/a:/data:rw", "/tmp/a/sub:/data/sub:rw"],
+        "parent mounts before child: {volumes:?}"
+    );
 }
 
 #[test]
@@ -283,15 +319,16 @@ fn merge_rejects_cli_on_worktree_target() {
 #[test]
 fn merge_rejects_partial_cli_profile_overlap() {
     use cistella::mount::merge_cli_mounts;
-    // WW nesting across the CLI/profile boundary stays fail-closed.
-    assert!(
-        merge_cli_mounts(
-            &[triple("/a", "/data", MountMode::Rw)],
-            &[triple("/b", "/data/sub", MountMode::Rw)],
-            "/work",
-        )
-        .is_err()
-    );
+    // RW nesting across the CLI/profile boundary stacks: the pair-form
+    // worktree shape (RW target beneath an RW profile ancestor) depends
+    // on this.
+    let merged = merge_cli_mounts(
+        &[triple("/a", "/data", MountMode::Rw)],
+        &[triple("/b", "/data/sub", MountMode::Rw)],
+        "/work",
+    )
+    .unwrap();
+    assert_eq!(merged.len(), 2);
 }
 
 #[test]
@@ -315,10 +352,22 @@ fn validation_allows_ro_parent_rw_child() {
 }
 
 #[test]
-fn validation_rejects_ww_nesting() {
+fn validation_allows_ro_child_under_rw_parent() {
+    // RO child under an RW parent stacks (the child graft is the point);
+    // missing chains under RO ancestors stay covered by the nested-ro
+    // preflight, not by the overlap rule.
     let parent = triple("/tmp/a", "/data", MountMode::Rw);
     let child = triple("/tmp/a/sub", "/data/sub", MountMode::Ro);
-    assert!(validate_mounts(&[parent, child], "/home/cistella").is_err());
+    assert!(validate_mounts(&[parent, child], "/home/cistella").is_ok());
+}
+
+#[test]
+fn validation_allows_distinct_nested_host_sources() {
+    // Host-side mirror: distinct nested sources stack; only identical
+    // canonical sources refuse (ambiguous intent, not stacking).
+    let parent = triple("/tmp/a", "/data", MountMode::Rw);
+    let child = triple("/tmp/a/sub", "/data/sub", MountMode::Rw);
+    assert!(validate_mounts(&[parent, child], "/home/cistella").is_ok());
 }
 
 #[test]

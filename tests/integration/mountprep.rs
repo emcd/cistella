@@ -83,9 +83,9 @@ fn mountpoint_host_alias_conducts() {
     // resolution sees no alias (host symlinks do not create container
     // symlinks). The session conducts and sibling creation works.
     // (A container-side alias into a bind cannot be admitted at all:
-    // nesting a target under any triple is an overlap violation, so the
-    // runtime refusal path covers only image-baked symlinks — proven by
-    // unit tests on the authorization predicate, not a live session.)
+    // strict nesting stacks, so the runtime refusal path covers only
+    // image-baked symlinks — proven by unit tests on the authorization
+    // predicate, not a live session.)
     let real = TempDir::new().unwrap();
     std::fs::write(real.path().join("canary"), "host content").unwrap();
     let linkdir = TempDir::new().unwrap();
@@ -573,5 +573,66 @@ fn nested_ro_symlinked_source_resolves() {
         "symlinked source resolves: {} {}",
         out.status,
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn nested_rw_under_rw_conducts() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    // The seat-restart shape: a wholesale RW profile ancestor with the
+    // pair-form worktree nested beneath it. RW-under-RW stacks (podman
+    // mounts parent-first, mkdir works through RW parents); only exact
+    // duplicates refuse.
+    let parent = TempDir::new().unwrap();
+    let parent_str = parent.path().to_string_lossy().to_string();
+    let profile = worktree.path().join("tmpl-nested-rw.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [[mounts]]\n\
+             host-source = \"{parent_str}\"\n\
+             container-target = \"/ns-parent\"\n\
+             mode = \"rw\"\n",
+        ),
+    )
+    .unwrap();
+    let pair = format!("{worktree_str}:/ns-parent/child");
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &pair,
+            "--identity",
+            "alice",
+            "--",
+            "sh",
+            "-c",
+            "echo data > /ns-parent/child/from-child && cat /ns-parent/child/from-child",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success() && stdout.contains("data"),
+        "nested RW worktree conducts: {} {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The write landed on the host worktree through the nested mount.
+    assert!(
+        worktree.path().join("from-child").exists(),
+        "nested write reaches host worktree"
     );
 }

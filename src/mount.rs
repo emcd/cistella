@@ -145,7 +145,7 @@ pub fn parse_session_directory(s: &str) -> Result<(String, String)> {
 ///
 /// Exact canonical-target matches override (CLI wins); duplicate CLI
 /// targets, CLI triples on the worktree target, and ancestor/descendant
-/// CLI/profile overlap outside the read-only-ancestor rule are typed
+/// CLI/profile overlap outside the stacking rule are typed
 /// errors. The merged list still requires [`validate_mounts`].
 ///
 /// # Errors
@@ -219,19 +219,19 @@ pub fn merge_cli_mounts(
     Ok(merged)
 }
 
-/// Whether an ancestor/descendant triple pair may stack: the ancestor
-/// triple is read-only (deepest mount wins either way).
-fn overlap_allowed(canon_a: &str, mode_a: MountMode, canon_b: &str, mode_b: MountMode) -> bool {
-    if canon_a == canon_b {
-        return false;
-    }
-    if is_ancestor_or_equal(canon_a, canon_b) {
-        mode_a == MountMode::Ro
-    } else if is_ancestor_or_equal(canon_b, canon_a) {
-        mode_b == MountMode::Ro
-    } else {
-        false
-    }
+/// Whether an ancestor/descendant triple pair may stack: any strict
+/// nesting stacks (deepest mount wins either way). Podman receives
+/// parent-first ordering (`podman_volume_args` sorts shallower targets
+/// first), `mkdir` works through read-write parents, and nesting under
+/// read-only ancestors is covered separately by the nested-ro preflight
+/// (preexists rule). Only exact duplicates are refused here.
+///
+/// Modes ride along unused (underscore parameters): the stacking rule is
+/// deliberately mode-agnostic, and the signature stays symmetric with
+/// the rest of the validation pipeline.
+fn overlap_allowed(canon_a: &str, _mode_a: MountMode, canon_b: &str, _mode_b: MountMode) -> bool {
+    canon_a != canon_b
+        && (is_ancestor_or_equal(canon_a, canon_b) || is_ancestor_or_equal(canon_b, canon_a))
 }
 
 /// Sensitive container roots that must not be used as target.
@@ -298,8 +298,8 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
     }
 
     // Pairwise overlap among triples (after canonicalization): exact
-    // duplicates always fail; strict ancestor/descendant pairs stack only
-    // over a read-only ancestor (deepest mount wins).
+    // duplicates always fail; strict ancestor/descendant pairs always
+    // stack (deepest mount wins).
     let mut canons: Vec<(&MountTriple, String)> = triples
         .iter()
         .map(|t| (t, canonicalize_container_target(&t.container_target)))
@@ -345,8 +345,8 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
 
     // Canonicalize both sides host-side via longest existing prefix to
     // detect symlink aliasing; spec requires canonicalize before validation.
-    // Same stacking rule as container targets: strict host-side overlap is
-    // allowed only over a read-only ancestor; identical host sources stay
+    // Same stacking rule as container targets: strict host-side overlap
+    // always stacks; identical host sources stay
     // an error (ambiguous intent, not stacking).
     let mut canon_hosts: Vec<(&MountTriple, PathBuf)> = triples
         .iter()
@@ -379,25 +379,18 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
     Ok(())
 }
 
-/// Whether a strict host-side ancestor/descendant pair may stack: the
-/// ancestor triple is read-only. PathBuf `starts_with` is
-/// component-wise, so no string-prefix false positives.
+/// Whether a strict host-side ancestor/descendant pair may stack: any
+/// strict nesting stacks, mirroring [`overlap_allowed`]. PathBuf
+/// `starts_with` is component-wise, so no string-prefix false
+/// positives. Identical host sources stay refused (ambiguous intent,
+/// not stacking).
 fn overlap_allowed_host(
-    mode_a: MountMode,
-    mode_b: MountMode,
+    _mode_a: MountMode,
+    _mode_b: MountMode,
     host_a: &Path,
     host_b: &Path,
 ) -> bool {
-    if host_a == host_b {
-        return false;
-    }
-    if host_a.starts_with(host_b) {
-        mode_b == MountMode::Ro
-    } else if host_b.starts_with(host_a) {
-        mode_a == MountMode::Ro
-    } else {
-        false
-    }
+    host_a != host_b && (host_a.starts_with(host_b) || host_b.starts_with(host_a))
 }
 
 /// Canonicalizes a container target: cleans `.`, `..`, duplicate slashes
