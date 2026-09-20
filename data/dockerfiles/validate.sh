@@ -4,7 +4,7 @@ set -euo pipefail
 for d in data/dockerfiles/*; do
   [ -f "$d/Dockerfile" ] || continue
   name=$(basename "$d")
-  tag="cistella/$name:example"
+  tag="localhost/cistella/$name:example"
   echo "=== Building $tag from $d ==="
   podman build -f "$d/Dockerfile" -t "$tag" .
   echo "--- Verifying baked terminfo and opencode for $tag ---"

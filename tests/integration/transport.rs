@@ -16,7 +16,8 @@ fn podman_available() -> bool {
 }
 
 fn image_ref() -> String {
-    std::env::var("CISTELLA_TEST_IMAGE").unwrap_or_else(|_| "cistella/opencode:example".to_string())
+    std::env::var("CISTELLA_TEST_IMAGE")
+        .unwrap_or_else(|_| "localhost/cistella/opencode:example".to_string())
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
