@@ -1,15 +1,8 @@
 # Cistella
 
-Cistella gives every agent development session its own supervised
-execution environment: a declarative profile selects the image, the
-allowlist mounts, and the harness argv, and the driver owns the session
-lifetime from start through teardown. The profile and lifecycle
-contract is shaped to allow other runtimes later.
+Cistella isolates agent sessions via various technologies. 
 
-Today that environment is an OCI container: rootless Podman for
-execution, Quadlet systemd user units for long-lived supervision,
-runtime labels plus a sidecar `gc` verb for orphan reaping. The harness
-launches inside via a runtime exec call (never via attach to PID 1).
+Currently, Podman + Quadlet is supported. More to come.
 
 ## Documentation
 
