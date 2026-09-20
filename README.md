@@ -1,6 +1,6 @@
 # Cistella
 
-Cistella isolates agent sessions via various technologies. 
+Cistella isolates agent sessions via various technologies.
 
 Currently, Podman + Quadlet is supported. More to come.
 

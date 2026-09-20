@@ -26,6 +26,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   credential-shaped host variables can never leak through templates.
 - Prompt container stop, prepared mount ownership, and fail-fast errors
   for mounts nested under read-only parents.
+- Strict mount nesting in any mode combination (deepest mount wins),
+  so pair-form worktrees may sit beneath profile ancestors.
 - User documentation (usage, profile reference, trust model and
   limitations) and a maintainer guide.
 
