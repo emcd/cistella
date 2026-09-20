@@ -15,21 +15,21 @@ under XDG, never the baked files.
 ## Fields
 
 ```toml
-image = "localhost/cistella/opencode:example"  # required: tag or digest
-credential-surface = "none"                    # required; see below
-container-home = "{{environment:HOME}}"        # default /home/cistella
-command = ["opencode"]                         # harness argv (array, never a shell string)
+image = 'localhost/cistella/opencode:example'  # required: tag or digest
+credential-surface = 'none'                    # required; see below
+container-home = '{{environment:HOME}}'        # default /home/cistella
+command = ['opencode']                         # harness argv (array, never a shell string)
 
 [[mounts]]                                     # required (may be empty): allowlist triples
-host-source = "~/.config/opencode"
-container-target = "{{core:container-home}}/.config/opencode"
-mode = "ro"                                    # or "rw"
+host-source = '~/.config/opencode'
+container-target = '{{core:container-home}}/.config/opencode'
+mode = 'ro'                                    # or 'rw'
 
 [environment]                                  # container env exports
-CARGO_HOME = "{{core:container-home}}/.cargo"
+CARGO_HOME = '{{core:container-home}}/.cargo'
 
 [labels]                                       # generic labels; `cistella.` prefix refused
-"my.tag" = "{{core:project-name}}"
+'my.tag' = '{{core:project-name}}'
 ```
 
 - `container-home` is canonicalized; sensitive roots (`/`, `/etc` and

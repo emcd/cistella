@@ -1,6 +1,6 @@
 # Minimal profile for tests and first sessions: image plus worktree.
-image = "localhost/cistella/opencode:example"
-credential-surface = "none"
-container-home = "/home/cistella"
-command = ["sleep", "infinity"]
+image = 'localhost/cistella/opencode:example'
+credential-surface = 'none'
+container-home = '/home/cistella'
+command = ['sleep', 'infinity']
 mounts = []
