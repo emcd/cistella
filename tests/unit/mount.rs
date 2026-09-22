@@ -208,7 +208,7 @@ image = "localhost/cistella/opencode:example"
 credential-surface = "none"
 mounts = []
 container-home = "/home/cistella"
-[environment]
+[environment-assignments]
 HOME = "/override"
 "#;
     assert!(Profile::from_toml(bad).is_err());

@@ -283,6 +283,11 @@ fn conduct_session(
     let supplements = Supplements::from_pairs(pairs);
     let (prof, digest, profile_name) =
         Profile::resolve_in(profile_ref, &source, project, &supplements)?;
+    // Snapshot accepted invoker env first: absent names, collisions, and
+    // gate violations fail here, before any session/runtime mutation.
+    // Accepted pairs are post-substitution by construction (resolution
+    // already expanded templates) and never template-scanned.
+    let accepted_env = prof.snapshot_acceptances()?;
     let generic: Vec<(String, String)> = labels
         .iter()
         .map(|a| parse_cli_label(a))
@@ -347,16 +352,21 @@ fn conduct_session(
         mode: MountMode::Rw,
     });
     cistella::mount::validate_mounts(&triples, prof.home())?;
-    cistella::identity::assert_no_github_token(&prof)?;
+    cistella::identity::assert_no_github_token_in_assignments(&prof)?;
     let volumes = podman_volume_args(&triples, prof.home(), None);
     let ssh_args = cistella::identity::ssh_agent_volume_args(&prof);
     // ssh_args is mixed ["--volume", "sock:sock:ro", "-e", "SSH_AUTH_SOCK=..."]; split for Quadlet
     let mut all_volumes = volumes;
     let mut env_extra: Vec<String> = prof
-        .environment
+        .environment_assignments
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
+    // Accepted pairs append in profile-list order (deterministic suffix).
+    // Collision checks in snapshot_acceptances guarantee no key overlap.
+    for (k, v) in &accepted_env {
+        env_extra.push(format!("{k}={v}"));
+    }
     let mut i = 0;
     while i + 1 < ssh_args.len() {
         let flag = &ssh_args[i];

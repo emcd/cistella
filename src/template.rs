@@ -465,7 +465,7 @@ pub(crate) fn expand_templates(
             *arg = substitute(arg, &values)?;
         }
     }
-    for value in profile.environment.values_mut() {
+    for value in profile.environment_assignments.values_mut() {
         *value = substitute(value, &values)?;
     }
     for value in profile.labels.values_mut() {
@@ -507,7 +507,7 @@ fn template_values(profile: &Profile) -> Vec<(&str, &str)> {
     }
     out.extend(
         profile
-            .environment
+            .environment_assignments
             .values()
             .map(|v| ("env value", String::as_str(v))),
     );

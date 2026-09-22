@@ -24,20 +24,23 @@ pub fn ssh_agent_volume_args(profile: &Profile) -> Vec<String> {
     }
 }
 
-/// Verifies that no push credential exists in the profile's env map.
+/// Verifies that no push credential exists in the profile's assignment map.
 ///
-/// Scans `profile.environment` keys (the only env that reaches the container) for
-/// `GITHUB_TOKEN` variants. In-container checks are `env | grep -i github`
-/// and `ssh -o BatchMode=yes -T git@github.com` (requires egress).
+/// Assignment-scoped by design: this guards the profile-authored path only.
+/// Explicit `environment-acceptances` are an operator override and are not
+/// scanned here (see the identity capability delta).
+/// `GITHUB_TOKEN` variants are refused; in-container checks are
+/// `env | grep -i github` and `ssh -o BatchMode=yes -T git@github.com`
+/// (requires egress).
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Identity` if a token is found.
-pub fn assert_no_github_token(profile: &Profile) -> Result<()> {
+pub fn assert_no_github_token_in_assignments(profile: &Profile) -> Result<()> {
     for key in ["GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT"] {
-        if profile.environment.contains_key(key)
+        if profile.environment_assignments.contains_key(key)
             || profile
-                .environment
+                .environment_assignments
                 .keys()
                 .any(|k| k.eq_ignore_ascii_case(key))
         {

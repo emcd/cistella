@@ -519,7 +519,7 @@ fn directory_default_basename_validates_charset() {
 
 fn env_labels_toml(env_value: &str, label_key: &str, label_value: &str) -> String {
     format!(
-        "{}\n[environment]\nPROBE = \"{env_value}\"\n[labels]\n\"{label_key}\" = \"{label_value}\"\n",
+        "{}\n[environment-assignments]\nPROBE = \"{env_value}\"\n[labels]\n\"{label_key}\" = \"{label_value}\"\n",
         template_toml("/data", "/x")
     )
 }
@@ -535,7 +535,10 @@ fn env_values_expand_templates() {
     let (profile, _, _) =
         resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap();
     assert_eq!(
-        profile.environment.get("PROBE").map(String::as_str),
+        profile
+            .environment_assignments
+            .get("PROBE")
+            .map(String::as_str),
         Some(format!("/home/cistella/.config:{home}/.x:proj").as_str())
     );
 }
@@ -585,7 +588,7 @@ fn brace_shaped_env_stays_literal_without_context() {
         "host-source = \"/data\"",
         "container-target = \"/x\"",
         "mode = \"rw\"",
-        "[environment]",
+        "[environment-assignments]",
         "PROBE = \"{not-a-span}\"",
         "[labels]",
         "plain = \"(also-literal)\"",
@@ -594,7 +597,10 @@ fn brace_shaped_env_stays_literal_without_context() {
     .join("\n");
     let (profile, _, _) = resolve_template_text(&toml, None).unwrap();
     assert_eq!(
-        profile.environment.get("PROBE").map(String::as_str),
+        profile
+            .environment_assignments
+            .get("PROBE")
+            .map(String::as_str),
         Some("{not-a-span}")
     );
     assert_eq!(

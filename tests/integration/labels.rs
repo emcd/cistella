@@ -227,7 +227,7 @@ fn environment_values_verbatim() {
          container-home = \"/home/cistella\"\n\
          command = [\"sleep\", \"300\"]\n\
          mounts = []\n\
-         [environment]\n\
+         [environment-assignments]\n\
          EDGE = \"a=b c\\\"d'e 100% %h\"\n",
     )
     .unwrap();

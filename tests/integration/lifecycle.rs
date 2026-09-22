@@ -1,6 +1,6 @@
 //! Core conduct lifecycle: mint, attached terminate, orphan reap.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -643,7 +643,7 @@ fn template_env_and_labels_resolve_live() {
          credential-surface = \"none\"\n\
          container-home = \"/home/cistella\"\n\
          mounts = []\n\
-         [environment]\n\
+         [environment-assignments]\n\
          PROBE_ALL = \"{{core:container-home}}/.config:{{core:host-home}}/.x:{{core:project-name}}\"\n\
          [labels]\n\
          \"tmpl.tag\" = \"{{core:project-name}}-{{core:container-home}}\"\n",
@@ -704,6 +704,185 @@ fn template_env_and_labels_resolve_live() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
+fn environment_acceptances_forward_live() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+
+    // Relay-style invoker var with transport-hostile content: spaces,
+    // `=`, `%`, quotes, backslash, and template-looking text. Set in the
+    // test process (unique name, no parallel-test interaction), restored
+    // afterwards. Gate-legal by construction (no line breaks).
+    let live_value = "sp ace=a%b'c\"d\\e{{supplement:x}}@end";
+    let prev = std::env::var("CISTELLA_LIVE_ACCEPT").ok();
+    unsafe { std::env::set_var("CISTELLA_LIVE_ACCEPT", live_value) };
+    let profile = worktree.path().join("accept-env.toml");
+    std::fs::write(
+        &profile,
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential-surface = \"none\"\n\
+         container-home = \"/home/cistella\"\n\
+         mounts = []\n\
+         environment-acceptances = [\"CISTELLA_LIVE_ACCEPT\"]\n",
+    )
+    .unwrap();
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile.to_string_lossy(),
+        &worktree_str,
+        &["--identity", "alice", "--project-name", "liveaccept"],
+        &["sleep", "300"],
+        &[],
+    );
+    wait_active(&id);
+    let container = format!("cistella-{id}");
+
+    // Accepted value visible byte-exact in container env. `printenv`
+    // (not shell `echo`) proves exact transport: no rescan, `=`
+    // preservation, and actual Quadlet/systemd delivery.
+    let env_out = Command::new("podman")
+        .args(["exec", &container, "printenv", "CISTELLA_LIVE_ACCEPT"])
+        .output()
+        .expect("podman exec printenv");
+    assert!(env_out.status.success(), "podman exec printenv");
+    assert_eq!(
+        String::from_utf8_lossy(&env_out.stdout).to_string(),
+        format!("{live_value}\n"),
+        "accepted invoker env forwarded byte-exact in-container"
+    );
+
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = conduct.wait();
+    guard.id = None;
+    match prev {
+        Some(v) => unsafe { std::env::set_var("CISTELLA_LIVE_ACCEPT", v) },
+        None => unsafe { std::env::remove_var("CISTELLA_LIVE_ACCEPT") },
+    }
+    assert!(!unit_path(&home, &id).exists(), "no unit residue");
+    assert!(scratch_gone(&id), "no scratch residue");
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn environment_acceptances_absent_refuses_residue_free() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = TempDir::new().unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+
+    // Serialize against concurrent live conducts: while the
+    // creation-window lock is held here, no other conduct can create
+    // units, scratch, or containers, so the before/after diff is exact.
+    // The refusal path never reaches lock acquisition, so no self-deadlock.
+    let _creation = cistella::lock::LockGuard::acquire().expect("creation lock");
+    let units_before = cistella_unit_names(&home);
+    let scratch_before = cistella_scratch_names();
+
+    let prev = std::env::var("CISTELLA_LIVE_REFUSE").ok();
+    unsafe { std::env::remove_var("CISTELLA_LIVE_REFUSE") };
+    let profile = worktree.path().join("accept-refuse.toml");
+    std::fs::write(
+        &profile,
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential-surface = \"none\"\n\
+         container-home = \"/home/cistella\"\n\
+         mounts = []\n\
+         environment-acceptances = [\"CISTELLA_LIVE_REFUSE\"]\n",
+    )
+    .unwrap();
+    // Spawn (not synchronous output()): if snapshotting ever regresses
+    // below creation-lock acquisition, the child blocks on the test-held
+    // lock instead of failing — poll to a deadline, kill/reap on timeout,
+    // and fail explicitly. nextest sets no terminate-after bound, so an
+    // unbounded wait would hang the live suite forever.
+    let mut child = Command::new(bin())
+        .args([
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "sleep",
+            "300",
+        ])
+        .env("HOME", &home)
+        .env("TERM", "xterm-ghostty")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn conduct");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll conduct") {
+            break status;
+        }
+        if Instant::now() > deadline {
+            child.kill().ok();
+            let _ = child.wait();
+            panic!(
+                "conduct reached the mutation gate (blocked on the creation lock): \
+                 acceptance refusal must precede lock acquisition"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // try_wait reaped the child, so drain the captured pipes directly.
+    use std::io::Read as _;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("stdout pipe")
+        .read_to_end(&mut stdout)
+        .unwrap();
+    child
+        .stderr
+        .take()
+        .expect("stderr pipe")
+        .read_to_end(&mut stderr)
+        .unwrap();
+    if let Some(v) = prev {
+        unsafe { std::env::set_var("CISTELLA_LIVE_REFUSE", v) };
+    }
+    assert!(!status.success(), "absent acceptance refuses conduct");
+    let stderr = String::from_utf8_lossy(&stderr).to_string();
+    assert!(
+        stderr.contains("CISTELLA_LIVE_REFUSE"),
+        "name-only diagnostic: {stderr}"
+    );
+    // The `conduct {id}` line prints after install/start/preparation, so
+    // its absence proves no announced/started session (not pre-mint
+    // ordering — mint itself is unobservable from outside).
+    assert!(
+        !String::from_utf8_lossy(&stdout).contains("conduct "),
+        "refusal precedes session announce"
+    );
+    assert_eq!(cistella_unit_names(&home), units_before, "no unit residue");
+    assert_eq!(
+        cistella_scratch_names(),
+        scratch_before,
+        "no scratch residue"
+    );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
 fn template_namespaces_resolve_live() {
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");
@@ -727,7 +906,7 @@ fn template_namespaces_resolve_live() {
          host-source = \"/tmp\"\n\
          container-target = \"/ns-{{supplement:dataset}}\"\n\
          mode = \"ro\"\n\
-         [environment]\n\
+         [environment-assignments]\n\
          PROBE_NS = \"{{supplement:dataset}}@{{environment:HOME}}\"\n\
          [labels]\n\
          \"ns.tag\" = \"{{core:project-name}}-{{supplement:dataset}}\"\n",

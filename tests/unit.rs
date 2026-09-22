@@ -7,6 +7,8 @@
 
 #[path = "unit/cli_args.rs"]
 mod cli_args;
+#[path = "unit/environment_acceptances.rs"]
+mod environment_acceptances;
 #[path = "unit/identity.rs"]
 mod identity;
 #[path = "unit/mount.rs"]

@@ -352,3 +352,44 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
         }
     }
 }
+
+/// Session-state enumeration for residue-diff tests: unit files
+/// and scratch entries under the shared HOME registry.
+pub fn cistella_unit_names(home: &str) -> Vec<String> {
+    dir_names_filtered(
+        &std::path::PathBuf::from(home).join(".config/containers/systemd"),
+        Some("cistella-"),
+    )
+}
+
+pub fn cistella_scratch_names() -> Vec<String> {
+    // XDG entries are bare session ids (plus the lock file itself, stable
+    // across the test since the guard is acquired before snapshotting);
+    // the no-XDG fallback carries the `cistella-` prefix under /tmp, as
+    // does the legacy path.
+    let mut out = match std::env::var("XDG_RUNTIME_DIR") {
+        Ok(rt) if !rt.is_empty() => {
+            dir_names_filtered(&std::path::PathBuf::from(rt).join("cistella"), None)
+        }
+        _ => Vec::new(),
+    };
+    out.extend(dir_names_filtered(
+        std::path::Path::new("/tmp"),
+        Some("cistella-"),
+    ));
+    out.sort();
+    out
+}
+
+fn dir_names_filtered(dir: &std::path::Path, prefix: Option<&str>) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| prefix.is_none_or(|p| n.starts_with(p)))
+        .collect();
+    names.sort();
+    names
+}

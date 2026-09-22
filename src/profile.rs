@@ -17,7 +17,7 @@
 //! cwd-relative lookup and no development-directory detection: a name
 //! resolves identically from any working directory.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
@@ -114,9 +114,17 @@ pub struct Profile {
     /// Harness argv array (TOML array, never a shell string).
     #[serde(default)]
     pub command: Option<Vec<String>>,
-    /// Env exports inside the container.
+    /// Env exports inside the container (TOML `[environment-assignments]`).
     #[serde(default)]
-    pub environment: HashMap<String, String>,
+    pub environment_assignments: HashMap<String, String>,
+    /// Exact invoker-environment names forwarded verbatim into container
+    /// env (TOML top-level `environment-acceptances`, default empty).
+    /// Required, collision-checked, never template-scanned, never denied.
+    /// Reserved direction: this list may later extend to a union with a
+    /// name-to-attributes table (untagged deserialization); bare list
+    /// entries are defaults-equivalent and stay valid forever.
+    #[serde(default)]
+    pub environment_acceptances: Vec<String>,
     /// Credential surface slot; `none` mounts nothing, `ssh_agent` mounts per-identity socket RO.
     pub credential_surface: CredentialSurface,
     /// Single distinguished writable session-home root.
@@ -328,6 +336,62 @@ enum ProfileText {
 }
 
 impl Profile {
+    /// Snapshots accepted invoker-environment values for this profile, in
+    /// profile-list order with deterministic first-error behavior.
+    ///
+    /// Three phases, each scanning in list order: snapshot every value
+    /// (absent or non-Unicode names fail name-only — the `VarError` payload
+    /// is discarded, never rendered), then collision checks (assignment
+    /// keys, `HOME` always, credential-surface-injected names), then the
+    /// shared value gate (line-break rejection, `=` permitted). Accepted
+    /// values are never template-scanned. Call on the conduct path after
+    /// resolution, before any session/runtime mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` on absent/non-Unicode names,
+    /// collisions, or gate violations. Diagnostics are name-only.
+    pub fn snapshot_acceptances(&self) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::with_capacity(self.environment_acceptances.len());
+        for name in &self.environment_acceptances {
+            let value = std::env::var(name).map_err(|_| {
+                CistellaError::Profile(format!(
+                    "environment-acceptances name absent or non-Unicode: {name}"
+                ))
+            })?;
+            out.push((name.clone(), value));
+        }
+        for (name, _) in &out {
+            if self.environment_assignments.contains_key(name) {
+                return Err(CistellaError::Profile(format!(
+                    "environment-acceptances name collides with an assignment: {name}"
+                )));
+            }
+            if name == "HOME" {
+                return Err(CistellaError::Profile(
+                    "environment-acceptances must not name HOME; derived from container_home"
+                        .to_string(),
+                ));
+            }
+            if matches!(self.credential_surface, CredentialSurface::Agent { .. })
+                && name == "SSH_AUTH_SOCK"
+            {
+                return Err(CistellaError::Profile(
+                    "environment-acceptances must not name SSH_AUTH_SOCK; injected by credential-surface"
+                        .to_string(),
+                ));
+            }
+        }
+        for (name, value) in &out {
+            if value.contains('\n') || value.contains('\r') || value.contains('\0') {
+                return Err(CistellaError::Profile(format!(
+                    "environment-acceptances value must not contain control characters: {name}"
+                )));
+            }
+        }
+        Ok(out)
+    }
+
     /// Loads a profile by name (configuration directories, then XDG with
     /// seed-if-absent, then baked examples) or file path, using the host
     /// environment for lookup inputs and no supplied tiers.
@@ -445,6 +509,30 @@ fn parse_profile(text: &str) -> Result<Profile> {
     Ok(profile)
 }
 
+/// Validates one environment variable name against the `[A-Z_][A-Z0-9_]*`
+/// grammar shared by assignment keys and acceptance names (parity by
+/// construction: both call this).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` when `name` violates the grammar.
+fn validate_env_name(name: &str, kind: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(CistellaError::Profile(format!(
+            "{kind} must match [A-Z_][A-Z0-9_]*: {name}"
+        )));
+    }
+    Ok(())
+}
+
 /// Validates a parsed profile: literal text or template-expanded values.
 ///
 /// # Errors
@@ -505,28 +593,31 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
             ));
         }
     }
-    for (k, v) in &profile.environment {
+    for (k, v) in &profile.environment_assignments {
         if k.contains('\n') || k.contains('\r') || v.contains('\n') || v.contains('\r') {
             return Err(CistellaError::Profile(format!(
                 "env key/value must not contain newlines: {k}"
             )));
         }
-        if k.is_empty()
-            || !k
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
-            || !k
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        {
-            return Err(CistellaError::Profile(format!(
-                "env key must match [A-Z_][A-Z0-9_]*: {k}"
-            )));
+        validate_env_name(k, "env key")?;
+    }
+    // Acceptance names share the assignment key grammar (parity by
+    // construction — same helper, list order, first error deterministic).
+    // Deliberately no deny/allowlist checks: an exactly-named acceptance
+    // is operator intent, including secret-shaped names.
+    {
+        let mut seen = HashSet::new();
+        for name in &profile.environment_acceptances {
+            validate_env_name(name, "environment-acceptances name")?;
+            if !seen.insert(name.clone()) {
+                return Err(CistellaError::Profile(format!(
+                    "duplicate environment-acceptances name: {name}"
+                )));
+            }
         }
     }
-    // HOME is derived from container_home, not freely overridden via env.
-    if profile.environment.contains_key("HOME") {
+    // HOME is derived from container_home, not freely overridden via assignments.
+    if profile.environment_assignments.contains_key("HOME") {
         return Err(CistellaError::Profile(
             "HOME must not be set in env; derived from container_home".to_string(),
         ));

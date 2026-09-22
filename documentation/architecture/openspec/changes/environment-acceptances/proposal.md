@@ -22,9 +22,10 @@ Containerized seats lose caller-provided process environment at the `cistella co
 ### Modified Capabilities
 
 - `mounts`: profile schema gains the top-level `environment-acceptances` key and renames `[environment]` to `[environment-assignments]` (requirement-level schema change; resolution/validation behavior for assignments unchanged).
+- `identity`: credential-absence push enforcement gains the explicit-acceptance operator override (assignments/templates/credential-surface still inject nothing by default; accepted values rest in unit `Environment=` lines with name-only diagnostics).
 
 ## Impact
 
 - `src/profile.rs` (schema, validation), conduct resolution path, unit rendering (accepted env into container env).
-- Profiles: two host seats, baked example(s), docs (`documentation/usage/profiles.md`), trust-model note (accepted secrets rest transiently in generated unit files for the session lifetime — conveyed, never displayed).
+- Profiles: two host seats, baked example(s), docs (`documentation/usage/profiles.md`), trust-model note (accepted secrets rest in generated unit `Environment=` lines for the session lifetime; diagnostics display names only).
 - Tests: unit matrix (required/collision/verbatim/grammar/dupes/order) plus live conduct proving relay-var forwarding end to end.

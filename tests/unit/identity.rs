@@ -53,10 +53,10 @@ fn rejects_github_token_in_env() {
 image = "localhost/cistella/opencode:example"
 credential-surface = "none"
 mounts = []
-[environment]
+[environment-assignments]
 GITHUB_TOKEN = "secret"
 "#,
     )
     .unwrap();
-    assert!(cistella::identity::assert_no_github_token(&prof).is_err());
+    assert!(cistella::identity::assert_no_github_token_in_assignments(&prof).is_err());
 }

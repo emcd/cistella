@@ -21,10 +21,12 @@ any agent, especially a lower-trust harness.
   trust contract is that the seat may touch what the operator may
   touch, not that secrets are sealed out.
 - **Credential absence is about push credentials, not mounted data.**
-  The `credential-surface` discipline (no code-hosting auth inside;
-  sign-only agent socket for commits) and the template credential deny
-  keep the driver from *adding* exfiltration paths, but they do not
-  remove what whole-directory mounts already carry.
+  The `credential-surface` discipline (no code-hosting auth inside by
+  default; sign-only agent socket for commits) and the template
+  credential deny keep the driver from *adding* exfiltration paths,
+  but they do not remove what whole-directory mounts already carry.
+  Explicit `environment-acceptances` override this absence by
+  operator choice (see below).
 - **Nesting is fail-closed, not isolated.** Mounts nested under
   read-only ancestors must pre-exist on the host; the driver refuses
   rather than remounts. Kernel-enforced walls (user namespaces,
@@ -32,6 +34,18 @@ any agent, especially a lower-trust harness.
   mechanisms below are future work, not promises.
 - **Host sources must pre-exist.** The driver never creates host mount
   sources implicitly; missing sources are typed refusals.
+- **Accepted environment is an explicit override, stored in the unit.**
+  Variables listed in `environment-acceptances` cross the conduct
+  boundary verbatim because the operator named them exactly —
+  including secret-shaped names, which is deliberate, supported use
+  and an explicit override to credential absence (credential-surface,
+  assignments, and templates still inject no push credentials by
+  default). Diagnostics display names only; the values themselves are
+  stored in the unit file's `Environment=` lines for the session
+  lifetime — visible to principals able to read or inspect them —
+  and are torn down with the session. Acceptance grants no render
+  permission, so accepted values cannot leak into mount paths,
+  labels, or template diagnostics through the driver.
 
 ## Planned future work (not 0.1.0)
 
