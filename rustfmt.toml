@@ -1,0 +1,8 @@
+# Pin the style edition so `cargo fmt` (which reads `Cargo.toml`
+# edition) and bare `rustfmt` (editors, LSP, format-on-save — which
+# otherwise default to edition 2015) agree on import grouping and
+# related style-edition gates. Without this, seat-side saves and the
+# pre-commit/CI `cargo fmt --check` gate fight each other.
+# See cistella:issues/git/1.
+edition = "2024"
+style_edition = "2024"
