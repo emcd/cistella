@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-22
+
+### Added
+
+- Top-level `environment-acceptances`: exact invoker-environment names
+  forwarded verbatim into container env (required, fail-before-mutation,
+  collision-checked, value-free diagnostics, no deny). Unblocks
+  containerized agentmux seats (relay `AGENTMUX_BUNDLE`/`AGENTMUX_SESSION`
+  discovery).
+
+### Changed
+
+- **BREAKING** (pre-1.0): `[environment]` table renamed to
+  `[environment-assignments]`, symmetric with acceptances. Legacy tables
+  fail closed at parse time.
+- Credential absence is now absence-by-default: explicit acceptances are
+  an operator override (diagnostics display names only; values rest in
+  unit `Environment=` lines for the session lifetime).
+- `[environment-assignments]` values reject line breaks; accepted and
+  assigned values share one safety gate (`=` permitted).
+
 ## [0.1.0] - 2026-09-20
 
 ### Added
