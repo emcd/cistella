@@ -162,7 +162,7 @@ jobs:
 
   publish-crates-io:
     if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/') }}
-    needs: [test]
+    needs: [initialize, test]
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
