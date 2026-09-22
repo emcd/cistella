@@ -49,7 +49,7 @@ Use consistent tags for discoverability:
 - Example component names include `engine`, `mcp`, `tui`, `web`, `handbook`, and `data-models`.
 - This project should define and document its specific component-folder conventions in @.auxiliary/agents/project.md.
 - For cross-component work, prefer `coordination/general` and use multiple `#component-*` tags.
-- For per-component rolling handoffs, prefer `coordination/<component>` (one stable note updated at checkpoints).
+- For tech-lead lane handoffs, prefer `coordination/<component>` (one stable note updated in place).
 - Keep notebook lifecycle hygiene:
     - prune completed todos quickly,
     - keep only active/near-term coordination checkpoints,
@@ -63,10 +63,8 @@ Use consistent tags for discoverability:
 - For each active OpenSpec proposal, keep **exactly one** linked `nb` todo as the tracking anchor (with proposal reference), rather than duplicating full task trees in both systems.
 
 ## Handoff Hygiene
-- Use `coordination/<component>` for per-component rolling handoffs (one stable note per component, updated in place). Use `coordination/general` for coordinator-wide state and cross-component snapshots.
+- **Who maintains handoffs:** coordinators and sole owners maintain project-level rolling handoffs (typically `coordination/general`). Tech leads maintain handoffs for lanes under their purview (`coordination/<component>` or equivalent). No one else maintains a rolling handoff. Coordinated multi-agent teams may be multi-tier (for example coordinator above several tech leads); each tier owns only its scope.
 - Keep rolling handoff notes separate from OpenSpec proposal content. Do not repurpose or overwrite rolling handoff notes with proposal content.
-- Handoff content should be a brief summary of recent accomplishments and the current agenda. Replace the note body rather than appending so the handoff stays one screenful; a growing checkpoint log is an anti-pattern.
-- **Updates are conditional, not routine.** Do not refresh a handoff after every task, review round, or status ping.
-- **Primary update point: before compaction (or a genuine session end).** When the conversation is about to compact or the session is ending such that the next pickup may be a cold start, rewrite the handoff so the next agent has operating state without relying on chat history. That is the default reason to touch the note.
-- **Secondary update point:** when another lane or the coordinator needs visibility into a state change that is not otherwise discoverable from git log, `nb` todo/issue status, or OpenSpec `tasks.md`.
-- In-session continuity after compaction is not a substitute for a handoff when the next actor may be a different session or seat; still prefer one pre-compaction rewrite over many mid-flight tweaks.
+- **When to update:** before compaction or planned seat transfer; when the coordinator or operator requests it; or when material state would otherwise be lost (active blocker, uncommitted work, non-obvious decision, external dependency, required next action with no durable task record). Do not update routinely after ordinary commits, merges, tests, review rounds, or status pings when those outcomes are already visible from Git, `nb`, or packets.
+- **What goes in a handoff:** a brief summary of recent accomplishments and the current agenda (next accountable action). Include blockers or decisions only when material. Link to todos, issues, commits, or proposals instead of reproducing history.
+- Keep the note brief and operational. Replace the body rather than appending checkpoints. A growing chronological log is an anti-pattern.

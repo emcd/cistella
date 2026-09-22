@@ -118,10 +118,6 @@ When a commit completes an OpenSpec task or requirement, update the relevant Ope
 
 **Read this section before reviewing or stacking commits.** @.auxiliary/agents/procedures/reviews.md covers the delegated review flow, review request packet format, and how to handle stacked commits with `--fixup`/`--autosquash`.
 
-## Rolling Handoffs
-
-**Read this before writing or updating a handoff note.** @.auxiliary/agents/procedures/notebook.md Handoff Hygiene covers when to update (pre-compaction primary), content shape, and anti-patterns. Do not refresh handoffs routinely mid-flight.
-
 # Collaboration
 
 ## Questions Are Not Stop-Orders

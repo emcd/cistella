@@ -64,9 +64,7 @@
       "command": [
         "agentmux",
         "host",
-        "mcp",
-        "--bundle",
-        "infrastructure"
+        "mcp"
       ],
       "enabled": true,
       "timeout": 900000

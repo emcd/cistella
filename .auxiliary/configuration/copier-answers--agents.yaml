@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: v1.0a13-7-g3c71392
+_commit: v1.0a13-20-g3124b9e
 _src_path: gh:emcd/agents-common
 coders:
 - claude
@@ -25,7 +25,6 @@ instructions_sources:
 instructions_target: .auxiliary/agents/standards
 languages:
 - rust
-project_bundle_name: infrastructure
 project_name: cistella
 provide_instructions: true
 support_local_models: true
