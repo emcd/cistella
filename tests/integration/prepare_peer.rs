@@ -171,18 +171,22 @@ fn prepare_duplicate_hook_order_refuses() {
 
 #[test]
 fn prepare_credential_shape_fault_refuses() {
-    // Peer smuggles a `credentials` array with a `value` field. The
-    // host's `PrepareResponse` uses `deny_unknown_fields`, so the
-    // `credentials` key itself is refused.
+    // Peer smuggles a `credentials` contribution carrying a raw
+    // `value` field (forbidden by the schema-level secret
+    // unrepresentability rule). Post-2.3, `credentials` is a
+    // first-class typed contribution; the gate that refuses this
+    // payload is the credential-handle schema's strict
+    // `deny_unknown_fields` (or the equivalent typed-shape
+    // refusal), NOT the outer `PrepareResponse` deny. The wire
+    // error surface is "bad prepare response" or a typed Contract
+    // refusal naming the unknown field.
     let error = run_fault("prepare-credential-shape-fault");
     let message = error.to_string();
-    // The wire-level refusal: deny_unknown_fields on PrepareResponse
-    // surfaces as a serde failure ("unknown field `credentials`") or
-    // a typed Contract refusal. Either is acceptable host behavior.
     assert!(
         message.contains("bad prepare response")
             || message.contains("unknown")
-            || message.contains("credentials"),
+            || message.contains("credentials")
+            || message.contains("secret"),
         "expected credential-shape refusal, got: {message}"
     );
 }

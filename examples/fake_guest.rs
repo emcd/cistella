@@ -379,8 +379,9 @@ fn main() -> ExitCode {
             // The peer's main returns immediately and the process
             // exits, so fd 1 stays closed for the remainder of the
             // pipe lifetime. Bounded to this arm.
-            let close_result = unsafe { libc::close(1) };
-            eprintln!("DEBUG: libc::close(1) returned {close_result}");
+            unsafe {
+                libc::close(1);
+            }
             std::thread::sleep(Duration::from_millis(100));
             ExitCode::SUCCESS
         }

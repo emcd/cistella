@@ -27,53 +27,67 @@ use std::time::Duration;
 use cistella::framework::contract::Deadlines;
 use cistella::framework::protocol::{GuestHost, PROTOCOL_MAJOR};
 
-/// Resolves the peer path. Cargo's `CARGO_BIN_EXE_<name>` env var is
-/// only set inside the test binary that OWNS the binary, not in
-/// sibling test binaries that depend on it (verified for `[[test]]`
-/// and `examples/` targets: neither exposes the var to other
-/// integration tests). The peer is built next to the integration
-/// test binary in `target/<profile>/deps/` when `cargo test` builds
-/// all targets; filtered single-target runs do NOT build the peer,
-/// so glob-resolving on a filtered run returns "not found".
+/// Resolves the peer path. The peer is a Cargo autodiscovered
+/// example (`examples/fake_guest.rs`); it lands at
+/// `target/<profile>/examples/fake_guest` (plus a hashed sibling
+/// copy). Cargo's `CARGO_BIN_EXE_<name>` is only set inside the
+/// binary that OWNS the example, so we glob the examples dir.
 ///
-/// We find the peer by globbing the deps directory and skipping
-/// dep-info files (`fake_guest-<hash>.d`) so the match is the
-/// actual executable.
+/// Newest-mtime wins: when the workspace has stale binaries from
+/// prior rebases/branches, the OLD executable takes precedence if
+/// `read_dir` returns it first (sorted or not), and tests pass against
+/// the wrong shape — observed during `conformance-harness` review.
+/// Filtering to executable files via `mode() & 0o111` and sorting
+/// by mtime descending picks the freshest build, matching what the
+/// suite was authored against.
 pub(super) fn peer_path() -> PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
-    let my_dir = my_path.parent().expect("deps dir");
+    // `current_exe` is e.g. `target/debug/deps/integration-<hash>`.
+    // Two ancestors up gets us to `target/debug/`, then `examples/`.
+    let profile_dir = my_path
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile>/deps ancestors");
+    let examples_dir = profile_dir.join("examples");
     let prefix = "fake_guest";
-    let mut found: Option<PathBuf> = None;
-    let entries = std::fs::read_dir(my_dir).expect("read deps dir");
-    for entry in entries {
-        let entry = entry.expect("dir entry");
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        // Match `fake_guest-<hash>` and `fake_guest-<hash>.exe`; skip
-        // `fake_guest-<hash>.d` (dep-info, not an executable).
-        if !name.starts_with(prefix) {
-            continue;
-        }
-        let after = &name[prefix.len()..];
-        if !after.starts_with('-') {
-            continue;
-        }
-        let metadata = entry.metadata().expect("metadata");
-        // Executable bit set, regular file.
-        if metadata.is_file() && (metadata.mode() & 0o111) != 0 {
-            found = Some(entry.path());
-            break;
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&examples_dir) {
+        for entry in entries {
+            let entry = entry.expect("dir entry");
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Match `fake_guest`, `fake_guest-<hash>`, `fake_guest-<hash>.exe`;
+            // skip `fake_guest-<hash>.d` (dep-info, not an executable).
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            let after = &name[prefix.len()..];
+            if !after.is_empty() && !after.starts_with('-') {
+                continue;
+            }
+            let metadata = entry.metadata().expect("metadata");
+            if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
+                continue;
+            }
+            let modified = metadata.modified().expect("mtime");
+            candidates.push((modified, entry.path()));
         }
     }
-    found.unwrap_or_else(|| {
-        panic!(
-            "fake_guest executable not found in {}; \
-             run `cargo build --test fake_guest` (or a full `cargo test`) \
-             to produce it before invoking filtered single-target runs",
-            my_dir.display()
-        )
-    })
+    // Newest first.
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.0));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, p)| p)
+        .unwrap_or_else(|| {
+            panic!(
+                "fake_guest executable not found in {}; \
+                 run `cargo build --example fake_guest` (or a full `cargo test`) \
+                 to produce it before invoking filtered single-target runs",
+                examples_dir.display()
+            )
+        })
 }
 
 /// Tight deadlines so the test surface stays bounded; the peer faults
