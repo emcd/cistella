@@ -9,6 +9,7 @@ pub mod cli;
 pub mod error;
 pub mod framework;
 pub mod identity;
+pub mod isolators;
 pub mod lock;
 pub mod mount;
 pub mod preflight;

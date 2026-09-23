@@ -13,6 +13,8 @@ mod environment_acceptances;
 mod framework_contract;
 #[path = "unit/identity.rs"]
 mod identity;
+#[path = "unit/isolator_trait.rs"]
+mod isolator_trait;
 #[path = "unit/mount.rs"]
 mod mount;
 #[path = "unit/prepare.rs"]

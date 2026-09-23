@@ -1,38 +1,22 @@
 //! Cistella CLI entry point.
 
-use std::os::unix::process::CommandExt;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use cistella::cli::{Cli, Command};
+use cistella::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
+use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use cistella::framework::signals;
+use cistella::isolators::podman::PodmanIsolator;
 use cistella::mount::{MountMode, MountTriple, podman_volume_args};
 use cistella::profile::Profile;
 use cistella::registry::{filter_records, list_sessions, resolve_exact};
-use cistella::runtime::{
-    gc_exited, generate_quadlet_unit, install_quadlet, logs_container, resolve_image_digest,
-    start_quadlet, teardown,
-};
+use cistella::runtime::{gc_exited, logs_container, resolve_image_digest};
 use cistella::session::{Session, mint_session_id, parse_cli_label};
 use clap::Parser;
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
-use nix::sys::wait::{WaitPidFlag, WaitStatus};
-
-/// Set when `conduct` receives `SIGHUP`.
-static GOT_HUP: AtomicBool = AtomicBool::new(false);
-/// Set when `conduct` receives `SIGTERM`.
-static GOT_TERM: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_conduct_signal(signal: nix::libc::c_int) {
-    if signal == nix::libc::SIGHUP {
-        GOT_HUP.store(true, Ordering::SeqCst);
-    } else if signal == nix::libc::SIGTERM {
-        GOT_TERM.store(true, Ordering::SeqCst);
-    }
-}
 
 fn main() -> std::process::ExitCode {
     // Standard CLI hygiene: Rust ignores SIGPIPE by default, which turns
     // `cistella inspect | head -1` into a panic instead of a quiet exit.
     unsafe {
+        use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
         let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
         let _ = sigaction(Signal::SIGPIPE, &action);
     }
@@ -147,7 +131,12 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             // half-installed unit and reap a session being born.
             let _guard = cistella::lock::LockGuard::acquire()?;
             let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
-            cistella::runtime::teardown_inner(&record.container_name, &record.id)?;
+            let isolator = PodmanIsolator::new();
+            let handle = isolator.adopt(&record.container_name, &record.id);
+            let key = ReconciliationKey::generate();
+            let grace = Deadlines::default().terminate_grace;
+            isolator.terminate(&handle, grace, &key)?;
+            isolator.remove(&handle, &key)?;
             println!("terminate {}", record.container_name);
             Ok(())
         }
@@ -392,59 +381,61 @@ fn conduct_session(
             merged_labels.push((k.clone(), v.clone()));
         }
     }
-    let unit = generate_quadlet_unit(&session, &all_volumes, &env_extra, &merged_labels)?;
-    let unit_name = session.quadlet_unit_name();
     let container_name = session.container_name();
+    let isolator = PodmanIsolator::new();
+    let key = ReconciliationKey::generate();
+    let grace = Deadlines::default().terminate_grace;
     // Trap SIGHUP/SIGTERM before the lock or any residue exists, so a
     // signal during startup tears down instead of killing us by default.
-    install_conduct_handlers();
+    signals::install_conduct_handlers();
     // Creation window: lock BEFORE any unit-file or scratch creation,
     // hold through install -> start, then release before exec.
     let guard = cistella::lock::LockGuard::acquire()?;
-    if let Some(signum) = pending_signal() {
+    if let Some(signum) = signals::pending_signal() {
         drop(guard);
         std::process::exit(128 + signum);
     }
-    let scratch_path = cistella::lock::scratch_dir(&id);
-    if let Err(e) = std::fs::create_dir_all(&scratch_path)
-        .map_err(|e| CistellaError::Runtime(format!("create scratch: {e}")))
-    {
-        drop(guard);
-        return Err(e);
-    }
-    if let Some(signum) = pending_signal() {
-        drop(guard);
-        abort_startup(&container_name, &id, signum, false);
-    }
-    if let Err(e) = install_quadlet(&unit_name, &unit) {
-        drop(guard);
-        // Every failure past install runs teardown so no residue remains;
-        // a teardown failure with residue left behind dominates the report.
-        if let Err(teardown_err) = teardown(&container_name, &id)
-            && !cistella::runtime::residue_gone(&container_name, &id)
-        {
-            return Err(teardown_err);
+    // Isolator create installs the unit file and scratch together; on
+    // failure the shared teardown converges any installed residue (a
+    // failed daemon-reload leaves a unit file behind).
+    let spec = CreateSpec {
+        session: session.clone(),
+        volumes: all_volumes.clone(),
+        env: env_extra,
+        labels: merged_labels,
+    };
+    let unit = match isolator.create(&spec, &key) {
+        Ok(handle) => handle,
+        Err(e) => {
+            drop(guard);
+            // Every failure past install runs teardown so no residue remains;
+            // a teardown failure with residue left behind dominates the report.
+            if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
+                && !cistella::runtime::residue_gone(&container_name, &id)
+            {
+                return Err(teardown_err);
+            }
+            return Err(e);
         }
-        return Err(e);
-    }
-    if let Some(signum) = pending_signal() {
+    };
+    if let Some(signum) = signals::pending_signal() {
         drop(guard);
-        abort_startup(&container_name, &id, signum, true);
+        abort_startup(&isolator, Some(&unit), &container_name, &id, signum);
     }
     // Test-hook stall between install and start: a deterministic window for
     // signal-during-startup regression, polling so signals abort promptly.
     let delay = start_delay_ms();
     let waited = std::time::Instant::now();
     while waited.elapsed() < std::time::Duration::from_millis(delay) {
-        if let Some(signum) = pending_signal() {
+        if let Some(signum) = signals::pending_signal() {
             drop(guard);
-            abort_startup(&container_name, &id, signum, true);
+            abort_startup(&isolator, Some(&unit), &container_name, &id, signum);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    if let Err(e) = start_quadlet(&unit_name) {
+    if let Err(e) = isolator.initiate(&unit, &key) {
         drop(guard);
-        if let Err(teardown_err) = teardown(&container_name, &id)
+        if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
             && !cistella::runtime::residue_gone(&container_name, &id)
         {
             return Err(teardown_err);
@@ -469,7 +460,9 @@ fn conduct_session(
         &volume_targets,
         prof.home(),
     ) {
-        let teardown_result = cistella::runtime::teardown_inner(&container_name, &id);
+        let teardown_result = isolator
+            .terminate(&unit, grace, &key)
+            .and_then(|_| isolator.remove(&unit, &key));
         let residue_ok = cistella::runtime::residue_gone(&container_name, &id);
         drop(guard);
         if let Err(teardown_err) = teardown_result
@@ -479,62 +472,49 @@ fn conduct_session(
         }
         return Err(e);
     }
-    if let Some(signum) = pending_signal() {
+    if let Some(signum) = signals::pending_signal() {
         drop(guard);
-        abort_startup(&container_name, &id, signum, true);
+        abort_startup(&isolator, Some(&unit), &container_name, &id, signum);
     }
     drop(guard);
     println!("conduct {id}");
-    // Own the harness lifetime on the pane PTY; traps SIGHUP/SIGTERM.
+    // Own the harness lifetime on the pane PTY; launch never blocks for
+    // completion and the await redeems the outcome. Cancellation kills
+    // (pre-existing conduct semantics); the detach-without-killing
+    // distinction is protocol-level (task 2.1).
     // The session runs in its worktree target (validated absolute above).
-    let status = exec_harness(&container_name, &argv, &worktree_target);
+    let status = match isolator.execute_launch(
+        &unit,
+        &argv,
+        Some(&worktree_target),
+        StdioBinding::Inherit,
+        &key,
+    ) {
+        Ok(execution) => match isolator.await_result(&execution, signals::conduct_cancel()) {
+            Ok(outcome) => outcome,
+            Err(_) => ExecutionOutcome::Exited(1),
+        },
+        Err(_) => ExecutionOutcome::Exited(1),
+    };
     // Shared teardown converges with `terminate` from another pane: the
-    // unit may already be gone, which teardown tolerates via not-found.
-    // A real teardown failure (residue remains) fails the invocation even
-    // when the harness succeeded, naming the harness disposition.
-    if let Err(teardown_err) = teardown(&container_name, &id)
+    // unit may already be gone, which idempotent terminate/remove
+    // tolerate via not-found. A real teardown failure (residue remains)
+    // fails the invocation even when the harness succeeded, naming the
+    // harness disposition.
+    let teardown_result = isolator
+        .terminate(&unit, grace, &key)
+        .and_then(|_| isolator.remove(&unit, &key));
+    if let Err(teardown_err) = teardown_result
         && !cistella::runtime::residue_gone(&container_name, &id)
     {
         let harness_note = match &status {
-            HarnessEnd::Signaled(signum) => format!("harness signaled 128+{signum}"),
-            HarnessEnd::Exited(code) => format!("harness exited {code}"),
+            ExecutionOutcome::Signaled(signum) => format!("harness signaled 128+{signum}"),
+            ExecutionOutcome::Exited(code) => format!("harness exited {code}"),
         };
         eprintln!("error: teardown after {harness_note}: {teardown_err}");
         std::process::exit(1);
     }
-    match status {
-        HarnessEnd::Signaled(signum) => std::process::exit(128 + signum),
-        HarnessEnd::Exited(code) => std::process::exit(code),
-    }
-}
-
-/// Installs the conduct-level SIGHUP/SIGTERM traps (flag-only handlers).
-///
-/// Called at the top of `conduct_session`, before the lock is acquired or
-/// any residue is created, so a signal during startup tears down instead of
-/// taking the default action. The harnessed child resets to default in
-/// `pre_exec` so it still dies with the pane.
-fn install_conduct_handlers() {
-    unsafe {
-        let action = SigAction::new(
-            SigHandler::Handler(on_conduct_signal),
-            SaFlags::empty(),
-            SigSet::empty(),
-        );
-        let _ = sigaction(Signal::SIGHUP, &action);
-        let _ = sigaction(Signal::SIGTERM, &action);
-    }
-}
-
-/// Returns the pending conduct-level signal, if SIGHUP/SIGTERM arrived.
-fn pending_signal() -> Option<i32> {
-    if GOT_HUP.load(Ordering::SeqCst) {
-        Some(1)
-    } else if GOT_TERM.load(Ordering::SeqCst) {
-        Some(15)
-    } else {
-        None
-    }
+    std::process::exit(status.exit_code());
 }
 
 /// Test hook: milliseconds to stall between install and start, polling for
@@ -546,13 +526,23 @@ fn start_delay_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Aborts a startup after a signal: cleans installed residue and exits
-/// 128+signal. The creation-window guard must already be dropped (teardown
-/// acquires the lock itself). Cleanup is verified: residue left behind
-/// fails the invocation (exit 1) instead of reporting a clean signal exit.
-fn abort_startup(container_name: &str, session_id: &str, signum: i32, installed: bool) -> ! {
-    if installed {
-        let _ = teardown(container_name, session_id);
+/// Aborts a startup after a signal: converges installed residue and exits
+/// 128+signal. The creation-window guard must already be dropped (the
+/// isolator methods used here assume the caller held it where the moved
+/// mechanics did). Cleanup is verified: residue left behind fails the
+/// invocation (exit 1) instead of reporting a clean signal exit.
+fn abort_startup(
+    isolator: &PodmanIsolator,
+    handle: Option<&UnitHandle>,
+    container_name: &str,
+    session_id: &str,
+    signum: i32,
+) -> ! {
+    if let Some(unit) = handle {
+        let key = ReconciliationKey::generate();
+        let grace = Deadlines::default().terminate_grace;
+        let _ = isolator.terminate(unit, grace, &key);
+        let _ = isolator.remove(unit, &key);
     } else if let Err(e) = cistella::runtime::remove_scratch(session_id) {
         eprintln!("error: startup abort cleanup: {e}");
     }
@@ -561,104 +551,4 @@ fn abort_startup(container_name: &str, session_id: &str, signum: i32, installed:
         std::process::exit(1);
     }
     std::process::exit(128 + signum);
-}
-
-/// How the harnessed `podman exec` child ended.
-enum HarnessEnd {
-    /// Harness exited with a status code.
-    Exited(i32),
-    /// `conduct` itself was signaled while attached.
-    Signaled(i32),
-}
-
-/// Runs `podman exec -i -t` with stdio inherited, polling for the child
-/// while honoring `SIGHUP`/`SIGTERM` to this process.
-///
-/// Conduct-level traps must already be installed by the caller
-/// (`conduct_session` installs before any residue exists); the child
-/// resets to default in `pre_exec` so it still dies with the pane.
-fn exec_harness(container: &str, argv: &[String], workdir: &str) -> HarnessEnd {
-    let args = cistella::transport::exec_harness_args(container, workdir, argv);
-    let mut child = match unsafe {
-        std::process::Command::new("podman")
-            .args(&args)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .pre_exec(|| {
-                let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-                let _ = sigaction(Signal::SIGHUP, &dfl);
-                let _ = sigaction(Signal::SIGTERM, &dfl);
-                Ok(())
-            })
-            .spawn()
-    } {
-        Ok(child) => child,
-        Err(_) => return HarnessEnd::Exited(1),
-    };
-    let pid = nix::unistd::Pid::from_raw(child.id() as i32);
-    loop {
-        match nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-            Ok(WaitStatus::StillAlive) => {}
-            Ok(WaitStatus::Exited(_, code)) => {
-                return signal_or_exit(code);
-            }
-            Ok(WaitStatus::Signaled(_, signal, _)) => {
-                return HarnessEnd::Exited(128 + signal as i32);
-            }
-            Ok(_) => {}
-            Err(nix::errno::Errno::ECHILD) => {
-                // Reaped elsewhere; fall back to blocking wait on the handle.
-                return match child.wait() {
-                    Ok(status) => {
-                        use std::os::unix::process::ExitStatusExt;
-                        if let Some(signal) = status.signal() {
-                            HarnessEnd::Exited(128 + signal)
-                        } else {
-                            signal_or_exit(status.code().unwrap_or(1))
-                        }
-                    }
-                    Err(_) => HarnessEnd::Exited(1),
-                };
-            }
-            Err(_) => {}
-        }
-        if GOT_HUP.load(Ordering::SeqCst) {
-            let _ = nix::sys::signal::kill(pid, Signal::SIGTERM);
-            // Give the child a moment, then escalate and report 128+SIGHUP.
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            match nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-                Ok(WaitStatus::StillAlive) => {
-                    let _ = nix::sys::signal::kill(pid, Signal::SIGKILL);
-                    let _ = nix::sys::wait::waitpid(pid, None);
-                    return HarnessEnd::Signaled(1);
-                }
-                _ => return HarnessEnd::Signaled(1),
-            }
-        }
-        if GOT_TERM.load(Ordering::SeqCst) {
-            let _ = nix::sys::signal::kill(pid, Signal::SIGTERM);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            match nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-                Ok(WaitStatus::StillAlive) => {
-                    let _ = nix::sys::signal::kill(pid, Signal::SIGKILL);
-                    let _ = nix::sys::wait::waitpid(pid, None);
-                    return HarnessEnd::Signaled(15);
-                }
-                _ => return HarnessEnd::Signaled(15),
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
-
-/// Prefers the conduct-level signal disposition over the harness status.
-fn signal_or_exit(code: i32) -> HarnessEnd {
-    if GOT_HUP.load(Ordering::SeqCst) {
-        HarnessEnd::Signaled(1)
-    } else if GOT_TERM.load(Ordering::SeqCst) {
-        HarnessEnd::Signaled(15)
-    } else {
-        HarnessEnd::Exited(code)
-    }
 }

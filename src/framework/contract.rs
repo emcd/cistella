@@ -19,6 +19,7 @@
 //! function. Nothing here touches units, mounts, files, or containers.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -411,6 +412,15 @@ pub enum LifecycleState {
 pub struct UnitHandle(String);
 
 impl UnitHandle {
+    /// Mints a framework-issued handle.
+    ///
+    /// Backends mint at `create` (and `adopt`); callers and guests
+    /// treat handles as opaque and never construct them to name a
+    /// unit they did not create.
+    pub fn mint() -> Self {
+        Self(mint_session_id())
+    }
+
     /// Opaque identifier for wire envelopes.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -426,6 +436,15 @@ impl UnitHandle {
 pub struct ExecutionHandle(String);
 
 impl ExecutionHandle {
+    /// Mints a framework-issued handle.
+    ///
+    /// Backends mint at `execute_launch`; callers treat handles as
+    /// opaque and never construct them to redeem an execution they
+    /// did not launch.
+    pub fn mint() -> Self {
+        Self(mint_session_id())
+    }
+
     /// Opaque identifier for wire envelopes.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -523,6 +542,45 @@ impl BaselineBinding {
             }
         }
         Ok(())
+    }
+}
+
+/// Framework-owned cancellation flag with signal provenance.
+///
+/// Conduct-level traps record the signal number here; `await_result`
+/// polls it instead of touching process globals, so fakes and tests
+/// drive cancellation without signals. `0` means not cancelled.
+#[derive(Debug, Default)]
+pub struct CancelFlag {
+    signum: AtomicI32,
+}
+
+impl CancelFlag {
+    /// Fresh uncancelled flag (const so process-wide statics can hold one).
+    pub(crate) const fn new() -> Self {
+        Self {
+            signum: AtomicI32::new(0),
+        }
+    }
+
+    /// Cancels with the given signal number (e.g. `1`/`15`).
+    pub fn cancel_with(&self, signum: i32) {
+        self.signum.store(signum, Ordering::SeqCst);
+    }
+
+    /// True once cancelled.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.signum.load(Ordering::SeqCst) != 0
+    }
+
+    /// Pending signal number, if cancelled.
+    #[must_use]
+    pub fn signum(&self) -> Option<i32> {
+        match self.signum.load(Ordering::SeqCst) {
+            0 => None,
+            signum => Some(signum),
+        }
     }
 }
 

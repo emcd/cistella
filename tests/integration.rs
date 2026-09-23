@@ -1,5 +1,7 @@
 //! Integration tests entry point.
 
+#[path = "integration/conformance.rs"]
+mod conformance;
 #[path = "integration/helpers.rs"]
 mod helpers;
 #[path = "integration/labels.rs"]
