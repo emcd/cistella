@@ -27,6 +27,17 @@ path = "src/lib.rs"
 name = "cistella"
 path = "src/main.rs"
 
+# Conformance harness: deterministic protocol peer (task 3.1,
+# `framework-isolators-extensions`). Lives under `examples/` so
+# Cargo autodiscovers it as an example target — examples are
+# never probed as tests by `cargo nextest run` (which broke the
+# `[[test]] harness=false` shape via `--list` exit 2 on clap-derived
+# argv), are built to `target/<profile>/examples/`, and stay out
+# of `package.include` either way. Access from other test binaries
+# via glob in `target/<profile>/examples/` — `CARGO_BIN_EXE_fake_guest`
+# is NOT set in sibling test binaries.
+# (Cargo discovers the example automatically; no [[example]] block needed.)
+
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
