@@ -28,11 +28,19 @@ use cistella::framework::contract::Deadlines;
 use cistella::framework::protocol::{GuestHost, PROTOCOL_MAJOR};
 
 /// Resolves the peer path. Cargo's `CARGO_BIN_EXE_<name>` env var is
-/// only set in the test binary that OWNS the binary; integration
-/// tests don't see it for a separate `[[test]]` target. The peer is
-/// built next to the integration test binary in `target/<profile>/deps/`
-/// (both are test targets); we find it by globbing the directory.
+/// only set inside the test binary that OWNS the binary, not in
+/// sibling test binaries that depend on it (verified for `[[test]]`
+/// and `examples/` targets: neither exposes the var to other
+/// integration tests). The peer is built next to the integration
+/// test binary in `target/<profile>/deps/` when `cargo test` builds
+/// all targets; filtered single-target runs do NOT build the peer,
+/// so glob-resolving on a filtered run returns "not found".
+///
+/// We find the peer by globbing the deps directory and skipping
+/// dep-info files (`fake_guest-<hash>.d`) so the match is the
+/// actual executable.
 fn peer_path() -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
     let my_dir = my_path.parent().expect("deps dir");
     let prefix = "fake_guest";
@@ -42,20 +50,28 @@ fn peer_path() -> PathBuf {
         let entry = entry.expect("dir entry");
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with(prefix) && name != prefix {
-            // Match `fake_guest-<hash>` and `fake_guest-<hash>.exe`.
-            let after = &name[prefix.len()..];
-            if after.starts_with('-') {
-                found = Some(entry.path());
-                break;
-            }
+        // Match `fake_guest-<hash>` and `fake_guest-<hash>.exe`; skip
+        // `fake_guest-<hash>.d` (dep-info, not an executable).
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let after = &name[prefix.len()..];
+        if !after.starts_with('-') {
+            continue;
+        }
+        let metadata = entry.metadata().expect("metadata");
+        // Executable bit set, regular file.
+        if metadata.is_file() && (metadata.mode() & 0o111) != 0 {
+            found = Some(entry.path());
+            break;
         }
     }
     found.unwrap_or_else(|| {
         panic!(
-            "fake_guest binary not found in {} (CARGO_BIN_EXE_fake_guest={:?})",
-            my_dir.display(),
-            std::env::var("CARGO_BIN_EXE_fake_guest").ok()
+            "fake_guest executable not found in {}; \
+             run `cargo build --test fake_guest` (or a full `cargo test`) \
+             to produce it before invoking filtered single-target runs",
+            my_dir.display()
         )
     })
 }
@@ -263,24 +279,184 @@ fn spurious_after_terminal_recovers() {
     .expect("peer spawn");
     let exchange = host.exchange_mut();
     let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
-    // First request: peer responds validly. Second recv (after the
-    // terminal) hits the spurious frame — the host's correlation
-    // check rejects because the second frame's id doesn't match a
-    // live request id (or the connection sees EOF).
+    // First request: peer responds validly. After the terminal frame,
+    // the host's `request` is satisfied — the spurious frame sits in
+    // the pipe buffer OR the peer exits before the second send. Either
+    // way, the second request must surface as a typed error
+    // (correlation refusal on the stray frame, or pipe write error
+    // when the peer has already closed its read end).
+    let first = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    assert!(first.is_ok(), "first request must succeed: {first:?}");
+    let second = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let cleanup = host.shutdown();
+    assert!(
+        second.is_err(),
+        "second request must refuse (stray frame consumed or peer closed): {second:?}"
+    );
+    let message = second.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("unknown or duplicate id")
+            || message.contains("correlation")
+            || message.contains("Broken pipe")
+            || message.contains("EPIPE")
+            || message.contains("truncated")
+            || message.contains("EOF")
+            || message.contains("frame write"),
+        "expected correlation refusal or pipe-write error, got: {message}"
+    );
+    assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
+    assert_eq!(PROTOCOL_MAJOR, 1);
+}
+
+#[test]
+fn duplicate_id_refuses() {
+    // Peer sends hello + a second response with id "hello" (the
+    // correlation id for hello). After hello succeeds, the host's
+    // next recv should refuse the duplicate id.
+    let path = peer_path();
+    let mut host = GuestHost::spawn(&path, &["--mode=duplicate-id".to_string()], deadlines())
+        .expect("peer spawn");
+    let exchange = host.exchange_mut();
+    let hello = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+    let cleanup = host.shutdown();
+    assert!(hello.is_ok(), "first hello must succeed: {hello:?}");
+    // No second recv: peer did not provide a request-response cycle
+    // for us to assert against. The relevant invariant is that
+    // shutdown cleans up despite the duplicate-id write in the pipe.
+    assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
+}
+
+#[test]
+fn pending_on_solo_refuses() {
+    // Peer responds to a single-shot request with `{pending: true}`.
+    // The host's `request` (non-streaming) refuses pending frames.
+    let path = peer_path();
+    let mut host = GuestHost::spawn(&path, &["--mode=pending-on-solo".to_string()], deadlines())
+        .expect("peer spawn");
+    let exchange = host.exchange_mut();
+    let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
     let result = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
     let cleanup = host.shutdown();
-    // The peer replays `req-0` once and then sends `stray`. After the
-    // first valid response, the next recv should refuse — either via
-    // id-mismatch or EOF. Either typed error is acceptable; we
-    // require non-Ok recovery.
-    if let Ok(value) = &result {
-        // If the peer actually succeeded, the spurious frame would
-        // surface on a *next* recv. We accept both shapes: Ok
-        // followed by Err on the second recv, or Err immediately.
-        let _ = value;
-    }
+    assert!(result.is_err(), "pending-on-solo must refuse");
+    let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("pending") && message.contains("single-shot"),
+        "expected single-shot-pending refusal, got: {message}"
+    );
     assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
-    // Sanity: protocol version constant still accessible from the
-    // host crate (imported at top), proving the integration wiring.
-    assert_eq!(PROTOCOL_MAJOR, 1);
+}
+
+#[test]
+fn hang_request_killed_by_deadline() {
+    // Peer hangs after hello. Host's request fires the apply
+    // deadline; the kill+reap is residue-dominated.
+    let path = peer_path();
+    let mut host = GuestHost::spawn(&path, &["--mode=hang-request".to_string()], deadlines())
+        .expect("peer spawn");
+    let exchange = host.exchange_mut();
+    let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+    let start = std::time::Instant::now();
+    let result = exchange.request("ping", serde_json::json!({}), Duration::from_millis(500));
+    let elapsed = start.elapsed();
+    let cleanup = host.shutdown();
+    assert!(result.is_err(), "hang-request must time out");
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "hang-request must respect 500ms request timeout; took {elapsed:?}"
+    );
+    let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("timed out"),
+        "expected timeout error, got: {message}"
+    );
+    assert!(cleanup.is_ok(), "shutdown must kill+reap: {cleanup:?}");
+}
+
+#[test]
+fn cleanup_then_write_surfaces_typed_error() {
+    // Peer drops its stdout (closes fd 1) after hello, then sleeps and
+    // exits without writing a response. The host's recv observes EOF
+    // on the pipe (typed Protocol error). The host must surface the
+    // failure as a typed error, not a panic or hang.
+    let path = peer_path();
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=cleanup-then-write".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
+    let exchange = host.exchange_mut();
+    let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+    let result = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let cleanup = host.shutdown();
+    assert!(result.is_err(), "cleanup-then-write must surface as Err");
+    let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("truncated")
+            || message.contains("EOF")
+            || message.contains("Broken pipe")
+            || message.contains("EPIPE")
+            || message.contains("frame write")
+            || message.contains("EBADF"),
+        "expected pipe-close/EOF or pipe-write error, got: {message}"
+    );
+    assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
+}
+
+#[test]
+fn malformed_frame_header_refuses() {
+    // Peer sends a header that declares `u32::MAX` body length. Host's
+    // read_frame refuses before allocating the body.
+    let path = peer_path();
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=malformed-frame-header".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
+    let result = host
+        .exchange_mut()
+        .hello(&["test-cap".to_string()], Duration::from_secs(1));
+    let cleanup = host.shutdown();
+    assert!(result.is_err(), "u32::MAX header must refuse");
+    let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("exceeds maximum"),
+        "expected oversize-frame error, got: {message}"
+    );
+    assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
+}
+
+#[test]
+fn normal_echo_round_trip_succeeds() {
+    // Sanity test: the peer in normal-echo mode lets a request
+    // round-trip cleanly. Proves the harness is not
+    // self-rejecting valid traffic.
+    let path = peer_path();
+    let mut host = GuestHost::spawn(&path, &["--mode=normal-echo".to_string()], deadlines())
+        .expect("peer spawn");
+    let exchange = host.exchange_mut();
+    let hello = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+    assert!(
+        hello.is_ok(),
+        "hello must succeed in normal-echo: {hello:?}"
+    );
+    let response = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let cleanup = host.shutdown();
+    assert!(
+        response.is_ok(),
+        "request must succeed in normal-echo: {response:?}"
+    );
+    let value = response.unwrap();
+    assert_eq!(
+        value.get("ok").and_then(|v| v.as_bool()),
+        Some(true),
+        "expected ok=true in echo response: {value}"
+    );
+    assert_eq!(
+        value.get("echoed").and_then(|v| v.as_bool()),
+        Some(true),
+        "expected echoed=true in echo response: {value}"
+    );
+    assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
 }

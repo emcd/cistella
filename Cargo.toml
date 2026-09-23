@@ -32,6 +32,16 @@ path = "src/main.rs"
 # `tests/` so it stays out of `package.include` (`/src/**` is the
 # published surface; `tests/**` is not). Access from other tests via
 # `std::env::var("CARGO_BIN_EXE_fake_guest")` at runtime.
+# Test-auxiliary target: deterministic protocol peer for the conformance
+# harness (task 3.1, `framework-isolators-extensions`). Lives under
+# `tests/` so it stays out of `package.include` (`/src/**` is the
+# published surface; `tests/**` is not). `harness = false` is required
+# because Cargo's test harness replaces `fn main()` with its own
+# runner, and the peer needs to read `--mode=...` from argv as a
+# regular executable. Access from other test binaries via glob in
+# `target/<profile>/deps/` — `CARGO_BIN_EXE_fake_guest` is NOT set in
+# sibling test binaries (only the binary that OWNS the `[[test]]`
+# target sees it).
 [[test]]
 name = "fake_guest"
 path = "tests/fixtures/fake_guest.rs"

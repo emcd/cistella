@@ -37,7 +37,6 @@
 //! peer never ships to crates.io.
 
 use std::io::{Read, Write};
-use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -46,8 +45,7 @@ use serde_json::{Value, json};
 const PROTOCOL_MAJOR: u32 = 1;
 
 fn read_arg_mode() -> String {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
+    for arg in std::env::args().skip(1) {
         if let Some(value) = arg.strip_prefix("--mode=") {
             return value.to_string();
         }
@@ -77,6 +75,20 @@ fn write_frame<W: Write>(stdout: &mut W, payload: &[u8], max_frame: usize) -> st
 
 fn read_exact<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<()> {
     reader.read_exact(buf)
+}
+
+/// Reads one length-prefixed frame from stdin (header + body). Returns
+/// the body bytes when the host's wire shape is correct, or `Err` when
+/// the pipe is shorter than the declared length (host closed early or
+/// wire shape is malformed). Used by fault modes that need to keep
+/// stdin byte-aligned with the host's send/recv cadence.
+fn read_frame_from_stdin<R: Read>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+    let mut header = [0u8; HEADER_LEN];
+    read_exact(reader, &mut header)?;
+    let len = u32::from_be_bytes(header) as usize;
+    let mut body = vec![0u8; len];
+    read_exact(reader, &mut body)?;
+    Ok(body)
 }
 
 fn hello_response_ok() -> Value {
@@ -131,6 +143,7 @@ mod libc {
     use std::ffi::c_void;
     unsafe extern "C" {
         pub unsafe fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
+        pub unsafe fn close(fd: i32) -> i32;
     }
 }
 fn main() -> ExitCode {
@@ -205,9 +218,7 @@ fn main() -> ExitCode {
             let _ = stdout_lock.flush();
             ExitCode::SUCCESS
         }
-        "unknown-fields" => {
-            return hello_response_unknown_field();
-        }
+        "unknown-fields" => hello_response_unknown_field(),
         "duplicate-id" => {
             let mut header = [0u8; 4];
             let _ = read_exact(&mut stdin_lock, &mut header);
@@ -226,13 +237,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "pending-on-solo" => {
-            let mut header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut header);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // Read the host's first request frame...
-            let mut req_header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut req_header);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             // ...then reply with `{pending: true}` on what should be a solo exchange.
             let body2 = serde_json::to_vec(&json!({
                 "protocol": PROTOCOL_MAJOR,
@@ -253,8 +262,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "hang-request" => {
-            let mut header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut header);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // After hello, sleep before responding to any request.
@@ -275,13 +283,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "spurious-after-terminal" => {
-            let mut header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut header);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // Read the host's request frame...
-            let mut req_header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut req_header);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             // ...reply validly...
             let body2 = serde_json::to_vec(&json!({
                 "protocol": PROTOCOL_MAJOR,
@@ -303,29 +309,22 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "cleanup-then-write" => {
-            let mut header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut header);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
-            // Read the host's request, then drop stdout and try a write.
-            let mut req_header = [0u8; 4];
-            let _ = read_exact(&mut stdin_lock, &mut req_header);
-            let raw_fd = stdout_lock.as_raw_fd();
+            // Read the host's request, then close fd 1 entirely so any
+            // subsequent write fails with EBADF. The host's recv sees
+            // EOF on the pipe and surfaces a typed Protocol error.
+            let _ = read_frame_from_stdin(&mut stdin_lock);
             drop(stdout_lock);
-            // Reopen stdout briefly — write fails (EPIPE / EBADF depending on close path).
-            // The host must observe this as a typed error, not a SIGPIPE.
-            let mut reopened = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-            let body2 = serde_json::to_vec(&json!({
-                "protocol": PROTOCOL_MAJOR,
-                "id": "req-0",
-                "op": "ping",
-                "payload": {"ok": true}
-            }))
-            .expect("serialize");
-            let header = (body2.len() as u32).to_be_bytes();
-            let _ = reopened.write_all(&header);
-            let _ = reopened.write_all(&body2);
-            let _ = reopened.flush();
+            // SAFETY: closing fd 1 (stdout) is intentional fault
+            // injection. After this, any write to fd 1 returns EBADF.
+            // The peer's main returns immediately and the process
+            // exits, so fd 1 stays closed for the remainder of the
+            // pipe lifetime. Bounded to this arm.
+            let close_result = unsafe { libc::close(1) };
+            eprintln!("DEBUG: libc::close(1) returned {close_result}");
+            std::thread::sleep(Duration::from_millis(100));
             ExitCode::SUCCESS
         }
         "stderr-fill" => {
@@ -340,10 +339,9 @@ fn main() -> ExitCode {
             let _ = handle.flush();
             ExitCode::SUCCESS
         }
-        "normal-echo" | _ => {
+        "normal-echo" => {
             // Default: hello + echo one request frame as a response.
-            let mut header = [0u8; 4];
-            if read_exact(&mut stdin_lock, &mut header).is_err() {
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
                 return protocol_error_exit();
             }
             let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
@@ -351,15 +349,10 @@ fn main() -> ExitCode {
                 return protocol_error_exit();
             }
             // Echo the next request frame back as a valid response.
-            let mut req_header = [0u8; 4];
-            if read_exact(&mut stdin_lock, &mut req_header).is_err() {
-                return protocol_error_exit();
-            }
-            let req_len = u32::from_be_bytes(req_header) as usize;
-            let mut req_body = vec![0u8; req_len];
-            if read_exact(&mut stdin_lock, &mut req_body).is_err() {
-                return protocol_error_exit();
-            }
+            let req_body = match read_frame_from_stdin(&mut stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return protocol_error_exit(),
+            };
             // Parse and respond with the same id/op.
             if let Ok(envelope) = serde_json::from_slice::<Value>(&req_body) {
                 let id = envelope.get("id").cloned().unwrap_or(json!("req-0"));
@@ -373,6 +366,19 @@ fn main() -> ExitCode {
                 let body = serde_json::to_vec(&response).expect("serialize");
                 let _ = write_frame(&mut stdout_lock, &body, 64 * 1024);
             }
+            ExitCode::SUCCESS
+        }
+        _ => {
+            // Unknown mode falls back to `normal-echo` behavior —
+            // the host treats the peer as untrusted input and any
+            // deviation from the negotiated protocol must surface
+            // as a typed error rather than a silent success.
+            let mut header = [0u8; 4];
+            if read_exact(&mut stdin_lock, &mut header).is_err() {
+                return protocol_error_exit();
+            }
+            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             ExitCode::SUCCESS
         }
     }
