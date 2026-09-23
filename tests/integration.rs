@@ -6,6 +6,8 @@ mod conformance;
 mod helpers;
 #[path = "integration/labels.rs"]
 mod labels;
+#[path = "integration/landlock_spike.rs"]
+mod landlock_spike;
 #[path = "integration/lifecycle.rs"]
 mod lifecycle;
 #[path = "integration/mountprep.rs"]
