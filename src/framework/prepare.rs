@@ -25,6 +25,7 @@ use crate::framework::contract::{
     Capability, CapabilitySet, EnvContribution, GuestHookRequest, MountContribution, MountMode,
     MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
 };
+use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
 use crate::framework::policy::PolicySet;
 use crate::framework::protocol::Exchange;
 
@@ -67,19 +68,25 @@ struct PrepareResponse {
     /// Guest-hook requests (default empty).
     #[serde(default)]
     guest_hooks: Vec<GuestHookRequest>,
+    /// Credential handles, variants only, never values (default empty).
+    #[serde(default)]
+    credentials: Vec<CredentialHandle>,
 }
 
 /// Evaluated plan: merged contributions plus claim diagnostics.
 ///
 /// `diagnostics` records discarded weakenings (name-only); the merged
 /// plan is whole or the transaction refused — partial application
-/// never occurs.
+/// never occurs. Admitted credential handles ride alongside for the
+/// dogfood gate to consume.
 #[derive(Debug, Clone)]
 pub struct EvaluatedPlan {
     /// Centrally merged, policy-admitted plan.
     pub merged: crate::framework::contract::MergedPlan,
     /// Weakening-discard notes from claim partition.
     pub diagnostics: Vec<String>,
+    /// Admitted credential handles (kinds + locator classes only).
+    pub credentials: Vec<AdmittedCredential>,
 }
 
 /// Parses a capability advertisement name.
@@ -130,13 +137,19 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write>(
     let response: PrepareResponse = serde_json::from_value(payload)
         .map_err(|e| CistellaError::Contract(format!("bad prepare response: {e}")))?;
     let provenance = Provenance::Extension(guest_id.to_string());
-    let plan = build_plan(response, &provenance)?;
     let advertised = CapabilitySet::new(
         &capabilities
             .iter()
             .filter_map(|name| parse_capability(name))
             .collect::<Vec<_>>(),
     );
+    if !response.credentials.is_empty() && !advertised.allows(Capability::Credentials) {
+        return Err(CistellaError::Contract(
+            "guest returned unadvertised contribution type: credentials".to_string(),
+        ));
+    }
+    let credentials = admit_all(&response.credentials)?;
+    let plan = build_plan(response, &provenance)?;
     let merged = merge_prepare(plan, &advertised, container_home)?;
     let contributed: Vec<String> = merged
         .environment
@@ -150,6 +163,7 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write>(
     Ok(EvaluatedPlan {
         merged,
         diagnostics,
+        credentials,
     })
 }
 

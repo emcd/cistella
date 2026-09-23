@@ -7,6 +7,8 @@
 
 #[path = "unit/cli_args.rs"]
 mod cli_args;
+#[path = "unit/credentials.rs"]
+mod credentials;
 #[path = "unit/environment_acceptances.rs"]
 mod environment_acceptances;
 #[path = "unit/framework_contract.rs"]
