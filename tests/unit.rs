@@ -17,6 +17,8 @@ mod identity;
 mod isolator_trait;
 #[path = "unit/mount.rs"]
 mod mount;
+#[path = "unit/policy_prepare.rs"]
+mod policy_prepare;
 #[path = "unit/prepare.rs"]
 mod prepare;
 #[path = "unit/profile_resolution.rs"]

@@ -169,6 +169,7 @@ pub struct MountContribution {
 
 /// Policy severity: acknowledgement-escapable or absolute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Severity {
     /// Refuses unless an exact-name acknowledgement exists (user
     /// policy only; compiled defaults are suppressible only).
@@ -179,6 +180,7 @@ pub enum Severity {
 
 /// Policy scope: every value or extension contributions only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Scope {
     /// Matches any provenance.
     Universal,
@@ -194,6 +196,7 @@ pub enum Scope {
 /// to their own transaction and contributions: overreach refuses the
 /// whole transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyClaim {
     /// Name or pattern the claim constrains (regex compiled at
     /// evaluation; non-empty required at merge).
@@ -210,6 +213,7 @@ pub struct PolicyClaim {
 /// explicit sequence position, and the framework assigns the
 /// diagnostics channel in the accepted-plan response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GuestHookRequest {
     /// Composition position (framework-declared sequence; duplicate
     /// positions across hooks refuse at merge).
