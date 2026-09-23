@@ -21,8 +21,4 @@ Cistella is a CLI driver that launches and supervises one OCI container per agen
 Design decisions live in OpenSpec specifications under `openspec/` and in source-tree READMEs under `src/**/README.md`.
 User-facing usage, profile setup, and the trust model live in `documentation/usage/` (start at the repo `README.md`); maintainer workflows in `documentation/development/`.
 
-<!-- TODO: If this project uses multiple agent/worktree roles, create a stable
-     team-organization note in `nb`, modeled after one of the examples at:
-     https://raw.githubusercontent.com/emcd/agents-common/master/examples/nb-notes/team-organization/README.md
-     Then link the note here, for example:
-     - Team org, role ownership, signoff policy, and merge workflow: `coordination/general/<n>` -->
+- Team org, role ownership, signoff policy, and merge workflow: `cistella:coordination/general/3`.
