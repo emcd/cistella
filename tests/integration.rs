@@ -10,6 +10,8 @@ mod labels;
 mod lifecycle;
 #[path = "integration/mountprep.rs"]
 mod mountprep;
+#[path = "integration/protocol_peer.rs"]
+mod protocol_peer;
 #[path = "integration/selectors.rs"]
 mod selectors;
 #[path = "integration/signals.rs"]

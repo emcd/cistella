@@ -27,6 +27,16 @@ path = "src/lib.rs"
 name = "cistella"
 path = "src/main.rs"
 
+# Test-auxiliary target: deterministic protocol peer for the conformance
+# harness (task 3.1, `framework-isolators-extensions`). Lives under
+# `tests/` so it stays out of `package.include` (`/src/**` is the
+# published surface; `tests/**` is not). Access from other tests via
+# `std::env::var("CARGO_BIN_EXE_fake_guest")` at runtime.
+[[test]]
+name = "fake_guest"
+path = "tests/fixtures/fake_guest.rs"
+harness = false
+
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
