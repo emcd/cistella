@@ -20,6 +20,9 @@ pub enum CistellaError {
     /// Framework contract violation (spine, merge, baseline, policy shape).
     #[error("contract: {0}")]
     Contract(String),
+    /// Protocol violation (framing, negotiation, request IDs, timeouts).
+    #[error("protocol: {0}")]
+    Protocol(String),
     /// Identity failure.
     #[error("identity: {0}")]
     Identity(String),

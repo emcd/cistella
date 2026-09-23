@@ -21,6 +21,8 @@ mod mount;
 mod prepare;
 #[path = "unit/profile_resolution.rs"]
 mod profile_resolution;
+#[path = "unit/protocol.rs"]
+mod protocol;
 #[path = "unit/runtime.rs"]
 mod runtime;
 #[path = "unit/version.rs"]

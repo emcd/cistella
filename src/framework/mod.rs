@@ -6,4 +6,5 @@
 
 pub mod contract;
 pub mod isolator;
+pub mod protocol;
 pub mod signals;
