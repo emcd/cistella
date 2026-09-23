@@ -146,6 +146,63 @@ mod libc {
         pub unsafe fn close(fd: i32) -> i32;
     }
 }
+
+/// Build one request response matching the host's wire envelope shape,
+/// then write it as a length-prefixed frame. `op` is echoed from the
+/// request envelope; `payload` is whatever the test wants the peer
+/// to assert against. Currently unused (kept for symmetry with
+/// `send_prepare_with_payload`'s future variants and for direct test
+/// composition if a fault needs a hand-built envelope).
+#[expect(dead_code)]
+fn write_envelope_response(
+    stdout: &mut std::io::Stdout,
+    id: &str,
+    op: &str,
+    payload: Value,
+    max_frame: usize,
+) -> std::io::Result<()> {
+    let envelope = json!({
+        "protocol": PROTOCOL_MAJOR,
+        "id": id,
+        "op": op,
+        "payload": payload,
+    });
+    let body = serde_json::to_vec(&envelope).expect("envelope serializes");
+    write_frame(stdout, &body, max_frame)
+}
+
+/// Drives one prepare transaction: consumes the hello, replies with a
+/// valid hello response, consumes the prepare request, then sends a
+/// prepare response carrying `payload` as the body. The host's
+/// `run_prepare` parses `payload` and applies its existing merge and
+/// lattice rules; the test asserts the typed refusal or success.
+fn send_prepare_with_payload(
+    stdin: &mut std::io::StdinLock<'_>,
+    stdout: &mut std::io::StdoutLock<'_>,
+    payload: Value,
+) {
+    if read_frame_from_stdin(stdin).is_err() {
+        return;
+    }
+    let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+    let _ = write_frame(stdout, &body1, 64 * 1024);
+    let req_body = match read_frame_from_stdin(stdin) {
+        Ok(body) => body,
+        Err(_) => return,
+    };
+    let id = serde_json::from_slice::<Value>(&req_body)
+        .ok()
+        .and_then(|env| env.get("id").cloned())
+        .unwrap_or(json!("req-0"));
+    let response = json!({
+        "protocol": PROTOCOL_MAJOR,
+        "id": id,
+        "op": "prepare",
+        "payload": payload,
+    });
+    let body = serde_json::to_vec(&response).expect("serialize");
+    let _ = write_frame(stdout, &body, 64 * 1024);
+}
 fn main() -> ExitCode {
     let mode = read_arg_mode();
     let stdin = std::io::stdin();
@@ -366,6 +423,145 @@ fn main() -> ExitCode {
                 let body = serde_json::to_vec(&response).expect("serialize");
                 let _ = write_frame(&mut stdout_lock, &body, 64 * 1024);
             }
+            ExitCode::SUCCESS
+        }
+        // ---- Prepare-transaction fault modes (task 3.1, peer-driven
+        //      boundary coverage per the frozen 2.2 wire shape).
+        //
+        // All prepare-fault modes share the same shape:
+        //   1. Read hello + write hello response.
+        //   2. Read prepare request (consume both header and body).
+        //   3. Write a prepare response carrying the fault payload.
+        //
+        // The host's `run_prepare` then exercises its merge/lattice
+        // machinery; the test asserts the typed Contract refusal.
+        "prepare-unadvertised-capability" => {
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [
+                        {"name": "PROBE_LEAK", "value": "x"}
+                    ],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-duplicate-env-name" => {
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [
+                        {"name": "DUPLICATE_VAR", "value": "first"},
+                        {"name": "DUPLICATE_VAR", "value": "second"}
+                    ],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-mount-violation" => {
+            // host_source contains `=` — `validate_mounts` refuses
+            // with "host_source must not contain control/'='".
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [
+                        {
+                            "host_source": "/bad=source",
+                            "container_target": "/work",
+                            "mode": "rw"
+                        }
+                    ],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-malformed-policy-claim" => {
+            // Empty pattern — `check_claims` refuses.
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "policy_claims": [
+                        {
+                            "pattern": "",
+                            "severity": "suppressible",
+                            "scope": "universal"
+                        }
+                    ],
+                    "guest_hooks": []
+                }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-duplicate-hook-order" => {
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": [
+                        {"order": 0, "argv_prefix": ["a"], "probe_op": "noop"},
+                        {"order": 0, "argv_prefix": ["b"], "probe_op": "noop"}
+                    ]
+                }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-credential-shape-fault" => {
+            // Schema-level shape fault: a credential contribution that
+            // carries a forbidden `value` field. The host's
+            // `deny_unknown_fields` (or shape refusal for
+            // credentials) refuses before any merge. Because the
+            // prepare wire schema does NOT yet include a credentials
+            // typed contribution in the public response, this mode
+            // smuggles a `credentials` array with raw `value`
+            // fields; deny_unknown_fields refuses the unknown key.
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": [],
+                    "credentials": [
+                        {"handle": "/run/creds/x", "value": "raw-secret"}
+                    ]
+                }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-empty-claim-pattern" => {
+            // Same shape as `prepare-malformed-policy-claim` (empty
+            // pattern). Kept separate so the harness enumerates the
+            // fault explicitly; if 2.2 adds another shape dimension,
+            // the two cases diverge.
+            send_prepare_with_payload(
+                &mut stdin_lock,
+                &mut stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }),
+            );
             ExitCode::SUCCESS
         }
         _ => {

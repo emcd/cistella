@@ -39,7 +39,7 @@ use cistella::framework::protocol::{GuestHost, PROTOCOL_MAJOR};
 /// We find the peer by globbing the deps directory and skipping
 /// dep-info files (`fake_guest-<hash>.d`) so the match is the
 /// actual executable.
-fn peer_path() -> PathBuf {
+pub(super) fn peer_path() -> PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
     let my_dir = my_path.parent().expect("deps dir");
