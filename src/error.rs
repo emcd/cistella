@@ -17,6 +17,9 @@ pub enum CistellaError {
     /// Transport failure.
     #[error("transport: {0}")]
     Transport(String),
+    /// Framework contract violation (spine, merge, baseline, policy shape).
+    #[error("contract: {0}")]
+    Contract(String),
     /// Identity failure.
     #[error("identity: {0}")]
     Identity(String),

@@ -9,6 +9,8 @@
 mod cli_args;
 #[path = "unit/environment_acceptances.rs"]
 mod environment_acceptances;
+#[path = "unit/framework_contract.rs"]
+mod framework_contract;
 #[path = "unit/identity.rs"]
 mod identity;
 #[path = "unit/mount.rs"]

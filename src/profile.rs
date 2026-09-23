@@ -511,12 +511,13 @@ fn parse_profile(text: &str) -> Result<Profile> {
 
 /// Validates one environment variable name against the `[A-Z_][A-Z0-9_]*`
 /// grammar shared by assignment keys and acceptance names (parity by
-/// construction: both call this).
+/// construction: both call this). Crate-visible so the framework
+/// contract merge enforces the same grammar on contributions.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Profile` when `name` violates the grammar.
-fn validate_env_name(name: &str, kind: &str) -> Result<()> {
+pub(crate) fn validate_env_name(name: &str, kind: &str) -> Result<()> {
     if name.is_empty()
         || !name
             .chars()

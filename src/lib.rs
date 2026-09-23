@@ -7,6 +7,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod framework;
 pub mod identity;
 pub mod lock;
 pub mod mount;
