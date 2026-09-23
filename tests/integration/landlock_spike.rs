@@ -9,14 +9,13 @@
 //!      blocks the syscalls; helper returns exit 1 with the typed
 //!      "unsupported: <reason>" stderr.
 //!
-//! All tests are `#[ignore]` (live-tier gated). They run in a separate
-//! seat authorized by the operator, with seccomp-filter relaxed
-//! (or removed) so `landlock_restrict_self` succeeds in the
-//! admitted/denied cases. The unsupported case is self-contained:
-//! a seccomp filter on this seat already blocks Landlock syscalls
-//! (verified in `cistella-qa@infrastructure`'s seat), so the helper
-//! exits 1 with the typed message — the assertion can run here
-//! today once we lift the `#[ignore]`.
+//! Live-tier gating: the `admitted` and `denied` tests are
+//! `#[ignore]`-d. They run in a separate seat authorized by the
+//! operator, with seccomp-filter relaxed (or removed) so
+//! `landlock_restrict_self` succeeds. The `unsupported` test is
+//! self-contained: a seccomp filter on this seat already blocks
+//! `landlock_restrict_self` with EPERM, so the helper exits 1 with
+//! the typed message and the assertion runs without authorization.
 //!
 //! Findings this spike proves:
 //!   - Helper placement: `target/<profile>/examples/landlock_helper`
@@ -25,13 +24,17 @@
 //!     the wrapped process inherits the helper's PID, so `getppid`
 //!     on the wrapped process returns the helper's PID (which is
 //!     the helper itself, pre-exec).
-//!   - Podman/user-namespace rule preservation: tested via the
-//!     `podman_ancestry` test (separate file), runs a helper inside
-//!     a `podman run` container and asserts Landlock rules reach the
-//!     wrapped process.
+//!   - Podman/user-namespace rule preservation: **DEFERRED** to the
+//!     operator-authorized separate seat — this seat has no podman
+//!     available, and the question is whether Landlock rules
+//!     established in the helper's user namespace (which is the
+//!     container's, under `--userns=keep-id`) survive across
+//!     `execvp` into the harness process. Hypothesis: yes (Landlock
+//!     is enforced per-task at the kernel level, not per-namespace),
+//!     but unverified from this seat.
 //!
-//! THIS FILE IS SCAFFOLD ONLY — tests run on operator-authorized
-//! separate seat; no host-mutating runs from this seat until then.
+//! THIS FILE IS SCAFFOLD ONLY — no host-mutating runs from this seat
+//! until operator authorization lands for the separate seat.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

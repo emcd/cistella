@@ -49,10 +49,10 @@ use libc::{
     SYS_landlock_create_ruleset, SYS_landlock_restrict_self, c_int, close, fcntl, open,
 };
 
-/// Landlock ABI version (matches kernel ≥ 5.13). Bumped to 2 for
-/// `LANDLOCK_ACCESS_FS_REFER`/`TRUNCATE`; we use v1 for max compat.
-#[allow(dead_code)]
-const LANDLOCK_ABI_VERSION: u32 = 1;
+// (The `LANDLOCK_ABI_VERSION` constant was removed — the helper
+// always uses ABI v1 implicitly via the `landlock_ruleset_attr`
+// shape. When v2 (refer/truncate) lands, replace the v1 struct with
+// the v2 layout and gate by probe `op`.)
 
 /// Access rights we exercise in the spike. Read+execute cover the
 /// `/proc/self/fd`, `/tmp`, and `bin/` paths the wrapped command
@@ -358,8 +358,3 @@ fn print_help() {
     eprintln!("  2  execvp failed after Landlock was applied");
     eprintln!("  3  bad invocation");
 }
-
-// (No placeholder constants — the helper currently uses no extra
-// syscall constants. Kept here as a reminder for the next
-// extension: `openat(AT_FDCWD, ...)` for fd-relative paths, and
-// `O_DIRECTORY` for path-beneath over a directory fd.)
