@@ -2,6 +2,8 @@
 
 #[path = "integration/conformance.rs"]
 mod conformance;
+#[path = "integration/design_vectors.rs"]
+mod design_vectors;
 #[path = "integration/helpers.rs"]
 mod helpers;
 #[path = "integration/labels.rs"]
