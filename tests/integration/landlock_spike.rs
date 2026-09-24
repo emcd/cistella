@@ -208,14 +208,27 @@ fn denied_access_yields_eacces() {
 /// the wrapper forces the unavailable path, the helper surfaces the
 /// typed refusal, and the assertion always runs. No `#[ignore]` —
 /// the wrapper IS the determinism.
+///
+/// Three assertions on the captured wrapper+helper invocation:
+///   1. helper exit_code == 1 (the typed-Unsupported path fires)
+///   2. stderr names `landlock_create_ruleset: ENOSYS` specifically —
+///      not a generic `unsupported:` (that could come from an
+///      unrelated prctl failure) and not a physical-cause claim
+///   3. stdout is empty — proves the wrapped Python never ran, so
+///      the refusal came from the seccomp filter, not from the
+///      wrapped command's own failure path.
 #[test]
 fn unsupported_kernel_typed_refusal() {
     // Spawn landlock_kill_wrapper, which sets no_new_privs + the
     // seccomp-bpf filter, then execvp's the helper. The helper sees
     // Landlock syscalls returning ENOSYS and exits 1 with the typed
-    // refusal.
+    // refusal. The wrapped python3 prints a unique marker; if it
+    // runs, stdout contains the marker. Asserting stdout is empty
+    // proves the filter caught the syscall before exec.
+    const MARKER: &str = "LANDLOCK_SPIKE_DID_NOT_REACH_PYTHON";
     let wrapper = landlock_kill_wrapper_path();
     let helper = landlock_helper_path();
+    let wrapped_code = format!("print('{MARKER}')");
     let output = Command::new(&wrapper)
         .arg("--")
         .arg(&helper)
@@ -223,29 +236,51 @@ fn unsupported_kernel_typed_refusal() {
         .arg("--")
         .arg("/usr/bin/python3")
         .arg("-c")
-        .arg("pass")
+        .arg(&wrapped_code)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .expect("landlock_kill_wrapper must spawn");
     let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    // (1) helper exit_code == 1.
     assert_eq!(
         exit_code, 1,
         "helper must exit 1 under seccomp-filtered Landlock; stderr: {stderr}"
     );
-    let combined = stderr.to_lowercase();
+
+    // (2) stderr names the SPECIFIC syscall + errno that the helper
+    //     observed. A generic "unsupported:" prefix would also match
+    //     an unrelated prctl failure (e.g., seccomp-blocking prctl);
+    //     the specific reason proves the seccomp filter caught the
+    //     Landlock syscall itself.
     assert!(
-        combined.contains("unsupported:"),
-        "stderr must surface typed `unsupported:` message, got: {stderr}"
+        stderr.contains("landlock_create_ruleset: ENOSYS"),
+        "stderr must name the specific seccomp-blocked syscall \
+         (landlock_create_ruleset: ENOSYS); got: {stderr}"
     );
-    // Helper must NOT claim a specific physical cause. Assert
-    // negative: stderr must not contain "kernel lacks" (the false
-    // diagnosis Advisor flagged). The helper reports only the syscall
-    // name + errno (e.g. "landlock_create_ruleset: ENOSYS").
+    // Helper must NOT claim a specific physical cause (the false
+    // diagnosis Advisor flagged in the prior round).
     assert!(
-        !combined.contains("kernel lacks"),
+        !stderr.contains("kernel lacks"),
         "helper must not infer physical cause from errno alone; got: {stderr}"
+    );
+
+    // (3) stdout is empty — proves the wrapped python never ran.
+    //     The python command would print LANDLOCK_SPIKE_DID_NOT_REACH_PYTHON
+    //     to stdout on success; if the marker is absent, the seccomp
+    //     filter killed the helper's execvp chain before python started.
+    assert!(
+        !stdout.contains(MARKER),
+        "stdout contains the marker — wrapped python ran, seccomp filter \
+         may not have intercepted the Landlock syscalls. stdout: {stdout:?}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "stdout is not empty — wrapped python output leaked through \
+         the seccomp filter. stdout: {stdout:?}"
     );
 }
