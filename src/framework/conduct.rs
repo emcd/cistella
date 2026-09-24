@@ -25,6 +25,11 @@ use crate::profile::Profile;
 /// lattice as profile provenance with the profile's acceptance set
 /// (grandfathering) and no transaction claims.
 ///
+/// The slice carries keys plus values from `snapshot_acceptances`,
+/// but only keys participate in the lattice (values are content-free
+/// by construction); the slice shape stays for symmetry with the
+/// snapshot API.
+///
 /// Call before unit/scratch creation: a refusal leaves no residue.
 ///
 /// # Errors
