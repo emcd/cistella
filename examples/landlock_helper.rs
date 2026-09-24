@@ -154,11 +154,11 @@ fn main() -> ExitCode {
 #[derive(Debug)]
 enum HelperError {
     /// `landlock_create_ruleset` returned -1 OR `landlock_restrict_self`
-    /// refused to apply. `errno` distinguishes `ENOSYS` (kernel lacks
-    /// Landlock) and `EPERM` (seccomp-filter / capability restricted) —
-    /// both surface as typed pre-execute `Unsupported` at the host
-    /// dispatch layer. The string names the cause without binding to
-    /// a single errno value (per protocol contract: never an errno pin).
+    /// refused to apply. The payload names the observed syscall and
+    /// errno only (e.g. `landlock_create_ruleset: ENOSYS`): ENOSYS is
+    /// also what seccomp returns when a filter blocks the syscall, so
+    /// no physical cause is inferred here. Both surface as typed
+    /// pre-execute `Unsupported` at the host dispatch layer.
     Unsupported(&'static str),
     /// `landlock_add_rule` failed: an allowed path could not be
     /// opened. Distinct from `Unsupported` (kernel feature is
