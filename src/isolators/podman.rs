@@ -208,7 +208,8 @@ pub fn find_key_in_ps_output(text: &str) -> Option<(String, String)> {
 /// Scans one unit directory for a key label.
 ///
 /// Generic over the entry iterator so failing iteration is
-/// unit-testable: any `Err` item refuses the whole scan, because an
+/// unit-testable (production callers pass `std::fs::ReadDir`
+/// directly). Any `Err` item refuses the whole scan, because an
 /// unreadable candidate or a skipped entry could be the sought unit
 /// (installed before a crash), and either would report clean
 /// absence into a duplicate install. Readable files lacking the key

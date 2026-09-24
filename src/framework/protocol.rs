@@ -341,7 +341,8 @@ pub const AWAIT_RESULT_OP: &str = "isolator.await_result";
 /// Write-side SIGPIPE discipline without process-global state: a
 /// dead guest's EPIPE arrives as a typed error on the writing
 /// thread, never a signal, and concurrent guests need no shared
-/// disposition save/restore.
+/// disposition save/restore. Restore is best-effort; callers keep
+/// responsibility for any prior mask they care about.
 fn masked<T>(op: impl FnOnce() -> T) -> T {
     use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
     let mut block = SigSet::empty();

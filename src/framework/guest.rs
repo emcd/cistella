@@ -28,8 +28,11 @@ const PIPE_EOF_BUDGET: Duration = Duration::from_secs(3);
 /// True when no process group survives (signal-0 pole, ESRCH).
 ///
 /// Signal 0 delivers nothing: it only asks the kernel whether the
-/// group exists. A recycled PGID could theoretically false-negative,
-/// but the pole runs inside a bounded window the framework owns.
+/// group exists. EPERM (foreign-owned group) also reads as gone:
+/// the framework cannot enforce on a group it lacks permission for,
+/// so the wait returns rather than blocking on a budget it cannot
+/// act on. A recycled PGID could theoretically false-negative, but
+/// the pole runs inside a bounded window the framework owns.
 fn group_gone(group: Pid) -> bool {
     kill(group, None).is_err()
 }
