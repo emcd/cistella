@@ -509,7 +509,7 @@ impl Isolator for PodmanIsolator {
             Some(&active_state),
             container.as_deref(),
             unit_present,
-            !executing,
+            executing,
         );
         Ok(UnitSnapshot {
             unit_identity: record.container_name,
