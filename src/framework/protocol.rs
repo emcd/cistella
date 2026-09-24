@@ -352,6 +352,12 @@ pub const AWAIT_RESULT_OP: &str = "isolator.await_result";
 /// EPIPE. So while still masked, exactly one NEWLY generated
 /// SIGPIPE is consumed (a pre-existing pending SIGPIPE is never
 /// touched); mask failures refuse rather than writing unprotected.
+/// The single unsafe block groups setup, op, consume, and restore:
+/// any libc error returns before the mask is touched, and the
+/// restore path is the only place partial state could leak (the
+/// caller receives the error). The timed wait matches only the
+/// block set, so non-blocked signals (SIGCHLD/SIGTERM) are never
+/// consumed — only the SIGPIPE this write may have produced.
 fn masked<T>(op: impl FnOnce() -> T) -> Result<T> {
     use nix::libc;
     unsafe {
@@ -365,13 +371,20 @@ fn masked<T>(op: impl FnOnce() -> T) -> Result<T> {
         let had = libc::sigismember(&before, libc::SIGPIPE) == 1;
         let mut block: libc::sigset_t = std::mem::zeroed();
         let mut old: libc::sigset_t = std::mem::zeroed();
-        if libc::sigemptyset(&mut block) != 0
+        let mask_error = if libc::sigemptyset(&mut block) != 0
             || libc::sigaddset(&mut block, libc::SIGPIPE) != 0
-            || libc::pthread_sigmask(libc::SIG_BLOCK, &block, &mut old) != 0
         {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
+        } else {
+            // pthread_sigmask returns the errno directly (not via
+            // thread-local errno): report the returned code, never a
+            // stale last_os_error.
+            libc::pthread_sigmask(libc::SIG_BLOCK, &block, &mut old)
+        };
+        if mask_error != 0 {
             return Err(protocol_error(format!(
                 "sigmask block: {}",
-                std::io::Error::last_os_error()
+                std::io::Error::from_raw_os_error(mask_error)
             )));
         }
         let out = op();
@@ -388,10 +401,11 @@ fn masked<T>(op: impl FnOnce() -> T) -> Result<T> {
                 libc::sigtimedwait(&block, &mut info, &timeout);
             }
         }
-        if libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) != 0 {
+        let restore_error = libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        if restore_error != 0 {
             return Err(protocol_error(format!(
                 "sigmask restore: {}",
-                std::io::Error::last_os_error()
+                std::io::Error::from_raw_os_error(restore_error)
             )));
         }
         Ok(out)

@@ -625,32 +625,60 @@ fn in_group_term_ignorer_cleared_by_kill() {
 
 #[test]
 fn default_disposition_closed_pipe_is_typed_not_fatal() {
-    // The Advisor regression: with SIGPIPE at SIG_DFL, a write to a
-    // closed pipe raises a PENDING signal while masked; unmasking
-    // without consuming it would kill the host after EPIPE was
-    // already observed. The masked path must consume exactly the
-    // signal its own write generated and survive.
-    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
-    unsafe {
-        let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-        sigaction(Signal::SIGPIPE, &dfl).expect("set SIG_DFL");
-    }
-    let (mut writer, reader) = UnixStream::pair().expect("socketpair");
-    drop(reader);
-    // Buffered reader end dropped: first write raises EPIPE.
-    let result = write_frame(&mut writer, b"hello", 1024);
-    // Restore the Rust-runtime ignore before any assertion can panic.
-    unsafe {
-        let ign = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
-        sigaction(Signal::SIGPIPE, &ign).expect("restore SIG_IGN");
-    }
-    let error = result.unwrap_err().to_string();
+    // The Advisor regression, isolated: a FRESH PROCESS with SIGPIPE
+    // at SIG_DFL writes to a closed pipe through the masked path. A
+    // pending SIGPIPE surviving unmask would kill it after EPIPE was
+    // observed; exit 0 plus PROBE_OK proves typed error and survival.
+    // The runner's own disposition is never touched (parallel-safe).
+    let probe = example_binary("sigpipe_probe");
+    let output = std::process::Command::new(&probe)
+        .output()
+        .expect("spawn sigpipe probe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        error.contains("frame write"),
-        "closed pipe must surface typed EPIPE, got: {error}"
+        output.status.success(),
+        "probe must survive DFL closed-pipe write: {stdout}"
     );
-    // Survival itself is the assertion: reaching here proves no
-    // delayed SIGPIPE delivery killed the process.
+    assert!(
+        stdout.contains("PROBE_OK"),
+        "probe must report typed EPIPE: {stdout}"
+    );
+}
+
+/// Resolves a built example binary (newest-mtime executable match).
+fn example_binary(name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let my_path = std::env::current_exe().expect("current_exe");
+    let examples_dir = my_path
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile>/deps ancestors")
+        .join("examples");
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&examples_dir) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+                continue;
+            }
+            let metadata = entry.metadata().expect("metadata");
+            if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
+                continue;
+            }
+            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+        }
+    }
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| {
+            panic!(
+                "example binary {name} not found in {}; run `cargo build --examples` first",
+                examples_dir.display()
+            )
+        })
 }
 
 #[test]
