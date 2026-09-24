@@ -35,6 +35,11 @@ pub enum CistellaError {
     /// Selector usage failure (ambiguous, empty, or mixed forms).
     #[error("selector: {0}")]
     Selector(String),
+    /// Await detached by cancellation: the execution keeps running
+    /// and stays redeemable until `remove` (explicit terminate owns
+    /// the kill).
+    #[error("detached: {0}")]
+    Detached(String),
     /// IO wrapper.
     #[error(transparent)]
     Io(#[from] std::io::Error),

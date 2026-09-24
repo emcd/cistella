@@ -33,6 +33,8 @@ use crate::isolators::quadlet::{
     remove_scratch, remove_unit_file, start_quadlet, stop_settle,
 };
 use crate::lock::scratch_dir;
+use crate::registry::unit_file_label;
+use crate::session::{LABEL_ID, LABEL_RECONCILIATION_KEY};
 
 /// Unit record tracked per issued handle.
 #[derive(Debug, Clone)]
@@ -46,9 +48,19 @@ struct UnitRecord {
 }
 
 /// Pending launched execution awaiting `await_result`.
+///
+/// The record (and, once collected, the outcome) lives until
+/// `remove`: cancelling detaches without killing, and a later await
+/// on the same handle re-attaches or replays. The table retains
+/// identity only — the caller owns the reconciliation key for any
+/// cross-call operation (terminate/remove take it as a parameter).
 struct PendingExec {
-    /// Running harness child.
-    child: Child,
+    /// Unit this execution belongs to (cleared with the unit).
+    unit: UnitHandle,
+    /// Running harness child (None once reaped).
+    child: Option<Child>,
+    /// Collected outcome for replay until `remove`.
+    outcome: Option<ExecutionOutcome>,
 }
 
 /// Podman isolator backend (`podman` + Quadlet + systemd user manager).
@@ -114,6 +126,123 @@ impl PodmanIsolator {
             .expect("key table lock")
             .insert(key.clone(), handle);
     }
+    /// Scans durable state for a key label: live containers first,
+    /// then unit files (crash-after-install leaves a file with no
+    /// container).
+    ///
+    /// Fail-closed: spawn/query/read failures refuse with a typed
+    /// error instead of reporting absence. A missing unit directory
+    /// is clean absence (no units ever installed), not failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Runtime` on podman or filesystem
+    /// query failure.
+    fn scan_locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
+        let out = Command::new("podman")
+            .args([
+                "ps",
+                "--all",
+                "--filter",
+                &format!("label={}={}", LABEL_RECONCILIATION_KEY, key.as_str()),
+                "--format",
+                "{{.Names}} {{index .Config.Labels \"cistella.id\"}}",
+            ])
+            .output()
+            .map_err(|e| CistellaError::Runtime(format!("podman ps for key: {e}")))?;
+        if !out.status.success() {
+            return Err(CistellaError::Runtime(format!(
+                "podman ps for key failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        if let Some((name, sid)) = find_key_in_ps_output(&text) {
+            return Ok(Some(self.adopt_key(key, &name, &sid)));
+        }
+        let Some(dir) = quadlet_dir() else {
+            return Ok(None);
+        };
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(CistellaError::Runtime(format!(
+                    "scan {}: {e}",
+                    dir.display()
+                )));
+            }
+        };
+        if let Some((name, sid)) = scan_unit_dir(entries, key.as_str())? {
+            return Ok(Some(self.adopt_key(key, &name, &sid)));
+        }
+        Ok(None)
+    }
+
+    /// Adopts a scan hit and binds it to the key.
+    fn adopt_key(&self, key: &ReconciliationKey, name: &str, sid: &str) -> UnitHandle {
+        let handle = self.adopt(name, sid);
+        self.keys
+            .lock()
+            .expect("key table lock")
+            .insert(key.clone(), handle.clone());
+        handle
+    }
+}
+
+/// Parses `podman ps` name/id lines for the first entry with a real
+/// session id (podman's `<no value>` missing marker never matches).
+#[must_use]
+pub fn find_key_in_ps_output(text: &str) -> Option<(String, String)> {
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(name), Some(sid)) = (parts.next(), parts.next())
+            && !sid.starts_with('<')
+        {
+            return Some((name.to_string(), sid.to_string()));
+        }
+    }
+    None
+}
+
+/// Scans one unit directory for a key label.
+///
+/// A `cistella-*.container` file that cannot be read refuses the
+/// whole scan: an unreadable candidate could be the sought unit
+/// (installed before a crash), and skipping it would report clean
+/// absence into a duplicate install. Readable files lacking the key
+/// skip normally; non-unit files never read.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on unreadable candidate units.
+pub fn scan_unit_dir(entries: std::fs::ReadDir, key: &str) -> Result<Option<(String, String)>> {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "container") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !name.starts_with("cistella-") {
+            continue;
+        }
+        let key_hit = unit_file_label(&path, LABEL_RECONCILIATION_KEY).map_err(|e| {
+            CistellaError::Runtime(format!("unreadable candidate unit {}: {e}", path.display()))
+        })?;
+        if key_hit.as_deref() != Some(key) {
+            continue;
+        }
+        let sid = unit_file_label(&path, LABEL_ID)
+            .map_err(|e| {
+                CistellaError::Runtime(format!("unreadable candidate unit {}: {e}", path.display()))
+            })?
+            .unwrap_or_default();
+        return Ok(Some((name, sid)));
+    }
+    Ok(None)
 }
 
 impl Default for PodmanIsolator {
@@ -124,12 +253,17 @@ impl Default for PodmanIsolator {
 
 impl Drop for PodmanIsolator {
     fn drop(&mut self) {
-        // Best-effort reap of never-awaited executions: kill and
-        // release without blocking the drop.
+        // Owner-death cleanup, not cancellation: a dropped backend
+        // must not leave harness processes running past its owner.
+        // Protocol cancel detaches (records survive for re-attach);
+        // Drop kills what no owner remains to terminate. Best-effort
+        // and nonblocking; explicit `terminate` is the reporting path.
         let mut executions = self.executions.lock().expect("exec table lock");
         for (_, mut pending) in executions.drain() {
-            let _ = pending.child.kill();
-            let _ = pending.child.try_wait();
+            if let Some(mut child) = pending.child.take() {
+                let _ = child.kill();
+                let _ = child.try_wait();
+            }
         }
     }
 }
@@ -179,10 +313,27 @@ impl Isolator for PodmanIsolator {
     }
 
     fn create(&self, spec: &CreateSpec, key: &ReconciliationKey) -> Result<UnitHandle> {
+        // Same-key retry replays instead of duplicating: a timed-out
+        // create whose unit survived (durable key label) converges on
+        // the existing resource rather than installing a second one.
+        // A failed scan refuses (fail-closed) instead of installing
+        // blind into an uncertain outcome.
+        if let Some(existing) = self.locate(key)? {
+            return Ok(existing);
+        }
         let session = &spec.session;
         let container_name = session.container_name();
         let unit_name = session.quadlet_unit_name();
-        let unit = generate_quadlet_unit(session, &spec.volumes, &spec.env, &spec.labels)?;
+        // The key label bakes into the unit BEFORE install: a crash
+        // between install and registration still leaves a scannable
+        // binding for the replacement peer.
+        let unit = generate_quadlet_unit(
+            session,
+            &spec.volumes,
+            &spec.env,
+            &spec.labels,
+            Some(key.as_str()),
+        )?;
         // Scratch first, unit file second: any failure cleans what it
         // made, so create leaves no partial unit behind.
         let scratch_path = scratch_dir(&session.id);
@@ -255,10 +406,14 @@ impl Isolator for PodmanIsolator {
         }
         .map_err(|e| CistellaError::Runtime(format!("podman exec: {e}")))?;
         let execution = ExecutionHandle::mint();
-        self.executions
-            .lock()
-            .expect("exec table lock")
-            .insert(execution.clone(), PendingExec { child });
+        self.executions.lock().expect("exec table lock").insert(
+            execution.clone(),
+            PendingExec {
+                unit: handle.clone(),
+                child: Some(child),
+                outcome: None,
+            },
+        );
         Ok(execution)
     }
 
@@ -267,30 +422,59 @@ impl Isolator for PodmanIsolator {
         execution: &ExecutionHandle,
         cancel: &CancelFlag,
     ) -> Result<ExecutionOutcome> {
-        let mut pending = self
-            .executions
-            .lock()
-            .expect("exec table lock")
-            .remove(execution)
-            .ok_or_else(|| {
-                CistellaError::Contract(format!("unknown execution handle: {}", execution.as_str()))
-            })?;
-        let child = &mut pending.child;
+        // Never hold the table lock across a wait: try_wait is
+        // nonblocking, so each iteration borrows briefly. Records
+        // (and collected outcomes) live until `remove`: cancelling
+        // detaches without killing, and a later await re-attaches or
+        // replays. Explicit `terminate` owns the kill.
         loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return Ok(status_outcome(status, cancel)),
-                Ok(None) => {}
-                Err(_) => {
-                    // Reaped elsewhere; fall back to a blocking wait.
-                    let status = child
-                        .wait()
-                        .map_err(|e| CistellaError::Runtime(format!("wait: {e}")))?;
-                    return Ok(status_outcome(status, cancel));
+            let completed = {
+                let mut table = self.executions.lock().expect("exec table lock");
+                let pending = table.get_mut(execution).ok_or_else(|| {
+                    CistellaError::Contract(format!(
+                        "unknown execution handle: {}",
+                        execution.as_str()
+                    ))
+                })?;
+                if let Some(outcome) = pending.outcome {
+                    return Ok(outcome);
                 }
+                let child = pending.child.as_mut().ok_or_else(|| {
+                    CistellaError::Contract(format!(
+                        "execution already reaped: {}",
+                        execution.as_str()
+                    ))
+                })?;
+                match child.try_wait() {
+                    Ok(Some(status)) => Some(status),
+                    Ok(None) => None,
+                    Err(_) => {
+                        // Reaped elsewhere; fall back to a blocking wait.
+                        let status = child
+                            .wait()
+                            .map_err(|e| CistellaError::Runtime(format!("wait: {e}")))?;
+                        Some(status)
+                    }
+                }
+            };
+            if let Some(status) = completed {
+                let outcome = status_outcome(status, cancel);
+                if let Some(pending) = self
+                    .executions
+                    .lock()
+                    .expect("exec table lock")
+                    .get_mut(execution)
+                {
+                    pending.outcome = Some(outcome);
+                    pending.child = None;
+                }
+                return Ok(outcome);
             }
-            if let Some(signum) = cancel_signum(cancel) {
-                kill_child(child);
-                return Ok(ExecutionOutcome::Signaled(signum));
+            if cancel.is_cancelled() || cancel_signum(cancel).is_some() {
+                return Err(CistellaError::Detached(format!(
+                    "await detached; execution {} stays redeemable until remove",
+                    execution.as_str()
+                )));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -305,7 +489,14 @@ impl Isolator for PodmanIsolator {
             .cloned()
             .unwrap_or_else(|| "inactive".to_string());
         let unit_present = unit_file_present(&record.unit_name);
-        let executing = self.executions.lock().expect("exec table lock").is_empty();
+        // Executing means an unreaped child exists, not merely a
+        // retained record (outcomes replay after completion).
+        let executing = self
+            .executions
+            .lock()
+            .expect("exec table lock")
+            .values()
+            .any(|pending| pending.child.is_some());
         let lifecycle = classify_state(
             Some(&active_state),
             container.as_deref(),
@@ -351,13 +542,56 @@ impl Isolator for PodmanIsolator {
         if !record.session_id.is_empty() {
             remove_scratch(&record.session_id)?;
         }
+        // Execution records die with the unit: outcomes stay
+        // replayable until `remove`, never after.
+        self.executions
+            .lock()
+            .expect("exec table lock")
+            .retain(|_, pending| pending.unit != *handle);
         Ok(RemovedAttestation {
             unit_identity: record.container_name,
         })
     }
 
-    fn locate(&self, key: &ReconciliationKey) -> Option<UnitHandle> {
-        self.keys.lock().expect("key table lock").get(key).cloned()
+    fn locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
+        // Memory hit is a hint, not proof: verify against durable
+        // state before returning, or a stale entry could mask a
+        // reaped unit and greenlight a duplicate install.
+        if let Some(handle) = self.keys.lock().expect("key table lock").get(key).cloned()
+            && let Ok(record) = self.record(&handle)
+        {
+            let alive = container_exists(&record.container_name).unwrap_or(false)
+                || unit_file_present(&record.unit_name);
+            if alive {
+                return Ok(Some(handle));
+            }
+            self.keys.lock().expect("key table lock").remove(key);
+        }
+        self.scan_locate(key)
+    }
+
+    fn converge_clean(
+        &self,
+        handle: &UnitHandle,
+        grace: Duration,
+        key: &ReconciliationKey,
+    ) -> Result<()> {
+        // Never trust `state` alone: an `Absent` unit with surviving
+        // scratch is residue, not convergence. `remove` is idempotent
+        // and owns both the unit file and scratch, so it closes every
+        // state including absent-with-residue.
+        match self.state(handle) {
+            Ok(LifecycleState::Absent) => {
+                self.remove(handle, key)?;
+                Ok(())
+            }
+            Ok(_) => {
+                self.terminate(handle, grace, key)?;
+                self.remove(handle, key)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -375,7 +609,7 @@ fn status_outcome(status: std::process::ExitStatus, cancel: &CancelFlag) -> Exec
         return ExecutionOutcome::Signaled(15);
     }
     if let Some(signal) = status.signal() {
-        ExecutionOutcome::Signaled(128 + signal)
+        ExecutionOutcome::Signaled(signal)
     } else {
         ExecutionOutcome::Exited(status.code().unwrap_or(1))
     }
@@ -393,18 +627,6 @@ fn cancel_signum(cancel: &CancelFlag) -> Option<i32> {
 }
 
 /// Kills a harness child: SIGTERM, brief grace, SIGKILL on survival.
-fn kill_child(child: &mut Child) {
-    use nix::sys::signal::{Signal, kill};
-    use nix::unistd::Pid;
-    let pid = Pid::from_raw(child.id() as i32);
-    let _ = kill(pid, Signal::SIGTERM);
-    std::thread::sleep(Duration::from_millis(200));
-    if child.try_wait().unwrap_or(None).is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-}
-
 /// Inspects a container: status, `cistella.id` label, image.
 ///
 /// Absence (`podman container exists` exit 1) returns `None` status

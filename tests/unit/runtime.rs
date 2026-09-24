@@ -43,7 +43,7 @@ fn quadlet_uses_tmpfs_key() {
         "--volume".to_string(),
         "/tmp/a:/work:rw".to_string(),
     ];
-    let unit = generate_quadlet_unit(&sess, &volumes, &[], &[]).unwrap();
+    let unit = generate_quadlet_unit(&sess, &volumes, &[], &[], None).unwrap();
     assert!(
         unit.contains("Tmpfs=/home/cistella"),
         "Tmpfs stays raw (Quadlet quotes it for ExecStart itself), got {unit}"
@@ -60,9 +60,24 @@ fn quadlet_uses_tmpfs_key() {
 }
 
 #[test]
+fn quadlet_bakes_reconciliation_key_label_before_install() {
+    let sess = test_session();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], Some("key-abc123")).unwrap();
+    assert!(
+        unit.contains("Label=cistella.reconciliation-key=\"key-abc123\""),
+        "key label baked pre-mutation for crash recovery, got {unit}"
+    );
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
+    assert!(
+        !unit.contains("cistella.reconciliation-key"),
+        "no key label without a key"
+    );
+}
+
+#[test]
 fn quadlet_runs_container_under_init() {
     let sess = test_session();
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[]).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
     // Scoped to the [Container] section: podman's minimal init as PID 1 forwards SIGTERM
     // to `sleep infinity` (bare PID 1 ignores it, stalling stop for the
     // full StopTimeout) and reaps zombies.
@@ -82,7 +97,7 @@ fn quadlet_runs_container_under_init() {
 #[test]
 fn quadlet_labels_present() {
     let sess = test_session();
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[]).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
     assert!(unit.contains(&format!("Label=cistella.id=\"{}\"", sess.id)));
     assert!(unit.contains("Label=cistella.directory=\"/tmp/work\""));
     assert!(unit.contains("Label=cistella.profile=\"default\""));
@@ -96,7 +111,7 @@ fn quadlet_labels_present() {
 fn quadlet_driver_labels_last() {
     let sess = test_session();
     let generic = vec![("agentmux.session".to_string(), "s1".to_string())];
-    let unit = generate_quadlet_unit(&sess, &[], &[], &generic).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &generic, None).unwrap();
     let generic_pos = unit.find("Label=agentmux.session=").expect("generic label");
     let driver_pos = unit.find("Label=cistella.id=").expect("driver label");
     assert!(generic_pos < driver_pos, "driver-owned labels render last");
@@ -144,7 +159,7 @@ fn quadlet_command_label_survives_quoting() {
         "-c".to_string(),
         "echo \"a=b c'd\" > /tmp/edge_probe; sleep 60".to_string(),
     ];
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[]).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
     let line = unit
         .lines()
         .find(|l| l.starts_with("Label=cistella.command="))
@@ -157,14 +172,14 @@ fn quadlet_command_label_survives_quoting() {
 fn quadlet_rejects_injection() {
     let mut sess = test_session();
     sess.identity = "a\n[Service]\nExec=bad".to_string();
-    assert!(generate_quadlet_unit(&sess, &[], &[], &[]).is_err());
+    assert!(generate_quadlet_unit(&sess, &[], &[], &[], None).is_err());
 }
 
 #[test]
 fn quadlet_rejects_reserved_generic_label() {
     let sess = test_session();
     let generic = vec![("cistella.id".to_string(), "spoof".to_string())];
-    assert!(generate_quadlet_unit(&sess, &[], &[], &generic).is_err());
+    assert!(generate_quadlet_unit(&sess, &[], &[], &generic, None).is_err());
 }
 
 #[test]

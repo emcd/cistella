@@ -22,8 +22,8 @@ use serde::Deserialize;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::{
-    Capability, CapabilitySet, EnvContribution, GuestHookRequest, MountContribution, MountMode,
-    MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
+    Capability, CapabilitySet, EnvContribution, GuestHookRequest, MergeContext, MountContribution,
+    MountMode, MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
 use crate::framework::policy::PolicySet;
@@ -110,21 +110,22 @@ pub fn parse_capability(name: &str) -> Option<Capability> {
 ///
 /// Sends `prepare`, parses the single response with unknown-field
 /// refusal, gates contribution types against the negotiated
-/// capabilities, merges atomically, partitions claims, and evaluates
-/// every contributed name against the lattice (user acknowledgements
-/// and shipped-acceptance grandfathering apply). At most one call per
-/// session per extension.
+/// capabilities, merges atomically against the framework-owned
+/// baseline context (destination collisions refuse), partitions
+/// claims, and evaluates every contributed name against the lattice
+/// (user acknowledgements and shipped-acceptance grandfathering
+/// apply). At most one call per session per extension.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Protocol` on transport, correlation, or
 /// shape failures, and `CistellaError::Contract` on merge, claim, or
 /// policy refusals. Any refusal rejects the whole transaction.
-pub fn run_prepare<R: Read + AsFd, W: std::io::Write>(
+pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     exchange: &mut Exchange<R, W>,
     guest_id: &str,
     capabilities: &[String],
-    container_home: &str,
+    context: &MergeContext,
     policy: &PolicySet,
     acceptances: &HashSet<String>,
     timeout: Duration,
@@ -134,8 +135,9 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write>(
         serde_json::Value::Object(serde_json::Map::new()),
         timeout,
     )?;
-    let response: PrepareResponse = serde_json::from_value(payload)
-        .map_err(|e| CistellaError::Contract(format!("bad prepare response: {e}")))?;
+    let response: PrepareResponse = serde_json::from_value(payload).map_err(|_| {
+        CistellaError::Contract("bad prepare response: shape violation".to_string())
+    })?;
     let provenance = Provenance::Extension(guest_id.to_string());
     let advertised = CapabilitySet::new(
         &capabilities
@@ -150,7 +152,7 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write>(
     }
     let credentials = admit_all(&response.credentials)?;
     let plan = build_plan(response, &provenance)?;
-    let merged = merge_prepare(plan, &advertised, container_home)?;
+    let merged = merge_prepare(plan, &advertised, context)?;
     let contributed: Vec<String> = merged
         .environment
         .iter()

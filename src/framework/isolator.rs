@@ -234,7 +234,16 @@ pub trait Isolator: Send + Sync {
 
     /// Locates a unit by reconciliation key (replacement-peer
     /// recovery independent of any returned handle).
-    fn locate(&self, key: &ReconciliationKey) -> Option<UnitHandle>;
+    ///
+    /// Fail-closed: any authoritative query error refuses instead of
+    /// reporting absence (an uncertain scan must never greenlight a
+    /// duplicate install). `Ok(None)` after clean queries genuinely
+    /// means absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns on backend query failure.
+    fn locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>>;
 
     /// Converges any unit to applied-or-clean: inspects, terminates
     /// when present, removes always. The default implementation is

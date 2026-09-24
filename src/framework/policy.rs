@@ -111,7 +111,9 @@ impl PolicySet {
     ///
     /// `config_dir` overrides the directory lookup (tests); `None`
     /// uses `$XDG_CONFIG_HOME/cistella` with a `~/.config` fallback.
-    /// An absent file means compiled defaults only.
+    /// A missing file means compiled defaults only; a present but
+    /// empty file is malformed (a truncated policy must never
+    /// silently drop user denials).
     ///
     /// # Errors
     ///
@@ -123,7 +125,11 @@ impl PolicySet {
         let path = policy_path(config_dir);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                use sha2::{Digest, Sha256};
+                let source_hash = format!("{:x}", Sha256::digest([]));
+                return Ok(Self::defaults_only(source_hash));
+            }
             Err(e) => {
                 return Err(CistellaError::Contract(format!(
                     "read {}: {e}",
@@ -136,15 +142,19 @@ impl PolicySet {
 
     /// Parses policy file bytes (load's pure half, unit-testable).
     ///
+    /// Empty input refuses: only a missing file means defaults.
+    ///
     /// # Errors
     ///
     /// Returns `CistellaError::Contract` on any file-contract violation.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         use sha2::{Digest, Sha256};
-        let source_hash = format!("{:x}", Sha256::digest(bytes));
         if bytes.is_empty() {
-            return Ok(Self::defaults_only(source_hash));
+            return Err(CistellaError::Contract(
+                "policies.toml is present but empty: refusing (not defaults)".to_string(),
+            ));
         }
+        let source_hash = format!("{:x}", Sha256::digest(bytes));
         let text = std::str::from_utf8(bytes)
             .map_err(|_| CistellaError::Contract("policies.toml is not UTF-8".to_string()))?;
         let file: PolicyFile = toml::from_str(text)
@@ -218,13 +228,15 @@ impl PolicySet {
     /// transaction claims.
     ///
     /// `acceptances` carries shipped 0.1.1 `environment-acceptances`
-    /// entries, grandfathered against compiled-default rules only: an
-    /// exact acceptance is not itself an acknowledgement, user/site
-    /// suppressible denials still require explicit acknowledgement,
-    /// and later rules apply normally. Upheld claims enforce like
-    /// rules without grandfathering (they are transaction scope, not
-    /// defaults). Diagnostics name the variable, its scope, and its
-    /// severity — never its value.
+    /// entries, grandfathered against compiled-default rules for
+    /// profile-supplied values ONLY: an extension contributing its
+    /// own value under an accepted name is spoofing, never
+    /// grandfathered. An exact acceptance is not itself an
+    /// acknowledgement, user/site suppressible denials still require
+    /// explicit acknowledgement, and later rules apply normally.
+    /// Upheld claims enforce like rules without grandfathering (they
+    /// are transaction scope, not defaults). Diagnostics name the
+    /// variable, its scope, and its severity — never its value.
     ///
     /// # Errors
     ///
@@ -236,11 +248,12 @@ impl PolicySet {
         acceptances: &HashSet<String>,
         claims: &[UpheldClaim],
     ) -> Result<()> {
+        let profile_value = matches!(provenance, Provenance::Profile);
         for rule in self.site.iter().chain(&self.user).chain(&self.defaults) {
             if !rule_applies(rule, name, provenance) {
                 continue;
             }
-            if rule.is_default && acceptances.contains(name) {
+            if rule.is_default && profile_value && acceptances.contains(name) {
                 continue;
             }
             if rule.severity == Severity::Suppressible && self.acknowledgements.contains(name) {

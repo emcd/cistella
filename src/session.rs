@@ -18,6 +18,11 @@ pub const LABEL_PROFILE_DIGEST: &str = "cistella.profile-digest";
 pub const LABEL_IDENTITY: &str = "cistella.identity";
 pub const LABEL_COMMAND: &str = "cistella.command";
 pub const LABEL_IMAGE: &str = "cistella.image";
+/// Reconciliation key for crash recovery (per-attempt identity).
+/// Driver-emitted like the other `cistella.*` labels, but only when a
+/// key reaches `generate_quadlet_unit`: paths that never prepare
+/// (seat-only units) carry no key label.
+pub const LABEL_RECONCILIATION_KEY: &str = "cistella.reconciliation-key";
 
 /// Reserved prefix: only the driver emits `cistella.*` labels.
 pub const RESERVED_PREFIX: &str = "cistella.";

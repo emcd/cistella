@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
+use cistella::framework::contract::MergeContext;
 use cistella::framework::credentials::{admit_all, parse_wire};
 use cistella::framework::policy::PolicySet;
 use cistella::framework::prepare::run_prepare;
@@ -30,6 +31,12 @@ fn full_caps() -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect()
+}
+
+/// Compiled defaults via load: an absent file means defaults only.
+fn defaults() -> PolicySet {
+    let dir = tempfile::tempdir().expect("tempdir");
+    PolicySet::load(Some(dir.path())).expect("absent file means defaults")
 }
 
 #[test]
@@ -158,12 +165,12 @@ fn prepare_admits_handles_with_capability() {
         "environment": [],
         "credentials": [{"kind": "opaque-reference", "id": "abc123"}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     let plan = run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &HashSet::new(),
         FAST,
@@ -178,12 +185,12 @@ fn prepare_refuses_handles_without_capability() {
     let (mut host, peer) = scripted_peer(json!({
         "credentials": [{"kind": "opaque-reference", "id": "abc123"}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     run_prepare(
         &mut host,
         "probe",
         &["environment".to_string()],
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &HashSet::new(),
         FAST,
@@ -198,12 +205,12 @@ fn prepare_bad_handle_fails_whole_transaction() {
         "environment": [{"name": "PROBE_A", "value": "1"}],
         "credentials": [{"kind": "seat-socket", "path": "/etc/shadow"}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &HashSet::new(),
         FAST,

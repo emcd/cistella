@@ -309,8 +309,14 @@ fn shared_gate_parity_with_assignments() {
         container_home: "/home/cistella".to_string(),
     };
     assert!(
-        cistella::runtime::generate_quadlet_unit(&session, &[], &["NUL_BAD=a\0b".to_string()], &[])
-            .is_err(),
+        cistella::runtime::generate_quadlet_unit(
+            &session,
+            &[],
+            &["NUL_BAD=a\0b".to_string()],
+            &[],
+            None
+        )
+        .is_err(),
         "render gate refuses NUL in env"
     );
 }
@@ -337,7 +343,8 @@ fn accepted_value_round_trips_post_escaping() {
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>();
-    let unit = cistella::runtime::generate_quadlet_unit(&session, &[], &env_extra, &[]).unwrap();
+    let unit =
+        cistella::runtime::generate_quadlet_unit(&session, &[], &env_extra, &[], None).unwrap();
     let line = unit
         .lines()
         .find(|l| l.starts_with("Environment=CISTELLA_ACC_RT="))

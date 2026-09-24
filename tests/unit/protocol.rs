@@ -190,7 +190,7 @@ fn stream_collects_pending_then_terminal() {
     });
     let cancel = CancelFlag::default();
     let outcome = host
-        .request_stream("await_result", json!({}), FAST, &cancel)
+        .request_stream("await_result", json!({}), Some(FAST), &cancel)
         .unwrap();
     assert_eq!(outcome.pending, 2);
     assert_eq!(outcome.result, json!({"exit_status": 0}));
@@ -223,6 +223,378 @@ fn guest_going_off_protocol_after_hello_refuses() {
         write_frame(&mut peer, &raw, PRE_NEGOTIATION_MAX_FRAME).unwrap();
         host.request("prepare", json!({}), FAST).unwrap_err();
     }
+}
+
+#[test]
+fn blocked_write_consumes_budget_instead_of_hanging() {
+    // Guest end never reads: the pipe fills and the SEND must time
+    // out on budget rather than hang. Recv timeouts while the pipe
+    // fills are expected (no peer answers); only a write timeout
+    // proves the send path is bounded.
+    let (mut host, _peer) = exchange();
+    let payload = json!({"pad": "x".repeat(63 * 1024)});
+    let mut write_timed_out = false;
+    for _ in 0..256 {
+        match host.request("fill", payload.clone(), Duration::from_millis(100)) {
+            Err(e) if e.to_string() == "protocol: frame write timed out" => {
+                write_timed_out = true;
+                break;
+            }
+            Err(_) => continue,
+            Ok(_) => continue,
+        }
+    }
+    assert!(write_timed_out, "full pipe must time out the send");
+}
+
+#[test]
+fn unbounded_stream_serves_await_result_only() {
+    // Misuse: any other op with no budget refuses immediately.
+    let (mut host, _peer) = exchange();
+    let cancel = CancelFlag::default();
+    host.request_stream("prepare", json!({}), None, &cancel)
+        .unwrap_err();
+}
+
+#[test]
+fn unbounded_await_collects_until_terminal_or_cancel() {
+    use cistella::framework::protocol::AWAIT_RESULT_OP;
+    let (mut host, mut peer) = exchange();
+    let peer_thread = std::thread::spawn(move || {
+        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let envelope = parse_envelope(&request).unwrap();
+        for _ in 0..2 {
+            std::thread::sleep(Duration::from_millis(50));
+            respond(
+                &mut peer,
+                &Envelope {
+                    protocol: PROTOCOL_MAJOR,
+                    id: envelope.id.clone(),
+                    op: envelope.op.clone(),
+                    payload: json!({"pending": true}),
+                },
+                PRE_NEGOTIATION_MAX_FRAME,
+            );
+        }
+        respond(
+            &mut peer,
+            &Envelope {
+                protocol: PROTOCOL_MAJOR,
+                id: envelope.id.clone(),
+                op: envelope.op.clone(),
+                payload: json!({"exit_status": 0}),
+            },
+            PRE_NEGOTIATION_MAX_FRAME,
+        );
+    });
+    let cancel = CancelFlag::default();
+    // No budget: completes on terminal far past any finite timeout.
+    let outcome = host
+        .request_stream(AWAIT_RESULT_OP, json!({}), None, &cancel)
+        .unwrap();
+    assert_eq!(outcome.pending, 2);
+    peer_thread.join().unwrap();
+    // Cancelled unbounded stream detaches with a typed error.
+    let (mut host, mut peer) = exchange();
+    let peer_thread = std::thread::spawn(move || {
+        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let envelope = parse_envelope(&request).unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+        let _ = &envelope;
+    });
+    let cancel = CancelFlag::default();
+    cancel.cancel_with(15);
+    host.request_stream(AWAIT_RESULT_OP, json!({}), None, &cancel)
+        .unwrap_err();
+    drop(peer_thread);
+}
+
+#[test]
+fn spawn_binds_opened_executable_identity() {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read("/bin/cat").expect("read cat");
+    let expected = hex::encode(Sha256::digest(&bytes));
+    let host = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    assert_eq!(host.executable_digest(), expected);
+    // Identity and exec share one open description: no path check
+    // could race this digest.
+}
+
+#[test]
+fn fd_holder_survival_reports_residue() {
+    if std::process::Command::new("setsid")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        eprintln!("skip: setsid unavailable");
+        return;
+    }
+    // The script exits at once, leaving a reparented sleeper (new
+    // session, outside the group kill) holding the stdout pipe open
+    // for 5 s. Shutdown must report residue instead of clean success.
+    let script = "setsid sleep 5 & exit 0".to_string();
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sh"),
+        &["-c".to_string(), script],
+        Deadlines::default(),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let error = host.shutdown().unwrap_err();
+    assert!(
+        error.to_string().contains("retains protocol FDs"),
+        "expected FD-holder residue, got: {error}"
+    );
+}
+
+#[test]
+fn blocked_write_cleanup_kills_and_reaps() {
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sleep"),
+        &["30".to_string()],
+        Deadlines::default(),
+    )
+    .unwrap();
+    let pid = host.pid();
+    // Fill the never-read stdin until the send itself times out.
+    let payload = json!({"pad": "x".repeat(63 * 1024)});
+    let mut write_timed_out = false;
+    for n in 0..256u64 {
+        let envelope = Envelope {
+            protocol: PROTOCOL_MAJOR,
+            id: format!("req-{n}"),
+            op: "fill".to_string(),
+            payload: payload.clone(),
+        };
+        let deadline = std::time::Instant::now() + Duration::from_millis(100);
+        match host.exchange_mut().send(&envelope, deadline) {
+            Err(e) if e.to_string() == "protocol: frame write timed out" => {
+                write_timed_out = true;
+                break;
+            }
+            Err(_) => break,
+            Ok(_) => continue,
+        }
+    }
+    assert!(write_timed_out, "full pipe must time out the send");
+    host.shutdown().unwrap();
+    let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
+    assert!(gone.is_err());
+}
+
+#[test]
+fn drop_without_shutdown_still_reaps() {
+    let pid = {
+        let host = GuestHost::spawn(
+            Path::new("/bin/sleep"),
+            &["30".to_string()],
+            Deadlines::default(),
+        )
+        .unwrap();
+        host.pid()
+    };
+    let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
+    assert!(gone.is_err(), "dropped host must reap its guest");
+}
+
+#[test]
+fn envelope_tokens_are_grammar_bounded() {
+    // Control characters, spaces, and overlong tokens refuse even
+    // when the JSON shape is otherwise valid.
+    for (op, id) in [
+        ("pro\x00be", "req-0"),
+        ("pro be", "req-0"),
+        ("probe", "req-\n0"),
+        ("probe", &"x".repeat(200)),
+    ] {
+        let body = serde_json::to_vec(&json!({
+            "protocol": PROTOCOL_MAJOR,
+            "id": id,
+            "op": op,
+            "payload": {},
+        }))
+        .unwrap();
+        parse_envelope(&body).unwrap_err();
+    }
+}
+
+#[test]
+fn envelope_errors_are_fixed_classes_without_echo() {
+    // Malformed, truncated, and shape-violating envelopes map to
+    // fixed diagnostics: no guest bytes render, even adversarial ones.
+    let evil = "x".repeat(500) + "\nSECRET=hunter2";
+    for (body, fixed) in [
+        (b"{\"protocol\":".to_vec(), "bad envelope: truncated JSON"),
+        (b"{oops".to_vec(), "bad envelope: malformed JSON"),
+        (
+            format!("{{\"protocol\":1,\"id\":\"a\",\"op\":\"o\",\"payload\":null,\"smuggled\":\"{evil}\"}}").into_bytes(),
+            "bad envelope: shape violation",
+        ),
+    ] {
+        let error = parse_envelope(&body).unwrap_err().to_string();
+        assert!(error.contains(fixed), "got: {error}");
+        assert!(!error.contains("hunter2"), "guest content leaked: {error}");
+    }
+}
+
+#[test]
+fn correlation_refusal_names_no_guest_string() {
+    let (mut host, mut peer) = exchange();
+    let peer_thread = std::thread::spawn(move || {
+        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let envelope = parse_envelope(&request).unwrap();
+        // Grammar-valid but wrong ID: refusal must not echo it.
+        let response = Envelope {
+            protocol: PROTOCOL_MAJOR,
+            id: "someone-else".to_string(),
+            op: envelope.op.clone(),
+            payload: json!({"ok": true}),
+        };
+        respond(&mut peer, &response, PRE_NEGOTIATION_MAX_FRAME);
+    });
+    let error = host
+        .request("probe", json!({}), FAST)
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("someone-else"), "id echoed: {error}");
+    assert!(error.contains("unknown or duplicate id"), "got: {error}");
+    peer_thread.join().unwrap();
+}
+
+#[test]
+fn unbounded_await_survives_idle_silence() {
+    use cistella::framework::protocol::AWAIT_RESULT_OP;
+    // Quiet peer: 800 ms of total silence (past the 500 ms poll
+    // slice), then a terminal result. An unbounded await must ride
+    // through the silence; a finite budget must refuse.
+    for timeout in [None, Some(Duration::from_millis(300))] {
+        let (mut host, mut peer) = exchange();
+        let peer_thread = std::thread::spawn(move || {
+            let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+            let envelope = parse_envelope(&request).unwrap();
+            std::thread::sleep(Duration::from_millis(800));
+            respond(
+                &mut peer,
+                &Envelope {
+                    protocol: PROTOCOL_MAJOR,
+                    id: envelope.id.clone(),
+                    op: envelope.op.clone(),
+                    payload: json!({"exit_status": 0}),
+                },
+                PRE_NEGOTIATION_MAX_FRAME,
+            );
+        });
+        let cancel = CancelFlag::default();
+        let result = host.request_stream(AWAIT_RESULT_OP, json!({}), timeout, &cancel);
+        match timeout {
+            None => {
+                let outcome = result.unwrap();
+                assert_eq!(outcome.result, json!({"exit_status": 0}));
+            }
+            Some(_) => {
+                result.unwrap_err();
+            }
+        }
+        peer_thread.join().unwrap();
+    }
+}
+
+#[test]
+fn unbounded_quiet_cancel_detaches_not_times_out() {
+    use cistella::framework::protocol::AWAIT_RESULT_OP;
+    // No frames at all; cancellation at 200 ms must surface as
+    // cancellation, never as a read timeout.
+    let (mut host, _peer) = exchange();
+    let cancel = CancelFlag::default();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(200));
+            cancel.cancel_with(15);
+        });
+        let error = host
+            .request_stream(AWAIT_RESULT_OP, json!({}), None, &cancel)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cancelled"),
+            "quiet cancel must detach, got: {error}"
+        );
+    });
+}
+
+#[test]
+fn post_exit_group_kill_reaches_left_behind_sleepers() {
+    // Script quits at once leaving a SAME-GROUP sleeper that would
+    // write a marker after 2 s. Shutdown signals the group even
+    // though the leader already exited, so the marker never appears.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("marker").to_string_lossy().to_string();
+    let script = format!("(sleep 2 && touch {marker}) & exit 0");
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sh"),
+        &["-c".to_string(), script],
+        Deadlines::default(),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    host.shutdown().unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !dir.path().join("marker").exists(),
+        "post-exit group kill must preempt the left-behind sleeper"
+    );
+}
+
+#[test]
+fn group_escapee_with_closed_fds_outside_enforcement() {
+    // Narrowed-contract pin: a descendant that escapes its process
+    // group AND closes every protocol FD is outside enforcement.
+    // Shutdown reports clean (pipes EOF) while the escapee
+    // demonstrably survives (marker appears). Pinned helpers are
+    // trusted code; this combination requires deliberate evasion.
+    // The setsid guard skips only when the binary is absent; the
+    // boundary pinned here is the contract, not setsid availability.
+    if std::process::Command::new("setsid")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        eprintln!("skip: setsid unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("marker").to_string_lossy().to_string();
+    let script = format!("setsid sh -c 'exec >/dev/null 2>&1; sleep 2; touch {marker}' & exit 0");
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sh"),
+        &["-c".to_string(), script],
+        Deadlines::default(),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    host.shutdown().unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        dir.path().join("marker").exists(),
+        "escapee survival pins the enforcement boundary"
+    );
+}
+
+#[test]
+fn concurrent_second_spawn_refuses() {
+    // The single-guest gate is enforced, not documented: a live
+    // guest blocks a second spawn, and shutdown releases the gate.
+    let host = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    let error = match GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()) {
+        Err(error) => error,
+        Ok(_) => panic!("concurrent spawn must refuse"),
+    };
+    assert!(error.to_string().contains("concurrent guests"));
+    drop(host);
+    // Gate released through Drop/shutdown: a new guest spawns clean.
+    let mut next = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    next.shutdown().unwrap();
 }
 
 #[test]

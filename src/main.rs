@@ -479,9 +479,11 @@ fn conduct_session(
     drop(guard);
     println!("conduct {id}");
     // Own the harness lifetime on the pane PTY; launch never blocks for
-    // completion and the await redeems the outcome. Cancellation kills
-    // (pre-existing conduct semantics); the detach-without-killing
-    // distinction is protocol-level (task 2.1).
+    // completion and the await redeems the outcome. Cancellation
+    // DETACHES (trait contract): on a conduct-level signal the await
+    // returns Detached and explicit terminate below owns the kill, so
+    // the observable disposition (128+signal, no residue) is unchanged
+    // while the trait never kills on cancel.
     // The session runs in its worktree target (validated absolute above).
     let status = match isolator.execute_launch(
         &unit,
@@ -492,6 +494,20 @@ fn conduct_session(
     ) {
         Ok(execution) => match isolator.await_result(&execution, signals::conduct_cancel()) {
             Ok(outcome) => outcome,
+            Err(cistella::error::CistellaError::Detached(_)) => {
+                // Signaled while attached: terminate owns the kill,
+                // then exit with the signal disposition. The SIGTERM
+                // fallback covers detach-without-signal (unusual, but
+                // matches the common-case disposition).
+                let signum = signals::conduct_cancel().signum().unwrap_or(15);
+                let _ = isolator.terminate(&unit, grace, &key);
+                let _ = isolator.remove(&unit, &key);
+                if !cistella::runtime::residue_gone(&container_name, &id) {
+                    eprintln!("error: signal teardown left residue for {container_name}");
+                    std::process::exit(1);
+                }
+                std::process::exit(128 + signum);
+            }
             Err(_) => ExecutionOutcome::Exited(1),
         },
         Err(_) => ExecutionOutcome::Exited(1),

@@ -15,8 +15,8 @@ use crate::lock::{LockGuard, legacy_scratch_dir, scratch_dir};
 use crate::registry::unit_file_label;
 use crate::session::{
     LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_PROFILE,
-    LABEL_PROFILE_DIGEST, Session, command_label, ensure_minted_id, ensure_no_injection,
-    ensure_session_field, validate_generic_label,
+    LABEL_PROFILE_DIGEST, LABEL_RECONCILIATION_KEY, Session, command_label, ensure_minted_id,
+    ensure_no_injection, ensure_session_field, validate_generic_label,
 };
 
 /// Quotes a value for a Quadlet `Label=` or `Environment=` directive.
@@ -145,6 +145,10 @@ pub fn resolve_image_digest(image: &str) -> Result<String> {
 /// The unit uses systemd to own the container, not `podman run --rm`.
 /// Removal is `teardown`'s job. All interpolated values are validated to
 /// prevent Quadlet directive injection (`\n`/`\r`/`\0` rejected).
+/// The reconciliation key (when present) is baked in as a
+/// `cistella.reconciliation-key` label BEFORE install, so a crash
+/// between install and handle registration still leaves a durable
+/// key→resource binding a replacement peer can scan for.
 ///
 /// Quadlet manpage: `Container` section with `Image`, `ContainerName`,
 /// `Label`, `Volume`, `Environment`, `UserNS`, `RunInit`.
@@ -157,6 +161,7 @@ pub fn generate_quadlet_unit(
     volumes: &[String],
     env_extra: &[String],
     generic_labels: &[(String, String)],
+    reconciliation_key: Option<&str>,
 ) -> Result<String> {
     ensure_minted_id(&session.id)?;
     ensure_session_field(&session.profile, "profile")?;
@@ -261,6 +266,14 @@ pub fn generate_quadlet_unit(
         LABEL_IMAGE,
         quote_systemd(&session.image)
     ));
+    if let Some(key) = reconciliation_key {
+        ensure_no_injection(key, "reconciliation-key")?;
+        out.push_str(&format!(
+            "Label={}={}\n",
+            LABEL_RECONCILIATION_KEY,
+            quote_systemd(key)
+        ));
+    }
     // HOME is static and belongs in the unit; closed TERM env is forwarded at exec time (transport spec), not baked.
     out.push_str(&format!(
         "Environment=HOME={}\n",
@@ -799,7 +812,10 @@ pub fn gc_exited_locked() -> Result<GcResult> {
                     let path = dir.join(format!("{name}.container"));
                     if path.exists() {
                         if sid.is_empty() {
-                            sid = unit_file_label(&path, LABEL_ID).unwrap_or_default();
+                            sid = unit_file_label(&path, LABEL_ID)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
                         }
                         if systemd {
                             let service = format!("{name}.service");

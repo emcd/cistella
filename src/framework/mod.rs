@@ -6,6 +6,7 @@
 
 pub mod contract;
 pub mod credentials;
+pub mod guest;
 pub mod isolator;
 pub mod policy;
 pub mod prepare;

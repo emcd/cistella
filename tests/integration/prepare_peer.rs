@@ -23,6 +23,12 @@ use cistella::framework::protocol::GuestHost;
 
 use super::protocol_peer::peer_path;
 
+/// Compiled defaults via load: an absent file means defaults only.
+fn defaults() -> PolicySet {
+    let dir = tempfile::tempdir().expect("tempdir");
+    PolicySet::load(Some(dir.path())).expect("absent file means defaults")
+}
+
 /// Negotiate hello with the peer advertising the full capability set.
 fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>) {
     host.exchange_mut()
@@ -44,7 +50,7 @@ fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::
 fn run_full_prepare(
     host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
 ) -> Result<cistella::framework::prepare::EvaluatedPlan, cistella::error::CistellaError> {
-    let policy = PolicySet::parse(b"").expect("empty policy parses");
+    let policy = defaults();
     let acceptances: HashSet<String> = HashSet::new();
     run_prepare(
         host.exchange_mut(),
@@ -56,7 +62,7 @@ fn run_full_prepare(
             "guest-hooks".to_string(),
             "credentials".to_string(),
         ],
-        "/home/cistella",
+        &cistella::framework::contract::MergeContext::empty("/home/cistella"),
         &policy,
         &acceptances,
         Duration::from_secs(2),
@@ -108,13 +114,13 @@ fn prepare_unadvertised_capability_refuses() {
     host.exchange_mut()
         .hello(&[], Duration::from_secs(2))
         .expect("hello with empty capabilities");
-    let policy = PolicySet::parse(b"").expect("empty policy parses");
+    let policy = defaults();
     let acceptances: HashSet<String> = HashSet::new();
     let result = run_prepare(
         host.exchange_mut(),
         "test-guest",
         &[], // <-- no capabilities advertised
-        "/home/cistella",
+        &cistella::framework::contract::MergeContext::empty("/home/cistella"),
         &policy,
         &acceptances,
         Duration::from_secs(2),

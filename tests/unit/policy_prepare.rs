@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use cistella::framework::contract::{Provenance, Scope, Severity};
+use cistella::framework::contract::{MergeContext, Provenance, Scope, Severity};
 use cistella::framework::policy::{PolicySet, acceptance_set, evaluate_all};
 use cistella::framework::prepare::{parse_capability, run_prepare};
 use cistella::framework::protocol::{
@@ -32,9 +32,15 @@ fn empty_acceptances() -> HashSet<String> {
     HashSet::new()
 }
 
+/// Compiled defaults via load: an absent file means defaults only.
+fn defaults() -> PolicySet {
+    let dir = tempfile::tempdir().expect("tempdir");
+    PolicySet::load(Some(dir.path())).expect("absent file means defaults")
+}
+
 #[test]
 fn absent_file_means_compiled_defaults() {
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     // Token-shaped names refuse for any provenance, even profile.
     let error = policy
         .evaluate("GITHUB_TOKEN", &profile(), &empty_acceptances(), &[])
@@ -148,8 +154,33 @@ fn inviolable_on_extensions_refuses_despite_acknowledgement() {
 }
 
 #[test]
+fn present_empty_file_refuses_instead_of_defaulting() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("policies.toml"), b"").expect("write empty");
+    let error = PolicySet::load(Some(dir.path())).unwrap_err();
+    assert!(error.to_string().contains("empty"));
+    // And the pure half agrees.
+    PolicySet::parse(b"").unwrap_err();
+}
+
+#[test]
+fn extension_spoof_of_accepted_name_refuses() {
+    let policy = defaults();
+    let acceptances = acceptance_set(&["GITHUB_TOKEN".to_string()]);
+    // Profile value grandfathers; extension value under the same
+    // accepted name is spoofing and refuses.
+    policy
+        .evaluate("GITHUB_TOKEN", &profile(), &acceptances, &[])
+        .unwrap();
+    let error = policy
+        .evaluate("GITHUB_TOKEN", &extension(), &acceptances, &[])
+        .unwrap_err();
+    assert!(error.to_string().contains("GITHUB_TOKEN"));
+}
+
+#[test]
 fn shipped_acceptances_grandfathered_against_defaults_only() {
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     let acceptances = acceptance_set(&["GITHUB_TOKEN".to_string()]);
     // Grandfathered: no acknowledgement needed against the default.
     policy
@@ -166,7 +197,7 @@ fn shipped_acceptances_grandfathered_against_defaults_only() {
 
 #[test]
 fn diagnostics_are_value_free() {
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     let error = policy
         .evaluate("GITHUB_TOKEN", &extension(), &empty_acceptances(), &[])
         .unwrap_err();
@@ -178,7 +209,7 @@ fn diagnostics_are_value_free() {
 
 #[test]
 fn evaluate_all_fails_first() {
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     evaluate_all(
         &policy,
         &[
@@ -235,12 +266,12 @@ fn prepare_merges_valid_response() {
         "policy_claims": [],
         "guest_hooks": [],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     let plan = run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -258,12 +289,12 @@ fn prepare_refuses_undeclared_contribution_type() {
     let (mut host, peer) = scripted_peer(json!({
         "environment": [{"name": "PROBE_A", "value": "1"}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     run_prepare(
         &mut host,
         "probe",
         &[],
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -277,12 +308,12 @@ fn prepare_refuses_unknown_wire_fields_whole() {
     let (mut host, peer) = scripted_peer(json!({
         "environment": [{"name": "PROBE_A", "value": "1", "smuggled": true}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -296,12 +327,12 @@ fn prepare_refuses_token_contribution_without_ack() {
     let (mut host, peer) = scripted_peer(json!({
         "environment": [{"name": "GITHUB_TOKEN", "value": "x"}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     let error = run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -327,7 +358,7 @@ fn prepare_discards_weaker_claim_and_proceeds() {
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -345,12 +376,12 @@ fn prepare_refuses_overreaching_claim_whole() {
         "environment": [{"name": "PROBE_A", "value": "1"}],
         "policy_claims": [{"pattern": "^ELSEWHERE_", "severity": "suppressible", "scope": "universal"}],
     }));
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     let error = run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -369,12 +400,12 @@ fn prepare_upheld_claim_enforces_with_ack_escape() {
         "policy_claims": [{"pattern": "^PROBE_", "severity": "suppressible", "scope": "universal"}],
     });
     let (mut host, peer) = scripted_peer(payload);
-    let policy = PolicySet::parse(b"").unwrap();
+    let policy = defaults();
     run_prepare(
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &policy,
         &empty_acceptances(),
         FAST,
@@ -391,7 +422,7 @@ fn prepare_upheld_claim_enforces_with_ack_escape() {
         &mut host,
         "probe",
         &full_caps(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
         &acked,
         &empty_acceptances(),
         FAST,

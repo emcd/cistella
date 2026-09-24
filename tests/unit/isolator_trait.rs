@@ -19,13 +19,14 @@ use cistella::isolators::podman::classify_state;
 /// In-memory fake: units flip through states without any runtime.
 ///
 /// Proves trait-level logic only (converge ordering, idempotent
-/// teardown, cancellation plumbing). It is NOT the deterministic
+/// teardown, detach/replay plumbing). It is NOT the deterministic
 /// protocol peer (task 3.1): no framing, no faults, no lifecycle
 /// meaning beyond the state machine the trait requires.
 struct MemIsolator {
     states: Mutex<HashMap<String, LifecycleState>>,
     terminated: Mutex<Vec<String>>,
     removed: Mutex<Vec<String>>,
+    outcomes: Mutex<HashMap<String, ExecutionOutcome>>,
 }
 
 impl MemIsolator {
@@ -34,6 +35,7 @@ impl MemIsolator {
             states: Mutex::new(HashMap::new()),
             terminated: Mutex::new(Vec::new()),
             removed: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -91,12 +93,23 @@ impl Isolator for MemIsolator {
 
     fn await_result(
         &self,
-        _execution: &ExecutionHandle,
+        execution: &ExecutionHandle,
         cancel: &CancelFlag,
     ) -> Result<ExecutionOutcome, cistella::error::CistellaError> {
-        if cancel.is_cancelled() {
-            return Ok(ExecutionOutcome::Signaled(cancel.signum().unwrap_or(15)));
+        // Detach without killing: cancellation leaves the record for
+        // re-attach; completion stores the outcome for replay. A
+        // completed outcome replays even when cancelled.
+        let mut outcomes = self.outcomes.lock().unwrap();
+        if let Some(outcome) = outcomes.get(execution.as_str()) {
+            return Ok(*outcome);
         }
+        if cancel.is_cancelled() {
+            return Err(cistella::error::CistellaError::Detached(format!(
+                "detached: {}",
+                execution.as_str()
+            )));
+        }
+        outcomes.insert(execution.as_str().to_string(), ExecutionOutcome::Exited(0));
         Ok(ExecutionOutcome::Exited(0))
     }
 
@@ -152,8 +165,11 @@ impl Isolator for MemIsolator {
         })
     }
 
-    fn locate(&self, _key: &ReconciliationKey) -> Option<UnitHandle> {
-        None
+    fn locate(
+        &self,
+        _key: &ReconciliationKey,
+    ) -> Result<Option<UnitHandle>, cistella::error::CistellaError> {
+        Ok(None)
     }
 }
 
@@ -180,18 +196,35 @@ fn converge_clean_terminates_then_removes() {
 }
 
 #[test]
-fn await_honors_cancellation() {
+fn await_detaches_without_killing_and_replays() {
     let backend = MemIsolator::new();
-    let cancel = CancelFlag::default();
+    let live = CancelFlag::default();
     let execution = ExecutionHandle::mint();
+    // Completion stores the outcome.
     assert_eq!(
-        backend.await_result(&execution, &cancel).unwrap(),
+        backend.await_result(&execution, &live).unwrap(),
         ExecutionOutcome::Exited(0)
     );
-    cancel.cancel_with(15);
+    // Replay returns the stored outcome without re-running.
     assert_eq!(
-        backend.await_result(&execution, &cancel).unwrap(),
-        ExecutionOutcome::Signaled(15)
+        backend.await_result(&execution, &live).unwrap(),
+        ExecutionOutcome::Exited(0)
+    );
+    // Cancellation on a live execution detaches with a typed
+    // error; the record survives for re-attach.
+    let fresh = ExecutionHandle::mint();
+    let cancel = CancelFlag::default();
+    cancel.cancel_with(15);
+    let error = backend.await_result(&fresh, &cancel).unwrap_err();
+    assert!(error.to_string().contains("detached"));
+    // Re-attach after detach completes and replays.
+    assert_eq!(
+        backend.await_result(&fresh, &live).unwrap(),
+        ExecutionOutcome::Exited(0)
+    );
+    assert_eq!(
+        backend.await_result(&fresh, &live).unwrap(),
+        ExecutionOutcome::Exited(0)
     );
 }
 
@@ -244,4 +277,65 @@ fn capabilities_gate_matches_contract() {
     assert!(capabilities.supports(Capability::Environment));
     assert!(capabilities.supports(Capability::Mounts));
     assert!(!capabilities.supports(Capability::GuestHooks));
+}
+
+#[test]
+fn ps_output_parsing_skips_missing_markers() {
+    use cistella::isolators::podman::find_key_in_ps_output;
+    assert_eq!(
+        find_key_in_ps_output("cistella-abc abc123\n"),
+        Some(("cistella-abc".to_string(), "abc123".to_string()))
+    );
+    // Podman's `<no value>` marker never matches.
+    assert_eq!(find_key_in_ps_output("cistella-abc <no value>\n"), None);
+    assert_eq!(find_key_in_ps_output(""), None);
+}
+
+#[test]
+fn unit_dir_scan_finds_key_and_ignores_others() {
+    use cistella::isolators::podman::scan_unit_dir;
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("cistella-abc.container"),
+        "[Container]\nLabel=cistella.reconciliation-key=\"key-1\"\nLabel=cistella.id=\"abc\"\n",
+    )
+    .expect("write unit");
+    std::fs::write(
+        dir.path().join("cistella-other.container"),
+        "[Container]\nLabel=cistella.reconciliation-key=\"key-2\"\n",
+    )
+    .expect("write unit");
+    std::fs::write(dir.path().join("notes.txt"), "not a unit").expect("write notes");
+    let entries = std::fs::read_dir(dir.path()).expect("read dir");
+    assert_eq!(
+        scan_unit_dir(entries, "key-1").expect("scan runs clean"),
+        Some(("cistella-abc".to_string(), "abc".to_string()))
+    );
+    let entries = std::fs::read_dir(dir.path()).expect("read dir");
+    assert_eq!(
+        scan_unit_dir(entries, "key-9").expect("scan runs clean"),
+        None
+    );
+}
+
+#[test]
+fn unit_dir_scan_refuses_unreadable_candidates() {
+    use cistella::isolators::podman::scan_unit_dir;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let locked = dir.path().join("cistella-locked.container");
+    std::fs::write(&locked, "[Container]\nLabel=cistella.id=\"x\"\n").expect("write unit");
+    // Owner bits fully cleared (read-only alone stays readable).
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    if std::fs::read(&locked).is_ok() {
+        // File modes not enforced here (e.g. running as root): the
+        // refusal path cannot be exercised.
+        eprintln!("skip: unreadable-file probe reads back");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).expect("restore");
+        return;
+    }
+    let entries = std::fs::read_dir(dir.path()).expect("read dir");
+    let error = scan_unit_dir(entries, "key-1").unwrap_err();
+    assert!(error.to_string().contains("unreadable candidate unit"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).expect("restore");
 }

@@ -256,6 +256,51 @@ pub struct MergedPlan {
     pub guest_hooks: Vec<GuestHookRequest>,
 }
 
+/// Framework-owned baseline inputs for central merge.
+///
+/// The extension's sets never merge in isolation: environment
+/// contributions collide against the full destination namespace
+/// (profile assignments, acceptances, driver-injected names like
+/// `HOME`), and mount contributions validate jointly with the full
+/// emitted set (profile/CLI/session/scratch/credential triples).
+#[derive(Debug, Clone, Default)]
+pub struct MergeContext {
+    /// Container home for topology validation.
+    pub container_home: String,
+    /// Reserved env names (profile + driver namespace).
+    pub reserved_env: HashSet<String>,
+    /// Already-emitted mount triples (profile/CLI/session/...).
+    pub occupied_mounts: Vec<MountTriple>,
+}
+
+impl MergeContext {
+    /// Baseline inputs for central merge.
+    pub fn new(
+        container_home: &str,
+        reserved_env: HashSet<String>,
+        occupied_mounts: Vec<MountTriple>,
+    ) -> Self {
+        Self {
+            container_home: container_home.to_string(),
+            reserved_env,
+            occupied_mounts,
+        }
+    }
+
+    /// Standalone merge with no baseline.
+    ///
+    /// Tests-only: production callers (conduct wiring) must fill the
+    /// full destination namespace and emitted mount set — an empty
+    /// context there would silently skip collision checks.
+    pub fn empty(container_home: &str) -> Self {
+        Self {
+            container_home: container_home.to_string(),
+            reserved_env: HashSet::new(),
+            occupied_mounts: Vec::new(),
+        }
+    }
+}
+
 /// Validates and centrally merges one prepare transaction.
 ///
 /// Atomic: every check runs before any output is built, so the
@@ -263,33 +308,36 @@ pub struct MergedPlan {
 /// application never occurs. In order: capability advertisement gate
 /// (non-empty sets need their type advertised), per-type validation
 /// with existing rules (env-name grammar, value gate, mount
-/// topology), collision refusal (duplicate env names, duplicate hook
-/// orders), claim shape checks. Diagnostics name variables, never
-/// values.
+/// topology), destination collisions (extension names against the
+/// reserved namespace, extension triples jointly with the occupied
+/// set), duplicate refusal (env names, hook orders), claim shape
+/// checks. Diagnostics name variables, never values.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Contract` on undeclared contribution
-/// types, invalid names/values, mount violations, collisions, or
-/// malformed claims.
+/// types, invalid names/values, mount violations, destination
+/// collisions, duplicates, or malformed claims.
 pub fn merge_prepare(
     plan: PreparePlan,
     advertised: &CapabilitySet,
-    container_home: &str,
+    context: &MergeContext,
 ) -> Result<MergedPlan> {
     gate_capabilities(&plan, advertised)?;
-    let environment = merge_environment(&plan.environment)?;
-    let triples: Vec<MountTriple> = plan
-        .mounts
-        .iter()
-        .map(|contribution| contribution.triple.clone())
-        .collect();
-    validate_mounts(&triples, container_home).map_err(contract_error)?;
+    let environment = merge_environment(&plan.environment, &context.reserved_env)?;
+    let mut triples: Vec<MountTriple> = context.occupied_mounts.clone();
+    triples.extend(
+        plan.mounts
+            .iter()
+            .map(|contribution| contribution.triple.clone()),
+    );
+    validate_mounts(&triples, &context.container_home).map_err(contract_error)?;
+    let contributed: Vec<MountTriple> = triples[context.occupied_mounts.len()..].to_vec();
     let policy_claims = check_claims(&plan.policy_claims)?;
     let guest_hooks = order_hooks(&plan.guest_hooks)?;
     Ok(MergedPlan {
         environment,
-        mounts: triples,
+        mounts: contributed,
         policy_claims,
         guest_hooks,
     })
@@ -327,7 +375,10 @@ fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) -> Result<(
     Ok(())
 }
 
-fn merge_environment(contributions: &[EnvContribution]) -> Result<Vec<(String, String)>> {
+fn merge_environment(
+    contributions: &[EnvContribution],
+    reserved: &HashSet<String>,
+) -> Result<Vec<(String, String)>> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut merged = Vec::with_capacity(contributions.len());
     for contribution in contributions {
@@ -338,6 +389,12 @@ fn merge_environment(contributions: &[EnvContribution]) -> Result<Vec<(String, S
         {
             return Err(CistellaError::Contract(format!(
                 "contribution value must not contain control characters: {}",
+                contribution.name
+            )));
+        }
+        if reserved.contains(&contribution.name) {
+            return Err(CistellaError::Contract(format!(
+                "contribution collides with reserved name: {}",
                 contribution.name
             )));
         }

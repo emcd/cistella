@@ -20,21 +20,17 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use nix::sys::select::{FdSet, select};
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction};
 use nix::sys::time::TimeVal;
-use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::CancelFlag;
+
+pub use crate::framework::guest::{GuestHost, StderrDrain};
 
 /// Protocol major version this host speaks.
 pub const PROTOCOL_MAJOR: u32 = 1;
@@ -52,6 +48,12 @@ pub const HOST_MAX_FRAME: usize = 8 * 1024 * 1024;
 /// Stderr accounting cap: bytes beyond this mark the drain truncated
 /// (content is always discarded; only counts survive).
 pub const STDERR_CAP: u64 = 1024 * 1024;
+
+/// Bound for the single send inside an otherwise unbounded stream.
+const SEND_BUDGET: Duration = Duration::from_secs(10);
+
+/// Read slice for unbounded streams (cancellation stays live).
+const READ_POLL_BUDGET: Duration = Duration::from_millis(500);
 
 /// Header size: 4-byte unsigned big-endian frame length.
 const HEADER_LEN: usize = 4;
@@ -115,16 +117,7 @@ pub struct StreamOutcome {
     pub result: Value,
 }
 
-/// Stderr drain accounting (content discarded, counts only).
-#[derive(Debug, Clone, Copy)]
-pub struct StderrDrain {
-    /// Total stderr bytes drained.
-    pub bytes: u64,
-    /// True when output exceeded [`STDERR_CAP`].
-    pub truncated: bool,
-}
-
-fn protocol_error(message: impl Into<String>) -> CistellaError {
+pub(crate) fn protocol_error(message: impl Into<String>) -> CistellaError {
     CistellaError::Protocol(message.into())
 }
 
@@ -147,7 +140,7 @@ fn is_pending(payload: &Value) -> bool {
 /// # Errors
 ///
 /// Returns `CistellaError::Protocol` on select failure.
-fn wait_readable(fd: &impl AsFd, deadline: Instant) -> Result<bool> {
+pub(crate) fn wait_readable(fd: &impl AsFd, deadline: Instant) -> Result<bool> {
     loop {
         let now = Instant::now();
         if now >= deadline {
@@ -173,31 +166,6 @@ fn wait_readable(fd: &impl AsFd, deadline: Instant) -> Result<bool> {
     }
 }
 
-/// Reads exactly `buf.len()` bytes before `deadline`.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Protocol` on timeout (budget exhausted) or
-/// EOF/truncation mid-frame.
-fn read_exact_deadline(
-    reader: &mut (impl Read + AsFd),
-    mut buf: &mut [u8],
-    deadline: Instant,
-) -> Result<()> {
-    while !buf.is_empty() {
-        if !wait_readable(reader, deadline)? {
-            return Err(protocol_error("frame read timed out"));
-        }
-        match reader.read(buf) {
-            Ok(0) => return Err(protocol_error("truncated frame: EOF mid-frame")),
-            Ok(n) => buf = &mut buf[n..],
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(protocol_error(format!("frame read: {e}"))),
-        }
-    }
-    Ok(())
-}
-
 /// Reads one length-prefixed frame, rejecting oversize before allocation.
 ///
 /// The 4-byte big-endian length counts exactly the envelope bytes. A
@@ -214,20 +182,131 @@ pub fn read_frame(
     timeout: Duration,
 ) -> Result<Vec<u8>> {
     let deadline = Instant::now() + timeout;
-    let mut header = [0u8; HEADER_LEN];
-    read_exact_deadline(reader, &mut header, deadline)?;
-    let len = u32::from_be_bytes(header) as usize;
-    if len > max_frame {
-        return Err(protocol_error(format!(
-            "frame length {len} exceeds maximum {max_frame}"
-        )));
+    let mut assembler = FrameAssembler::new();
+    loop {
+        // Bounded reads never idle and never trickle forever: any
+        // slice without completion past the deadline is a timeout.
+        if Instant::now() >= deadline {
+            return Err(protocol_error("frame read timed out"));
+        }
+        match assembler.poll_once(reader, max_frame, deadline)? {
+            FramePoll::Complete(body) => return Ok(body),
+            FramePoll::Idle => {
+                return Err(protocol_error("frame read timed out"));
+            }
+            FramePoll::Partial => continue,
+        }
     }
-    let mut body = vec![0u8; len];
-    read_exact_deadline(reader, &mut body, deadline)?;
-    Ok(body)
+}
+
+/// Incremental frame assembly across poll slices.
+///
+/// Unbounded waits must distinguish idle (no bytes yet — keep
+/// polling, cancellation stays live) from mid-frame progress (bytes
+/// consumed — parsing must NOT restart, or the stream corrupts).
+/// The assembler keeps partial state across `poll_once` calls; a
+/// bounded `read_frame` treats any idle slice as timeout.
+struct FrameAssembler {
+    header: [u8; HEADER_LEN],
+    header_read: usize,
+    length: Option<usize>,
+    body: Vec<u8>,
+}
+
+/// One poll outcome: complete frame, idle slice, or kept progress.
+enum FramePoll {
+    /// Complete frame bytes.
+    Complete(Vec<u8>),
+    /// Budget exhausted with zero new bytes (idle, not failure).
+    Idle,
+    /// Bytes consumed, frame incomplete (state kept, poll again).
+    Partial,
+}
+
+impl FrameAssembler {
+    fn new() -> Self {
+        Self {
+            header: [0u8; HEADER_LEN],
+            header_read: 0,
+            length: None,
+            body: Vec::new(),
+        }
+    }
+
+    /// Polls once toward a complete frame.
+    ///
+    /// Two callers, two lifetimes: bounded `read_frame` owns one
+    /// assembler per call (any non-complete slice ends the read),
+    /// while unbounded `collect_unbounded` owns one assembler across
+    /// the whole stream (idle/partial slices poll again with state
+    /// kept). The assembler itself is lifetime-agnostic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Protocol` on oversize (refused before
+    /// allocating the body), EOF/truncation mid-frame, or IO failure.
+    /// Budget exhaustion surfaces as `Idle`/`Partial`, never an error.
+    fn poll_once(
+        &mut self,
+        reader: &mut (impl Read + AsFd),
+        max_frame: usize,
+        deadline: Instant,
+    ) -> Result<FramePoll> {
+        // Header first (restartable only while zero bytes consumed).
+        while self.header_read < HEADER_LEN {
+            if !wait_readable(reader, deadline)? {
+                return Ok(if self.header_read == 0 && self.body.is_empty() {
+                    FramePoll::Idle
+                } else {
+                    FramePoll::Partial
+                });
+            }
+            match reader.read(&mut self.header[self.header_read..]) {
+                Ok(0) => return Err(protocol_error("truncated frame: EOF mid-frame")),
+                Ok(n) => self.header_read += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(protocol_error(format!("frame read: {e}"))),
+            }
+        }
+        let length = match self.length {
+            Some(length) => length,
+            None => {
+                let length = u32::from_be_bytes(self.header) as usize;
+                if length > max_frame {
+                    return Err(protocol_error(format!(
+                        "frame length {length} exceeds maximum {max_frame}"
+                    )));
+                }
+                self.length = Some(length);
+                self.body = Vec::with_capacity(length.min(65536));
+                length
+            }
+        };
+        while self.body.len() < length {
+            if !wait_readable(reader, deadline)? {
+                return Ok(FramePoll::Partial);
+            }
+            let remaining = length - self.body.len();
+            let mut chunk = vec![0u8; remaining.min(8192)];
+            match reader.read(&mut chunk) {
+                Ok(0) => return Err(protocol_error("truncated frame: EOF mid-frame")),
+                Ok(n) => self.body.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(protocol_error(format!("frame read: {e}"))),
+            }
+        }
+        // Reset for the next frame on this connection: a stale header
+        // or length would corrupt every subsequent parse.
+        self.header_read = 0;
+        self.length = None;
+        Ok(FramePoll::Complete(std::mem::take(&mut self.body)))
+    }
 }
 
 /// Writes one length-prefixed frame, refusing oversize payloads.
+///
+/// Small-frame fast path for scripted peers and tests (blocking;
+/// callers speak to draining readers).
 ///
 /// # Errors
 ///
@@ -250,15 +329,145 @@ pub fn write_frame(writer: &mut impl Write, payload: &[u8], max_frame: usize) ->
         .map_err(|e| protocol_error(format!("frame write: {e}")))
 }
 
-/// Parses and validates one envelope: UTF-8, JSON object, known fields.
+/// `isolator.await_result` op name: the only exchange permitted an
+/// unbounded (cancellable, never timed) wait. The harness lifetime
+/// is uncapped by design; every other op carries a finite budget.
+pub const AWAIT_RESULT_OP: &str = "isolator.await_result";
+
+/// Waits for writability on `fd` until `deadline` (remaining budget).
+///
+/// Returns true when writable, false on budget exhaustion.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Protocol` on select failure.
+fn wait_writable(fd: &impl AsFd, deadline: Instant) -> Result<bool> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(false);
+        }
+        let remaining = deadline - now;
+        let mut timeout =
+            TimeVal::new(remaining.as_secs() as i64, remaining.subsec_micros() as i64);
+        let raw = fd.as_fd();
+        let mut set = FdSet::new();
+        set.insert(raw);
+        let ready = select(
+            raw.as_raw_fd() + 1,
+            None,
+            Some(&mut set),
+            None,
+            Some(&mut timeout),
+        )
+        .map_err(|e| protocol_error(format!("select: {e}")))?;
+        if ready > 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Writes all bytes before `deadline`: a full stdin pipe consumes
+/// budget, never an unbounded block.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Protocol` on budget exhaustion or IO failure.
+fn write_all_deadline(
+    writer: &mut (impl Write + AsFd),
+    mut buf: &[u8],
+    deadline: Instant,
+) -> Result<()> {
+    while !buf.is_empty() {
+        if !wait_writable(writer, deadline)? {
+            return Err(protocol_error("frame write timed out"));
+        }
+        match writer.write(buf) {
+            Ok(0) => return Err(protocol_error("frame write: closed pipe")),
+            Ok(n) => buf = &buf[n..],
+            Err(e)
+                if e.kind() == std::io::ErrorKind::Interrupted
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                continue;
+            }
+            Err(e) => return Err(protocol_error(format!("frame write: {e}"))),
+        }
+    }
+    writer
+        .flush()
+        .map_err(|e| protocol_error(format!("frame write: {e}")))
+}
+
+/// Writes one length-prefixed frame bounded by `deadline`.
+///
+/// The host path: every byte the host emits races a budget, so an
+/// unreading guest surfaces as a typed timeout instead of a hang.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Protocol` on oversize, budget exhaustion,
+/// or IO failure.
+pub fn write_frame_deadline(
+    writer: &mut (impl Write + AsFd),
+    payload: &[u8],
+    max_frame: usize,
+    deadline: Instant,
+) -> Result<()> {
+    if payload.len() > max_frame {
+        return Err(protocol_error(format!(
+            "frame length {} exceeds maximum {max_frame}",
+            payload.len()
+        )));
+    }
+    let header = (payload.len() as u32).to_be_bytes();
+    write_all_deadline(writer, &header, deadline)?;
+    write_all_deadline(writer, payload, deadline)
+}
+
+/// Parses and validates one envelope: UTF-8, JSON object, known
+/// fields, grammar-checked op and id.
+///
+/// Guest-controlled strings never reach diagnostics raw: op/id must
+/// match the token grammar, and serde failures map to fixed classes
+/// (never echoed content).
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Protocol` on invalid UTF-8, malformed
-/// JSON, non-object envelopes, or unknown fields.
+/// JSON, shape violations, or grammar violations.
 pub fn parse_envelope(body: &[u8]) -> Result<Envelope> {
-    let text = std::str::from_utf8(body).map_err(|_| protocol_error("frame is not UTF-8"))?;
-    serde_json::from_str(text).map_err(|e| protocol_error(format!("bad envelope: {e}")))
+    let text = std::str::from_utf8(body).map_err(|_| protocol_error("bad envelope: not UTF-8"))?;
+    let envelope: Envelope = serde_json::from_str(text).map_err(|e| {
+        if e.is_eof() {
+            return protocol_error("bad envelope: truncated JSON");
+        }
+        if e.is_syntax() {
+            return protocol_error("bad envelope: malformed JSON");
+        }
+        protocol_error("bad envelope: shape violation")
+    })?;
+    check_token(&envelope.op, "op")?;
+    check_token(&envelope.id, "id")?;
+    Ok(envelope)
+}
+
+/// Validates one protocol token (op/id): bounded safe charset.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Protocol` on empty, overlong, or
+/// out-of-grammar tokens.
+fn check_token(text: &str, what: &str) -> Result<()> {
+    let ok = !text.is_empty()
+        && text.len() <= 128
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_.:/-".contains(c));
+    if ok {
+        return Ok(());
+    }
+    Err(protocol_error(format!("bad envelope: {what} shape")))
 }
 
 /// Serializes one envelope to frame bytes.
@@ -275,7 +484,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> Vec<u8> {
 /// streaming terminal frame the host stops reading; a stray
 /// post-terminal frame surfaces as an ID mismatch on the next
 /// exchange.
-pub struct Exchange<R: Read + AsFd, W: Write> {
+pub struct Exchange<R: Read + AsFd, W: Write + AsFd> {
     reader: R,
     writer: Option<W>,
     max_frame: usize,
@@ -283,7 +492,7 @@ pub struct Exchange<R: Read + AsFd, W: Write> {
     live_ids: HashSet<String>,
 }
 
-impl<R: Read + AsFd, W: Write> Exchange<R, W> {
+impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     /// Opens an exchange with the pre-negotiation ceiling in force.
     pub fn new(reader: R, writer: W) -> Self {
         Self {
@@ -306,6 +515,32 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
         self.writer = None;
     }
 
+    /// Drains the read side to EOF on a bounded budget, discarding bytes.
+    ///
+    /// Supervision hook: after the kill, EOF proves no descendant
+    /// retains the read pipe; a blocked EOF reports holder residue.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Protocol` when EOF does not arrive in
+    /// budget or the drain fails.
+    pub(crate) fn drain_reader_to_eof(&mut self, deadline: Instant) -> Result<()> {
+        let mut chunk = [0u8; 8192];
+        loop {
+            if !wait_readable(&self.reader, deadline)? {
+                return Err(protocol_error(
+                    "residue: descendant retains protocol FDs (no stdout EOF)",
+                ));
+            }
+            match self.reader.read(&mut chunk) {
+                Ok(0) => return Ok(()),
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(protocol_error(format!("stdout EOF drain: {e}"))),
+            }
+        }
+    }
+
     /// Mints the next per-connection unique request ID.
     ///
     /// Host-minted integers (`req-0`, `req-1`, ...); the string form
@@ -316,18 +551,21 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
         id
     }
 
-    /// Sends one envelope frame.
+    /// Sends one envelope frame bounded by `deadline`.
+    ///
+    /// A full stdin pipe consumes budget, never an unbounded block.
     ///
     /// # Errors
     ///
     /// Returns `CistellaError::Protocol` on a closed exchange,
-    /// oversize, or write failure.
-    pub fn send(&mut self, envelope: &Envelope) -> Result<()> {
+    /// oversize, budget exhaustion, or write failure.
+    pub fn send(&mut self, envelope: &Envelope, deadline: Instant) -> Result<()> {
+        let max_frame = self.max_frame;
         let writer = self
             .writer
             .as_mut()
             .ok_or_else(|| protocol_error("exchange is closed"))?;
-        write_frame(writer, &envelope_bytes(envelope), self.max_frame)
+        write_frame_deadline(writer, &envelope_bytes(envelope), max_frame, deadline)
     }
 
     /// Receives one envelope frame and parses it.
@@ -363,19 +601,18 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
             })
             .expect("hello request serializes"),
         };
-        self.send(&request)?;
-        let response = self.recv(timeout)?;
+        // One end-to-end budget for send + receive.
+        let deadline = Instant::now() + timeout;
+        self.send(&request, deadline)?;
+        let response = self.recv(deadline.saturating_duration_since(Instant::now()))?;
         if response.protocol != PROTOCOL_MAJOR || response.id != "hello" {
             return Err(protocol_error("hello correlation failed"));
         }
         if response.op != "hello" {
-            return Err(protocol_error(format!(
-                "expected hello response, got op {}",
-                response.op
-            )));
+            return Err(protocol_error("expected hello response"));
         }
         let hello: HelloResponse = serde_json::from_value(response.payload)
-            .map_err(|e| protocol_error(format!("bad hello payload: {e}")))?;
+            .map_err(|_| protocol_error("bad hello payload: shape violation"))?;
         if hello.version != PROTOCOL_MAJOR {
             return Err(protocol_error(format!(
                 "unsupported guest version {}",
@@ -396,7 +633,8 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
     /// Sends one request and collects the single terminal response.
     ///
     /// A `{pending: true}` frame on a single-shot exchange refuses:
-    /// streaming belongs to [`Exchange::request_stream`].
+    /// streaming belongs to [`Exchange::request_stream`]. One
+    /// end-to-end budget covers send + receive.
     ///
     /// # Errors
     ///
@@ -405,7 +643,8 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
     pub fn request(&mut self, op: &str, payload: Value, timeout: Duration) -> Result<Value> {
         let id = self.mint_id();
         self.live_ids.insert(id.clone());
-        let result = self.request_inner(&id, op, payload, timeout);
+        let deadline = Instant::now() + timeout;
+        let result = self.request_inner(&id, op, payload, deadline);
         self.live_ids.remove(&id);
         result
     }
@@ -418,39 +657,63 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
     /// shutdown (in-process parity kills the group; wire peers drop
     /// the connection to detach).
     ///
+    /// `timeout` is `Some` budget for every op EXCEPT
+    /// [`AWAIT_RESULT_OP`], whose harness lifetime is uncapped by
+    /// design: `None` waits until terminal or cancellation, and any
+    /// other op with `None` refuses (guests never choose unbounded
+    /// waits; only the framework-selected await runs open-ended).
+    ///
     /// # Errors
     ///
     /// Returns `CistellaError::Protocol` on correlation failure,
-    /// cancellation, timeout, or transport errors.
+    /// cancellation, timeout, unbounded misuse, or transport errors.
     pub fn request_stream(
         &mut self,
         op: &str,
         payload: Value,
-        timeout: Duration,
+        timeout: Option<Duration>,
         cancel: &CancelFlag,
     ) -> Result<StreamOutcome> {
+        if timeout.is_none() && op != AWAIT_RESULT_OP {
+            return Err(protocol_error(format!(
+                "unbounded wait reserved for {AWAIT_RESULT_OP}: {op}"
+            )));
+        }
         let id = self.mint_id();
         self.live_ids.insert(id.clone());
-        let deadline = Instant::now() + timeout;
+        let deadline = timeout.map(|budget| Instant::now() + budget);
         let envelope = Envelope {
             protocol: PROTOCOL_MAJOR,
             id: id.clone(),
             op: op.to_string(),
             payload,
         };
-        self.send(&envelope)?;
+        // Unbounded streams still bound the single send.
+        let send_deadline = deadline.unwrap_or_else(|| Instant::now() + SEND_BUDGET);
+        self.send(&envelope, send_deadline)?;
+        if deadline.is_none() {
+            return self.collect_unbounded(&id, cancel);
+        }
         let mut pending = 0u32;
         loop {
             if cancel.is_cancelled() {
                 self.live_ids.remove(&id);
                 return Err(protocol_error("stream cancelled"));
             }
-            let now = Instant::now();
-            if now >= deadline {
-                self.live_ids.remove(&id);
-                return Err(protocol_error(format!("{op} timed out")));
-            }
-            let response = self.recv(deadline - now)?;
+            let budget = match deadline {
+                Some(end) => {
+                    let now = Instant::now();
+                    if now >= end {
+                        self.live_ids.remove(&id);
+                        return Err(protocol_error(format!("{op} timed out")));
+                    }
+                    end - now
+                }
+                // Unreachable: None returns above, but the match must
+                // stay total over the option.
+                None => READ_POLL_BUDGET,
+            };
+            let response = self.recv(budget)?;
             Self::check_correlation(&response, &id)?;
             if is_pending(&response.payload) {
                 pending += 1;
@@ -464,12 +727,52 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
         }
     }
 
+    /// Collects an unbounded `await_result` stream: idle slices poll
+    /// again (cancellation stays live), mid-frame progress keeps its
+    /// assembler state across slices (parsing never restarts), and
+    /// only terminal/cancel/error ends the wait.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Protocol` on correlation failure,
+    /// cancellation, framing errors, or transport errors — never on
+    /// idle silence, however long.
+    fn collect_unbounded(&mut self, id: &str, cancel: &CancelFlag) -> Result<StreamOutcome> {
+        let mut assembler = FrameAssembler::new();
+        let mut pending = 0u32;
+        loop {
+            if cancel.is_cancelled() {
+                self.live_ids.remove(id);
+                return Err(protocol_error("stream cancelled"));
+            }
+            let slice = Instant::now() + READ_POLL_BUDGET;
+            match assembler.poll_once(&mut self.reader, self.max_frame, slice)? {
+                FramePoll::Complete(body) => {
+                    let response = parse_envelope(&body)?;
+                    Self::check_correlation(&response, id)?;
+                    if is_pending(&response.payload) {
+                        pending += 1;
+                        continue;
+                    }
+                    self.live_ids.remove(id);
+                    return Ok(StreamOutcome {
+                        pending,
+                        result: response.payload,
+                    });
+                }
+                // Idle silence and mid-frame progress both poll again;
+                // the assembler keeps partial bytes across slices.
+                FramePoll::Idle | FramePoll::Partial => continue,
+            }
+        }
+    }
+
     fn request_inner(
         &mut self,
         id: &str,
         op: &str,
         payload: Value,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<Value> {
         let envelope = Envelope {
             protocol: PROTOCOL_MAJOR,
@@ -477,8 +780,8 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
             op: op.to_string(),
             payload,
         };
-        self.send(&envelope)?;
-        let response = self.recv(timeout)?;
+        self.send(&envelope, deadline)?;
+        let response = self.recv(deadline.saturating_duration_since(Instant::now()))?;
         Self::check_correlation(&response, id)?;
         if is_pending(&response.payload) {
             return Err(protocol_error(format!(
@@ -492,198 +795,11 @@ impl<R: Read + AsFd, W: Write> Exchange<R, W> {
         if response.protocol != PROTOCOL_MAJOR {
             return Err(protocol_error("response protocol mismatch"));
         }
+        // IDs are grammar-checked at parse; the diagnostic names no
+        // guest string (value-free).
         if response.id != id {
-            return Err(protocol_error(format!(
-                "response for unknown or duplicate id: {}",
-                response.id
-            )));
+            return Err(protocol_error("response for unknown or duplicate id"));
         }
         Ok(())
-    }
-}
-
-/// Guest process host: spawn, speak, kill, reap, drain.
-///
-/// Owns the whole guest lifetime: pinned executable (absolute path
-/// required, never PATH-searched), own process group (descendants
-/// that fork, change groups, retain FDs, or fill pipes die with the
-/// group), concurrent bounded stderr drain (content discarded, counts
-/// only), and reverse-order shutdown with residue-dominated
-/// reporting. While a guest lives, SIGPIPE is ignored process-wide
-/// (saved and restored at shutdown) so a dead guest arrives as a
-/// typed write error, never a signal.
-pub struct GuestHost<R: Read + AsFd, W: Write> {
-    exchange: Exchange<R, W>,
-    child: Child,
-    stderr_outcome: mpsc::Receiver<StderrDrain>,
-    old_sigpipe: Option<SigAction>,
-    deadlines: crate::framework::contract::Deadlines,
-    shut: bool,
-}
-
-impl GuestHost<ChildStdout, ChildStdin> {
-    /// Spawns a pinned guest executable and opens the exchange.
-    ///
-    /// The executable must be an absolute path: helpers are
-    /// discovered and pinned by the framework, never PATH-searched.
-    /// Stderr drains on a background thread from spawn (content
-    /// discarded immediately); the child leads its own process group.
-    ///
-    /// Exactly one guest at a time: a second `spawn` would save the
-    /// first spawn's SIGPIPE-ignore as its restore target, so
-    /// concurrent guests need a per-guest disposition layer (deferred).
-    ///
-    /// # Errors
-    ///
-    /// Returns `CistellaError::Protocol` on a relative executable or
-    /// spawn failure.
-    pub fn spawn(
-        executable: &Path,
-        args: &[String],
-        deadlines: crate::framework::contract::Deadlines,
-    ) -> Result<Self> {
-        if !executable.is_absolute() {
-            return Err(protocol_error(format!(
-                "guest executable must be absolute, never PATH-searched: {}",
-                executable.display()
-            )));
-        }
-        let mut child = unsafe {
-            Command::new(executable)
-                .args(args)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .pre_exec(|| {
-                    nix::unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0))
-                        .map_err(std::io::Error::other)
-                })
-                .spawn()
-        }
-        .map_err(|e| protocol_error(format!("guest spawn: {e}")))?;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let stderr = child.stderr.take().expect("piped stderr");
-        let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
-            sender.send(drain_stderr(stderr)).expect("drain report");
-        });
-        let old_sigpipe = ignore_sigpipe();
-        Ok(Self {
-            exchange: Exchange::new(stdout, stdin),
-            child,
-            stderr_outcome: receiver,
-            old_sigpipe,
-            deadlines,
-            shut: false,
-        })
-    }
-
-    /// Child pid (observability for tests and conformance).
-    #[must_use]
-    pub fn pid(&self) -> u32 {
-        self.child.id()
-    }
-
-    /// Mutable frame exchange (hello, requests, streams).
-    pub fn exchange_mut(&mut self) -> &mut Exchange<ChildStdout, ChildStdin> {
-        &mut self.exchange
-    }
-
-    /// Kills the process group (SIGTERM, grace, SIGKILL) and reaps.
-    ///
-    /// Alive check first: an already-reaped guest needs no signal.
-    /// Descendants fall with the group even when they retain FDs.
-    fn kill_group(&mut self) -> Result<()> {
-        if self
-            .child
-            .try_wait()
-            .map_err(|e| protocol_error(format!("wait: {e}")))?
-            .is_some()
-        {
-            return Ok(());
-        }
-        let group = Pid::from_raw(-(self.child.id() as i32));
-        let _ = kill(group, Signal::SIGTERM);
-        let grace = Instant::now() + self.deadlines.terminate_grace;
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => return Ok(()),
-                Ok(None) => {}
-                Err(e) => return Err(protocol_error(format!("reap: {e}"))),
-            }
-            if Instant::now() >= grace {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = kill(group, Signal::SIGKILL);
-        self.child
-            .wait()
-            .map_err(|e| protocol_error(format!("reap after kill: {e}")))?;
-        Ok(())
-    }
-
-    /// Reverse-order shutdown: close stdin, kill group, reap, join
-    /// the stderr drain, restore SIGPIPE. Residue dominates: a
-    /// kill/reap failure outranks drain or restore failures.
-    ///
-    /// # Errors
-    ///
-    /// Returns the residue-class failure when cleanup leaves residue;
-    /// drain/restore failures surface only with a clean kill.
-    pub fn shutdown(&mut self) -> Result<()> {
-        if self.shut {
-            return Ok(());
-        }
-        self.shut = true;
-        // Reverse acquisition: stdin pipe, process group, reap, drain.
-        self.exchange.close();
-        let mut residue: Option<CistellaError> = None;
-        if let Err(e) = self.kill_group() {
-            residue = Some(e);
-        }
-        let drain = self.stderr_outcome.recv_timeout(Duration::from_secs(5));
-        if residue.is_none()
-            && let Err(e) = drain
-                .map(|_| ())
-                .map_err(|_| protocol_error("stderr drain hung"))
-        {
-            residue = Some(e);
-        }
-        if let Some(old) = self.old_sigpipe.take() {
-            unsafe {
-                let _ = sigaction(Signal::SIGPIPE, &old);
-            }
-        }
-        if let Some(error) = residue {
-            return Err(error);
-        }
-        Ok(())
-    }
-}
-
-/// Reads stderr to EOF, discarding content, counting bytes.
-fn drain_stderr(mut stderr: ChildStderr) -> StderrDrain {
-    let mut bytes = 0u64;
-    let mut chunk = [0u8; 8192];
-    loop {
-        match stderr.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => bytes += n as u64,
-            Err(_) => break,
-        }
-    }
-    StderrDrain {
-        bytes,
-        truncated: bytes > STDERR_CAP,
-    }
-}
-
-/// Ignores SIGPIPE process-wide, returning the previous disposition.
-fn ignore_sigpipe() -> Option<SigAction> {
-    unsafe {
-        let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
-        sigaction(Signal::SIGPIPE, &ignore).ok()
     }
 }

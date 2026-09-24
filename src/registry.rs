@@ -61,15 +61,18 @@ impl SessionRecord {
 /// Values are systemd-unquoted: the unit stores `"..."` and the registry
 /// sees the literal value podman received. Pure fs read, so gc phase-1
 /// classification can use it without another fallible `podman inspect`.
-pub(crate) fn unit_file_label(unit_file: &Path, key: &str) -> Option<String> {
-    let content = std::fs::read_to_string(unit_file).ok()?;
+pub(crate) fn unit_file_label(
+    unit_file: &Path,
+    key: &str,
+) -> std::result::Result<Option<String>, std::io::Error> {
+    let content = std::fs::read_to_string(unit_file)?;
     let prefix = format!("Label={key}=");
     for line in content.lines() {
         if let Some(value) = line.strip_prefix(&prefix) {
-            return Some(unquote_systemd(value.trim()));
+            return Ok(Some(unquote_systemd(value.trim())));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Lists sessions by joining the unit-file registry with
@@ -119,12 +122,15 @@ pub fn list_sessions() -> Result<Vec<SessionRecord>> {
     }
     let systemd = systemd_user_available();
     for (container, path) in names {
-        let id = unit_file_label(&path, LABEL_ID).unwrap_or_else(|| {
-            container
-                .strip_prefix("cistella-")
-                .unwrap_or(&container)
-                .to_string()
-        });
+        let id = unit_file_label(&path, LABEL_ID)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                container
+                    .strip_prefix("cistella-")
+                    .unwrap_or(&container)
+                    .to_string()
+            });
         let active_state = if systemd {
             let service = format!("{container}.service");
             query_unit_props(&service)
@@ -146,10 +152,22 @@ pub fn list_sessions() -> Result<Vec<SessionRecord>> {
             }
         }
         records.push(SessionRecord {
-            directory: unit_file_label(&path, LABEL_DIRECTORY).unwrap_or_default(),
-            profile: unit_file_label(&path, LABEL_PROFILE).unwrap_or_default(),
-            identity: unit_file_label(&path, LABEL_IDENTITY).unwrap_or_default(),
-            image: unit_file_label(&path, LABEL_IMAGE).unwrap_or_default(),
+            directory: unit_file_label(&path, LABEL_DIRECTORY)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            profile: unit_file_label(&path, LABEL_PROFILE)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            identity: unit_file_label(&path, LABEL_IDENTITY)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            image: unit_file_label(&path, LABEL_IMAGE)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
             container_present: present.contains(&container),
             generic_labels,
             container_name: container,

@@ -5,13 +5,12 @@
 //! triples here are shape-valid only; topology rules stay covered by
 //! the mount suite.
 
-use std::collections::HashMap;
-
 use cistella::framework::contract::{
     Assumption, BaselineBinding, Capability, CapabilitySet, ControlDeadline, Deadlines,
-    EnvContribution, GuestHookRequest, MountContribution, MountMode, MountTriple, Phase,
-    PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Scope, Severity, merge_prepare,
+    EnvContribution, GuestHookRequest, MergeContext, MountContribution, MountMode, MountTriple,
+    Phase, PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Scope, Severity, merge_prepare,
 };
+use std::collections::{HashMap, HashSet};
 
 fn full_capabilities() -> CapabilitySet {
     CapabilitySet::new(&[
@@ -31,9 +30,13 @@ fn env(name: &str, value: &str) -> EnvContribution {
 }
 
 fn mount(target: &str) -> MountContribution {
+    mount_from("/srv/data", target)
+}
+
+fn mount_from(host: &str, target: &str) -> MountContribution {
     MountContribution {
         triple: MountTriple {
-            host_source: "/srv/data".to_string(),
+            host_source: host.to_string(),
             container_target: target.to_string(),
             mode: MountMode::Ro,
         },
@@ -62,7 +65,7 @@ fn empty_plan_merges_without_capabilities() {
     let merged = merge_prepare(
         PreparePlan::default(),
         &CapabilitySet::default(),
-        "/home/cistella",
+        &MergeContext::empty("/home/cistella"),
     )
     .unwrap();
     assert!(merged.environment.is_empty());
@@ -75,7 +78,12 @@ fn undeclared_contribution_type_refuses_whole() {
         environment: vec![env("PROBE_VAR", "1")],
         ..PreparePlan::default()
     };
-    let error = merge_prepare(plan, &CapabilitySet::default(), "/home/cistella").unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &CapabilitySet::default(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("unadvertised"));
 }
 
@@ -85,7 +93,12 @@ fn duplicate_env_name_refuses_atomically() {
         environment: vec![env("DUP_VAR", "1"), env("DUP_VAR", "2")],
         ..PreparePlan::default()
     };
-    let error = merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("DUP_VAR"));
     assert!(!error.to_string().contains('1'));
 }
@@ -97,13 +110,23 @@ fn bad_env_name_and_control_value_refuse() {
             environment: vec![contribution],
             ..PreparePlan::default()
         };
-        merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+        merge_prepare(
+            plan,
+            &full_capabilities(),
+            &MergeContext::empty("/home/cistella"),
+        )
+        .unwrap_err();
     }
     let plan = PreparePlan {
         environment: vec![env("CTRL_VAR", "a\nb")],
         ..PreparePlan::default()
     };
-    let error = merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("CTRL_VAR"));
 }
 
@@ -113,7 +136,12 @@ fn mount_topology_still_applies_to_contributions() {
         mounts: vec![mount("/etc")],
         ..PreparePlan::default()
     };
-    merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
 }
 
 #[test]
@@ -122,12 +150,22 @@ fn duplicate_hook_order_refuses_and_hooks_sort() {
         guest_hooks: vec![hook(1), hook(1)],
         ..PreparePlan::default()
     };
-    merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
     let plan = PreparePlan {
         guest_hooks: vec![hook(9), hook(3)],
         ..PreparePlan::default()
     };
-    let merged = merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap();
+    let merged = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap();
     let orders: Vec<u32> = merged.guest_hooks.iter().map(|hook| hook.order).collect();
     assert_eq!(orders, vec![3, 9]);
 }
@@ -140,14 +178,24 @@ fn empty_hook_content_refuses() {
         guest_hooks: vec![empty_argv],
         ..PreparePlan::default()
     };
-    merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
     let mut empty_probe = hook(1);
     empty_probe.probe_op.clear();
     let plan = PreparePlan {
         guest_hooks: vec![empty_probe],
         ..PreparePlan::default()
     };
-    merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
 }
 
 #[test]
@@ -156,7 +204,49 @@ fn empty_claim_pattern_refuses() {
         policy_claims: vec![claim("")],
         ..PreparePlan::default()
     };
-    merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap_err();
+    merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
+}
+
+#[test]
+fn reserved_env_names_refuse_atomically() {
+    let reserved: HashSet<String> = ["HOME".to_string()].iter().cloned().collect();
+    let occupied = Vec::new();
+    let context = MergeContext::new("/home/cistella", reserved, occupied);
+    let plan = PreparePlan {
+        environment: vec![env("HOME", "/tmp/evil"), env("CLEAN_VAR", "1")],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(plan, &full_capabilities(), &context).unwrap_err();
+    assert!(error.to_string().contains("HOME"));
+}
+
+#[test]
+fn occupied_mount_targets_refuse_overlap() {
+    let occupied = vec![MountTriple {
+        host_source: "/srv/data".to_string(),
+        container_target: "/data".to_string(),
+        mode: MountMode::Ro,
+    }];
+    let context = MergeContext::new("/home/cistella", HashSet::new(), occupied);
+    // Exact-target overlap with the emitted set refuses.
+    let plan = PreparePlan {
+        mounts: vec![mount("/data")],
+        ..PreparePlan::default()
+    };
+    merge_prepare(plan, &full_capabilities(), &context).unwrap_err();
+    // Disjoint targets merge, and only contributed triples return.
+    let plan = PreparePlan {
+        mounts: vec![mount_from("/srv/other", "/other")],
+        ..PreparePlan::default()
+    };
+    let merged = merge_prepare(plan, &full_capabilities(), &context).unwrap();
+    assert_eq!(merged.mounts.len(), 1);
+    assert_eq!(merged.mounts[0].container_target, "/other");
 }
 
 #[test]
@@ -167,7 +257,12 @@ fn merged_plan_keeps_spine_order() {
         policy_claims: vec![claim("FIRST_VAR")],
         guest_hooks: vec![hook(2)],
     };
-    let merged = merge_prepare(plan, &full_capabilities(), "/home/cistella").unwrap();
+    let merged = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap();
     let names: Vec<&str> = merged
         .environment
         .iter()

@@ -112,7 +112,7 @@ fn launch_unit(image: &str, env: Vec<String>) -> (Fixture, TempDir) {
         labels: vec![],
     };
     let handle = backend.create(&spec, &key).expect("create unit");
-    assert_eq!(backend.locate(&key), Some(handle.clone()));
+    assert_eq!(backend.locate(&key).expect("locate"), Some(handle.clone()));
     assert_eq!(
         backend.state(&handle).expect("state after create"),
         cistella::framework::contract::LifecycleState::Created
@@ -254,9 +254,92 @@ fn conformance_full_cycle_with_fidelity() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
+fn conformance_reconciliation_survives_restart() {
+    use cistella::framework::contract::LifecycleState;
+    let Some(image) = fixture_image() else { return };
+    let backend = PodmanIsolator::new();
+    let key = ReconciliationKey::generate();
+    let worktree = TempDir::new().expect("worktree tempdir");
+    let (session, volumes) = plan_session(&image, &worktree, "marker");
+    let container = session.container_name();
+    let session_id = session.id.clone();
+    let spec = CreateSpec {
+        session,
+        volumes,
+        env: vec![],
+        labels: vec![],
+    };
+    let handle = backend.create(&spec, &key).expect("create unit");
+    // Crash simulation: a fresh backend with empty tables must still
+    // locate the unit through its durable key label (unit file, no
+    // container yet).
+    let peer = PodmanIsolator::new();
+    let found = peer
+        .locate(&key)
+        .expect("scan runs clean")
+        .expect("scan locates crash-after-install unit by key");
+    assert_eq!(
+        peer.inspect(&found).expect("inspect found").unit_identity,
+        container
+    );
+    // Same-key retry replays the existing unit, never a duplicate.
+    let replayed = peer.create(&spec, &key).expect("same-key retry replays");
+    assert_eq!(
+        peer.inspect(&replayed)
+            .expect("inspect replay")
+            .unit_identity,
+        container
+    );
+    // Converge through the replacement peer, then prove absence plus
+    // residue freedom.
+    peer.initiate(&found, &key).expect("initiate found");
+    peer.converge_clean(&found, Duration::from_secs(10), &key)
+        .expect("converge found");
+    assert_eq!(
+        peer.state(&found).expect("state after converge"),
+        LifecycleState::Absent
+    );
+    assert!(
+        residue_gone(&container, &session_id),
+        "converged unit leaves no residue"
+    );
+    drop(handle);
+    drop(worktree);
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn conformance_absent_converge_clears_orphan_scratch() {
+    let Some(image) = fixture_image() else { return };
+    let (mut fixture, _worktree) = launch_unit(&image, vec![]);
+    let handle = fixture.handle.clone().expect("unit handle");
+    let key = ReconciliationKey::generate();
+    let grace = Duration::from_secs(10);
+    // Full teardown, then plant orphan scratch: converge on the
+    // absent unit must clear it rather than trust `state` alone.
+    fixture
+        .backend
+        .terminate(&handle, grace, &key)
+        .expect("terminate");
+    fixture.backend.remove(&handle, &key).expect("remove");
+    let scratch = cistella::lock::scratch_dir(&fixture.session_id);
+    std::fs::create_dir_all(&scratch).expect("plant orphan scratch");
+    fixture
+        .backend
+        .converge_clean(&handle, grace, &key)
+        .expect("converge absent clears scratch");
+    assert!(
+        residue_gone(&fixture.container, &fixture.session_id),
+        "orphan scratch cleared"
+    );
+    fixture.handle = None;
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
 fn conformance_executing_state_observable() {
     let Some(image) = fixture_image() else { return };
-    let (fixture, _worktree) = launch_unit(&image, vec![]);
+    let (mut fixture, _worktree) = launch_unit(&image, vec![]);
     let handle = fixture.handle.clone().expect("unit handle");
     let key = ReconciliationKey::generate();
     let sleep = fixture
@@ -283,11 +366,63 @@ fn conformance_executing_state_observable() {
     }
     let cancel = cistella::framework::contract::CancelFlag::default();
     cancel.cancel_with(15);
+    // Cancellation detaches without killing: typed Detached, harness
+    // still running. Explicit terminate owns the kill.
+    let error = fixture.backend.await_result(&sleep, &cancel).unwrap_err();
+    assert!(error.to_string().contains("detached"));
+    fixture
+        .backend
+        .terminate(&handle, Duration::from_secs(10), &key)
+        .expect("terminate owns the kill");
+    fixture
+        .backend
+        .remove(&handle, &key)
+        .expect("remove after terminate");
+    fixture.handle = None;
+    assert!(
+        residue_gone(&fixture.container, &fixture.session_id),
+        "terminated harness leaves no residue"
+    );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn conformance_await_reattaches_and_replays() {
+    let Some(image) = fixture_image() else { return };
+    let (fixture, _worktree) = launch_unit(&image, vec![]);
+    let handle = fixture.handle.clone().expect("unit handle");
+    let key = ReconciliationKey::generate();
+    let sleep = fixture
+        .backend
+        .execute_launch(
+            &handle,
+            &["sleep".to_string(), "5".to_string()],
+            Some("/work"),
+            StdioBinding::Inherit,
+            &key,
+        )
+        .expect("launch sleep");
+    // Detach from a second awaiter while the harness runs, then
+    // re-attach on the same handle: the outcome redeems once the
+    // harness exits, and replays after that.
+    let backend = &fixture.backend;
+    let cancel = cistella::framework::contract::CancelFlag::default();
+    cancel.cancel_with(15);
+    backend.await_result(&sleep, &cancel).unwrap_err();
+    let outcome = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let live = cistella::framework::contract::CancelFlag::default();
+                backend.await_result(&sleep, &live)
+            })
+            .join()
+            .expect("waiter joins")
+    })
+    .expect("re-attached await redeems");
+    assert_eq!(outcome, ExecutionOutcome::Exited(0));
+    let live = cistella::framework::contract::CancelFlag::default();
     assert_eq!(
-        fixture
-            .backend
-            .await_result(&sleep, &cancel)
-            .expect("await sleep"),
-        ExecutionOutcome::Signaled(15)
+        fixture.backend.await_result(&sleep, &live).expect("replay"),
+        ExecutionOutcome::Exited(0)
     );
 }
