@@ -130,7 +130,7 @@ User policy SHALL live at `$XDG_CONFIG_HOME/cistella/policies.toml`, falling bac
 
 ### Requirement: Framework-owned deadlines
 
-The framework SHALL bound every control-plane guest interaction (the harness lifetime itself is uncapped per the spine): short hello, bounded plan/apply windows, SIGTERM grace then SIGKILL, capped frame/message sizes and stderr, typed timeouts, fail-closed before execute. Guests SHALL NOT choose unbounded timeouts. The framework SHALL drain stdout and stderr concurrently and boundedly; SHALL own, terminate, and reap all descendants and protocol-FD holders (peers that fork, change process groups, retain FDs, or fill undrained pipes are covered, not just the immediate child); SHALL reconcile and clean up after a timed-out mutating operation with uncertain outcome; and SHALL report with residue dominating (residue failure outranks all other outcomes). Mechanism (process groups, pidfds, cgroups) and numeric values are implementation choices. Long-lived concurrent observers are out of scope; the event-stream capability is reserved but unbuilt.
+The framework SHALL bound every control-plane guest interaction (the harness lifetime itself is uncapped per the spine): short hello, bounded plan/apply windows, SIGTERM grace then SIGKILL, capped frame/message sizes and stderr, typed timeouts, fail-closed before execute. Guests SHALL NOT choose unbounded timeouts. The framework SHALL drain stdout and stderr concurrently and boundedly; SHALL own, terminate, and reap its process group and verify no descendant retains protocol FDs (pipe-EOF proof); SHALL reconcile and clean up after a timed-out mutating operation with uncertain outcome; and SHALL report with residue dominating (residue failure outranks all other outcomes). Mechanism (process groups, pidfds) and numeric values are implementation choices. Supervision assumes sane, non-malicious helpers (trusted code, untrusted data per the trust boundary): a descendant that deliberately escapes its process group AND closes every protocol FD is outside enforcement — hunting escapees by PID risks killing an innocent process after PID reuse, so the framework does not try. That residual is documented and pinned by conformance, never silently absorbed. Long-lived concurrent observers are out of scope; the event-stream capability is reserved but unbuilt.
 
 #### Scenario: Slow guest fails closed
 - **WHEN** an extension exceeds its plan window
@@ -138,7 +138,11 @@ The framework SHALL bound every control-plane guest interaction (the harness lif
 
 #### Scenario: Descendant holders reaped
 - **WHEN** a guest forks descendants that retain protocol FDs past SIGTERM grace
-- **THEN** the framework terminates and reaps the whole group; no holder survives the window
+- **THEN** the framework terminates and reaps the whole group and verifies pipe EOF; no FD-holder survives the window
+
+#### Scenario: Group-escapee residual documented
+- **WHEN** a descendant escapes its process group and closes every protocol FD
+- **THEN** shutdown may report clean while the escapee survives; this residual is outside enforcement (PID-hunting risks innocents) and stays pinned by conformance, never absorbed silently
 
 #### Scenario: Uncertain mutation reconciled
 - **WHEN** a guest times out after creating a resource but before returning its handle
