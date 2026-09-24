@@ -635,6 +635,8 @@ fn default_disposition_closed_pipe_is_typed_not_fatal() {
         .output()
         .expect("spawn sigpipe probe");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Exit code is the primary signal, stdout the secondary: never
+    // invert them (PROBE_OK without success still fails).
     assert!(
         output.status.success(),
         "probe must survive DFL closed-pipe write: {stdout}"
@@ -646,6 +648,10 @@ fn default_disposition_closed_pipe_is_typed_not_fatal() {
 }
 
 /// Resolves a built example binary (newest-mtime executable match).
+///
+/// Requires `cargo build --examples` first for filtered runs
+/// (`cargo test --test unit` does not build examples; full
+/// `cargo nextest run` does via the default target set).
 fn example_binary(name: &str) -> std::path::PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
