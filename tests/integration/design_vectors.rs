@@ -57,19 +57,25 @@ fn acknowledged(names: &[&str]) -> (tempfile::TempDir, PolicySet) {
     (dir, policy)
 }
 
+/// Full capability advertisement: one source of truth for every
+/// vector's hello negotiation and prepare gate.
+const FULL_CAPS: &[&str] = &[
+    "environment",
+    "mounts",
+    "policy-claims",
+    "guest-hooks",
+    "credentials",
+];
+
+/// Capability list owned for `hello`/`run_prepare` call sites.
+fn full_caps() -> Vec<String> {
+    FULL_CAPS.iter().map(ToString::to_string).collect()
+}
+
 /// Negotiate hello with the peer advertising the full capability set.
 fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>) {
     host.exchange_mut()
-        .hello(
-            &[
-                "environment".to_string(),
-                "mounts".to_string(),
-                "policy-claims".to_string(),
-                "guest-hooks".to_string(),
-                "credentials".to_string(),
-            ],
-            Duration::from_secs(2),
-        )
+        .hello(&full_caps(), Duration::from_secs(2))
         .expect("hello must succeed against the peer");
 }
 
@@ -97,13 +103,7 @@ fn run_vector(
     let result = run_prepare(
         host.exchange_mut(),
         "vector-guest",
-        &[
-            "environment".to_string(),
-            "mounts".to_string(),
-            "policy-claims".to_string(),
-            "guest-hooks".to_string(),
-            "credentials".to_string(),
-        ],
+        &full_caps(),
         &cistella::framework::contract::MergeContext::empty("/home/cistella"),
         policy,
         acceptances,
@@ -187,7 +187,9 @@ fn vector_agentmux_weakening_claim_discarded() {
 fn vector_ssh_prepare_merges() {
     // SSH identity wiring as a transaction: the pointer env and the
     // read-only socket bind merge, and the `seat-socket` handle
-    // admits with its locator class (never content).
+    // admits with its locator class (never content). The full
+    // capability set is advertised so the handle survives the merge
+    // gate — the vector proves credential-seam admission end to end.
     let policy = defaults();
     let acceptances: HashSet<String> = HashSet::new();
     let plan =
@@ -214,7 +216,9 @@ fn vector_ssh_prepare_merges() {
 fn vector_extension_token_refused_value_free() {
     // Negative vector: token-shaped env from extension provenance
     // refuses (never grandfathered) and the diagnostic names the
-    // variable without rendering its value.
+    // variable without rendering its value. The sentinel value
+    // `vector-secret-value` is the canary: any future change that
+    // renders it is a value-leak regression.
     let policy = defaults();
     let acceptances: HashSet<String> = HashSet::new();
     let error = run_vector("prepare-vector-token", &policy, &acceptances)
