@@ -45,18 +45,3 @@ mounts = []
     assert!(args[1].contains(":ro"));
     assert!(args[3].contains(sock.to_string_lossy().as_ref()));
 }
-
-#[test]
-fn rejects_github_token_in_env() {
-    let prof = Profile::from_toml(
-        r#"
-image = "localhost/cistella/opencode:example"
-credential-surface = "none"
-mounts = []
-[environment-assignments]
-GITHUB_TOKEN = "secret"
-"#,
-    )
-    .unwrap();
-    assert!(cistella::identity::assert_no_github_token_in_assignments(&prof).is_err());
-}

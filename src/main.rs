@@ -341,7 +341,13 @@ fn conduct_session(
         mode: MountMode::Rw,
     });
     cistella::mount::validate_mounts(&triples, prof.home())?;
-    cistella::identity::assert_no_github_token_in_assignments(&prof)?;
+    // Deliberate policy migration (0.2.0): the legacy unconditional
+    // token-assignments veto is removed here and replaced by lattice
+    // evaluation below. Refusals change error class from Identity to
+    // Contract; absence-by-default is preserved (the unacknowledged
+    // compiled-default denial still refuses).
+    let policy = cistella::framework::policy::PolicySet::load(None)?;
+    cistella::framework::conduct::evaluate_profile_contributions(&prof, &accepted_env, &policy)?;
     let volumes = podman_volume_args(&triples, prof.home(), None);
     let ssh_args = cistella::identity::ssh_agent_volume_args(&prof);
     // ssh_args is mixed ["--volume", "sock:sock:ro", "-e", "SSH_AUTH_SOCK=..."]; split for Quadlet

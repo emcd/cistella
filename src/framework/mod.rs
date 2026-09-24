@@ -4,6 +4,7 @@
 //! and reconciliation identity. The isolator trait (task 1.2) builds
 //! on these types; nothing here knows Podman.
 
+pub mod conduct;
 pub mod contract;
 pub mod credentials;
 pub mod guest;
