@@ -321,13 +321,16 @@ pub fn write_frame(writer: &mut impl Write, payload: &[u8], max_frame: usize) ->
         )));
     }
     let header = (payload.len() as u32).to_be_bytes();
-    masked(|| {
+    match masked(|| {
         writer
             .write_all(&header)
             .and_then(|()| writer.write_all(payload))
             .and_then(|()| writer.flush())
-    })
-    .map_err(|e| protocol_error(format!("frame write: {e}")))
+    }) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(protocol_error(format!("frame write: {e}"))),
+        Err(e) => Err(e),
+    }
 }
 
 /// `isolator.await_result` op name: the only exchange permitted an
@@ -343,15 +346,56 @@ pub const AWAIT_RESULT_OP: &str = "isolator.await_result";
 /// thread, never a signal, and concurrent guests need no shared
 /// disposition save/restore. Restore is best-effort; callers keep
 /// responsibility for any prior mask they care about.
-fn masked<T>(op: impl FnOnce() -> T) -> T {
-    use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
-    let mut block = SigSet::empty();
-    block.add(Signal::SIGPIPE);
-    let mut old = SigSet::empty();
-    let _ = pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&block), Some(&mut old));
-    let out = op();
-    let _ = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&old), None);
-    out
+///
+/// Correctness core: with a default disposition, a blocked SIGPIPE
+/// stays pending and would kill on unmask AFTER the write observed
+/// EPIPE. So while still masked, exactly one NEWLY generated
+/// SIGPIPE is consumed (a pre-existing pending SIGPIPE is never
+/// touched); mask failures refuse rather than writing unprotected.
+fn masked<T>(op: impl FnOnce() -> T) -> Result<T> {
+    use nix::libc;
+    unsafe {
+        let mut before: libc::sigset_t = std::mem::zeroed();
+        if libc::sigpending(&mut before) != 0 {
+            return Err(protocol_error(format!(
+                "sigpending: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let had = libc::sigismember(&before, libc::SIGPIPE) == 1;
+        let mut block: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        if libc::sigemptyset(&mut block) != 0
+            || libc::sigaddset(&mut block, libc::SIGPIPE) != 0
+            || libc::pthread_sigmask(libc::SIG_BLOCK, &block, &mut old) != 0
+        {
+            return Err(protocol_error(format!(
+                "sigmask block: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let out = op();
+        if !had {
+            let mut now: libc::sigset_t = std::mem::zeroed();
+            if libc::sigpending(&mut now) == 0 && libc::sigismember(&now, libc::SIGPIPE) == 1 {
+                // Zero-timeout wait consumes exactly the signal this
+                // write generated; EAGAIN (raced away) is harmless.
+                let timeout = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                libc::sigtimedwait(&block, &mut info, &timeout);
+            }
+        }
+        if libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) != 0 {
+            return Err(protocol_error(format!(
+                "sigmask restore: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(out)
+    }
 }
 
 /// Waits for writability on `fd` until `deadline` (remaining budget).
@@ -403,18 +447,23 @@ fn write_all_deadline(
             return Err(protocol_error("frame write timed out"));
         }
         match masked(|| writer.write(buf)) {
-            Ok(0) => return Err(protocol_error("frame write: closed pipe")),
-            Ok(n) => buf = &buf[n..],
-            Err(e)
+            Ok(Ok(0)) => return Err(protocol_error("frame write: closed pipe")),
+            Ok(Ok(n)) => buf = &buf[n..],
+            Ok(Err(e))
                 if e.kind() == std::io::ErrorKind::Interrupted
                     || e.kind() == std::io::ErrorKind::WouldBlock =>
             {
                 continue;
             }
-            Err(e) => return Err(protocol_error(format!("frame write: {e}"))),
+            Ok(Err(e)) => return Err(protocol_error(format!("frame write: {e}"))),
+            Err(e) => return Err(e),
         }
     }
-    masked(|| writer.flush()).map_err(|e| protocol_error(format!("frame write: {e}")))
+    match masked(|| writer.flush()) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(protocol_error(format!("frame write: {e}"))),
+        Err(e) => Err(e),
+    }
 }
 
 /// Writes one length-prefixed frame bounded by `deadline`.

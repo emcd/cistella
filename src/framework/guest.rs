@@ -25,16 +25,17 @@ const KILL_SETTLE: Duration = Duration::from_secs(5);
 /// Budget for post-kill pipe-EOF verification (FD-holder detection).
 const PIPE_EOF_BUDGET: Duration = Duration::from_secs(3);
 
-/// True when no process group survives (signal-0 pole, ESRCH).
+/// True when no process group survives (signal-0 pole, ESRCH only).
 ///
 /// Signal 0 delivers nothing: it only asks the kernel whether the
-/// group exists. EPERM (foreign-owned group) also reads as gone:
-/// the framework cannot enforce on a group it lacks permission for,
-/// so the wait returns rather than blocking on a budget it cannot
-/// act on. A recycled PGID could theoretically false-negative, but
+/// group exists. ONLY ESRCH proves extinction — EPERM or any other
+/// error means unverified, never clean (a foreign-owned or
+/// otherwise unpolable group fails closed into the settle budget
+/// and then residue, rather than reporting an extinction it cannot
+/// prove). A recycled PGID could theoretically false-negative, but
 /// the pole runs inside a bounded window the framework owns.
 fn group_gone(group: Pid) -> bool {
-    kill(group, None).is_err()
+    matches!(kill(group, None), Err(nix::errno::Errno::ESRCH))
 }
 
 /// Stderr drain accounting (content discarded, counts only).

@@ -624,6 +624,36 @@ fn in_group_term_ignorer_cleared_by_kill() {
 }
 
 #[test]
+fn default_disposition_closed_pipe_is_typed_not_fatal() {
+    // The Advisor regression: with SIGPIPE at SIG_DFL, a write to a
+    // closed pipe raises a PENDING signal while masked; unmasking
+    // without consuming it would kill the host after EPIPE was
+    // already observed. The masked path must consume exactly the
+    // signal its own write generated and survive.
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+    unsafe {
+        let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        sigaction(Signal::SIGPIPE, &dfl).expect("set SIG_DFL");
+    }
+    let (mut writer, reader) = UnixStream::pair().expect("socketpair");
+    drop(reader);
+    // Buffered reader end dropped: first write raises EPIPE.
+    let result = write_frame(&mut writer, b"hello", 1024);
+    // Restore the Rust-runtime ignore before any assertion can panic.
+    unsafe {
+        let ign = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        sigaction(Signal::SIGPIPE, &ign).expect("restore SIG_IGN");
+    }
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("frame write"),
+        "closed pipe must surface typed EPIPE, got: {error}"
+    );
+    // Survival itself is the assertion: reaching here proves no
+    // delayed SIGPIPE delivery killed the process.
+}
+
+#[test]
 fn guest_executable_must_be_absolute() {
     let error = match GuestHost::spawn(Path::new("relative/guest"), &[], Deadlines::default()) {
         Err(error) => error,
