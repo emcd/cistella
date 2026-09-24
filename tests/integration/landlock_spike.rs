@@ -44,6 +44,16 @@ use std::process::{Command, Stdio};
 /// descending. The two helpers could share a single resolution
 /// helper — out of scope for this spike; the duplication is small.
 fn landlock_helper_path() -> PathBuf {
+    resolve_example("landlock_helper")
+}
+
+/// Resolves the seccomp-fault-injector path. Same resolution logic
+/// as `landlock_helper_path`; separated for clarity.
+fn landlock_kill_wrapper_path() -> PathBuf {
+    resolve_example("landlock_kill_wrapper")
+}
+
+fn resolve_example(prefix: &str) -> PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
     let profile_dir = my_path
@@ -57,10 +67,10 @@ fn landlock_helper_path() -> PathBuf {
             let entry = entry.expect("dir entry");
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if !name.starts_with("landlock_helper") {
+            if !name.starts_with(prefix) {
                 continue;
             }
-            let after = &name["landlock_helper".len()..];
+            let after = &name[prefix.len()..];
             if !after.is_empty() && !after.starts_with('-') {
                 continue;
             }
@@ -79,8 +89,8 @@ fn landlock_helper_path() -> PathBuf {
         .map(|(_, p)| p)
         .unwrap_or_else(|| {
             panic!(
-                "landlock_helper executable not found in {}; \
-                 run `cargo build --example landlock_helper` first",
+                "{prefix} executable not found in {}; \
+                 run `cargo build --example {prefix}` first",
                 examples_dir.display()
             )
         })
@@ -108,45 +118,74 @@ fn run_helper(allows: &[&str], wrapped_argv: &[&str]) -> (i32, String) {
     (output.status.code().unwrap_or(-1), stderr)
 }
 
-/// `admitted` — helper allows `/tmp` and `/proc/self/fd`; wrapped
-/// command writes a marker to `/tmp/landlock_spike_marker` and exits 0.
-/// This proves Landlock rules reach the wrapped process (or the file
-/// write would fail with EACCES).
-#[ignore = "live: requires operator-authorized seat with seccomp-filter relaxed for landlock_restrict_self"]
+/// `admitted` — helper allows the wrapped process's needed paths
+/// (the marker destination + python3 binary + dynamic linker +
+/// libc), wrapped writes the marker and exits 0. Proves Landlock
+/// rules reach the wrapped process. The NARROW-rules proof is
+/// `denied_access_yields_eacces` (separate allow list).
+#[ignore = "live: requires operator-authorized Podman seat"]
 #[test]
 fn admitted_access_succeeds() {
     let marker = "/tmp/landlock_spike_marker";
     let _ = std::fs::remove_file(marker);
     let wrapped = [
-        "/bin/sh",
+        "/usr/bin/python3",
         "-c",
-        &format!("echo spike-marker > {marker} && echo from-wrapped"),
+        &format!("open({marker:?}, 'w').write('spike-marker')"),
     ];
-    let (exit_code, stderr) = run_helper(&["/tmp", "/proc/self/fd"], &wrapped);
+    // Allow directory paths only (Landlock `path_beneath` rules
+    // require the fd to refer to a directory — files like
+    // `/etc/ld.so.cache` reject with EINVAL). The python3 binary
+    // lives under `/usr`; `/etc` covers the ld cache directory;
+    // `/proc/self/fd` covers stdio; `/tmp` is the marker destination.
+    // `/lib` is a symlink to `/usr/lib` on Debian-derived systems;
+    // Landlock rejects symlinks for path-beneath (EINVAL), so we
+    // skip it. `/lib64` is x86_64-only; skipped on aarch64.
+    let allows = ["/tmp", "/proc/self/fd", "/usr", "/etc"];
+    let (exit_code, stderr) = run_helper(&allows, &wrapped);
     assert_eq!(
         exit_code, 0,
         "wrapped command must exit 0; stderr: {stderr}"
     );
     let contents = std::fs::read_to_string(marker).expect("marker readable after helper exit");
-    assert_eq!(contents, "spike-marker\n");
+    assert_eq!(contents, "spike-marker");
     let _ = std::fs::remove_file(marker);
 }
 
-/// `denied` — helper allows only `/proc/self/fd`; wrapped command
-/// attempts to read `/etc/passwd`. Landlock denies the path-beneath
-/// rule; the wrapped process gets `EACCES` and the helper propagates
-/// the error (wrapped exit code reflects the failure — `1` from
-/// `cat`'s standard error path, or the kernel's errno for direct
-/// syscalls). The host's pre-execute dispatch must map this to a
-/// typed refusal (NOT a per-errno pin).
-#[ignore = "live: requires operator-authorized seat with seccomp-filter relaxed for landlock_restrict_self"]
+/// Local smoke for the admitted path: runs WITHOUT `#[ignore]` in
+/// this seat (kernel 6.17 has Landlock, seccomp off, no_new_privs
+/// branch works). Equivalent to the Podman-seat test for the helper's
+/// correctness; the Podman test adds the namespace-inheritance
+/// assertion (separate `podman_ancestry` file when that test lands).
+#[test]
+fn local_smoke_admitted_works() {
+    let marker = "/tmp/landlock_spike_local_marker";
+    let _ = std::fs::remove_file(marker);
+    let wrapped = [
+        "/usr/bin/python3",
+        "-c",
+        &format!("open({marker:?}, 'w').write('local-smoke')"),
+    ];
+    let allows = ["/tmp", "/proc/self/fd", "/usr", "/etc"];
+    let (exit_code, stderr) = run_helper(&allows, &wrapped);
+    assert_eq!(exit_code, 0, "local smoke must exit 0; stderr: {stderr}");
+    let contents = std::fs::read_to_string(marker).expect("marker readable after helper exit");
+    assert_eq!(contents, "local-smoke");
+    let _ = std::fs::remove_file(marker);
+}
+
+/// `denied` — helper allows the wrapped process's needed paths
+/// (`/usr` for python3, `/proc/self/fd` for stdio) but NOT `/etc`.
+/// Wrapped attempts to read `/etc/passwd` — Landlock denies the
+/// path-beneath under `/etc`, the wrapped process gets `EACCES`,
+/// python exits non-zero. The host's pre-execute dispatch must map
+/// this to a typed refusal (NOT a per-errno pin).
+#[ignore = "live: requires operator-authorized Podman seat"]
 #[test]
 fn denied_access_yields_eacces() {
-    let wrapped = ["/bin/cat", "/etc/passwd"];
-    let (exit_code, stderr) = run_helper(&["/proc/self/fd"], &wrapped);
-    // `cat` exits with non-zero on open failure and writes to stderr.
-    // We assert the failure shape, not the exact exit code (the
-    // wrapper command may translate EACCES differently).
+    let wrapped = ["/usr/bin/python3", "-c", "open('/etc/passwd', 'r').read()"];
+    let allows = ["/usr", "/proc/self/fd"];
+    let (exit_code, stderr) = run_helper(&allows, &wrapped);
     assert_ne!(exit_code, 0, "wrapped command must fail on denied path");
     let combined = stderr.to_lowercase();
     assert!(
@@ -157,29 +196,56 @@ fn denied_access_yields_eacces() {
     );
 }
 
-/// `unsupported` — kernel/syscall unavailable. On this seat,
-/// `landlock_restrict_self` already fails with EPERM (seccomp-filter
-/// blocks). The helper exits 1 with stderr
-/// "landlock_helper: unsupported: seccomp-filter or capability
-/// restricts Landlock". The host's pre-execute dispatch must
-/// surface this as a typed `Unsupported` (not an errno pin).
+/// `unsupported` — the `landlock_kill_wrapper` deterministically
+/// filters `landlock_create_ruleset`/`add_rule`/`restrict_self` to
+/// return `ENOSYS` via seccomp-bpf. The helper observes the same
+/// `ENOSYS` it would see on a kernel-without-Landlock, and surfaces
+/// it as typed `Unsupported: <syscall>: ENOSYS` — NOT as a
+/// cause-specific "kernel lacks Landlock" claim (the helper cannot
+/// distinguish absent-feature from blocked-syscall from errno alone).
 ///
-/// Self-contained — can be un-`#[ignore]`-d in this seat without
-/// operator authorization.
+/// This test runs unconditionally on every host (capable or not):
+/// the wrapper forces the unavailable path, the helper surfaces the
+/// typed refusal, and the assertion always runs. No `#[ignore]` —
+/// the wrapper IS the determinism.
 #[test]
-fn unsupported_kernel_or_seccomp_typed_refusal() {
-    let wrapped = ["/bin/true"];
-    let (exit_code, stderr) = run_helper(&["/tmp"], &wrapped);
-    assert_eq!(exit_code, 1, "unsupported must exit 1");
+fn unsupported_kernel_typed_refusal() {
+    // Spawn landlock_kill_wrapper, which sets no_new_privs + the
+    // seccomp-bpf filter, then execvp's the helper. The helper sees
+    // Landlock syscalls returning ENOSYS and exits 1 with the typed
+    // refusal.
+    let wrapper = landlock_kill_wrapper_path();
+    let helper = landlock_helper_path();
+    let output = Command::new(&wrapper)
+        .arg("--")
+        .arg(&helper)
+        .args(["--allow=/tmp", "--allow=/proc/self/fd", "--allow=/etc"])
+        .arg("--")
+        .arg("/usr/bin/python3")
+        .arg("-c")
+        .arg("pass")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("landlock_kill_wrapper must spawn");
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        exit_code, 1,
+        "helper must exit 1 under seccomp-filtered Landlock; stderr: {stderr}"
+    );
     let combined = stderr.to_lowercase();
     assert!(
-        combined.contains("unsupported"),
+        combined.contains("unsupported:"),
         "stderr must surface typed `unsupported:` message, got: {stderr}"
     );
+    // Helper must NOT claim a specific physical cause. Assert
+    // negative: stderr must not contain "kernel lacks" (the false
+    // diagnosis Advisor flagged). The helper reports only the syscall
+    // name + errno (e.g. "landlock_create_ruleset: ENOSYS").
     assert!(
-        combined.contains("landlock")
-            || combined.contains("seccomp")
-            || combined.contains("kernel"),
-        "stderr must name the cause, got: {stderr}"
+        !combined.contains("kernel lacks"),
+        "helper must not infer physical cause from errno alone; got: {stderr}"
     );
 }

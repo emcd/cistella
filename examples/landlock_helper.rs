@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use libc::{
-    EACCES, EBADF, ENOSYS, EPERM, O_CLOEXEC, O_PATH, SYS_landlock_add_rule,
+    EACCES, EBADF, ENOSYS, EPERM, O_CLOEXEC, O_PATH, PR_SET_NO_NEW_PRIVS, SYS_landlock_add_rule,
     SYS_landlock_create_ruleset, SYS_landlock_restrict_self, c_int, close, fcntl, open,
 };
 
@@ -249,10 +249,15 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
                 close(f);
             }
         }
+        // Report only what the syscall returned — do NOT infer a
+        // physical cause (seccomp-blocked vs kernel-absent vs
+        // capability-denied are indistinguishable from errno alone).
+        // The host dispatch layer can probe if it wants a richer
+        // verdict; the helper stays truthful.
         return Err(match e {
-            ENOSYS => HelperError::Unsupported("kernel lacks Landlock"),
-            EPERM => HelperError::Unsupported("seccomp-filter or capability restricts Landlock"),
-            _ => HelperError::Unsupported("landlock_create_ruleset refused"),
+            ENOSYS => HelperError::Unsupported("landlock_create_ruleset: ENOSYS"),
+            EPERM => HelperError::Unsupported("landlock_create_ruleset: EPERM"),
+            _ => HelperError::Unsupported("landlock_create_ruleset: refused"),
         });
     }
 
@@ -291,14 +296,49 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
         }
     }
 
+    // `landlock_restrict_self(2)` accepts either CAP_SYS_ADMIN in the
+    // calling user namespace OR `PR_SET_NO_NEW_PRIVS=1` on the calling
+    // thread. The seat user has no effective capabilities, so we set
+    // `PR_SET_NO_NEW_PRIVS` to take the second branch. Without this,
+    // a bare EPERM from `restrict_self` proves nothing about Landlock
+    // support — it proves the helper never set `no_new_privs`.
+    //
+    // `prctl(PR_SET_NO_NEW_PRIVS, ...)` is irreversible for the calling
+    // thread; setting it is safe here because the helper is a one-shot
+    // Landlock wrapper and the ruleset is the next syscall anyway.
+    let pr = unsafe {
+        libc::syscall(
+            libc::SYS_prctl,
+            PR_SET_NO_NEW_PRIVS as libc::c_long,
+            1 as libc::c_long,
+            0,
+            0,
+            0,
+        )
+    };
+    if pr < 0 {
+        let e = io::Error::last_os_error().raw_os_error().unwrap_or(EPERM);
+        for &f in &allowed_fds {
+            unsafe {
+                close(f);
+            }
+        }
+        unsafe {
+            close(ruleset_fd);
+        }
+        return Err(match e {
+            ENOSYS => HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): ENOSYS"),
+            EPERM => HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): EPERM"),
+            _ => HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): refused"),
+        });
+    }
+
     // Apply the ruleset. `landlock_restrict_self` is the gate that
     // turns the ruleset into an enforced restriction on this thread.
-    //
-    // EPERM here is the canonical "Landlock cannot be applied"
-    // signal — either the kernel lacks Landlock support, the
-    // seccomp filter blocks the syscall, or capabilities are
-    // missing. The host dispatch layer must surface any of these as
-    // a typed pre-execute `Unsupported` (never per-errno pin).
+    // The helper reports only what the syscall returned — physical
+    // cause (seccomp-blocked vs kernel-absent vs capability-denied)
+    // is not inferable from errno alone; the host dispatch layer
+    // probes if it needs a richer verdict.
     let r = unsafe { syscall2(SYS_landlock_restrict_self, ruleset_fd as libc::c_long, 0) };
     if r < 0 {
         let e = io::Error::last_os_error().raw_os_error().unwrap_or(EPERM);
@@ -311,11 +351,9 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
             close(ruleset_fd);
         }
         return Err(match e {
-            ENOSYS => HelperError::Unsupported("kernel lacks Landlock"),
-            EPERM => HelperError::Unsupported(
-                "seccomp-filter or capability restricts landlock_restrict_self",
-            ),
-            _ => HelperError::Unsupported("landlock_restrict_self refused"),
+            ENOSYS => HelperError::Unsupported("landlock_restrict_self: ENOSYS"),
+            EPERM => HelperError::Unsupported("landlock_restrict_self: EPERM"),
+            _ => HelperError::Unsupported("landlock_restrict_self: refused"),
         });
     }
     // ruleset_fd is consumed by restrict_self — close not required.
