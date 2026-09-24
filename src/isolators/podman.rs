@@ -207,17 +207,24 @@ pub fn find_key_in_ps_output(text: &str) -> Option<(String, String)> {
 
 /// Scans one unit directory for a key label.
 ///
-/// A `cistella-*.container` file that cannot be read refuses the
-/// whole scan: an unreadable candidate could be the sought unit
-/// (installed before a crash), and skipping it would report clean
+/// Generic over the entry iterator so failing iteration is
+/// unit-testable: any `Err` item refuses the whole scan, because an
+/// unreadable candidate or a skipped entry could be the sought unit
+/// (installed before a crash), and either would report clean
 /// absence into a duplicate install. Readable files lacking the key
 /// skip normally; non-unit files never read.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Runtime` on unreadable candidate units.
-pub fn scan_unit_dir(entries: std::fs::ReadDir, key: &str) -> Result<Option<(String, String)>> {
-    for entry in entries.flatten() {
+/// Returns `CistellaError::Runtime` on iteration failure or
+/// unreadable candidate units.
+pub fn scan_unit_dir(
+    entries: impl Iterator<Item = std::io::Result<std::fs::DirEntry>>,
+    key: &str,
+) -> Result<Option<(String, String)>> {
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| CistellaError::Runtime(format!("unit directory iteration: {e}")))?;
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "container") {
             continue;

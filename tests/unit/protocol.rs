@@ -582,19 +582,45 @@ fn group_escapee_with_closed_fds_outside_enforcement() {
 }
 
 #[test]
-fn concurrent_second_spawn_refuses() {
-    // The single-guest gate is enforced, not documented: a live
-    // guest blocks a second spawn, and shutdown releases the gate.
-    let host = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
-    let error = match GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()) {
-        Err(error) => error,
-        Ok(_) => panic!("concurrent spawn must refuse"),
+fn concurrent_guests_coexist() {
+    // The old process-global gate is gone: two live guests hello
+    // and round-trip independently, proving the protocol supports
+    // multiple extensions without serialization.
+    let mut first = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    let mut second = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    for host in [&mut first, &mut second] {
+        host.exchange_mut().hello(&[], FAST).unwrap();
+        let payload = host
+            .exchange_mut()
+            .request("probe", json!({"n": 1}), FAST)
+            .unwrap();
+        assert_eq!(payload, json!({"n": 1}));
+    }
+    first.shutdown().unwrap();
+    second.shutdown().unwrap();
+}
+
+#[test]
+fn in_group_term_ignorer_cleared_by_kill() {
+    // Sane in-group descendant ignoring SIGTERM with closed FDs:
+    // pipes EOF (nothing retained) but the group survives TERM, so
+    // shutdown must escalate to SIGKILL and report clean ONLY with
+    // the group extinct (signal-0 pole from the test).
+    let deadlines = Deadlines {
+        terminate_grace: Duration::from_secs(2),
+        ..Deadlines::default()
     };
-    assert!(error.to_string().contains("concurrent guests"));
-    drop(host);
-    // Gate released through Drop/shutdown: a new guest spawns clean.
-    let mut next = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
-    next.shutdown().unwrap();
+    let script = "(trap '' TERM; exec >/dev/null 2>&1; sleep 30) & exit 0".to_string();
+    let mut host =
+        GuestHost::spawn(Path::new("/bin/sh"), &["-c".to_string(), script], deadlines).unwrap();
+    let pgid = host.pid() as i32;
+    std::thread::sleep(Duration::from_millis(500));
+    host.shutdown().unwrap();
+    let group = nix::unistd::Pid::from_raw(-pgid);
+    assert!(
+        nix::sys::signal::kill(group, None).is_err(),
+        "in-group ignorer must be reaped by SIGKILL escalation"
+    );
 }
 
 #[test]

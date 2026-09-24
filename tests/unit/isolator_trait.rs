@@ -339,3 +339,14 @@ fn unit_dir_scan_refuses_unreadable_candidates() {
     assert!(error.to_string().contains("unreadable candidate unit"));
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).expect("restore");
 }
+
+#[test]
+fn unit_dir_scan_refuses_failed_iteration() {
+    use cistella::isolators::podman::scan_unit_dir;
+    // Deterministic iterator failure: no filesystem stages a
+    // mid-iteration getdents error reliably (open fds keep working
+    // past chmod), so the test injects the Err item directly.
+    let injected: std::io::Result<std::fs::DirEntry> = Err(std::io::Error::other("staged"));
+    let error = scan_unit_dir(vec![injected].into_iter(), "key-1").unwrap_err();
+    assert!(error.to_string().contains("unit directory iteration"));
+}

@@ -306,13 +306,12 @@ impl FrameAssembler {
 /// Writes one length-prefixed frame, refusing oversize payloads.
 ///
 /// Small-frame fast path for scripted peers and tests (blocking;
-/// callers speak to draining readers).
+/// callers speak to draining readers). SIGPIPE masked per write.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Protocol` when the payload exceeds
-/// `max_frame` or the write fails (including EPIPE on a dead guest —
-/// the host ignores SIGPIPE while a guest lives, so death arrives as
+/// `max_frame` or the write fails (EPIPE on a dead peer arrives as
 /// a typed error, never a signal).
 pub fn write_frame(writer: &mut impl Write, payload: &[u8], max_frame: usize) -> Result<()> {
     if payload.len() > max_frame {
@@ -322,17 +321,37 @@ pub fn write_frame(writer: &mut impl Write, payload: &[u8], max_frame: usize) ->
         )));
     }
     let header = (payload.len() as u32).to_be_bytes();
-    writer
-        .write_all(&header)
-        .and_then(|()| writer.write_all(payload))
-        .and_then(|()| writer.flush())
-        .map_err(|e| protocol_error(format!("frame write: {e}")))
+    masked(|| {
+        writer
+            .write_all(&header)
+            .and_then(|()| writer.write_all(payload))
+            .and_then(|()| writer.flush())
+    })
+    .map_err(|e| protocol_error(format!("frame write: {e}")))
 }
 
 /// `isolator.await_result` op name: the only exchange permitted an
 /// unbounded (cancellable, never timed) wait. The harness lifetime
 /// is uncapped by design; every other op carries a finite budget.
 pub const AWAIT_RESULT_OP: &str = "isolator.await_result";
+
+/// Runs `op` with SIGPIPE blocked on this thread, restoring the
+/// mask after.
+///
+/// Write-side SIGPIPE discipline without process-global state: a
+/// dead guest's EPIPE arrives as a typed error on the writing
+/// thread, never a signal, and concurrent guests need no shared
+/// disposition save/restore.
+fn masked<T>(op: impl FnOnce() -> T) -> T {
+    use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
+    let mut block = SigSet::empty();
+    block.add(Signal::SIGPIPE);
+    let mut old = SigSet::empty();
+    let _ = pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&block), Some(&mut old));
+    let out = op();
+    let _ = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&old), None);
+    out
+}
 
 /// Waits for writability on `fd` until `deadline` (remaining budget).
 ///
@@ -382,7 +401,7 @@ fn write_all_deadline(
         if !wait_writable(writer, deadline)? {
             return Err(protocol_error("frame write timed out"));
         }
-        match writer.write(buf) {
+        match masked(|| writer.write(buf)) {
             Ok(0) => return Err(protocol_error("frame write: closed pipe")),
             Ok(n) => buf = &buf[n..],
             Err(e)
@@ -394,9 +413,7 @@ fn write_all_deadline(
             Err(e) => return Err(protocol_error(format!("frame write: {e}"))),
         }
     }
-    writer
-        .flush()
-        .map_err(|e| protocol_error(format!("frame write: {e}")))
+    masked(|| writer.flush()).map_err(|e| protocol_error(format!("frame write: {e}")))
 }
 
 /// Writes one length-prefixed frame bounded by `deadline`.

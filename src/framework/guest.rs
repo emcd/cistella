@@ -10,23 +10,29 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction};
+use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::{Exchange, STDERR_CAP, protocol_error};
 
-/// Process-wide live-guest flag: SIGPIPE ignore/restore is
-/// process-global, so concurrent guests would corrupt each other's
-/// disposition save/restore. Enforced, not merely documented.
-static GUEST_LIVE: AtomicBool = AtomicBool::new(false);
+/// Budget for post-SIGKILL group-extinction settle.
+const KILL_SETTLE: Duration = Duration::from_secs(5);
 
 /// Budget for post-kill pipe-EOF verification (FD-holder detection).
 const PIPE_EOF_BUDGET: Duration = Duration::from_secs(3);
+
+/// True when no process group survives (signal-0 pole, ESRCH).
+///
+/// Signal 0 delivers nothing: it only asks the kernel whether the
+/// group exists. A recycled PGID could theoretically false-negative,
+/// but the pole runs inside a bounded window the framework owns.
+fn group_gone(group: Pid) -> bool {
+    kill(group, None).is_err()
+}
 
 /// Stderr drain accounting (content discarded, counts only).
 #[derive(Debug, Clone, Copy)]
@@ -43,14 +49,13 @@ pub struct StderrDrain {
 /// that fork, change groups, retain FDs, or fill pipes die with the
 /// group), concurrent bounded stderr drain (content discarded, counts
 /// only), and reverse-order shutdown with residue-dominated
-/// reporting. While a guest lives, SIGPIPE is ignored process-wide
-/// (saved and restored at shutdown) so a dead guest arrives as a
-/// typed write error, never a signal.
+/// reporting. Dead guests arrive as typed write errors, never
+/// signals: SIGPIPE is masked per write on the calling thread, so
+/// concurrent guests coexist with no shared disposition state.
 pub struct GuestHost<R: Read + AsFd, W: Write + AsFd> {
     exchange: Exchange<R, W>,
     child: Child,
     stderr_outcome: mpsc::Receiver<StderrDrain>,
-    old_sigpipe: Option<SigAction>,
     deadlines: crate::framework::contract::Deadlines,
     /// sha256 hex of the opened executable object (baseline identity).
     executable_digest: String,
@@ -90,16 +95,14 @@ impl GuestHost<ChildStdout, ChildStdin> {
     /// Stderr drains on a background thread from spawn (content
     /// discarded immediately); the child leads its own process group.
     ///
-    /// Exactly one guest at a time (enforced): SIGPIPE ignore/restore
-    /// is process-global, so a second concurrent spawn refuses with a
-    /// typed error instead of corrupting the first guest's restore
-    /// target. Concurrent guests need a per-guest disposition layer.
+    /// Concurrent guests coexist: SIGPIPE is masked per write on the
+    /// calling thread (never process-global), so no shared
+    /// disposition save/restore exists to corrupt.
     ///
     /// # Errors
     ///
-    /// Returns `CistellaError::Protocol` on a relative executable, a
-    /// live guest already existing, open/digest failure, or spawn
-    /// failure.
+    /// Returns `CistellaError::Protocol` on a relative executable,
+    /// open/digest failure, or spawn failure.
     pub fn spawn(
         executable: &Path,
         args: &[String],
@@ -111,31 +114,6 @@ impl GuestHost<ChildStdout, ChildStdin> {
                 executable.display()
             )));
         }
-        if GUEST_LIVE
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Err(protocol_error(
-                "concurrent guests not supported: one live guest per process",
-            ));
-        }
-        let host = Self::spawn_inner(executable, args, deadlines);
-        if host.is_err() {
-            GUEST_LIVE.store(false, Ordering::SeqCst);
-        }
-        host
-    }
-
-    /// Spawn implementation behind the single-guest gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns `CistellaError::Protocol` on open/digest or spawn failure.
-    fn spawn_inner(
-        executable: &Path,
-        args: &[String],
-        deadlines: crate::framework::contract::Deadlines,
-    ) -> Result<Self> {
         let (file, digest) = pin_executable(executable)?;
         // The fd number is stable (we hold the description open).
         // CLOEXEC stays set in the parent: the CHILD clears it on
@@ -171,12 +149,10 @@ impl GuestHost<ChildStdout, ChildStdin> {
         std::thread::spawn(move || {
             sender.send(drain_stderr(stderr)).expect("drain report");
         });
-        let old_sigpipe = ignore_sigpipe();
         Ok(Self {
             exchange: Exchange::new(stdout, stdin),
             child,
             stderr_outcome: receiver,
-            old_sigpipe,
             deadlines,
             executable_digest: digest,
             shut: false,
@@ -226,6 +202,17 @@ impl<R: Read + AsFd, W: Write + AsFd> GuestHost<R, W> {
     /// escapes its process group AND closes every protocol FD is
     /// outside enforcement; that combination requires deliberate
     /// evasion by code the framework already trusts.
+    ///
+    /// Completion means leader reaped AND group extinct (signal-0
+    /// pole): a sane in-group descendant ignoring SIGTERM but closing
+    /// its FDs still counts as residue until SIGKILL clears it. Only
+    /// group-escapees are outside — and only by operator-approved
+    /// narrowing, pinned by conformance.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Protocol` on reap failure or a group
+    /// surviving SIGKILL past settle.
     fn kill_group(&mut self) -> Result<()> {
         let group = Pid::from_raw(-(self.child.id() as i32));
         // Unconditional: the prior alive-check skipped the signal
@@ -235,11 +222,15 @@ impl<R: Read + AsFd, W: Write + AsFd> GuestHost<R, W> {
         // pipe-EOF verification owns the proof.
         let _ = kill(group, Signal::SIGTERM);
         let grace = Instant::now() + self.deadlines.terminate_grace;
+        let mut reaped = false;
         loop {
             match self.child.try_wait() {
-                Ok(Some(_)) => return Ok(()),
+                Ok(Some(_)) => reaped = true,
                 Ok(None) => {}
                 Err(e) => return Err(protocol_error(format!("reap: {e}"))),
+            }
+            if reaped && group_gone(group) {
+                return Ok(());
             }
             if Instant::now() >= grace {
                 break;
@@ -247,9 +238,20 @@ impl<R: Read + AsFd, W: Write + AsFd> GuestHost<R, W> {
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = kill(group, Signal::SIGKILL);
-        self.child
-            .wait()
-            .map_err(|e| protocol_error(format!("reap after kill: {e}")))?;
+        if !reaped {
+            self.child
+                .wait()
+                .map_err(|e| protocol_error(format!("reap after kill: {e}")))?;
+        }
+        let settle = Instant::now() + KILL_SETTLE;
+        while !group_gone(group) {
+            if Instant::now() >= settle {
+                return Err(protocol_error(
+                    "residue: process group survives SIGKILL past settle",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         Ok(())
     }
 
@@ -286,15 +288,6 @@ impl<R: Read + AsFd, W: Write + AsFd> GuestHost<R, W> {
         {
             residue = Some(e);
         }
-        if let Some(old) = self.old_sigpipe.take() {
-            unsafe {
-                let _ = sigaction(Signal::SIGPIPE, &old);
-            }
-        }
-        // Release the single-guest gate last: shutdown is straight-line
-        // from `shut = true` (no early returns), so every path passes
-        // here; Drop re-enters shutdown but returns early on `shut`.
-        GUEST_LIVE.store(false, Ordering::SeqCst);
         if let Some(error) = residue {
             return Err(error);
         }
@@ -340,13 +333,5 @@ fn drain_stderr(mut stderr: ChildStderr) -> StderrDrain {
     StderrDrain {
         bytes,
         truncated: bytes > STDERR_CAP,
-    }
-}
-
-/// Ignores SIGPIPE process-wide, returning the previous disposition.
-fn ignore_sigpipe() -> Option<SigAction> {
-    unsafe {
-        let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
-        sigaction(Signal::SIGPIPE, &ignore).ok()
     }
 }
