@@ -72,20 +72,37 @@ const fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> SockFilter {
     SockFilter { code, jt, jf, k }
 }
 
-/// `AUDIT_ARCH_AARCH64` = `EM_AARCH64 | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE`
-/// = 0xC00000B7 (matches the kernel's `linux/audit.h` for aarch64).
+/// Multi-arch target dispatch: pick the audit arch + Landlock
+/// syscall numbers for the build target at compile time. Adding a
+/// new arch is one cfg-arm + constant pair; the BPF filter shape is
+/// identical across arches (only the constants differ).
 ///
-/// For portability, the filter currently hard-codes the aarch64
-/// arch because that's what runs the spike today. Adding x86_64
-/// (0xC000003E) is a one-line change when needed.
-const AUDIT_ARCH_AARCH64: u32 = 0xC00000B7;
+/// `AUDIT_ARCH_*` values from `linux/audit.h`:
+///
+/// aarch64: `EM_AARCH64 | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE`
+///          = 0xC00000B7
+/// x86_64:   `EM_X86_64 | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE`
+///          = 0xC000003E
+///
+/// Landlock syscall numbers (same on aarch64 and x86_64):
+///   landlock_create_ruleset = 444
+///   landlock_add_rule       = 445
+///   landlock_restrict_self  = 446
+const SYSCALL_LANDLOCK_CREATE_RULESET: u32 = 444;
+const SYSCALL_LANDLOCK_ADD_RULE: u32 = 445;
+const SYSCALL_LANDLOCK_RESTRICT_SELF: u32 = 446;
 
-/// Landlock syscall numbers — aarch64 (this host). x86_64 is
-/// 444/445/446, s390x 436/437/438, etc. The numbers below match the
-/// kernel headers for aarch64.
-const SYSCALL_LANDLOCK_CREATE_RULESET_AARCH64: u32 = 444;
-const SYSCALL_LANDLOCK_ADD_RULE_AARCH64: u32 = 445;
-const SYSCALL_LANDLOCK_RESTRICT_SELF_AARCH64: u32 = 446;
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH: u32 = 0xC00000B7;
+
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH: u32 = 0xC000003E;
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!(
+    "landlock_kill_wrapper currently supports aarch64 and x86_64 only; \
+     add another #[cfg] arm to extend it."
+);
 
 /// BPF filter: deny the three Landlock syscalls with `ENOSYS`,
 /// allow everything else. 11 instructions.
@@ -94,30 +111,21 @@ fn landlock_filter() -> [SockFilter; 11] {
     [
         // Load `seccomp_data.arch`.
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4),
-        // If arch == AUDIT_ARCH_AARCH64, skip 1 (continue).
-        bpf_jump(BPF_JMP | BPF_JEQ, AUDIT_ARCH_AARCH64, 1, 0),
-        // Wrong arch: kill thread (this spike is single-architecture).
+        // If arch == AUDIT_ARCH (build target), skip 1 (continue).
+        bpf_jump(BPF_JMP | BPF_JEQ, AUDIT_ARCH, 1, 0),
+        // Wrong arch: kill thread (the wrapper itself only runs on
+        // the build target; a foreign-ABI invocation would land here).
         bpf_stmt(BPF_RET, SECCOMP_RET_KILL_THREAD),
         // Load `seccomp_data.nr`.
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 0),
         // If nr == landlock_create_ruleset, skip 1 (return ENOSYS).
-        bpf_jump(
-            BPF_JMP | BPF_JEQ,
-            SYSCALL_LANDLOCK_CREATE_RULESET_AARCH64,
-            0,
-            1,
-        ),
+        bpf_jump(BPF_JMP | BPF_JEQ, SYSCALL_LANDLOCK_CREATE_RULESET, 0, 1),
         bpf_stmt(BPF_RET, errno_enosys),
         // If nr == landlock_add_rule, skip 1 (return ENOSYS).
-        bpf_jump(BPF_JMP | BPF_JEQ, SYSCALL_LANDLOCK_ADD_RULE_AARCH64, 0, 1),
+        bpf_jump(BPF_JMP | BPF_JEQ, SYSCALL_LANDLOCK_ADD_RULE, 0, 1),
         bpf_stmt(BPF_RET, errno_enosys),
         // If nr == landlock_restrict_self, skip 1 (return ENOSYS).
-        bpf_jump(
-            BPF_JMP | BPF_JEQ,
-            SYSCALL_LANDLOCK_RESTRICT_SELF_AARCH64,
-            0,
-            1,
-        ),
+        bpf_jump(BPF_JMP | BPF_JEQ, SYSCALL_LANDLOCK_RESTRICT_SELF, 0, 1),
         bpf_stmt(BPF_RET, errno_enosys),
         // Allow all other syscalls.
         bpf_stmt(BPF_RET, SECCOMP_RET_ALLOW),
