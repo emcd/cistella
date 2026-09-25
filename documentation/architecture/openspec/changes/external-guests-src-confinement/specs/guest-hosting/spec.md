@@ -34,6 +34,10 @@ External guest pre-exec operations (create, initiate) SHALL be recoverable by st
 
 Recovery scope is pre-exec only: create and initiate converge by re-exec plus key. A guest death during execute/await SHALL NOT attempt handle resurrection (execution ownership — Child, PTY binding, outcome recording — dies with the guest and must not be reaped from a stranger); the framework SHALL converge the session to clean via typed teardown and refuse further operations on the dead execution. Full cross-crash execution survival is deferred, not promised.
 
+After any abnormal guest exit the framework SHALL check unit residue by reconciliation key over every recorded attempt key (a latched death observation — never error-text matching — gates the check); located residue fails loudly and dominates the report instead of passing silently.
+
+Shutdown proof is part of the death observation: the dispatcher attempts bounded shutdown/reap before failing pending callers. Proven shutdown latches dead-or-reaped (residue check valid); FAILED shutdown sets a separate shutdown-uncertain state WITHOUT latching (the guest or a descendant may live — no keyed scan runs), records the proof failure, and still converges by name. The uncertain path SHALL never return clean: the shutdown residue class dominates even when a post-converge snapshot finds nothing (a survivor could install after the check).
+
 #### Scenario: Crashed guest recovers by re-exec
 - **WHEN** a guest dies mid-create or mid-initiate with unknown applied state
 - **THEN** the framework re-execs the guest binary, presents the same key, and converges the resource to applied or clean

@@ -30,9 +30,11 @@
 //! they mark the id detached (late terminals drop) and return
 //! detached without killing anything.
 
-use std::collections::HashMap;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -43,12 +45,13 @@ use crate::framework::contract::{
     CancelFlag, Deadlines, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
 };
 use crate::framework::fdpass::{BundleHeader, accept_authenticated, bind_rendezvous, send_bundle};
-use crate::framework::guest::{GuestHost, host_external};
+use crate::framework::guest::host_external;
 use crate::framework::isolator::{
     CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
     StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
 };
-use crate::framework::protocol::{Envelope, PROTOCOL_MAJOR};
+use crate::isolators::close::{complete_close, parse_await_outcome, wire_error};
+use crate::isolators::dispatch::{Command, DISPATCH_SLICE, serve};
 use crate::isolators::podman::PodmanIsolator;
 
 /// Guest binary name resolved sibling-relative to the driver.
@@ -57,86 +60,52 @@ pub const ISOLATOR_BIN: &str = "cistella-isolator-podman";
 /// Extra argv carrying the fd-rendezvous path to the guest.
 const FD_SOCKET_ARG: &str = "--fd-socket";
 
-/// Dispatcher poll cadence: stream reads never block past this
-/// slice, so commands, deadlines, and detach marks stay live.
-const DISPATCH_SLICE: Duration = Duration::from_millis(100);
-
-/// Bound for a single envelope send (capped even on uncapped
-/// awaits: the wait is unbounded, the write never is).
-const SEND_BOUND: Duration = Duration::from_secs(30);
-
-/// One in-flight request tracked by the dispatcher.
-struct Pending {
-    /// Caller reply channel.
-    reply: mpsc::Sender<Result<Value>>,
-    /// Expiry for bounded ops; `None` for uncapped await.
-    deadline: Option<Instant>,
-    /// Op name (deadline diagnostics only).
-    op: String,
-    /// True for await calls (pending frames kept, not forwarded).
-    is_await: bool,
-    /// Execution handle for await calls (detach addressing).
-    exec: Option<String>,
+/// Selects the reported error after a failed phase with teardown
+/// attempted: the teardown error dominates when residue remains OR
+/// shutdown is uncertain (unverified quiescence never collapses to
+/// the original error even when the snapshot is clean); otherwise
+/// the original phase error stands. Conduct's prepare arm routes
+/// through here; other arms reach the same table by shape.
+///
+/// Precondition note: Ok+uncertain returns the original error.
+/// That state is unreachable through `teardown_unit` (the uncertain
+/// branch never returns clean), so the selector stays conservative
+/// there by construction rather than by check.
+///
+/// Public for the deterministic selection pin (the branch decision
+/// pins directly instead of through a live guest).
+pub fn select_teardown_error(
+    teardown: Result<()>,
+    original: CistellaError,
+    residue_ok: bool,
+    uncertain: bool,
+) -> CistellaError {
+    match teardown {
+        Err(teardown_err) if !residue_ok || uncertain => teardown_err,
+        _ => original,
+    }
 }
 
-/// Dispatcher commands from client threads.
-enum Command {
-    /// Send one op; terminal response (or expiry) goes to `reply`.
-    Op {
-        /// Operation name.
-        op: String,
-        /// Request payload.
-        payload: Value,
-        /// Response budget; `None` for uncapped await.
-        timeout: Option<Duration>,
-        /// Caller reply channel.
-        reply: mpsc::Sender<Result<Value>>,
-    },
-    /// Shut the guest down and stop the dispatcher.
-    Shutdown {
-        /// Shutdown result channel.
-        reply: mpsc::Sender<Result<()>>,
-    },
-    /// Retire one await entry by execution handle (caller
-    /// cancelled and already returned detached): the late
-    /// terminal drops instead of lingering to harness exit.
-    /// Best-effort by exec handle, not strict-id correlation:
-    /// concurrent awaits sharing one handle (replays, retries)
-    /// retire together, which is safe (all callers already left).
-    DetachByExec {
-        /// Execution handle whose await entry retires.
-        exec: String,
-    },
-}
-
-/// Reconstructs a typed error from a wire error envelope.
-///
-/// Codes come from the guest's `error_code` mapping; unknown codes
-/// refuse rather than collapsing into a generic bucket (an
-/// inventing guest fails the exchange, never negotiates new
-/// semantics). Messages arrive inner (prefix-free); the variant
-/// constructor applies its single class prefix here, so no
-/// doubling.
-///
-/// # Errors
-///
-/// Returns the reconstructed error. This function never fails;
-/// malformed envelopes are rejected by the caller before it runs.
-fn wire_error(code: &str, message: &str) -> CistellaError {
-    match code {
-        "profile" => CistellaError::Profile(message.to_string()),
-        "mount" => CistellaError::Mount(message.to_string()),
-        "runtime" => CistellaError::Runtime(message.to_string()),
-        "transport" => CistellaError::Transport(message.to_string()),
-        "contract" => CistellaError::Contract(message.to_string()),
-        "protocol" => CistellaError::Protocol(message.to_string()),
-        "identity" => CistellaError::Identity(message.to_string()),
-        "preflight" => CistellaError::Preflight(message.to_string()),
-        "lock-contended" => CistellaError::LockContended,
-        "selector" => CistellaError::Selector(message.to_string()),
-        "detached" => CistellaError::Detached(message.to_string()),
-        "io" => CistellaError::Runtime(format!("guest io: {message}")),
-        _ => CistellaError::Contract(format!("unknown guest error code: {code}")),
+/// Exit code for a startup abort: residue left behind fails (1);
+/// shutdown uncertainty fails (1) even when the snapshot is clean
+/// — unverified quiescence must never masquerade as a clean signal
+/// exit; a FAILED release also fails (1) — the guest may have
+/// entered a fatal path during release itself, so a pre-release
+/// uncertainty snapshot alone is stale by construction. Otherwise
+/// the signal disposition rules (128+signum). Conduct's abort path
+/// routes through here; the decision pins directly instead of
+/// through a live signal.
+#[must_use]
+pub fn abort_exit_code(
+    residue_left: bool,
+    uncertain_before: bool,
+    release_failed: bool,
+    signum: i32,
+) -> i32 {
+    if residue_left || uncertain_before || release_failed {
+        1
+    } else {
+        128 + signum
     }
 }
 
@@ -158,6 +127,26 @@ pub struct WireClient {
     inspector: PodmanIsolator,
     /// Attempt keys recorded before mutating calls (residue duty).
     recorded_keys: std::sync::Mutex<Vec<ReconciliationKey>>,
+    /// Abnormal-exit latch: set by the dispatcher ONLY after proven
+    /// shutdown (send timeout, hard send failure, stream death,
+    /// protocol violation). Local send refusal (oversize) and
+    /// orderly Shutdown never set it. Conduct tells a dead-or-reaped
+    /// guest (residue check valid) from a live one (a located unit
+    /// is expected, not residue) without string-matching error text.
+    dead: Arc<AtomicBool>,
+    /// Shutdown-uncertain flag: set when a fatal path's shutdown
+    /// proof FAILED (the guest or a descendant may live). Mutually
+    /// clarifying with `dead`: proven shutdown latches dead;
+    /// unproven shutdown sets uncertain WITHOUT latching, so no
+    /// keyed residue check runs beside a possible-live guest while
+    /// name-based convergence still routes. Both set resolves to
+    /// uncertain (safer).
+    uncertain: Arc<AtomicBool>,
+    /// Recorded shutdown proof failure, set alongside `uncertain`
+    /// before it (any thread observing uncertain==true also observes
+    /// the report). `close()` reports it as dominant; conduct reads
+    /// it through [`WireClient::death_checked`].
+    shutdown_report: Arc<Mutex<Option<String>>>,
 }
 
 impl WireClient {
@@ -211,7 +200,16 @@ impl WireClient {
         let fd_sock = Self::accept_guest(&listener, pid, deadlines.hello).inspect_err(|_| {
             let _ = std::fs::remove_file(&path);
         })?;
-        let (commands, worker) = Self::serve(guest, deadlines.frame_completion);
+        let dead = Arc::new(AtomicBool::new(false));
+        let uncertain = Arc::new(AtomicBool::new(false));
+        let shutdown_report = Arc::new(Mutex::new(None));
+        let (commands, worker) = serve(
+            guest,
+            deadlines.frame_completion,
+            Arc::clone(&dead),
+            Arc::clone(&shutdown_report),
+            Arc::clone(&uncertain),
+        );
         Ok(Self {
             commands,
             worker: Some(worker),
@@ -221,6 +219,9 @@ impl WireClient {
             deadlines,
             inspector: PodmanIsolator::new(),
             recorded_keys: std::sync::Mutex::new(Vec::new()),
+            dead,
+            uncertain,
+            shutdown_report,
         })
     }
 
@@ -275,215 +276,6 @@ impl WireClient {
                 return accept_authenticated(listener, pid);
             }
         }
-    }
-
-    /// Starts the dispatcher thread owning the guest exchange.
-    fn serve(
-        mut guest: GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
-        frame_timeout: Duration,
-    ) -> (mpsc::Sender<Command>, std::thread::JoinHandle<()>) {
-        // Negotiated ceiling (post-hello): the dispatcher refuses
-        // oversize at the same bound the guest was promised, not
-        // the smaller default.
-        let max_frame = guest.exchange_mut().max_frame();
-        let (commands_tx, commands_rx) = mpsc::channel::<Command>();
-        let worker = std::thread::spawn(move || {
-            let mut pending: HashMap<String, Pending> = HashMap::new();
-            // Explicitly retired ids (expiry, detach): late
-            // terminals with these ids drop silently. Anything
-            // else unknown is a protocol violation, not patience.
-            let mut retired: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut next_id: u64 = 0;
-            let mut stopping = false;
-            let mut stream = crate::framework::stream::StreamReader::new(max_frame, frame_timeout);
-            // Fail every pending entry with the guest-death error,
-            // then stop: called exactly once on a fatal stream
-            // failure (EOF, protocol, IO — never the idle slice).
-            let fail_all = |pending: &mut HashMap<String, Pending>, error: &str| {
-                for (_, entry) in pending.drain() {
-                    let _ = entry.reply.send(Err(CistellaError::Protocol(format!(
-                        "guest terminated during {}: {error}",
-                        entry.op
-                    ))));
-                }
-            };
-            while !stopping {
-                // Drain new commands without blocking the stream.
-                while let Ok(command) = commands_rx.try_recv() {
-                    match command {
-                        Command::Op {
-                            op,
-                            payload,
-                            timeout,
-                            reply,
-                        } => {
-                            next_id += 1;
-                            let id = format!("c{next_id}");
-                            let envelope = Envelope {
-                                protocol: PROTOCOL_MAJOR,
-                                id: id.clone(),
-                                op: op.clone(),
-                                payload: payload.clone(),
-                            };
-                            let deadline = Instant::now() + timeout.unwrap_or(Duration::ZERO);
-                            // Uncapped await uses no deadline; the
-                            // send itself stays bounded.
-                            let send_by = if timeout.is_none() {
-                                Instant::now() + SEND_BOUND
-                            } else {
-                                deadline
-                            };
-                            if guest.exchange_mut().send(&envelope, send_by).is_err() {
-                                let _ = reply.send(Err(CistellaError::Protocol(
-                                    "guest send failed".to_string(),
-                                )));
-                                continue;
-                            }
-                            let is_await = op == crate::framework::protocol::AWAIT_RESULT_OP;
-                            let exec = payload
-                                .get("execution_handle")
-                                .and_then(|handle| handle.as_str())
-                                .map(str::to_string);
-                            pending.insert(
-                                id,
-                                Pending {
-                                    reply,
-                                    deadline: timeout.map(|_| deadline),
-                                    op,
-                                    is_await,
-                                    exec,
-                                },
-                            );
-                        }
-                        Command::DetachByExec { exec } => {
-                            let retired_ids: Vec<String> = pending
-                                .iter()
-                                .filter(|(_, entry)| entry.exec.as_deref() == Some(&exec))
-                                .map(|(id, _)| id.clone())
-                                .collect();
-                            for id in retired_ids {
-                                pending.remove(&id);
-                                retired.insert(id);
-                            }
-                        }
-                        Command::Shutdown { reply } => {
-                            let _ = reply.send(guest.shutdown());
-                            stopping = true;
-                            break;
-                        }
-                    }
-                }
-                if stopping {
-                    break;
-                }
-                // One stream slice through the persistent
-                // assembler: trickled frames resolve across
-                // slices instead of desynchronizing.
-                match stream.poll_frame(guest.exchange_mut().reader_mut(), DISPATCH_SLICE) {
-                    Ok(Some(body)) => {
-                        // Full envelope grammar (unknown fields,
-                        // correlation, token shapes): the
-                        // dispatcher never trusts a hand-parsed id
-                        // match alone. The response op must equal
-                        // the pending op; retired ids (expiry,
-                        // detach) drop silently; anything else
-                        // unsolicited fails the exchange rather
-                        // than confusing later correlation.
-                        let envelope = match crate::framework::protocol::parse_envelope(&body) {
-                            Ok(envelope) => envelope,
-                            Err(_) => {
-                                fail_all(&mut pending, "malformed response frame");
-                                let _ = guest.shutdown();
-                                break;
-                            }
-                        };
-                        match pending.remove(&envelope.id) {
-                            Some(entry) if entry.op == envelope.op => {
-                                // `{pending: true}` heartbeat: kept,
-                                // never forwarded; only the terminal
-                                // redeems the caller.
-                                let pending_frame = envelope
-                                    .payload
-                                    .get("pending")
-                                    .and_then(|pending| pending.as_bool())
-                                    .unwrap_or(false);
-                                if entry.is_await && pending_frame {
-                                    // Await heartbeat: keep the
-                                    // entry, forward nothing. Only
-                                    // the terminal redeems the
-                                    // caller.
-                                    pending.insert(envelope.id, entry);
-                                } else if !entry.is_await && pending_frame {
-                                    let _ = entry.reply.send(Err(CistellaError::Contract(
-                                        "pending frame on non-await op".to_string(),
-                                    )));
-                                } else {
-                                    let _ = entry.reply.send(Ok(envelope.payload));
-                                }
-                            }
-                            Some(entry) => {
-                                // Op mismatch: the response names a
-                                // live request but answers a
-                                // different operation — fail the
-                                // caller, keep no ambiguity.
-                                let _ = entry.reply.send(Err(CistellaError::Contract(
-                                    "response op mismatches request".to_string(),
-                                )));
-                            }
-                            None if retired.contains(&envelope.id) => {
-                                // Explicitly retired (expiry,
-                                // detach): late terminal drops.
-                            }
-                            None => {
-                                // Truly unsolicited id: fail the
-                                // exchange rather than confuse later
-                                // correlation.
-                                fail_all(&mut pending, "unsolicited response id");
-                                let _ = guest.shutdown();
-                                break;
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // Idle slice: loop back for commands,
-                        // deadlines, and detach marks.
-                    }
-                    Err(error) => {
-                        if crate::framework::protocol::is_read_timeout(&error) {
-                            // Idle slice (no bytes yet): loop back.
-                        } else {
-                            // EOF, truncation, oversize, IO, frame
-                            // stall: the guest is gone or speaking
-                            // garbage. Fail everything pending with
-                            // the real reason, shut down and reap,
-                            // then stop. Residue duty belongs to the
-                            // callers' on_guest_death paths, which
-                            // this typed error triggers.
-                            fail_all(&mut pending, &format!("guest stream failed: {error}"));
-                            let _ = guest.shutdown();
-                            break;
-                        }
-                    }
-                }
-                // Expire bounded ops; uncapped awaits never expire.
-                let now = Instant::now();
-                let expired: Vec<String> = pending
-                    .iter()
-                    .filter(|(_, entry)| entry.deadline.is_some_and(|deadline| now >= deadline))
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for id in expired {
-                    if let Some(entry) = pending.remove(&id) {
-                        retired.insert(id.clone());
-                        let _ = entry.reply.send(Err(CistellaError::Protocol(format!(
-                            "{} response timed out",
-                            entry.op
-                        ))));
-                    }
-                }
-            }
-        });
-        (commands_tx, worker)
     }
 
     /// Sends one op and blocks for its terminal response payload.
@@ -592,11 +384,131 @@ impl WireClient {
         Ok(())
     }
 
+    /// Reports whether the dispatcher proved abnormal guest exit
+    /// (send timeout, hard send failure, stream death, protocol
+    /// violation) with a successful shutdown/reap first. Latch,
+    /// never reset: local refusal, shutdown-uncertain paths, and
+    /// orderly Shutdown leave it clear.
+    #[must_use]
+    pub fn guest_dead(&self) -> bool {
+        self.dead.load(Ordering::SeqCst)
+    }
+
+    /// Reports whether a fatal path's shutdown proof FAILED (the
+    /// guest or a descendant may live). Set without latching death,
+    /// so no keyed residue check runs — but name-based convergence
+    /// still routes, and the recorded shutdown failure dominates
+    /// every report on this path.
+    #[must_use]
+    pub fn shutdown_uncertain(&self) -> bool {
+        self.uncertain.load(Ordering::SeqCst)
+    }
+
+    /// Conduct's death gate for one wire outcome: passes successes
+    /// through, and passes failures through while the guest lives.
+    /// Proven death runs the residue check first — located residue
+    /// dominates, else the original error stands. Shutdown
+    /// uncertainty returns the RECORDED shutdown failure as
+    /// dominant (no keyed scan beside a possible-live guest). No
+    /// error-text matching on either side.
+    pub fn death_checked<T>(&self, outcome: Result<T>) -> Result<T> {
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(error) if self.shutdown_uncertain() => Err(self.shutdown_dominant(error)),
+            Err(error) if self.guest_dead() => self.on_guest_death().and(Err(error)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Dominant error on the shutdown-uncertain path: the recorded
+    /// shutdown proof failure when present (it names the
+    /// residue-class directly), else the original error.
+    fn shutdown_dominant(&self, error: CistellaError) -> CistellaError {
+        match self
+            .shutdown_report
+            .lock()
+            .expect("shutdown report lock")
+            .clone()
+        {
+            Some(recorded) => CistellaError::Protocol(recorded),
+            None => error,
+        }
+    }
+
+    /// Tears down one unit through the wire: terminate then remove.
+    /// On guest death the wire ops cannot run, so converge directly
+    /// instead (backend calls need no living guest) and let residue
+    /// decide: gone means the original death error stands, remaining
+    /// means the teardown failure dominates. On shutdown uncertainty
+    /// converge best-effort but NEVER clean Ok — the shutdown residue
+    /// dominates even when the snapshot is clean (unverified
+    /// quiescence). `lock_held` selects the
+    /// lock-held converge half on paths running under the
+    /// creation-window guard (the full converge re-acquires and
+    /// would deadlock nested) — pinned through this method, not
+    /// around it, so a swapped branch fails the pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns the death-checked wire failure, or the direct
+    /// teardown failure when residue remains after guest death.
+    pub fn teardown_unit(
+        &self,
+        handle: &UnitHandle,
+        grace: Duration,
+        key: &ReconciliationKey,
+        container_name: &str,
+        session_id: &str,
+        lock_held: bool,
+    ) -> Result<()> {
+        let outcome = self.death_checked(
+            self.terminate(handle, grace, key)
+                .and_then(|_| self.remove(handle, key).map(|_| ())),
+        );
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if self.shutdown_uncertain() {
+                    // Unverified quiescence first (both-true resolves
+                    // uncertain): converge best-effort, but NEVER a
+                    // clean Ok — the shutdown residue dominates even
+                    // when the snapshot is clean (a surviving guest
+                    // could install after the check). `error` already
+                    // names the shutdown class via `death_checked`.
+                    if lock_held {
+                        let _ = crate::runtime::teardown_inner(container_name, session_id);
+                    } else {
+                        let _ = crate::runtime::teardown(container_name, session_id);
+                    }
+                    Err(error)
+                } else if self.guest_dead() {
+                    let converged = if lock_held {
+                        crate::runtime::teardown_inner(container_name, session_id)
+                    } else {
+                        crate::runtime::teardown(container_name, session_id)
+                    };
+                    if let Err(teardown_err) = converged
+                        && !crate::runtime::residue_gone(container_name, session_id)
+                    {
+                        return Err(teardown_err);
+                    }
+                    Err(error)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     /// Closes the client: stops the dispatcher, shuts the guest
     /// down, and removes the rendezvous path. Join and path
     /// removal run unconditionally on every outcome (a dead
     /// dispatcher still joins, a dead guest still loses its
-    /// path); only then does the dominant error report.
+    /// path); only then does the dominant error report: the live
+    /// shutdown result, a RECORDED shutdown proof failure from a
+    /// fatal arm (residue-class, dominates any generic termination
+    /// message), or a typed termination error when no reply can
+    /// arrive and nothing was recorded.
     ///
     /// # Errors
     ///
@@ -613,7 +525,7 @@ impl WireClient {
         // and lose its path. Nested result kept, never early
         // return.
         let worker = self.worker.take();
-        if send_ok {
+        let outcome = if send_ok {
             complete_close(worker, &self.fd_path, reply_rx)
         } else {
             // Dispatcher already gone: same unconditional path,
@@ -623,6 +535,18 @@ impl WireClient {
             Err(CistellaError::Protocol(
                 "dispatcher already terminated".to_string(),
             ))
+        };
+        // A recorded shutdown proof failure dominates any generic
+        // outcome: it names the residue-class directly instead of
+        // a bland termination.
+        match self
+            .shutdown_report
+            .lock()
+            .expect("shutdown report lock")
+            .take()
+        {
+            Some(recorded) => Err(CistellaError::Protocol(recorded)),
+            None => outcome,
         }
     }
 }
@@ -867,61 +791,4 @@ impl Isolator for WireClient {
         // exactly what post-exit residue checks require.
         self.inspector.locate(key)
     }
-}
-
-/// Completes client close after the Shutdown send: joins the
-/// worker and unlinks the rendezvous path on EVERY outcome,
-/// including a worker that accepted Shutdown but died before
-/// replying (send_ok with a disconnected reply channel). Only
-/// then does the dominant error report: the live shutdown result,
-/// or a typed termination error when no reply can arrive.
-///
-/// Public for the deterministic close-path pin (a dead worker is
-/// injected directly instead of raced against peer sleep timing).
-///
-/// # Errors
-///
-/// Returns the shutdown failure, or `CistellaError::Protocol`
-/// when the dispatcher died without reporting.
-pub fn complete_close(
-    worker: Option<std::thread::JoinHandle<()>>,
-    path: &std::path::Path,
-    reply: mpsc::Receiver<Result<()>>,
-) -> Result<()> {
-    let shutdown = match reply.recv() {
-        Ok(result) => result,
-        Err(_) => Err(CistellaError::Protocol(
-            "dispatcher dropped shutdown".to_string(),
-        )),
-    };
-    if let Some(worker) = worker {
-        let _ = worker.join();
-    }
-    let _ = std::fs::remove_file(path);
-    shutdown
-}
-
-/// Parses an await terminal payload into its outcome.
-///
-/// Public so the schema mapping pins directly against fixtures
-/// (exit, signal, guest error, malformed) with no backend.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on shapes outside the
-/// `exit_status`/`signal` schema.
-pub fn parse_await_outcome(value: &Value) -> Result<ExecutionOutcome> {
-    if let Some(code) = value.get("exit_status").and_then(|code| code.as_i64()) {
-        let code = i32::try_from(code)
-            .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
-        return Ok(ExecutionOutcome::Exited(code));
-    }
-    if let Some(signum) = value.get("signal").and_then(|signum| signum.as_i64()) {
-        let signum = i32::try_from(signum)
-            .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
-        return Ok(ExecutionOutcome::Signaled(signum));
-    }
-    Err(CistellaError::Contract(
-        "bad await response: shape".to_string(),
-    ))
 }

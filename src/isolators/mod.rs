@@ -5,6 +5,8 @@
 //! fault-injecting test-double, never a lifecycle prover.
 
 pub mod client;
+pub mod close;
+pub mod dispatch;
 pub mod podman;
 pub mod quadlet;
 pub mod wire;

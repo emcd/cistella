@@ -23,6 +23,8 @@ mod framework_contract;
 mod identity;
 #[path = "unit/isolator_trait.rs"]
 mod isolator_trait;
+#[path = "unit/lock_teardown.rs"]
+mod lock_teardown;
 #[path = "unit/mount.rs"]
 mod mount;
 #[path = "unit/policy_prepare.rs"]
@@ -37,6 +39,8 @@ mod protocol;
 mod runtime;
 #[path = "unit/stream.rs"]
 mod stream;
+#[path = "unit/terminal.rs"]
+mod terminal;
 #[path = "unit/version.rs"]
 mod version;
 #[path = "unit/wire_dispatch.rs"]

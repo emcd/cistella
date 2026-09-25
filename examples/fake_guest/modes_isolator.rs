@@ -335,6 +335,165 @@ pub(crate) fn run(
             std::thread::sleep(Duration::from_millis(500));
             ExitCode::SUCCESS
         }
+        "isolator-die-after-two" => {
+            // Hello, then die abruptly after the SECOND op arrives,
+            // replying to neither: both callers must be in flight
+            // simultaneously at the moment of death (no sleep-tuned
+            // sequencing on the test side — the peer itself waits
+            // for both frames before dying). The client must fail
+            // both with typed errors and trip its death latch.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
+            std::process::exit(1);
+        }
+        "isolator-create-stall" => {
+            // Hello, then stall 30s without reading: a large op
+            // (over the pipe buffer) blocks in write past any
+            // bounded apply deadline with partial bytes already
+            // emitted. The client must treat the send timeout as
+            // fatal — bounded shutdown/reap first, then latch and
+            // fail typed — since neither end resynchronizes a
+            // timed-out stream. Killed by the worker's shutdown;
+            // the long sleep only bounds a shutdown failure.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 8388608u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            std::thread::sleep(Duration::from_secs(30));
+            ExitCode::SUCCESS
+        }
+        "isolator-small-ceiling" => {
+            // Hello with a 256-byte ceiling, then serve state
+            // normally: a create payload (hundreds of bytes of
+            // session spec) exceeds the ceiling the guest itself
+            // promised, so the client must refuse it LOCALLY with a
+            // typed Contract error — never sent, guest untouched,
+            // latch clear — while a small state op still succeeds
+            // through the same dispatcher afterwards.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 256u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 256);
+            loop {
+                let op_body = match read_frame_from_stdin(&mut stdin_lock) {
+                    Ok(body) => body,
+                    Err(_) => return Some(protocol_error_exit()),
+                };
+                let (id, op) = serde_json::from_slice::<Value>(&op_body)
+                    .ok()
+                    .map(|env| {
+                        (
+                            env.get("id").cloned().unwrap_or(json!("small-0")),
+                            env.get("op")
+                                .and_then(|op| op.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        )
+                    })
+                    .unwrap_or((json!("small-0"), String::new()));
+                if op != "isolator.state" {
+                    return Some(protocol_error_exit());
+                }
+                let response = serde_json::to_vec(&json!({
+                    "protocol": PROTOCOL_MAJOR,
+                    "id": id,
+                    "op": "isolator.state",
+                    "payload": {"ok": {"lifecycle": "initiated"}}
+                }))
+                .expect("serialize");
+                let _ = write_frame(&mut stdout_lock, &response, 256);
+            }
+        }
+        "isolator-lingering-descendant" => {
+            // Hello, read one op frame (left pending forever), then
+            // fork a setsid grandchild holding stdout while the
+            // parent exits immediately: the framework's group kill
+            // (SIGTERM, grace, SIGKILL to the parent's group) cannot
+            // touch the reparented setsid child, so pipe-EOF
+            // verification fails its budget and shutdown reports
+            // residue-class. The client must fail WITHOUT latching
+            // death (the descendant may live) and name the shutdown
+            // failure. Child uses raw libc only (fork in a
+            // multithreaded process): setsid, close stdin, sleep,
+            // _exit. Bounded 10s self-exit; nothing leaks past it.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
+            let _ = stdout_lock.flush();
+            let forked = unsafe { ::libc::fork() };
+            if forked < 0 {
+                return Some(protocol_error_exit());
+            }
+            if forked == 0 {
+                // Child: escape the group kill, hold stdout, leave
+                // stdin fully closed (parent exit closes the last
+                // other read end, so later sends fail fast). Raw
+                // libc only; single sleep (no signal source exists
+                // for this reparented child — our group kill misses
+                // its new pgid by construction).
+                unsafe {
+                    let _ = ::libc::setsid();
+                    ::libc::close(0);
+                    let remaining = ::libc::timespec {
+                        tv_sec: 10,
+                        tv_nsec: 0,
+                    };
+                    let _ = ::libc::nanosleep(&remaining, std::ptr::null_mut());
+                    ::libc::_exit(0);
+                }
+            }
+            unsafe { ::libc::_exit(0) };
+        }
         _ => return None,
     })
 }

@@ -148,6 +148,27 @@ impl GuestHost<ChildStdout, ChildStdin> {
         // its own reference past exec.
         drop(file);
         let stdin = child.stdin.take().expect("piped stdin");
+        // Nonblocking writer: write_all_deadline polls writable
+        // then writes, but POLLOUT means *some* room, not room for
+        // the whole frame — a blocking write can sleep past the
+        // deadline on a full pipe (indefinitely with an idle
+        // reader), so the send timeout would never fire. With
+        // O_NONBLOCK the write returns WouldBlock instead, and the
+        // existing deadline loop (which already retries WouldBlock)
+        // bounds every send. The reader stays blocking: a
+        // poll-readable pipe always resolves a read immediately.
+        {
+            use std::os::fd::AsRawFd;
+            let flags = nix::fcntl::fcntl(stdin.as_fd().as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+                .map_err(|e| protocol_error(format!("guest stdin flags: {e}")))?;
+            let mut flags = nix::fcntl::OFlag::from_bits_retain(flags);
+            flags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+            nix::fcntl::fcntl(
+                stdin.as_fd().as_raw_fd(),
+                nix::fcntl::FcntlArg::F_SETFL(flags),
+            )
+            .map_err(|e| protocol_error(format!("guest stdin nonblocking: {e}")))?;
+        }
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let (sender, receiver) = mpsc::channel();

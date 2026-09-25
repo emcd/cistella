@@ -134,6 +134,14 @@ pub const EOF_AT_BOUNDARY: &str = "eof at frame boundary";
 /// bytes and misalign the next frame.
 pub const IDLE_TIMEOUT: &str = "frame read timed out: idle";
 
+/// Write-timeout message: the write budget exhausted while the
+/// peer was not draining (stuck or slow). Partial bytes may
+/// already sit in the pipe and neither end resynchronizes, so the
+/// dispatcher treats this as fatal: bounded shutdown/reap, then
+/// latch and fail. Distinct from the oversize pre-send refusal,
+/// which never reaches the peer.
+pub const WRITE_TIMEOUT: &str = "frame write timed out";
+
 /// True when the error is a clean EOF at a frame boundary.
 ///
 /// Single source of truth for the boundary message so guests never
@@ -149,6 +157,17 @@ pub fn is_clean_eof(error: &CistellaError) -> bool {
 #[must_use]
 pub fn is_read_timeout(error: &CistellaError) -> bool {
     matches!(error, CistellaError::Protocol(message) if message == IDLE_TIMEOUT)
+}
+
+/// True when the error is a frame-write timeout (the peer was not
+/// draining within budget). The dispatcher treats this as a fatal
+/// exchange failure (quiesce, latch, fail); only the oversize
+/// pre-send refusal continues. Exact-match on our own constructor,
+/// same pattern as [`is_read_timeout`]: callers never match error
+/// text they do not own.
+#[must_use]
+pub fn is_write_timeout(error: &CistellaError) -> bool {
+    matches!(error, CistellaError::Protocol(message) if message == WRITE_TIMEOUT)
 }
 
 /// True when a response payload is a non-terminal `{pending: true}`.
@@ -505,7 +524,7 @@ fn write_all_deadline(
 ) -> Result<()> {
     while !buf.is_empty() {
         if !wait_writable(writer, deadline)? {
-            return Err(protocol_error("frame write timed out"));
+            return Err(protocol_error(WRITE_TIMEOUT));
         }
         match masked(|| writer.write(buf)) {
             Ok(Ok(0)) => return Err(protocol_error("frame write: closed pipe")),

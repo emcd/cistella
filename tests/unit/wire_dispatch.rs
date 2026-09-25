@@ -826,7 +826,7 @@ fn launch_without_channel_refuses() {
 #[test]
 fn await_outcome_shapes_pin() {
     use cistella::framework::isolator::ExecutionOutcome as Outcome;
-    use cistella::isolators::client::parse_await_outcome;
+    use cistella::isolators::close::parse_await_outcome;
     assert_eq!(
         parse_await_outcome(&serde_json::json!({"exit_status": 0})).expect("exit"),
         Outcome::Exited(0)
@@ -879,7 +879,7 @@ fn complete_close_joins_dead_worker_and_unlinks() {
     let (reply_tx, reply_rx) = mpsc::channel::<Result<(), cistella::error::CistellaError>>();
     drop(reply_tx);
     let worker = std::thread::spawn(|| {});
-    let error = cistella::isolators::client::complete_close(Some(worker), &socket, reply_rx)
+    let error = cistella::isolators::close::complete_close(Some(worker), &socket, reply_rx)
         .expect_err("dead worker close must report");
     assert!(
         error.to_string().contains("dispatcher dropped shutdown"),
@@ -903,7 +903,7 @@ fn complete_close_reports_live_shutdown() {
     let worker = std::thread::spawn(move || {
         let _ = reply_tx.send(Ok(()));
     });
-    cistella::isolators::client::complete_close(Some(worker), &socket, reply_rx)
+    cistella::isolators::close::complete_close(Some(worker), &socket, reply_rx)
         .expect("live close reports Ok");
     assert!(!socket.exists(), "path unlinked on clean close");
 }

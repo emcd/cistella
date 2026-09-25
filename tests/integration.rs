@@ -28,3 +28,5 @@ mod selectors;
 mod signals;
 #[path = "integration/transport.rs"]
 mod transport;
+#[path = "integration/wire_death.rs"]
+mod wire_death;

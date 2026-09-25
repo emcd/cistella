@@ -4,6 +4,7 @@ use cistella::cli::{Cli, Command};
 use cistella::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
 use cistella::framework::signals;
+use cistella::isolators::client::WireClient;
 use cistella::isolators::podman::PodmanIsolator;
 use cistella::mount::{MountMode, MountTriple, podman_volume_args};
 use cistella::profile::Profile;
@@ -227,6 +228,33 @@ fn exit_with_status(status: std::process::ExitStatus) -> ! {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// Releases the wire client on conduct exit paths: orderly guest
+/// shutdown plus rendezvous directory removal. Returns the close
+/// outcome: error paths report it to stderr while keeping their
+/// primary error (a release failure there is secondary, never
+/// silent), and the success path fails on it — a residue-class
+/// close failure dominates a clean harness. Rendezvous-dir litter
+/// reports to stderr without failing (litter, not residue).
+fn release_client(
+    client: WireClient,
+    rendezvous_dir: &std::path::Path,
+) -> Result<(), cistella::error::CistellaError> {
+    let outcome = client.close();
+    if let Err(error) = std::fs::remove_dir(rendezvous_dir) {
+        eprintln!("error: rendezvous cleanup: {error}");
+    }
+    outcome
+}
+
+/// Reports a release failure on an already-failing path: the
+/// primary error stays the report, but guest-shutdown residue is
+/// never concealed.
+fn report_release(outcome: Result<(), cistella::error::CistellaError>) {
+    if let Err(error) = outcome {
+        eprintln!("error: guest release: {error}");
+    }
+}
+
 /// Implements `conduct`: mint, install under lock, start, exec, teardown.
 ///
 /// Ten parameters mirror the conduct CLI surface one-to-one; bundling
@@ -388,17 +416,43 @@ fn conduct_session(
         }
     }
     let container_name = session.container_name();
-    let isolator = PodmanIsolator::new();
-    let key = ReconciliationKey::generate();
-    let grace = Deadlines::default().terminate_grace;
-    // Trap SIGHUP/SIGTERM before the lock or any residue exists, so a
+    // Trap SIGHUP/SIGTERM before the guest or the lock exists, so a
     // signal during startup tears down instead of killing us by default.
     signals::install_conduct_handlers();
+    // Production conduct drives the external guest binary (resolved
+    // sibling-relative to the driver): session stdio crosses by
+    // explicit descriptor passing inside the client, uniform across
+    // PTY and piped sessions. The in-process backend stays as the
+    // conformance reference and post-mortem inspector only.
+    let exe_dir =
+        std::env::current_exe().map_err(|e| CistellaError::Runtime(format!("driver path: {e}")))?;
+    let exe_dir = exe_dir.parent().ok_or_else(|| {
+        CistellaError::Runtime("driver binary has no parent directory".to_string())
+    })?;
+    let rendezvous_dir = std::env::temp_dir().join(format!("cistella-rdv-{id}"));
+    let client = match WireClient::host(exe_dir, &rendezvous_dir, Deadlines::default()) {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = std::fs::remove_dir(&rendezvous_dir);
+            return Err(error);
+        }
+    };
+    let key = ReconciliationKey::generate();
+    let grace = Deadlines::default().terminate_grace;
     // Creation window: lock BEFORE any unit-file or scratch creation,
-    // hold through install -> start, then release before exec.
-    let guard = cistella::lock::LockGuard::acquire()?;
+    // hold through install -> start, then release before exec. A lock
+    // failure strands the hosted guest unless released here (the
+    // client has no Drop): release first, then report.
+    let guard = match cistella::lock::LockGuard::acquire() {
+        Ok(guard) => guard,
+        Err(error) => {
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(error);
+        }
+    };
     if let Some(signum) = signals::pending_signal() {
         drop(guard);
+        report_release(release_client(client, &rendezvous_dir));
         std::process::exit(128 + signum);
     }
     // Isolator create installs the unit file and scratch together; on
@@ -410,9 +464,16 @@ fn conduct_session(
         env: env_extra,
         labels: merged_labels,
     };
-    let unit = match isolator.create(&spec, &key) {
+    let unit = match client.death_checked(client.create(&spec, &key)) {
         Ok(handle) => handle,
         Err(e) => {
+            // Quiesce before converging: a still-live guest with an
+            // in-flight mutating op (notably a timed-out create)
+            // could install past the direct teardown's residue
+            // check. Shutdown first (bounded), then converge, then
+            // report — the residue decision runs after the guest is
+            // gone, never beside a live mutator.
+            report_release(release_client(client, &rendezvous_dir));
             drop(guard);
             // Every failure past install runs teardown so no residue remains;
             // a teardown failure with residue left behind dominates the report.
@@ -426,7 +487,14 @@ fn conduct_session(
     };
     if let Some(signum) = signals::pending_signal() {
         drop(guard);
-        abort_startup(&isolator, Some(&unit), &container_name, &id, signum);
+        abort_startup(
+            client,
+            &rendezvous_dir,
+            Some(&unit),
+            &container_name,
+            &id,
+            signum,
+        );
     }
     // Test-hook stall between install and start: a deterministic window for
     // signal-during-startup regression, polling so signals abort promptly.
@@ -435,11 +503,22 @@ fn conduct_session(
     while waited.elapsed() < std::time::Duration::from_millis(delay) {
         if let Some(signum) = signals::pending_signal() {
             drop(guard);
-            abort_startup(&isolator, Some(&unit), &container_name, &id, signum);
+            abort_startup(
+                client,
+                &rendezvous_dir,
+                Some(&unit),
+                &container_name,
+                &id,
+                signum,
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    if let Err(e) = isolator.initiate(&unit, &key) {
+    if let Err(e) = client.death_checked(client.initiate(&unit, &key)) {
+        // Quiesce before converging, same as the create arm: a
+        // timed-out initiate leaves the guest live with an
+        // in-flight start that must die before the residue check.
+        report_release(release_client(client, &rendezvous_dir));
         drop(guard);
         if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
             && !cistella::runtime::residue_gone(&container_name, &id)
@@ -466,21 +545,35 @@ fn conduct_session(
         &volume_targets,
         prof.home(),
     ) {
-        let teardown_result = isolator
-            .terminate(&unit, grace, &key)
-            .and_then(|_| isolator.remove(&unit, &key));
+        // Lock-held converge (the guard is still live): the full
+        // converge re-acquires the creation-window lock and would
+        // deadlock nested, so the inner half runs here. The
+        // teardown error dominates on residue OR shutdown
+        // uncertainty (never demote recorded shutdown residue to
+        // the prepare error on a clean snapshot).
+        let teardown_result = client.teardown_unit(&unit, grace, &key, &container_name, &id, true);
         let residue_ok = cistella::runtime::residue_gone(&container_name, &id);
+        let uncertain = client.shutdown_uncertain();
         drop(guard);
-        if let Err(teardown_err) = teardown_result
-            && !residue_ok
-        {
-            return Err(teardown_err);
-        }
-        return Err(e);
+        let error = cistella::isolators::client::select_teardown_error(
+            teardown_result,
+            e,
+            residue_ok,
+            uncertain,
+        );
+        report_release(release_client(client, &rendezvous_dir));
+        return Err(error);
     }
     if let Some(signum) = signals::pending_signal() {
         drop(guard);
-        abort_startup(&isolator, Some(&unit), &container_name, &id, signum);
+        abort_startup(
+            client,
+            &rendezvous_dir,
+            Some(&unit),
+            &container_name,
+            &id,
+            signum,
+        );
     }
     drop(guard);
     println!("conduct {id}");
@@ -491,14 +584,32 @@ fn conduct_session(
     // the observable disposition (128+signal, no residue) is unchanged
     // while the trait never kills on cancel.
     // The session runs in its worktree target (validated absolute above).
-    let status = match isolator.execute_launch(
+    // Launch/await failures converge through the shared teardown
+    // before reporting: a dead guest converges directly (wire ops
+    // cannot run without it), and the death-checked error — residue
+    // dominating when the exit left units — is the report.
+    let execution = match client.death_checked(client.execute_launch(
         &unit,
         &argv,
         Some(&worktree_target),
         StdioBinding::Inherit,
         &key,
-    ) {
-        Ok(execution) => match isolator.await_result(&execution, signals::conduct_cancel()) {
+    )) {
+        Ok(execution) => execution,
+        Err(error) => {
+            if let Err(teardown_err) =
+                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+            {
+                report_release(release_client(client, &rendezvous_dir));
+                eprintln!("error: teardown after launch failure ({error}): {teardown_err}");
+                std::process::exit(1);
+            }
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(error);
+        }
+    };
+    let status =
+        match client.death_checked(client.await_result(&execution, signals::conduct_cancel())) {
             Ok(outcome) => outcome,
             Err(cistella::error::CistellaError::Detached(_)) => {
                 // Signaled while attached: terminate owns the kill,
@@ -506,34 +617,66 @@ fn conduct_session(
                 // fallback covers detach-without-signal (unusual, but
                 // matches the common-case disposition).
                 let signum = signals::conduct_cancel().signum().unwrap_or(15);
-                let _ = isolator.terminate(&unit, grace, &key);
-                let _ = isolator.remove(&unit, &key);
+                let _ = client.terminate(&unit, grace, &key);
+                let _ = client.remove(&unit, &key);
+                report_release(release_client(client, &rendezvous_dir));
                 if !cistella::runtime::residue_gone(&container_name, &id) {
                     eprintln!("error: signal teardown left residue for {container_name}");
                     std::process::exit(1);
                 }
                 std::process::exit(128 + signum);
             }
-            Err(_) => ExecutionOutcome::Exited(1),
-        },
-        Err(_) => ExecutionOutcome::Exited(1),
-    };
+            Err(error) => {
+                if let Err(teardown_err) =
+                    client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+                {
+                    report_release(release_client(client, &rendezvous_dir));
+                    eprintln!("error: teardown after await failure ({error}): {teardown_err}");
+                    std::process::exit(1);
+                }
+                report_release(release_client(client, &rendezvous_dir));
+                return Err(error);
+            }
+        };
     // Shared teardown converges with `terminate` from another pane: the
     // unit may already be gone, which idempotent terminate/remove
     // tolerate via not-found. A real teardown failure (residue remains)
     // fails the invocation even when the harness succeeded, naming the
-    // harness disposition.
-    let teardown_result = isolator
-        .terminate(&unit, grace, &key)
-        .and_then(|_| isolator.remove(&unit, &key));
-    if let Err(teardown_err) = teardown_result
-        && !cistella::runtime::residue_gone(&container_name, &id)
-    {
-        let harness_note = match &status {
-            ExecutionOutcome::Signaled(signum) => format!("harness signaled 128+{signum}"),
-            ExecutionOutcome::Exited(code) => format!("harness exited {code}"),
-        };
-        eprintln!("error: teardown after {harness_note}: {teardown_err}");
+    // harness disposition. A converged guest death reports the death
+    // instead of the harness disposition (abnormal exit is never
+    // silent); a live-guest wire failure with no residue keeps the
+    // harness disposition. A residue-class release failure dominates
+    // even a clean harness (the guest's shutdown owns group-reap
+    // and pipe-EOF verification, which teardown cannot see).
+    match client.teardown_unit(&unit, grace, &key, &container_name, &id, false) {
+        Ok(()) => {}
+        Err(teardown_err) if !cistella::runtime::residue_gone(&container_name, &id) => {
+            let harness_note = match &status {
+                ExecutionOutcome::Signaled(signum) => format!("harness signaled 128+{signum}"),
+                ExecutionOutcome::Exited(code) => format!("harness exited {code}"),
+            };
+            eprintln!("error: teardown after {harness_note}: {teardown_err}");
+            report_release(release_client(client, &rendezvous_dir));
+            std::process::exit(1);
+        }
+        Err(death_err) if client.guest_dead() => {
+            report_release(release_client(client, &rendezvous_dir));
+            eprintln!("error: {death_err}");
+            std::process::exit(1);
+        }
+        Err(uncertain_err) if client.shutdown_uncertain() => {
+            // Unverified quiescence: the shutdown residue dominates
+            // EVEN WHEN the snapshot above is clean (a surviving
+            // guest could install after the check). Never a clean
+            // harness disposition from this path.
+            report_release(release_client(client, &rendezvous_dir));
+            eprintln!("error: {uncertain_err}");
+            std::process::exit(1);
+        }
+        Err(_) => {}
+    }
+    if let Err(error) = release_client(client, &rendezvous_dir) {
+        eprintln!("error: guest release: {error}");
         std::process::exit(1);
     }
     std::process::exit(status.exit_code());
@@ -552,9 +695,12 @@ fn start_delay_ms() -> u64 {
 /// 128+signal. The creation-window guard must already be dropped (the
 /// isolator methods used here assume the caller held it where the moved
 /// mechanics did). Cleanup is verified: residue left behind fails the
-/// invocation (exit 1) instead of reporting a clean signal exit.
+/// invocation (exit 1) instead of reporting a clean signal exit. Takes
+/// the wire client by value so the guest shuts down orderly on every
+/// abort path instead of orphaning.
 fn abort_startup(
-    isolator: &PodmanIsolator,
+    client: WireClient,
+    rendezvous_dir: &std::path::Path,
     handle: Option<&UnitHandle>,
     container_name: &str,
     session_id: &str,
@@ -563,14 +709,30 @@ fn abort_startup(
     if let Some(unit) = handle {
         let key = ReconciliationKey::generate();
         let grace = Deadlines::default().terminate_grace;
-        let _ = isolator.terminate(unit, grace, &key);
-        let _ = isolator.remove(unit, &key);
+        let _ = client.terminate(unit, grace, &key);
+        let _ = client.remove(unit, &key);
     } else if let Err(e) = cistella::runtime::remove_scratch(session_id) {
         eprintln!("error: startup abort cleanup: {e}");
     }
-    if !cistella::runtime::residue_gone(container_name, session_id) {
+    // Read uncertainty BEFORE release consumes the client, then
+    // fold the release outcome in: the guest may enter a fatal
+    // path DURING release itself (after wire terminate/remove
+    // succeeded), so a pre-release snapshot alone is stale by
+    // construction and a failed close dominates the signal
+    // disposition. The release line already names any recorded
+    // failure; the code must not claim a clean signal exit.
+    let uncertain_before = client.shutdown_uncertain();
+    let release_outcome = release_client(client, rendezvous_dir);
+    let release_failed = release_outcome.is_err();
+    report_release(release_outcome);
+    let residue_left = !cistella::runtime::residue_gone(container_name, session_id);
+    if residue_left {
         eprintln!("error: startup abort left residue for {container_name}");
-        std::process::exit(1);
     }
-    std::process::exit(128 + signum);
+    std::process::exit(cistella::isolators::client::abort_exit_code(
+        residue_left,
+        uncertain_before,
+        release_failed,
+        signum,
+    ));
 }
