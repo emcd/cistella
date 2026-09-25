@@ -15,3 +15,4 @@ pub mod policy;
 pub mod prepare;
 pub mod protocol;
 pub mod signals;
+pub mod stream;

@@ -242,7 +242,7 @@ pub fn read_frame(
 /// consumed — parsing must NOT restart, or the stream corrupts).
 /// The assembler keeps partial state across `poll_once` calls; a
 /// bounded `read_frame` treats any idle slice as timeout.
-struct FrameAssembler {
+pub(crate) struct FrameAssembler {
     header: [u8; HEADER_LEN],
     header_read: usize,
     length: Option<usize>,
@@ -250,7 +250,7 @@ struct FrameAssembler {
 }
 
 /// One poll outcome: complete frame, idle slice, or kept progress.
-enum FramePoll {
+pub(crate) enum FramePoll {
     /// Complete frame bytes.
     Complete(Vec<u8>),
     /// Budget exhausted with zero new bytes (idle, not failure).
@@ -260,7 +260,7 @@ enum FramePoll {
 }
 
 impl FrameAssembler {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             header: [0u8; HEADER_LEN],
             header_read: 0,
@@ -270,7 +270,7 @@ impl FrameAssembler {
     }
 
     /// True when zero bytes have been consumed (fresh frame start).
-    fn is_fresh(&self) -> bool {
+    pub(crate) fn is_fresh(&self) -> bool {
         self.header_read == 0 && self.length.is_none() && self.body.is_empty()
     }
 
@@ -287,7 +287,7 @@ impl FrameAssembler {
     /// Returns `CistellaError::Protocol` on oversize (refused before
     /// allocating the body), EOF/truncation mid-frame, or IO failure.
     /// Budget exhaustion surfaces as `Idle`/`Partial`, never an error.
-    fn poll_once(
+    pub(crate) fn poll_once(
         &mut self,
         reader: &mut (impl Read + AsFd),
         max_frame: usize,
@@ -705,6 +705,16 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     pub fn recv(&mut self, timeout: Duration) -> Result<Envelope> {
         let body = read_frame(&mut self.reader, self.max_frame, timeout)?;
         parse_envelope(&body)
+    }
+
+    /// Raw stream reader for dispatcher-style demultiplexing.
+    ///
+    /// Advanced use only: callers that bypass [`Exchange::recv`]
+    /// take over framing (e.g. [`StreamReader`] across poll
+    /// slices) and correlation (request ids) themselves. The
+    /// envelope send path stays on the exchange.
+    pub fn reader_mut(&mut self) -> &mut R {
+        &mut self.reader
     }
 
     /// Runs the hello exchange and negotiates the session.

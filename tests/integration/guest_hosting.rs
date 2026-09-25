@@ -464,3 +464,64 @@ fn wire_client_accept_timeout_is_typed() {
         "rendezvous path cleans up on refusal"
     );
 }
+
+#[test]
+fn wire_client_guest_death_fails_pending_without_hang() {
+    // The scripted peer dies abruptly after its first op: the
+    // dispatcher must fail every pending caller (one uncapped
+    // await plus one bounded op) with a typed error instead of
+    // treating death as silence. Neither caller may hang.
+    use cistella::framework::contract::{ExecutionHandle, UnitHandle};
+    use cistella::framework::isolator::Isolator;
+    use cistella::isolators::client::WireClient;
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let mut deadlines = tight_deadlines();
+    deadlines.apply = Duration::from_secs(15);
+    let client = std::sync::Arc::new(
+        WireClient::host_as(
+            &dir,
+            &name,
+            &[
+                "--mode=isolator-die-mid-await".to_string(),
+                format!("--fd-watch={}", rendezvous.path().to_string_lossy()),
+            ],
+            rendezvous.path(),
+            deadlines,
+        )
+        .expect("host must negotiate with the scripted peer"),
+    );
+    let execution = ExecutionHandle::mint();
+    let waiter = {
+        let client = std::sync::Arc::clone(&client);
+        let execution = execution.clone();
+        std::thread::spawn(move || {
+            let cancel = cistella::framework::contract::CancelFlag::new();
+            client.await_result(&execution, &cancel)
+        })
+    };
+    // Give the await op time to arrive and the peer time to die,
+    // then issue a bounded op: both must fail typed, neither hang.
+    std::thread::sleep(Duration::from_secs(2));
+    let unit = UnitHandle::mint();
+    let bounded = client.inspect(&unit);
+    assert!(
+        bounded.is_err(),
+        "bounded op after guest death must fail typed"
+    );
+    let awaited = waiter
+        .join()
+        .expect("waiter joins")
+        .expect_err("uncapped await after guest death must fail typed");
+    assert!(
+        awaited.to_string().contains("guest terminated")
+            || awaited.to_string().contains("dispatcher"),
+        "guest-death error dominates, got: {awaited}"
+    );
+    drop(client);
+}

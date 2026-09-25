@@ -449,6 +449,20 @@ fn main() -> ExitCode {
             }))
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &reply2, 64 * 1024);
+            // Two heartbeat frames before the terminal: the client
+            // must keep the await entry (counting, forwarding
+            // nothing) and redeem only on the terminal.
+            for _ in 0..2 {
+                let pending = serde_json::to_vec(&json!({
+                    "protocol": PROTOCOL_MAJOR,
+                    "id": op1_id,
+                    "op": "isolator.await_result",
+                    "payload": {"pending": true}
+                }))
+                .expect("serialize");
+                let _ = write_frame(&mut stdout_lock, &pending, 64 * 1024);
+                std::thread::sleep(Duration::from_millis(200));
+            }
             let reply1 = serde_json::to_vec(&json!({
                 "protocol": PROTOCOL_MAJOR,
                 "id": op1_id,
@@ -458,6 +472,31 @@ fn main() -> ExitCode {
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &reply1, 64 * 1024);
             ExitCode::SUCCESS
+        }
+        "isolator-die-mid-await" => {
+            // Hello, then die abruptly after the first op arrives:
+            // the client must fail every pending caller with a
+            // typed error (never hang) instead of treating death
+            // as silence.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return protocol_error_exit();
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
+            drop(stdin_lock);
+            drop(stdout_lock);
+            std::process::exit(1);
         }
         "hello-then-eof" => {
             let mut header = [0u8; 4];

@@ -73,6 +73,10 @@ struct Pending {
     deadline: Option<Instant>,
     /// Op name (deadline diagnostics only).
     op: String,
+    /// True for await calls (pending frames kept, not forwarded).
+    is_await: bool,
+    /// Execution handle for await calls (detach addressing).
+    exec: Option<String>,
 }
 
 /// Dispatcher commands from client threads.
@@ -92,6 +96,16 @@ enum Command {
     Shutdown {
         /// Shutdown result channel.
         reply: mpsc::Sender<Result<()>>,
+    },
+    /// Retire one await entry by execution handle (caller
+    /// cancelled and already returned detached): the late
+    /// terminal drops instead of lingering to harness exit.
+    /// Best-effort by exec handle, not strict-id correlation:
+    /// concurrent awaits sharing one handle (replays, retries)
+    /// retire together, which is safe (all callers already left).
+    DetachByExec {
+        /// Execution handle whose await entry retires.
+        exec: String,
     },
 }
 
@@ -272,6 +286,20 @@ impl WireClient {
             let mut pending: HashMap<String, Pending> = HashMap::new();
             let mut next_id: u64 = 0;
             let mut stopping = false;
+            let mut stream = crate::framework::stream::StreamReader::new(
+                crate::framework::protocol::DEFAULT_MAX_FRAME,
+            );
+            // Fail every pending entry with the guest-death error,
+            // then stop: called exactly once on a fatal stream
+            // failure (EOF, protocol, IO — never the idle slice).
+            let fail_all = |pending: &mut HashMap<String, Pending>, error: &str| {
+                for (_, entry) in pending.drain() {
+                    let _ = entry.reply.send(Err(CistellaError::Protocol(format!(
+                        "guest terminated during {}: {error}",
+                        entry.op
+                    ))));
+                }
+            };
             while !stopping {
                 // Drain new commands without blocking the stream.
                 while let Ok(command) = commands_rx.try_recv() {
@@ -288,7 +316,7 @@ impl WireClient {
                                 protocol: PROTOCOL_MAJOR,
                                 id: id.clone(),
                                 op: op.clone(),
-                                payload,
+                                payload: payload.clone(),
                             };
                             let deadline = Instant::now() + timeout.unwrap_or(Duration::ZERO);
                             // Uncapped await uses no deadline; the
@@ -304,14 +332,24 @@ impl WireClient {
                                 )));
                                 continue;
                             }
+                            let is_await = op == crate::framework::protocol::AWAIT_RESULT_OP;
+                            let exec = payload
+                                .get("execution_handle")
+                                .and_then(|handle| handle.as_str())
+                                .map(str::to_string);
                             pending.insert(
                                 id,
                                 Pending {
                                     reply,
                                     deadline: timeout.map(|_| deadline),
                                     op,
+                                    is_await,
+                                    exec,
                                 },
                             );
+                        }
+                        Command::DetachByExec { exec } => {
+                            pending.retain(|_, entry| entry.exec.as_deref() != Some(&exec));
                         }
                         Command::Shutdown { reply } => {
                             let _ = reply.send(guest.shutdown());
@@ -320,18 +358,72 @@ impl WireClient {
                         }
                     }
                 }
-                // One bounded stream slice, then route by id.
-                match guest.exchange_mut().recv(DISPATCH_SLICE) {
-                    Ok(envelope) => {
-                        if let Some(entry) = pending.remove(&envelope.id) {
-                            let _ = entry.reply.send(Ok(envelope.payload));
+                if stopping {
+                    break;
+                }
+                // One stream slice through the persistent
+                // assembler: trickled frames resolve across
+                // slices instead of desynchronizing.
+                match stream.poll_frame(guest.exchange_mut().reader_mut(), DISPATCH_SLICE) {
+                    Ok(Some(body)) => {
+                        let envelope: Envelope = match serde_json::from_slice(&body) {
+                            Ok(envelope) => envelope,
+                            Err(_) => {
+                                fail_all(&mut pending, "malformed response frame");
+                                let _ = guest.shutdown();
+                                break;
+                            }
+                        };
+                        match pending.remove(&envelope.id) {
+                            Some(entry) => {
+                                // `{pending: true}` heartbeat: kept
+                                // and counted, never forwarded; only
+                                // the terminal redeems the caller.
+                                let pending_frame = envelope
+                                    .payload
+                                    .get("pending")
+                                    .and_then(|pending| pending.as_bool())
+                                    .unwrap_or(false);
+                                if entry.is_await && pending_frame {
+                                    // Await heartbeat: keep the
+                                    // entry, forward nothing. Only
+                                    // the terminal redeems the
+                                    // caller.
+                                    pending.insert(envelope.id, entry);
+                                } else if !entry.is_await && pending_frame {
+                                    let _ = entry.reply.send(Err(CistellaError::Contract(
+                                        "pending frame on non-await op".to_string(),
+                                    )));
+                                } else {
+                                    let _ = entry.reply.send(Ok(envelope.payload));
+                                }
+                            }
+                            None => {
+                                // Unknown ids (late terminals after
+                                // expiry or detach) drop silently by
+                                // design.
+                            }
                         }
-                        // Unknown ids (late terminals after expiry
-                        // or detach) drop silently by design.
                     }
-                    Err(_) => {
-                        // Slice timeout: loop back for commands,
+                    Ok(None) => {
+                        // Idle slice: loop back for commands,
                         // deadlines, and detach marks.
+                    }
+                    Err(error) => {
+                        if crate::framework::protocol::is_read_timeout(&error) {
+                            // Idle slice (no bytes yet): loop back.
+                        } else {
+                            // EOF, truncation, oversize, IO: the
+                            // guest is gone or speaking garbage.
+                            // Fail everything pending, shut down
+                            // and reap, then stop. Residue duty
+                            // belongs to the callers'
+                            // on_guest_death paths, which this
+                            // typed error triggers.
+                            fail_all(&mut pending, "guest stream failed");
+                            let _ = guest.shutdown();
+                            break;
+                        }
                     }
                 }
                 // Expire bounded ops; uncapped awaits never expire.
@@ -633,6 +725,13 @@ impl Isolator for WireClient {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if cancel.is_cancelled() {
+                        // Retire the entry explicitly so it clears
+                        // now instead of lingering to harness exit;
+                        // the late terminal (if any) drops on the
+                        // missing entry. Nothing is killed.
+                        let _ = self.commands.send(Command::DetachByExec {
+                            exec: execution.as_str().to_string(),
+                        });
                         return Err(CistellaError::Detached(
                             "await detached by cancellation".to_string(),
                         ));
