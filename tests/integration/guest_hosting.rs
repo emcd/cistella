@@ -525,3 +525,95 @@ fn wire_client_guest_death_fails_pending_without_hang() {
     );
     drop(client);
 }
+
+/// Hosts the scripted peer in the given mode (no fd channel
+/// needed: these modes never launch). The rendezvous directory is
+/// leaked deliberately: the client holds its path for the session
+/// and a dropped TempDir would remove it mid-test.
+fn host_scripted(
+    mode: &str,
+    deadlines: cistella::framework::contract::Deadlines,
+) -> cistella::isolators::client::WireClient {
+    use cistella::isolators::client::WireClient;
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let leaked = Box::leak(Box::new(scratch));
+    // The peer's --fd-watch hold thread connects to the bound
+    // socket (satisfying pid-bound accept) while the modes serve
+    // ops without launching.
+    WireClient::host_as(
+        &dir,
+        &name,
+        &[
+            format!("--mode={mode}"),
+            format!("--fd-watch={}", leaked.path().to_string_lossy()),
+        ],
+        leaked.path(),
+        deadlines,
+    )
+    .expect("host must negotiate with the scripted peer")
+}
+
+#[test]
+fn wire_client_split_frame_resolves() {
+    // The peer writes the length header, sleeps past two
+    // dispatch slices, then writes the body: the persistent
+    // assembler must resolve it (fresh-assembler-per-slice would
+    // corrupt correlation here).
+    use cistella::framework::contract::LifecycleState;
+    use cistella::framework::isolator::Isolator;
+    let client = host_scripted("isolator-split-frame", tight_deadlines());
+    let unit = cistella::framework::contract::UnitHandle::mint();
+    assert_eq!(
+        client.state(&unit).expect("split frame must resolve"),
+        LifecycleState::Initiated
+    );
+}
+
+#[test]
+fn wire_client_wrong_op_refuses() {
+    // The peer answers a live request id with a different op:
+    // the dispatcher must refuse the mismatch instead of
+    // delivering it to the caller.
+    use cistella::framework::isolator::Isolator;
+    let client = host_scripted("isolator-wrong-op", tight_deadlines());
+    let unit = cistella::framework::contract::UnitHandle::mint();
+    let error = client.state(&unit).expect_err("op mismatch must refuse");
+    assert!(
+        error.to_string().contains("mismatches request"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn wire_client_unsolicited_id_fails_exchange() {
+    // The peer emits a response for an id nobody asked about
+    // before answering: the dispatcher must fail the exchange
+    // (failing the pending caller) rather than drop it
+    // silently.
+    use cistella::framework::isolator::Isolator;
+    let client = host_scripted("isolator-unsolicited", tight_deadlines());
+    let unit = cistella::framework::contract::UnitHandle::mint();
+    let error = client.state(&unit).expect_err("unsolicited must fail");
+    assert!(error.to_string().contains("unsolicited"), "got: {error}");
+}
+
+#[test]
+fn wire_client_big_frame_routes() {
+    // A 2 MiB response (between the 1 MiB default and the
+    // negotiated 8 MiB ceiling) routes as a normal response:
+    // the dispatcher reads with the negotiated bound.
+    use cistella::framework::contract::LifecycleState;
+    use cistella::framework::isolator::Isolator;
+    let client = host_scripted("isolator-big-frame", tight_deadlines());
+    let unit = cistella::framework::contract::UnitHandle::mint();
+    assert_eq!(
+        client.state(&unit).expect("big frame must route"),
+        LifecycleState::Initiated
+    );
+}

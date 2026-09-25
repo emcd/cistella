@@ -9,7 +9,7 @@ use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use crate::error::Result;
-use crate::framework::protocol::{FrameAssembler, FramePoll, protocol_error};
+use crate::framework::protocol::{FrameAssembler, FramePoll};
 
 /// Incremental frame reader preserving assembly across polls.
 ///
@@ -38,33 +38,33 @@ impl StreamReader {
 
     /// Polls once toward a frame: `Ok(Some)` on completion,
     /// `Ok(None)` on an idle slice (call again), `Err` on
-    /// oversize, truncation, IO, or slice-budget exhaustion.
-    /// A budget-exhausted slice with zero bytes consumed is idle;
-    /// with bytes consumed it is a stalled trickle (failure),
-    /// mirroring [`read_frame`] without discarding state.
+    /// oversize, truncation, or IO failure.
+    ///
+    /// Slice expiry is never an error here, even with partial
+    /// progress: the caller retries next slice with assembly
+    /// intact, and the caller's own op deadlines bound total time
+    /// (a truly stalled trickle fails at the op deadline, not the
+    /// slice edge).
     ///
     /// # Errors
     ///
     /// Returns `CistellaError::Protocol` on oversize, truncation,
-    /// IO failure, or a stalled trickle past the slice budget.
+    /// or IO failure.
     pub fn poll_frame(
         &mut self,
         reader: &mut (impl Read + AsFd),
         budget: Duration,
     ) -> Result<Option<Vec<u8>>> {
         let deadline = Instant::now() + budget;
-        loop {
-            if Instant::now() >= deadline {
-                if self.assembler.is_fresh() {
-                    return Ok(None);
-                }
-                return Err(protocol_error("frame read timed out"));
-            }
-            match self.assembler.poll_once(reader, self.max_frame, deadline)? {
-                FramePoll::Complete(body) => return Ok(Some(body)),
-                FramePoll::Idle => return Ok(None),
-                FramePoll::Partial => continue,
-            }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        match self.assembler.poll_once(reader, self.max_frame, deadline)? {
+            FramePoll::Complete(body) => Ok(Some(body)),
+            // Idle and mid-slice progress both yield the slice:
+            // Partial resumes next call with state intact instead
+            // of failing the trickle.
+            FramePoll::Idle | FramePoll::Partial => Ok(None),
         }
     }
 }

@@ -281,14 +281,20 @@ impl WireClient {
     fn serve(
         mut guest: GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
     ) -> (mpsc::Sender<Command>, std::thread::JoinHandle<()>) {
+        // Negotiated ceiling (post-hello): the dispatcher refuses
+        // oversize at the same bound the guest was promised, not
+        // the smaller default.
+        let max_frame = guest.exchange_mut().max_frame();
         let (commands_tx, commands_rx) = mpsc::channel::<Command>();
         let worker = std::thread::spawn(move || {
             let mut pending: HashMap<String, Pending> = HashMap::new();
+            // Explicitly retired ids (expiry, detach): late
+            // terminals with these ids drop silently. Anything
+            // else unknown is a protocol violation, not patience.
+            let mut retired: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut next_id: u64 = 0;
             let mut stopping = false;
-            let mut stream = crate::framework::stream::StreamReader::new(
-                crate::framework::protocol::DEFAULT_MAX_FRAME,
-            );
+            let mut stream = crate::framework::stream::StreamReader::new(max_frame);
             // Fail every pending entry with the guest-death error,
             // then stop: called exactly once on a fatal stream
             // failure (EOF, protocol, IO — never the idle slice).
@@ -349,7 +355,15 @@ impl WireClient {
                             );
                         }
                         Command::DetachByExec { exec } => {
-                            pending.retain(|_, entry| entry.exec.as_deref() != Some(&exec));
+                            let retired_ids: Vec<String> = pending
+                                .iter()
+                                .filter(|(_, entry)| entry.exec.as_deref() == Some(&exec))
+                                .map(|(id, _)| id.clone())
+                                .collect();
+                            for id in retired_ids {
+                                pending.remove(&id);
+                                retired.insert(id);
+                            }
                         }
                         Command::Shutdown { reply } => {
                             let _ = reply.send(guest.shutdown());
@@ -366,7 +380,15 @@ impl WireClient {
                 // slices instead of desynchronizing.
                 match stream.poll_frame(guest.exchange_mut().reader_mut(), DISPATCH_SLICE) {
                     Ok(Some(body)) => {
-                        let envelope: Envelope = match serde_json::from_slice(&body) {
+                        // Full envelope grammar (unknown fields,
+                        // correlation, token shapes): the
+                        // dispatcher never trusts a hand-parsed id
+                        // match alone. The response op must equal
+                        // the pending op; retired ids (expiry,
+                        // detach) drop silently; anything else
+                        // unsolicited fails the exchange rather
+                        // than confusing later correlation.
+                        let envelope = match crate::framework::protocol::parse_envelope(&body) {
                             Ok(envelope) => envelope,
                             Err(_) => {
                                 fail_all(&mut pending, "malformed response frame");
@@ -375,10 +397,10 @@ impl WireClient {
                             }
                         };
                         match pending.remove(&envelope.id) {
-                            Some(entry) => {
-                                // `{pending: true}` heartbeat: kept
-                                // and counted, never forwarded; only
-                                // the terminal redeems the caller.
+                            Some(entry) if entry.op == envelope.op => {
+                                // `{pending: true}` heartbeat: kept,
+                                // never forwarded; only the terminal
+                                // redeems the caller.
                                 let pending_frame = envelope
                                     .payload
                                     .get("pending")
@@ -398,10 +420,26 @@ impl WireClient {
                                     let _ = entry.reply.send(Ok(envelope.payload));
                                 }
                             }
+                            Some(entry) => {
+                                // Op mismatch: the response names a
+                                // live request but answers a
+                                // different operation — fail the
+                                // caller, keep no ambiguity.
+                                let _ = entry.reply.send(Err(CistellaError::Contract(
+                                    "response op mismatches request".to_string(),
+                                )));
+                            }
+                            None if retired.contains(&envelope.id) => {
+                                // Explicitly retired (expiry,
+                                // detach): late terminal drops.
+                            }
                             None => {
-                                // Unknown ids (late terminals after
-                                // expiry or detach) drop silently by
-                                // design.
+                                // Truly unsolicited id: fail the
+                                // exchange rather than confuse later
+                                // correlation.
+                                fail_all(&mut pending, "unsolicited response id");
+                                let _ = guest.shutdown();
+                                break;
                             }
                         }
                     }
@@ -435,6 +473,7 @@ impl WireClient {
                     .collect();
                 for id in expired {
                     if let Some(entry) = pending.remove(&id) {
+                        retired.insert(id.clone());
                         let _ = entry.reply.send(Err(CistellaError::Protocol(format!(
                             "{} response timed out",
                             entry.op
