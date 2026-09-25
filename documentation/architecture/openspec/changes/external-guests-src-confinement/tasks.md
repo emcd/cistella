@@ -2,7 +2,7 @@
 
 - [x] 1.1 Implement sibling-relative guest discovery with typed pre-create refusal (no PATH search); state the trusted install-directory assumption and fail hello on guest/version mismatch.
 - [ ] 1.2 Host external guests through the existing `GuestHost` (framed stdio, deadlines, kill/reap, pipe-EOF already owned there); add only what the wire path needs beyond it.
-- [ ] 1.3 Prove hosting-layer death semantics (guest-agnostic): kill a peer mid-exchange and pin bounded typed failure, clean shutdown after death, and fresh re-host with no wedged state. Op-level recovery (kill/re-exec converging by key at create/initiate; typed teardown after execute/await death) rides with the Podman guest in 2.3, where the operations exist.
+- [x] 1.3 Prove hosting-layer death semantics (guest-agnostic): kill a peer mid-exchange and pin bounded typed failure, clean shutdown after death, and fresh re-host with no wedged state. Op-level recovery (kill/re-exec converging by key at create/initiate; typed teardown after execute/await death) rides with the Podman guest in 2.3, where the operations exist.
 
 ## 2. Podman guest binary
 
