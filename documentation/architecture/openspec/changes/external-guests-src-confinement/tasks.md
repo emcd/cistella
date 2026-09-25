@@ -7,7 +7,7 @@
 ## 2. Podman guest binary
 
 - [ ] 2.1 Ship the Podman isolator `--bin` speaking `isolator.*` ops over the framed protocol.
-- [ ] 2.2 Switch production `conduct` to the wire guest (the call-site switch itself); fleet-deploy confidence comes later at the 4.1 dogfood gate, which this switch enables rather than precedes; the in-process impl stays as conformance reference.
+- [ ] 2.2 Switch production `conduct` to the wire guest (the call-site switch itself); fleet-deploy confidence comes later at the 4.1 dogfood gate, which this switch enables rather than precedes; the in-process impl stays as conformance reference. The wire client SHALL check unit residue by reconciliation key after abnormal guest exit (guest stderr is discarded, so cleanup status cannot ride the error channel). The wire client SHALL fstat its open slave description at handshake time for `expect_rdev` and keep the description open until launch confirms (open slave holds the devpts slot; rdev match alone does not prevent reuse) — test the hold obligation.
 - [ ] 2.3 Pin wire/reference parity in conformance (divergence fails the suite), including op-level recovery: kill/re-exec converging by key at create/initiate, and typed teardown after guest death during execute/await.
 
 ## 3. Landlock guest binary and confinement

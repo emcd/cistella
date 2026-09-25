@@ -8,6 +8,8 @@
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{CistellaError, Result};
 
 /// Label keys emitted only by the driver.
@@ -149,7 +151,12 @@ pub fn parse_cli_label(arg: &str) -> Result<(String, String)> {
 }
 
 /// Session identity minted by `conduct`.
-#[derive(Debug, Clone)]
+///
+/// `Serialize`/`Deserialize` carry sessions across the isolator wire
+/// to external guest binaries; validation still happens once, at
+/// conduct resolution, never by revalidating the wire copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Session {
     /// Minted id (`[a-z0-9]`, fixed length, time-sortable).
     pub id: String,

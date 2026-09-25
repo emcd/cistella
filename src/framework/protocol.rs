@@ -121,6 +121,36 @@ pub(crate) fn protocol_error(message: impl Into<String>) -> CistellaError {
     CistellaError::Protocol(message.into())
 }
 
+/// Clean-EOF-at-boundary message: the peer closed an idle
+/// connection with zero bytes consumed (not truncation, not a
+/// protocol failure). Guests use [`is_clean_eof`] to exit quietly
+/// on orderly close while failing loudly on anything else.
+pub const EOF_AT_BOUNDARY: &str = "eof at frame boundary";
+
+/// Idle-timeout message: budget exhausted with zero bytes
+/// consumed (quiet connection, not failure). Distinct from a
+/// timeout after partial bytes, which is a desynchronizing
+/// protocol failure — looping again there would drop consumed
+/// bytes and misalign the next frame.
+pub const IDLE_TIMEOUT: &str = "frame read timed out: idle";
+
+/// True when the error is a clean EOF at a frame boundary.
+///
+/// Single source of truth for the boundary message so guests never
+/// match error text they do not own.
+#[must_use]
+pub fn is_clean_eof(error: &CistellaError) -> bool {
+    matches!(error, CistellaError::Protocol(message) if message == EOF_AT_BOUNDARY)
+}
+
+/// True when the error is a read-budget timeout (idle silence, not
+/// failure). Guests loop again on timeouts: quiet control
+/// connections are patience, never an exit reason.
+#[must_use]
+pub fn is_read_timeout(error: &CistellaError) -> bool {
+    matches!(error, CistellaError::Protocol(message) if message == IDLE_TIMEOUT)
+}
+
 /// True when a response payload is a non-terminal `{pending: true}`.
 ///
 /// The narrow streaming exception: `await_result`-style exchanges may
@@ -184,15 +214,21 @@ pub fn read_frame(
     let deadline = Instant::now() + timeout;
     let mut assembler = FrameAssembler::new();
     loop {
-        // Bounded reads never idle and never trickle forever: any
-        // slice without completion past the deadline is a timeout.
+        // Bounded reads never idle and never trickle forever. Past
+        // the deadline, zero consumed bytes is idle silence
+        // (loopable); any consumed bytes is a stalled trickle that
+        // already desynchronized the stream (failure).
         if Instant::now() >= deadline {
-            return Err(protocol_error("frame read timed out"));
+            return Err(protocol_error(if assembler.is_fresh() {
+                IDLE_TIMEOUT
+            } else {
+                "frame read timed out"
+            }));
         }
         match assembler.poll_once(reader, max_frame, deadline)? {
             FramePoll::Complete(body) => return Ok(body),
             FramePoll::Idle => {
-                return Err(protocol_error("frame read timed out"));
+                return Err(protocol_error(IDLE_TIMEOUT));
             }
             FramePoll::Partial => continue,
         }
@@ -233,6 +269,11 @@ impl FrameAssembler {
         }
     }
 
+    /// True when zero bytes have been consumed (fresh frame start).
+    fn is_fresh(&self) -> bool {
+        self.header_read == 0 && self.length.is_none() && self.body.is_empty()
+    }
+
     /// Polls once toward a complete frame.
     ///
     /// Two callers, two lifetimes: bounded `read_frame` owns one
@@ -262,6 +303,12 @@ impl FrameAssembler {
                 });
             }
             match reader.read(&mut self.header[self.header_read..]) {
+                // Zero bytes with zero header consumed is a clean EOF
+                // at a frame boundary (guest/host closed an idle
+                // connection), distinct from mid-frame truncation.
+                Ok(0) if self.header_read == 0 && self.body.is_empty() => {
+                    return Err(protocol_error(EOF_AT_BOUNDARY));
+                }
                 Ok(0) => return Err(protocol_error("truncated frame: EOF mid-frame")),
                 Ok(n) => self.header_read += n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}

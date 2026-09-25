@@ -51,7 +51,12 @@ impl IsolatorCapabilities {
 /// `--tmpfs` pairs); `env` is `KEY=value` strings; `labels` is the
 /// merged generic label set (driver-owned `cistella.*` added by the
 /// backend from the session).
-#[derive(Debug, Clone)]
+///
+/// Serde carries specs across the isolator wire; the framework
+/// builds them, the guest executes them, and neither revalidates
+/// the other's construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateSpec {
     /// Resolved session (identity, image, command, digests).
     pub session: Session,
@@ -64,20 +69,41 @@ pub struct CreateSpec {
 }
 
 /// Standard-input/output binding for launched executions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// In-memory API only (never serialized: file descriptors ride the
+/// ancillary-fd channel, not JSON). `Inherit` wires process stdio
+/// — correct only for in-process conduct, where process stdio IS
+/// the session PTY; the external wire path never offers it (there
+/// is no field to carry it, so the confusion is unexpressible).
+/// `HeldFiles` wires explicitly passed descriptors, received over
+/// the fd channel with header binding and owned exactly once.
+#[derive(Debug)]
 pub enum StdioBinding {
-    /// Inherit the caller's stdio (the session PTY slave).
-    ///
-    /// The only binding today; the enum stays open so PTY-slave,
-    /// captured, or null bindings land without trait churn.
+    /// Inherit the caller's stdio (in-process conduct only).
     Inherit,
+    /// Use explicitly held descriptors (external guests only).
+    HeldFiles {
+        /// Harness standard input.
+        stdin: std::os::fd::OwnedFd,
+        /// Harness standard output.
+        stdout: std::os::fd::OwnedFd,
+        /// Harness standard error.
+        stderr: std::os::fd::OwnedFd,
+    },
 }
 
 /// Initiate attestation: proof the unit started.
+///
+/// `pidns_proof` is the container init's PID-namespace identifier
+/// (Linux `pid:[inode]` form), proving the unit runs isolated;
+/// backends that cannot prove it fail initiate rather than
+/// attest blindly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartedAttestation {
     /// Unit identity (container name).
     pub unit_identity: String,
+    /// PID-namespace proof for the running unit.
+    pub pidns_proof: String,
     /// Initiate completed and the unit is ready for guest prep.
     pub ready: bool,
 }

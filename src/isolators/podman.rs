@@ -371,8 +371,10 @@ impl Isolator for PodmanIsolator {
     ) -> Result<StartedAttestation> {
         let record = self.record(handle)?;
         start_quadlet(&record.unit_name)?;
+        let pidns_proof = container_pidns(&record.container_name)?;
         Ok(StartedAttestation {
             unit_identity: record.container_name,
+            pidns_proof,
             ready: true,
         })
     }
@@ -385,12 +387,28 @@ impl Isolator for PodmanIsolator {
         stdio: StdioBinding,
         _key: &ReconciliationKey,
     ) -> Result<ExecutionHandle> {
+        // Session stdio routing: `Inherit` wires process stdio
+        // (in-process conduct, where that IS the session PTY);
+        // `HeldFiles` wires descriptors received over the
+        // ancillary-fd channel (external guests, whose own stdio
+        // is protocol pipes that must never carry harness bytes).
+        let (stdin, stdout, stderr) = match stdio {
+            StdioBinding::Inherit => (
+                std::process::Stdio::inherit(),
+                std::process::Stdio::inherit(),
+                std::process::Stdio::inherit(),
+            ),
+            StdioBinding::HeldFiles {
+                stdin,
+                stdout,
+                stderr,
+            } => (
+                std::process::Stdio::from(stdin),
+                std::process::Stdio::from(stdout),
+                std::process::Stdio::from(stderr),
+            ),
+        };
         let record = self.record(handle)?;
-        if !matches!(stdio, StdioBinding::Inherit) {
-            return Err(CistellaError::Contract(
-                "podman backend supports inherited stdio only".to_string(),
-            ));
-        }
         let args = match workdir {
             Some(target) => {
                 crate::transport::exec_harness_args(&record.container_name, target, argv)
@@ -400,9 +418,9 @@ impl Isolator for PodmanIsolator {
         let child = unsafe {
             Command::new("podman")
                 .args(&args)
-                .stdin(std::process::Stdio::inherit())
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
+                .stdin(stdin)
+                .stdout(stdout)
+                .stderr(stderr)
                 .pre_exec(|| {
                     // The child resets to default so it still dies with the pane.
                     let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
@@ -635,6 +653,39 @@ fn cancel_signum(cancel: &CancelFlag) -> Option<i32> {
 }
 
 /// Kills a harness child: SIGTERM, brief grace, SIGKILL on survival.
+/// Proves the container's PID namespace: polls `podman inspect` for
+/// a nonzero container init PID, then reads its `ns/pid` link
+/// (`pid:[inode]` form). Bounds match the start poll above; an
+/// unprovable namespace fails initiate rather than attesting
+/// blindly (the caller tears down).
+fn container_pidns(name: &str) -> Result<String> {
+    use std::time::Instant;
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let out = Command::new("podman")
+            .args(["inspect", "--format", "{{.State.Pid}}", name])
+            .output()
+            .map_err(|e| CistellaError::Runtime(format!("podman inspect pid: {e}")))?;
+        if out.status.success() {
+            let pid: i32 = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0);
+            if pid > 0 {
+                let link = std::fs::read_link(format!("/proc/{pid}/ns/pid"))
+                    .map_err(|e| CistellaError::Runtime(format!("read pidns of {pid}: {e}")))?;
+                return Ok(link.to_string_lossy().to_string());
+            }
+        }
+        if Instant::now() > deadline {
+            return Err(CistellaError::Runtime(format!(
+                "container {name} yielded no pidns proof after 30s"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// Inspects a container: status, `cistella.id` label, image.
 ///
 /// Absence (`podman container exists` exit 1) returns `None` status

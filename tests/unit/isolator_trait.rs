@@ -76,6 +76,7 @@ impl Isolator for MemIsolator {
             .insert(Self::key(handle), LifecycleState::Initiated);
         Ok(StartedAttestation {
             unit_identity: Self::key(handle),
+            pidns_proof: "pid:[fake]".to_string(),
             ready: true,
         })
     }

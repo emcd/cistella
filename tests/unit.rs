@@ -15,6 +15,8 @@ mod credentials;
 mod discovery;
 #[path = "unit/environment_acceptances.rs"]
 mod environment_acceptances;
+#[path = "unit/fdpass.rs"]
+mod fdpass;
 #[path = "unit/framework_contract.rs"]
 mod framework_contract;
 #[path = "unit/identity.rs"]
@@ -35,3 +37,5 @@ mod protocol;
 mod runtime;
 #[path = "unit/version.rs"]
 mod version;
+#[path = "unit/wire_dispatch.rs"]
+mod wire_dispatch;

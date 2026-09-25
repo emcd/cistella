@@ -451,7 +451,12 @@ fn order_hooks(hooks: &[GuestHookRequest]) -> Result<Vec<GuestHookRequest>> {
 ///
 /// `state` returns only this enum; `inspect` returns the rich
 /// read-only snapshot. Every transition stays a separate operation.
+///
+/// Lowercase wire spelling (`created|initiated|...`) matches the
+/// isolator-contract schema on both `state` and `inspect` paths —
+/// one form, never Debug-derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LifecycleState {
     /// Created but not initiated.
     Created,
@@ -618,7 +623,11 @@ pub struct CancelFlag {
 
 impl CancelFlag {
     /// Fresh uncancelled flag (const so process-wide statics can hold one).
-    pub(crate) const fn new() -> Self {
+    ///
+    /// Public so external guest binaries (separate `--bin` targets in
+    /// this crate) can own cancellation state; in-process callers
+    /// keep using the shared conduct/static flags.
+    pub const fn new() -> Self {
         Self {
             signum: AtomicI32::new(0),
         }

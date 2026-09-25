@@ -408,6 +408,7 @@ fn cleanup_then_write_surfaces_typed_error() {
     assert!(
         message.contains("truncated")
             || message.contains("EOF")
+            || message.contains("eof at frame boundary")
             || message.contains("Broken pipe")
             || message.contains("EPIPE")
             || message.contains("frame write")

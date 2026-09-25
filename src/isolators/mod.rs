@@ -6,3 +6,4 @@
 
 pub mod podman;
 pub mod quadlet;
+pub mod wire;

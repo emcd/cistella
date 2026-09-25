@@ -24,7 +24,7 @@ Isolators SHALL implement `create` / `initiate` / `execute` / `inspect` / `state
 Every external operation SHALL define its request/result wire schema as a concrete JSON envelope over the framed protocol. `op` spellings: `isolator.create`, `isolator.initiate`, `isolator.execute_launch`, `isolator.await_result`, `isolator.inspect`, `isolator.state`, `isolator.terminate`, `isolator.remove`. Handles are opaque strings issued by the framework (`unit_handle`, `execution_handle`); never paths, never guest-chosen. Payload object types with required/optional fields:
 - `create {spec: {image, mounts[], env[], labels{}, constraints?}, reconciliation_key} → {unit_handle} | error`
 - `initiate {unit_handle, reconciliation_key} → {started_attestation {unit_identity, pidns_proof, ready}} | error`
-- `execute_launch {unit_handle, argv[], stdio_binding, reconciliation_key} → {execution_handle} | error` (bounded; launch never blocks for completion)
+- `execute_launch {unit_handle, execution_handle, argv[], workdir?, stdio_binding, reconciliation_key} → {execution_handle} | error` (bounded; launch never blocks for completion; `execution_handle` is framework-issued in the request since handles are never guest-chosen; `workdir` carries session launch context)
 - `await_result {execution_handle} → {exit_status | signal} | {pending}` (uncapped by design; the launching connection owns the await; cancelling detaches without killing; reconnect re-attaches by handle; results replayable until `remove`)
 - `inspect {unit_handle} → {snapshot} | error`
 - `state {unit_handle} → {lifecycle: created|initiated|executing|stopped|absent}`
@@ -55,3 +55,27 @@ Conformance SHALL split four ways with explicit applicability rules: common cont
 #### Scenario: Inspect reads and state transitions are distinct
 - **WHEN** the suite exercises `inspect` and `state` alongside state-transition operations
 - **THEN** read-only snapshot scenarios, enum-state scenarios, and mutating transition scenarios are pinned separately (a call mixing intents is a distinct defect class)
+
+### Requirement: Session stdio separation for external guests
+
+Harness stdio SHALL NEVER share the guest's protocol pipes. In-process backends wire process stdio (`Inherit`); external guests receive an explicitly named session-PTY slave path (`SessionPty`) that the backend validates (exactly `/dev/pts/<numeric-slave>`, no symlinks, character device after open with `O_NOFOLLOW | O_NOCTTY`, canonical resolution still under `/dev/pts`, opened device identity equal to the framework-provided `st_rdev`) and re-opens before any spawn. The identity match alone does not prevent devpts slot reuse: the wire client SHALL fstat its open slave description at handshake time and keep the description open until launch confirms (an open slave is observed to hold its slot allocated — an experiment-pinned Linux property, not a cited kernel invariant). The framework keeps its own slave description open for the session lifetime so no last-close HUP fires mid-session.
+
+#### Scenario: Harness bytes never enter the frame parser
+- **WHEN** a launched harness writes arbitrary output and reads stdin
+- **THEN** all harness bytes travel on the re-opened slave; protocol stdout stays strictly framed and the parser never observes them
+
+#### Scenario: Non-terminal slave refuses pre-spawn
+- **WHEN** the named slave is outside `/dev/pts`, a symlink, a non-device, or missing
+- **THEN** launch refuses with a typed error before any spawn
+
+### Requirement: Handle eviction and replay binding on the wire
+
+Framework handles SHALL bind to the key and request identity that created them: identical replays succeed idempotently without re-executing, while a known handle with a divergent key or request refuses as mismatched reuse instead of overwriting (and orphaning) live state. Successful `remove` SHALL evict the unit binding and its executions; failed removals keep their handles for retry. Disconnect-time convergence SHALL sweep only units without live executions — live harness processes are left running for the framework's typed teardown path, never swept by the guest.
+
+#### Scenario: Retry does not double-launch
+- **WHEN** an `execute_launch` attempt repeats with the identical handle, key, and argv
+- **THEN** the guest returns the existing binding without spawning a second harness
+
+#### Scenario: Remove evicts, failure retains
+- **WHEN** `remove` succeeds against a bound unit
+- **THEN** the binding and its executions clear; a failed remove keeps them for retry
