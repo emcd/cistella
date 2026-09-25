@@ -669,6 +669,10 @@ pub struct Deadlines {
     pub apply: Duration,
     /// SIGTERM grace before SIGKILL on teardown/kill.
     pub terminate_grace: Duration,
+    /// Frame-completion budget once any response byte arrives
+    /// (control-plane framing stays bounded even when the
+    /// harness wait itself is uncapped).
+    pub frame_completion: Duration,
 }
 
 impl Default for Deadlines {
@@ -678,6 +682,7 @@ impl Default for Deadlines {
             plan: Duration::from_secs(30),
             apply: Duration::from_secs(30),
             terminate_grace: Duration::from_secs(10),
+            frame_completion: Duration::from_secs(60),
         }
     }
 }
@@ -695,6 +700,8 @@ pub enum ControlDeadline {
     Apply,
     /// SIGTERM grace before SIGKILL.
     TerminateGrace,
+    /// Frame completion once response bytes arrive.
+    FrameCompletion,
 }
 
 impl Deadlines {
@@ -706,6 +713,7 @@ impl Deadlines {
             ControlDeadline::Plan => self.plan,
             ControlDeadline::Apply => self.apply,
             ControlDeadline::TerminateGrace => self.terminate_grace,
+            ControlDeadline::FrameCompletion => self.frame_completion,
         }
     }
 }

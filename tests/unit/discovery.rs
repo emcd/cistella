@@ -88,6 +88,7 @@ fn host_external_missing_binary_spawns_nothing() {
         plan: std::time::Duration::from_secs(1),
         apply: std::time::Duration::from_secs(1),
         terminate_grace: std::time::Duration::from_secs(1),
+        frame_completion: std::time::Duration::from_secs(60),
     };
     let error = match host_external(dir.path(), "cistella-guest-absent", &[], &[], deadlines) {
         Ok(_) => panic!("absence must refuse before spawn"),
@@ -107,6 +108,7 @@ fn host_external_escape_name_refuses() {
         plan: std::time::Duration::from_secs(1),
         apply: std::time::Duration::from_secs(1),
         terminate_grace: std::time::Duration::from_secs(1),
+        frame_completion: std::time::Duration::from_secs(60),
     };
     let error = match host_external(dir.path(), "../guest", &[], &[], deadlines) {
         Ok(_) => panic!("escape must refuse before spawn"),

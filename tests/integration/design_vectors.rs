@@ -85,6 +85,7 @@ fn tight_deadlines() -> Deadlines {
         plan: Duration::from_secs(2),
         apply: Duration::from_secs(2),
         terminate_grace: Duration::from_secs(2),
+        frame_completion: Duration::from_secs(60),
     }
 }
 

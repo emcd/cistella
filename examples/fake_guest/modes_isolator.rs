@@ -288,6 +288,53 @@ pub(crate) fn run(
             let _ = write_frame(&mut stdout_lock, &response, 8 * 1024 * 1024);
             ExitCode::SUCCESS
         }
+        "isolator-await-stall" => {
+            // Hello, then one header byte followed by silence:
+            // the dispatcher's frame-completion bound (not its
+            // op deadline) must fail the pending call typed.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            let _ = read_frame_from_stdin(&mut stdin_lock);
+            let _ = stdout_lock.write_all(&[0u8; 1]);
+            let _ = stdout_lock.flush();
+            std::thread::sleep(Duration::from_secs(60));
+            ExitCode::SUCCESS
+        }
+        "isolator-exit-after-hello" => {
+            // Hello, then exit promptly: exercises close() against
+            // an already-dead dispatcher (join + path removal must
+            // run on every close outcome, not just clean ones).
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            std::thread::sleep(Duration::from_millis(500));
+            ExitCode::SUCCESS
+        }
         _ => return None,
     })
 }

@@ -19,6 +19,7 @@ fn tight_deadlines() -> Deadlines {
         plan: Duration::from_secs(2),
         apply: Duration::from_secs(2),
         terminate_grace: Duration::from_secs(2),
+        frame_completion: Duration::from_secs(60),
     }
 }
 
@@ -534,6 +535,16 @@ fn host_scripted(
     mode: &str,
     deadlines: cistella::framework::contract::Deadlines,
 ) -> cistella::isolators::client::WireClient {
+    host_scripted_extra(mode, &[], deadlines)
+}
+
+/// Hosts the scripted peer with additional argv (fd-watch is
+/// always included for rendezvous cooperation).
+fn host_scripted_extra(
+    mode: &str,
+    extra: &[String],
+    deadlines: cistella::framework::contract::Deadlines,
+) -> cistella::isolators::client::WireClient {
     use cistella::isolators::client::WireClient;
     let dir = examples_dir();
     let name = peer_path()
@@ -543,20 +554,13 @@ fn host_scripted(
         .into_owned();
     let scratch = tempfile::tempdir().expect("tempdir");
     let leaked = Box::leak(Box::new(scratch));
-    // The peer's --fd-watch hold thread connects to the bound
-    // socket (satisfying pid-bound accept) while the modes serve
-    // ops without launching.
-    WireClient::host_as(
-        &dir,
-        &name,
-        &[
-            format!("--mode={mode}"),
-            format!("--fd-watch={}", leaked.path().to_string_lossy()),
-        ],
-        leaked.path(),
-        deadlines,
-    )
-    .expect("host must negotiate with the scripted peer")
+    let mut args = vec![
+        format!("--mode={mode}"),
+        format!("--fd-watch={}", leaked.path().to_string_lossy()),
+    ];
+    args.extend(extra.iter().cloned());
+    WireClient::host_as(&dir, &name, &args, leaked.path(), deadlines)
+        .expect("host must negotiate with the scripted peer")
 }
 
 #[test]
@@ -615,5 +619,72 @@ fn wire_client_big_frame_routes() {
     assert_eq!(
         client.state(&unit).expect("big frame must route"),
         LifecycleState::Initiated
+    );
+}
+
+#[test]
+fn wire_client_stalled_partial_fails_typed() {
+    // The peer answers hello, then sends one header byte and
+    // stalls forever: the frame-completion bound (short here,
+    // production 60s) must fail the pending call typed instead
+    // of leaving the await pending across slices forever.
+    use cistella::framework::isolator::Isolator;
+    let mut deadlines = tight_deadlines();
+    // Frame bound well under the op budget: the stall failure
+    // must arrive from framing, not op expiry.
+    deadlines.frame_completion = Duration::from_secs(1);
+    deadlines.apply = Duration::from_secs(15);
+    let client = host_scripted("isolator-await-stall", deadlines);
+    let unit = cistella::framework::contract::UnitHandle::mint();
+    let start = std::time::Instant::now();
+    let error = client.state(&unit).expect_err("stall must fail typed");
+    assert!(
+        error.to_string().contains("stalled after first byte"),
+        "frame-completion failure, got: {error}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(30),
+        "frame bound applies, not the harness lifetime"
+    );
+}
+
+#[test]
+fn wire_client_close_after_guest_death_cleans_up() {
+    // The peer exits shortly after hello: close() on the dead
+    // dispatcher must still join the worker and unlink the
+    // rendezvous path (no strand on any close outcome).
+    use cistella::isolators::client::WireClient;
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let leaked = Box::leak(Box::new(scratch));
+    let leaked_path = leaked.path().to_path_buf();
+    let client = WireClient::host_as(
+        &dir,
+        &name,
+        &[
+            "--mode=isolator-exit-after-hello".to_string(),
+            format!("--fd-watch={}", leaked_path.to_string_lossy()),
+        ],
+        &leaked_path,
+        tight_deadlines(),
+    )
+    .expect("host must negotiate before the peer exits");
+    // The peer is dead by now; the dispatcher has broken out.
+    std::thread::sleep(Duration::from_secs(2));
+    let error = client
+        .close()
+        .expect_err("close after death reports, not Ok");
+    let _ = error;
+    assert!(
+        std::fs::read_dir(&leaked_path)
+            .expect("rendezvous dir lists")
+            .next()
+            .is_none(),
+        "rendezvous socket unlinked on every close outcome"
     );
 }

@@ -35,6 +35,8 @@ mod profile_resolution;
 mod protocol;
 #[path = "unit/runtime.rs"]
 mod runtime;
+#[path = "unit/stream.rs"]
+mod stream;
 #[path = "unit/version.rs"]
 mod version;
 #[path = "unit/wire_dispatch.rs"]

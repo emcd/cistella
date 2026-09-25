@@ -325,6 +325,7 @@ fn deadlines_cover_every_control_interaction() {
         ControlDeadline::Plan,
         ControlDeadline::Apply,
         ControlDeadline::TerminateGrace,
+        ControlDeadline::FrameCompletion,
     ] {
         assert!(!deadlines.for_interaction(interaction).is_zero());
     }

@@ -211,7 +211,7 @@ impl WireClient {
         let fd_sock = Self::accept_guest(&listener, pid, deadlines.hello).inspect_err(|_| {
             let _ = std::fs::remove_file(&path);
         })?;
-        let (commands, worker) = Self::serve(guest);
+        let (commands, worker) = Self::serve(guest, deadlines.frame_completion);
         Ok(Self {
             commands,
             worker: Some(worker),
@@ -280,6 +280,7 @@ impl WireClient {
     /// Starts the dispatcher thread owning the guest exchange.
     fn serve(
         mut guest: GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
+        frame_timeout: Duration,
     ) -> (mpsc::Sender<Command>, std::thread::JoinHandle<()>) {
         // Negotiated ceiling (post-hello): the dispatcher refuses
         // oversize at the same bound the guest was promised, not
@@ -294,7 +295,7 @@ impl WireClient {
             let mut retired: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut next_id: u64 = 0;
             let mut stopping = false;
-            let mut stream = crate::framework::stream::StreamReader::new(max_frame);
+            let mut stream = crate::framework::stream::StreamReader::new(max_frame, frame_timeout);
             // Fail every pending entry with the guest-death error,
             // then stop: called exactly once on a fatal stream
             // failure (EOF, protocol, IO — never the idle slice).
@@ -451,14 +452,14 @@ impl WireClient {
                         if crate::framework::protocol::is_read_timeout(&error) {
                             // Idle slice (no bytes yet): loop back.
                         } else {
-                            // EOF, truncation, oversize, IO: the
-                            // guest is gone or speaking garbage.
-                            // Fail everything pending, shut down
-                            // and reap, then stop. Residue duty
-                            // belongs to the callers'
-                            // on_guest_death paths, which this
-                            // typed error triggers.
-                            fail_all(&mut pending, "guest stream failed");
+                            // EOF, truncation, oversize, IO, frame
+                            // stall: the guest is gone or speaking
+                            // garbage. Fail everything pending with
+                            // the real reason, shut down and reap,
+                            // then stop. Residue duty belongs to the
+                            // callers' on_guest_death paths, which
+                            // this typed error triggers.
+                            fail_all(&mut pending, &format!("guest stream failed: {error}"));
                             let _ = guest.shutdown();
                             break;
                         }
@@ -592,18 +593,32 @@ impl WireClient {
     }
 
     /// Closes the client: stops the dispatcher, shuts the guest
-    /// down, and removes the rendezvous path. Best-effort all
-    /// thirds; reports the first failure.
+    /// down, and removes the rendezvous path. Join and path
+    /// removal run unconditionally on every outcome (a dead
+    /// dispatcher still joins, a dead guest still loses its
+    /// path); only then does the dominant error report.
     ///
     /// # Errors
     ///
-    /// Returns the first shutdown/cleanup failure, if any.
+    /// Returns the shutdown/residue failure if the close could
+    /// not complete cleanly.
     pub fn close(mut self) -> Result<()> {
         let (reply_tx, reply_rx) = mpsc::channel();
-        let _ = self.commands.send(Command::Shutdown { reply: reply_tx });
-        let shutdown: Result<()> = reply_rx
-            .recv()
-            .map_err(|_| CistellaError::Protocol("dispatcher dropped shutdown".to_string()))?;
+        let send_ok = self
+            .commands
+            .send(Command::Shutdown { reply: reply_tx })
+            .is_ok();
+        // The dispatcher may already be gone (worker broke on
+        // guest death): join and unlink either way, then report.
+        let shutdown = if send_ok {
+            reply_rx
+                .recv()
+                .map_err(|_| CistellaError::Protocol("dispatcher dropped shutdown".to_string()))?
+        } else {
+            Err(CistellaError::Protocol(
+                "dispatcher already terminated".to_string(),
+            ))
+        };
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
