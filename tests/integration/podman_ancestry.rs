@@ -48,7 +48,10 @@ fn image_ref() -> String {
 /// Resolves the host-built helper. Same mtime-descending logic as
 /// `resolve_example` in `landlock_spike.rs`; duplicated rather than
 /// shared so the tier-2-approved spike file stays untouched (the
-/// spike file itself notes the sharing is out of scope).
+/// spike file itself notes the sharing is out of scope). Duplicates
+/// `resolve_example` exactly — keep them in sync or extract a shared
+/// helper once the duplication cost outweighs the documentation
+/// benefit.
 fn landlock_helper_path() -> PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
@@ -95,7 +98,9 @@ fn landlock_helper_path() -> PathBuf {
 /// Runs the helper inside a one-shot `--userns=keep-id` container and
 /// returns `(exit_code, stdout, stderr)`. Callers that reach this far
 /// have podman and the image; a `podman run` failure here is a real
-/// failure, not a skip.
+/// failure, not a skip. Both probe callers exercise the admitted and
+/// denied paths through this same container shape; only the allow
+/// list and the wrapped argv differ.
 fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, String, String) {
     let helper = landlock_helper_path();
     let image = image_ref();
@@ -131,6 +136,9 @@ fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, Stri
 
 /// Guards both probe tests: skip with a diagnostic when the seat
 /// cannot run the probe (no podman, or the image is absent).
+/// Preconditions are cheap binary checks, not deep diagnostics — a
+/// later `podman run` failure is a real failure to investigate, not
+/// a skip.
 fn probe_preconditions() -> bool {
     if !podman_available() {
         eprintln!("skip: podman not available");
