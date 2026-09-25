@@ -11,6 +11,8 @@ mod cli_args;
 mod conduct_eval;
 #[path = "unit/credentials.rs"]
 mod credentials;
+#[path = "unit/discovery.rs"]
+mod discovery;
 #[path = "unit/environment_acceptances.rs"]
 mod environment_acceptances;
 #[path = "unit/framework_contract.rs"]

@@ -7,6 +7,7 @@
 pub mod conduct;
 pub mod contract;
 pub mod credentials;
+pub mod discovery;
 pub mod guest;
 pub mod isolator;
 pub mod policy;
