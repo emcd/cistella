@@ -212,3 +212,72 @@ fn host_external_evil_capability_refuses_value_free_and_reaps() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
+
+#[test]
+fn host_external_peer_death_is_typed_bounded_and_rehostable() {
+    // Hosting-layer death semantics (task 1.3, guest-agnostic):
+    // SIGKILL the peer mid-exchange, then pin that a subsequent
+    // request fails with a bounded typed error (no hang), shutdown
+    // after death is clean, and a fresh host negotiates (no wedged
+    // state). Op-level recovery by key rides with the Podman guest.
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let offered = [
+        "environment",
+        "mounts",
+        "policy-claims",
+        "guest-hooks",
+        "credentials",
+    ]
+    .map(String::from)
+    .to_vec();
+    let mut host = host_external(
+        &dir,
+        &name,
+        &["--mode=hello-real-capabilities".to_string()],
+        &offered,
+        tight_deadlines(),
+    )
+    .expect("hello must negotiate before the kill");
+    let pid = host.pid();
+    let kill = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .output()
+        .expect("kill must spawn");
+    assert!(kill.status.success(), "SIGKILL must land");
+    let start = std::time::Instant::now();
+    let error = match host.exchange_mut().request(
+        "ping",
+        serde_json::json!({"ok": true}),
+        std::time::Duration::from_secs(5),
+    ) {
+        Ok(_) => panic!("request to a dead peer must fail"),
+        Err(error) => error,
+    };
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(30),
+        "failure must be bounded, not a hang"
+    );
+    assert!(
+        error.to_string().contains("protocol"),
+        "typed protocol failure, got: {error}"
+    );
+    assert!(
+        host.shutdown().is_ok(),
+        "shutdown after death must reap cleanly"
+    );
+    let mut fresh = host_external(
+        &dir,
+        &name,
+        &["--mode=hello-real-capabilities".to_string()],
+        &offered,
+        tight_deadlines(),
+    )
+    .expect("re-host must negotiate after death");
+    assert!(fresh.shutdown().is_ok(), "fresh shutdown must reap");
+}
