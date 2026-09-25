@@ -862,3 +862,48 @@ fn wire_client_capabilities_match_backend() {
     assert!(reference.supports(Capability::Environment));
     assert!(reference.supports(Capability::Mounts));
 }
+
+#[test]
+fn complete_close_joins_dead_worker_and_unlinks() {
+    // Deterministic queued-Shutdown/no-reply pin: the worker
+    // thread already exited and the reply sender is dropped
+    // (simulating death after accepting Shutdown). Close must
+    // still join and unlink the path, then report typed
+    // termination instead of hanging or stranding.
+    use std::sync::mpsc;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("guest-dead.sock");
+    std::fs::write(&socket, b"stale").expect("stage stale socket file");
+    // Dropped sender with no message: simulates a worker that
+    // accepted Shutdown and died before replying.
+    let (reply_tx, reply_rx) = mpsc::channel::<Result<(), cistella::error::CistellaError>>();
+    drop(reply_tx);
+    let worker = std::thread::spawn(|| {});
+    let error = cistella::isolators::client::complete_close(Some(worker), &socket, reply_rx)
+        .expect_err("dead worker close must report");
+    assert!(
+        error.to_string().contains("dispatcher dropped shutdown"),
+        "typed termination, got: {error}"
+    );
+    assert!(
+        !socket.exists(),
+        "rendezvous path unlinked on every close outcome"
+    );
+}
+
+#[test]
+fn complete_close_reports_live_shutdown() {
+    // Happy path through the same helper: a live worker replying
+    // Ok still joins, unlinks, and reports Ok.
+    use std::sync::mpsc;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("guest-live.sock");
+    std::fs::write(&socket, b"stale").expect("stage stale socket file");
+    let (reply_tx, reply_rx) = mpsc::channel::<Result<(), cistella::error::CistellaError>>();
+    let worker = std::thread::spawn(move || {
+        let _ = reply_tx.send(Ok(()));
+    });
+    cistella::isolators::client::complete_close(Some(worker), &socket, reply_rx)
+        .expect("live close reports Ok");
+    assert!(!socket.exists(), "path unlinked on clean close");
+}

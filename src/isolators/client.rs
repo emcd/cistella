@@ -608,22 +608,22 @@ impl WireClient {
             .commands
             .send(Command::Shutdown { reply: reply_tx })
             .is_ok();
-        // The dispatcher may already be gone (worker broke on
-        // guest death): join and unlink either way, then report.
-        let shutdown = if send_ok {
-            reply_rx
-                .recv()
-                .map_err(|_| CistellaError::Protocol("dispatcher dropped shutdown".to_string()))?
+        // No `?` before join/unlink: a worker that dies after
+        // accepting Shutdown (send_ok, no reply) must still join
+        // and lose its path. Nested result kept, never early
+        // return.
+        let worker = self.worker.take();
+        if send_ok {
+            complete_close(worker, &self.fd_path, reply_rx)
         } else {
+            // Dispatcher already gone: same unconditional path,
+            // reported as termination rather than shutdown.
+            let _ = worker.map(|worker| worker.join());
+            let _ = std::fs::remove_file(&self.fd_path);
             Err(CistellaError::Protocol(
                 "dispatcher already terminated".to_string(),
             ))
-        };
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
         }
-        let _ = std::fs::remove_file(&self.fd_path);
-        shutdown
     }
 }
 
@@ -867,6 +867,38 @@ impl Isolator for WireClient {
         // exactly what post-exit residue checks require.
         self.inspector.locate(key)
     }
+}
+
+/// Completes client close after the Shutdown send: joins the
+/// worker and unlinks the rendezvous path on EVERY outcome,
+/// including a worker that accepted Shutdown but died before
+/// replying (send_ok with a disconnected reply channel). Only
+/// then does the dominant error report: the live shutdown result,
+/// or a typed termination error when no reply can arrive.
+///
+/// Public for the deterministic close-path pin (a dead worker is
+/// injected directly instead of raced against peer sleep timing).
+///
+/// # Errors
+///
+/// Returns the shutdown failure, or `CistellaError::Protocol`
+/// when the dispatcher died without reporting.
+pub fn complete_close(
+    worker: Option<std::thread::JoinHandle<()>>,
+    path: &std::path::Path,
+    reply: mpsc::Receiver<Result<()>>,
+) -> Result<()> {
+    let shutdown = match reply.recv() {
+        Ok(result) => result,
+        Err(_) => Err(CistellaError::Protocol(
+            "dispatcher dropped shutdown".to_string(),
+        )),
+    };
+    if let Some(worker) = worker {
+        let _ = worker.join();
+    }
+    let _ = std::fs::remove_file(path);
+    shutdown
 }
 
 /// Parses an await terminal payload into its outcome.
