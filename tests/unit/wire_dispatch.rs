@@ -822,3 +822,43 @@ fn launch_without_channel_refuses() {
         "fixed message"
     );
 }
+
+#[test]
+fn await_outcome_shapes_pin() {
+    use cistella::framework::isolator::ExecutionOutcome as Outcome;
+    use cistella::isolators::client::parse_await_outcome;
+    assert_eq!(
+        parse_await_outcome(&serde_json::json!({"exit_status": 0})).expect("exit"),
+        Outcome::Exited(0)
+    );
+    assert_eq!(
+        parse_await_outcome(&serde_json::json!({"signal": 9})).expect("signal"),
+        Outcome::Signaled(9)
+    );
+    assert!(
+        parse_await_outcome(&serde_json::json!({"Exited": 0})).is_err(),
+        "derived enum spelling is not the wire shape"
+    );
+    assert!(
+        parse_await_outcome(&serde_json::json!({"ok": true})).is_err(),
+        "unrelated shape refuses"
+    );
+}
+
+#[test]
+fn wire_client_capabilities_match_backend() {
+    // Parity: the wire client delegates to the same backend
+    // capabilities (podman-quadlet realizing environment plus
+    // mounts), so merge gating decides identically on the wire
+    // and in-process paths. The delegation lives in
+    // `WireClient::capabilities`; this pins the reference side it
+    // must mirror (constructing a live client needs a guest
+    // binary, so the live parity runs in integration).
+    use cistella::framework::contract::Capability;
+    use cistella::framework::isolator::Isolator;
+    use cistella::isolators::podman::PodmanIsolator;
+    let reference = PodmanIsolator::new().capabilities();
+    assert_eq!(reference.backend, "podman-quadlet");
+    assert!(reference.supports(Capability::Environment));
+    assert!(reference.supports(Capability::Mounts));
+}

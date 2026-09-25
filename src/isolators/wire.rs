@@ -35,6 +35,10 @@ use crate::isolators::podman::PodmanIsolator;
 
 /// Wire op names (mirror the isolator-contract schemas).
 pub const OP_CREATE: &str = "isolator.create";
+/// Best-effort drain budget for a queued bundle on early refusal.
+/// The framework sends bundles before ops, so a queued bundle is
+/// normally immediate; the budget only bounds a dead framework.
+const DRAIN_BUDGET: Duration = Duration::from_secs(2);
 pub const OP_INITIATE: &str = "isolator.initiate";
 pub const OP_EXECUTE_LAUNCH: &str = "isolator.execute_launch";
 pub const OP_INSPECT: &str = "isolator.inspect";
@@ -231,6 +235,17 @@ impl<B: Isolator> IsolatorGuest<B> {
         }
     }
 
+    /// Best-effort drain of one queued bundle: the framework sends
+    /// the bundle before the op, so an op that refuses before
+    /// consuming leaves a stale bundle for the next launch. Drained
+    /// fds close on drop; drain failure is ignored because the
+    /// original refusal reports either way.
+    fn drain_one_bundle(&self) {
+        if let Some(channel) = self.fd_channel.as_ref() {
+            let _ = crate::framework::fdpass::recv_bundle(channel, DRAIN_BUDGET);
+        }
+    }
+
     /// Attaches the ancillary-fd channel bundles arrive on
     /// (production guest; the rendezvous socket after connect).
     #[must_use]
@@ -410,7 +425,13 @@ impl<B: Isolator> IsolatorGuest<B> {
                     serde_json::to_value(attestation).expect("attestation serializes")}))
             }
             OP_EXECUTE_LAUNCH => {
-                let req: LaunchWire = parse(op, payload)?;
+                let req: LaunchWire = match parse(op, payload) {
+                    Ok(req) => req,
+                    Err(error) => {
+                        self.drain_one_bundle();
+                        return Err(error);
+                    }
+                };
                 // Channel first: without it harness stdio has no
                 // route, so the launch refuses before lookup.
                 if self.fd_channel.is_none() {
@@ -418,7 +439,13 @@ impl<B: Isolator> IsolatorGuest<B> {
                         "launch requires an fd channel".to_string(),
                     ));
                 }
-                let local = self.resolve_unit(&req.unit_handle)?;
+                let local = match self.resolve_unit(&req.unit_handle) {
+                    Ok(local) => local,
+                    Err(error) => {
+                        self.drain_one_bundle();
+                        return Err(error);
+                    }
+                };
                 check_handle_grammar("execution", req.execution_handle.as_str())?;
                 let fw = req.execution_handle.as_str().to_string();
                 {

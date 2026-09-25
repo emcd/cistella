@@ -16,6 +16,7 @@
 //!   `--mode=hello-bad-capability`       hello with unknown capability name
 //!   `--mode=hello-real-capabilities`    hello advertising the five real capability names
 //!   `--mode=hello-evil-capability`      hello with control bytes in the capability name
+//!   `--mode=isolator-concurrent`        scripted isolator ops: slow await plus concurrent op
 //!   `--mode=hello-then-eof`             hello, then close stdin
 //!   `--mode=malformed-frame-header`     send a header that exceeds negotiated max
 //!   `--mode=oversize-frame`             declare length far above `PRE_NEGOTIATION_MAX_FRAME`
@@ -57,6 +58,78 @@ fn read_arg_mode() -> String {
         }
     }
     "normal-echo".to_string()
+}
+
+/// Reads `--fd-watch=DIR` argv (rendezvous directory to connect
+/// and hold for client-concurrency tests), if present.
+fn read_fd_watch() -> Option<String> {
+    for arg in std::env::args().skip(1) {
+        if let Some(value) = arg.strip_prefix("--fd-watch=") {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Connects to the first rendezvous socket in `dir` and holds it
+/// open for the process lifetime: proves the guest side of
+/// pid-bound accept without moving any bundles (concurrency tests
+/// never launch). Uses a raw `SOCK_SEQPACKET` socket to match the
+/// rendezvous listener type (`UnixStream` is stream-oriented and
+/// cannot connect to it).
+fn hold_rendezvous(dir: &str) {
+    // SAFETY: libc socket/connect with a valid pathname; the
+    // connected fd is leaked intentionally (held open for the
+    // process lifetime, exactly the cooperation under test).
+    unsafe fn connect_one(path: &std::path::Path) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: straight-line libc calls with checked return
+        // values; the connected fd is intentionally never closed
+        // (held open for the process lifetime).
+        unsafe {
+            let fd = ::libc::socket(::libc::AF_UNIX, ::libc::SOCK_SEQPACKET, 0);
+            if fd < 0 {
+                return false;
+            }
+            let bytes = path.as_os_str().as_bytes();
+            let mut addr: ::libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = ::libc::AF_UNIX as ::libc::sa_family_t;
+            if bytes.len() + 1 > addr.sun_path.len() {
+                ::libc::close(fd);
+                return false;
+            }
+            for (slot, byte) in addr.sun_path.iter_mut().zip(bytes.iter()) {
+                *slot = *byte as ::libc::c_char;
+            }
+            let connected = ::libc::connect(
+                fd,
+                &addr as *const _ as *const ::libc::sockaddr,
+                (std::mem::size_of::<::libc::sa_family_t>() + bytes.len() + 1) as ::libc::socklen_t,
+            ) == 0;
+            if !connected {
+                ::libc::close(fd);
+            }
+            connected
+        }
+    }
+    unsafe {
+        for _ in 0..200 {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                let mut names: Vec<_> = entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sock"))
+                    .collect();
+                names.sort();
+                for path in names {
+                    if connect_one(&path) {
+                        return;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 fn protocol_error_exit() -> ExitCode {
@@ -211,6 +284,11 @@ fn send_prepare_with_payload(
 }
 fn main() -> ExitCode {
     let mode = read_arg_mode();
+    if let Some(dir) = read_fd_watch() {
+        // Rendezvous cooperation for client-concurrency tests:
+        // connect in the background while the mode serves ops.
+        std::thread::spawn(move || hold_rendezvous(&dir));
+    }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut stdin_lock = stdin.lock();
@@ -322,6 +400,63 @@ fn main() -> ExitCode {
                 return protocol_error_exit();
             }
             std::thread::sleep(Duration::from_secs(60));
+            ExitCode::SUCCESS
+        }
+        "isolator-concurrent" => {
+            // Scripted isolator ops for client-dispatcher proofs:
+            // hello with the isolator role cap, then a slow await
+            // op followed by a second op that MUST arrive while the
+            // await pends (the client must send it concurrently,
+            // not after). Replies go out in completion order: the
+            // second op first, the await terminal second.
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return protocol_error_exit();
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            let op1 = match read_frame_from_stdin(&mut stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return protocol_error_exit(),
+            };
+            let op1_id = serde_json::from_slice::<Value>(&op1)
+                .ok()
+                .and_then(|env| env.get("id").cloned())
+                .unwrap_or(json!("await-0"));
+            std::thread::sleep(Duration::from_secs(3));
+            let op2 = match read_frame_from_stdin(&mut stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return protocol_error_exit(),
+            };
+            let op2_id = serde_json::from_slice::<Value>(&op2)
+                .ok()
+                .and_then(|env| env.get("id").cloned())
+                .unwrap_or(json!("op2-0"));
+            let reply2 = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": op2_id,
+                "op": "isolator.terminate",
+                "payload": {"ok": {"stopped_attestation": {"unit_identity": "concurrent01"}}}
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &reply2, 64 * 1024);
+            let reply1 = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": op1_id,
+                "op": "isolator.await_result",
+                "payload": {"ok": {"exit_status": 0}}
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &reply1, 64 * 1024);
             ExitCode::SUCCESS
         }
         "hello-then-eof" => {

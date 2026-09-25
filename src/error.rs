@@ -45,4 +45,27 @@ pub enum CistellaError {
     Io(#[from] std::io::Error),
 }
 
+impl CistellaError {
+    /// Class-free message for wire transport: the envelope carries
+    /// the class separately as `code`, so the message travels
+    /// without its prefix and the receiver applies exactly one.
+    #[must_use]
+    pub fn inner(&self) -> String {
+        match self {
+            Self::Profile(message)
+            | Self::Mount(message)
+            | Self::Runtime(message)
+            | Self::Transport(message)
+            | Self::Contract(message)
+            | Self::Protocol(message)
+            | Self::Identity(message)
+            | Self::Preflight(message)
+            | Self::Selector(message)
+            | Self::Detached(message) => message.clone(),
+            Self::LockContended => "lock contended".to_string(),
+            Self::Io(error) => error.to_string(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, CistellaError>;

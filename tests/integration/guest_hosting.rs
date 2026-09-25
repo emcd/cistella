@@ -357,3 +357,110 @@ fn wire_client_maps_backend_error_envelope() {
     );
     client.close().expect("close must shut down and clean up");
 }
+
+#[test]
+fn wire_client_terminate_serves_during_pending_await() {
+    // Dispatcher concurrency through WireClient: a slow await
+    // pends while terminate sends on the same client — the await
+    // must not wedge the control plane. The scripted peer sleeps
+    // 3s after the await op and requires the terminate op inside
+    // that window (it exits 2 otherwise), then answers terminate
+    // first and the await terminal second.
+    use cistella::framework::contract::ReconciliationKey;
+    use cistella::framework::isolator::{ExecutionOutcome, Isolator};
+    use cistella::isolators::client::WireClient;
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let mut deadlines = tight_deadlines();
+    deadlines.apply = Duration::from_secs(15);
+    let client = std::sync::Arc::new(
+        WireClient::host_as(
+            &dir,
+            &name,
+            &[
+                "--mode=isolator-concurrent".to_string(),
+                format!("--fd-watch={}", rendezvous.path().to_string_lossy()),
+            ],
+            rendezvous.path(),
+            deadlines,
+        )
+        .expect("host must negotiate with the scripted peer"),
+    );
+    let execution = cistella::framework::contract::ExecutionHandle::mint();
+    let waiter = {
+        let client = std::sync::Arc::clone(&client);
+        let execution = execution.clone();
+        std::thread::spawn(move || {
+            let cancel = cistella::framework::contract::CancelFlag::new();
+            client.await_result(&execution, &cancel)
+        })
+    };
+    // Let the await op reach the peer and pend, then terminate
+    // through the same client: the dispatcher must send it while
+    // the await is still outstanding.
+    std::thread::sleep(Duration::from_millis(500));
+    let key = ReconciliationKey::generate();
+    let unit = cistella::framework::contract::UnitHandle::mint();
+    let stopped = client
+        .terminate(&unit, Duration::from_secs(5), &key)
+        .expect("terminate must serve during a pending await");
+    assert_eq!(stopped.unit_identity, "concurrent01");
+    let outcome = waiter
+        .join()
+        .expect("waiter joins")
+        .expect("await completes");
+    assert_eq!(outcome, ExecutionOutcome::Exited(0));
+    drop(client);
+}
+
+#[test]
+fn wire_client_accept_timeout_is_typed() {
+    // A guest that answers hello but never connects to the
+    // rendezvous path must fail hosting within budget — never
+    // wedge conduct. The concurrent peer without --fd-watch
+    // negotiates hello (isolator cap) and then blocks on ops,
+    // never connecting; accept expires, the rendezvous path
+    // cleans up, and the guest is reaped on drop.
+    use cistella::isolators::client::WireClient;
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let mut deadlines = tight_deadlines();
+    deadlines.hello = Duration::from_secs(2);
+    let before = std::time::Instant::now();
+    let error = match WireClient::host_as(
+        &dir,
+        &name,
+        &["--mode=isolator-concurrent".to_string()],
+        rendezvous.path(),
+        deadlines,
+    ) {
+        Ok(_) => panic!("hello-only peer must fail accept"),
+        Err(error) => error,
+    };
+    assert!(
+        before.elapsed() < Duration::from_secs(30),
+        "accept failure is bounded"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("timed out") || message.contains("died"),
+        "typed accept failure, got: {message}"
+    );
+    assert!(
+        std::fs::read_dir(rendezvous.path())
+            .expect("rendezvous dir lists")
+            .next()
+            .is_none(),
+        "rendezvous path cleans up on refusal"
+    );
+}

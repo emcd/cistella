@@ -74,12 +74,16 @@ fn error_code(error: &CistellaError) -> &'static str {
 }
 
 /// Renders a dispatch outcome as its terminal response payload.
+///
+/// Error messages travel inner (prefix-free): the envelope carries
+/// the class separately as `code`, and the framework applies its
+/// single prefix on reconstruction — never doubled.
 fn terminal_payload(result: Result<serde_json::Value, CistellaError>) -> serde_json::Value {
     match result {
         Ok(payload) => serde_json::json!({"ok": payload}),
         Err(error) => serde_json::json!({"error": {
             "code": error_code(&error),
-            "message": error.to_string(),
+            "message": error.inner(),
         }}),
     }
 }
