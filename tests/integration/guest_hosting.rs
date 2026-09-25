@@ -281,3 +281,79 @@ fn host_external_peer_death_is_typed_bounded_and_rehostable() {
     .expect("re-host must negotiate after death");
     assert!(fresh.shutdown().is_ok(), "fresh shutdown must reap");
 }
+
+/// Directory holding built binaries (`target/<profile>/`): the
+/// peer lives in `examples/`, the guest binary beside it.
+fn bins_dir() -> std::path::PathBuf {
+    peer_path()
+        .parent()
+        .expect("examples dir")
+        .parent()
+        .expect("profile dir")
+        .to_path_buf()
+}
+
+/// Resolves the built isolator guest binary (built by the normal
+/// test-target build; a missing binary is an environment bug, not
+/// a skip — fail loudly with the build instruction).
+fn guest_bin() -> (std::path::PathBuf, String) {
+    let dir = bins_dir();
+    let name = cistella::isolators::client::ISOLATOR_BIN.to_string();
+    assert!(
+        dir.join(&name).exists(),
+        "guest binary missing: run `cargo build --bin {name}` first"
+    );
+    (dir, name)
+}
+
+#[test]
+fn wire_client_hosts_real_guest_and_closes() {
+    // Full client lifecycle against the real guest binary with no
+    // podman: rendezvous bind, hello negotiation, pid-bound
+    // accept, orderly close with rendezvous cleanup.
+    use cistella::isolators::client::WireClient;
+    let (dir, _name) = guest_bin();
+    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let client = WireClient::host(&dir, rendezvous.path(), tight_deadlines())
+        .expect("host must negotiate with the real guest");
+    client.close().expect("close must shut down and clean up");
+}
+
+#[test]
+fn wire_client_maps_backend_error_envelope() {
+    // A backend failure inside the guest (podman absent in-seat)
+    // crosses as a typed error envelope and reconstructs
+    // framework-side with its class intact — no podman needed to
+    // prove the error path, only to prove success.
+    use cistella::framework::contract::ReconciliationKey;
+    use cistella::framework::isolator::{CreateSpec, Isolator};
+    use cistella::isolators::client::WireClient;
+    use cistella::session::Session;
+    let (dir, _name) = guest_bin();
+    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let client = WireClient::host(&dir, rendezvous.path(), tight_deadlines())
+        .expect("host must negotiate with the real guest");
+    let spec = CreateSpec {
+        session: Session {
+            id: "wireclient01".to_string(),
+            directory: "/tmp/wireclient01".to_string(),
+            profile: "probe".to_string(),
+            profile_digest: "digest".to_string(),
+            identity: "tester".to_string(),
+            command: vec!["true".to_string()],
+            image: "localhost/cistella/opencode:example".to_string(),
+            container_home: "/home/cistella".to_string(),
+        },
+        volumes: vec![],
+        env: vec![],
+        labels: vec![],
+    };
+    let error = client
+        .create(&spec, &ReconciliationKey::generate())
+        .expect_err("absent podman must surface as a typed backend error");
+    assert!(
+        error.to_string().contains("runtime"),
+        "backend error class preserved across the wire, got: {error}"
+    );
+    client.close().expect("close must shut down and clean up");
+}

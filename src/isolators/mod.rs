@@ -4,6 +4,7 @@
 //! deterministic protocol peer (task 3.1) joins this module as a
 //! fault-injecting test-double, never a lifecycle prover.
 
+pub mod client;
 pub mod podman;
 pub mod quadlet;
 pub mod wire;

@@ -177,9 +177,23 @@ fn serve_await(
 }
 
 fn main() -> ExitCode {
-    let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let mut reader = stdin.lock();
+    // Unbuffered stdin ownership: `StdinLock` hides readahead in a
+    // userspace buffer that `select` cannot see, so a first read
+    // slurps the whole frame and the next readiness wait sleeps on
+    // an empty pipe (lost wakeup). An owned `File` reads exactly
+    // what framing asks for; readiness and consumption never
+    // disagree. The bin owns its stdio for its whole lifetime, and
+    // a missing fd 0 refuses up front rather than aliasing a
+    // later-opened descriptor.
+    use std::os::fd::FromRawFd;
+    if nix::fcntl::fcntl(0, nix::fcntl::FcntlArg::F_GETFD).is_err() {
+        return ExitCode::from(2);
+    }
+    // SAFETY: fd 0 is open (checked above) and owned by this
+    // process image as its stdin for the process lifetime; no
+    // other owner reads it, and the `File` outlives `main`.
+    let mut reader = unsafe { std::fs::File::from_raw_fd(0) };
 
     // Hello under the pre-negotiation ceiling: version must match
     // before any planning, and the request must actually be hello.
@@ -191,6 +205,7 @@ fn main() -> ExitCode {
         Ok(envelope) => envelope,
         Err(_) => return ExitCode::from(2),
     };
+
     if hello.op != "hello" || hello.protocol != PROTOCOL_MAJOR {
         return ExitCode::from(2);
     }
