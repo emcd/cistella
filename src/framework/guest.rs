@@ -17,6 +17,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 use crate::error::{CistellaError, Result};
+use crate::framework::discovery::discover_in;
 use crate::framework::protocol::{Exchange, STDERR_CAP, protocol_error};
 
 /// Budget for post-SIGKILL group-extinction settle.
@@ -338,4 +339,66 @@ fn drain_stderr(mut stderr: ChildStderr) -> StderrDrain {
         bytes,
         truncated: bytes > STDERR_CAP,
     }
+}
+
+/// Discovers, spawns, and negotiates hello with an external guest
+/// (task 1.2): the production hosting path.
+///
+/// `exe_dir` is the install sibling directory (never PATH); `name`
+/// is a bare guest binary name per [`discover_in`]. Negotiation is
+/// closed for the 0.2 same-crate release: the guest-advertised set
+/// must sit within the host's offered set, and any name outside it
+/// refuses with a typed capability error distinct from the version
+/// error (unknown advertisements are not supported;
+/// optional-unknown semantics wait for an explicit spec).
+/// `Exchange::hello` itself stays forward-compatible for
+/// non-production paths; this boundary closes it. Required-role
+/// enforcement (e.g. mandatory `guest-hooks` for the Landlock role)
+/// belongs at prepare/pre-exec admission under the confinement
+/// contract — later work, not hello. Refusal diagnostics never
+/// render guest-controlled bytes: the offending advertisement is
+/// identified by index only, never by content. On any refusal the spawned guest is shut down (kill/reap) before
+/// the error returns, and a failed shutdown dominates the hello
+/// error (residue-dominated reporting), so refusal never leaves a
+/// guest behind nor swallows residue.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on discovery refusal and
+/// `CistellaError::Protocol` on spawn, hello, capability, or
+/// shutdown failure.
+pub fn host_external(
+    exe_dir: &Path,
+    name: &str,
+    args: &[String],
+    capabilities: &[String],
+    deadlines: crate::framework::contract::Deadlines,
+) -> Result<GuestHost<ChildStdout, ChildStdin>> {
+    let path = discover_in(exe_dir, name)?;
+    let mut host = GuestHost::spawn(&path, args, deadlines)?;
+    let negotiated = match host.exchange_mut().hello(capabilities, deadlines.hello) {
+        Ok(negotiated) => negotiated,
+        Err(error) => return shutdown_return(host, error),
+    };
+    for (index, advertised) in negotiated.capabilities.iter().enumerate() {
+        if !capabilities.contains(advertised) {
+            return shutdown_return(
+                host,
+                protocol_error(format!("unsupported guest capability at index {index}")),
+            );
+        }
+    }
+    Ok(host)
+}
+
+/// Shuts down after a hello-path refusal, letting residue dominate:
+///
+/// a failed shutdown (kill/reap residue) replaces the hello error;
+/// only a clean shutdown preserves it.
+fn shutdown_return(
+    mut host: GuestHost<ChildStdout, ChildStdin>,
+    error: CistellaError,
+) -> Result<GuestHost<ChildStdout, ChildStdin>> {
+    host.shutdown()?;
+    Err(error)
 }

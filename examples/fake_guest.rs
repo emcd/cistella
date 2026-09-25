@@ -14,6 +14,8 @@
 //!
 //!   `--mode=hello-version-mismatch`     hello with wrong `version`
 //!   `--mode=hello-bad-capability`       hello with unknown capability name
+//!   `--mode=hello-real-capabilities`    hello advertising the five real capability names
+//!   `--mode=hello-evil-capability`      hello with control bytes in the capability name
 //!   `--mode=hello-then-eof`             hello, then close stdin
 //!   `--mode=malformed-frame-header`     send a header that exceeds negotiated max
 //!   `--mode=oversize-frame`             declare length far above `PRE_NEGOTIATION_MAX_FRAME`
@@ -246,6 +248,80 @@ fn main() -> ExitCode {
             if write_frame(&mut stdout_lock, &body, 64 * 1024).is_err() {
                 return protocol_error_exit();
             }
+            ExitCode::SUCCESS
+        }
+        "hello-real-capabilities" => {
+            // Advertises the five real framework capability names so
+            // the production closed-negotiation path (`host_external`)
+            // accepts the set; the harness still treats every
+            // subsequent shape as untrusted input.
+            let mut header = [0u8; 4];
+            if read_exact(&mut stdin_lock, &mut header).is_err() {
+                return protocol_error_exit();
+            }
+            let body = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": [
+                        "environment",
+                        "mounts",
+                        "policy-claims",
+                        "guest-hooks",
+                        "credentials"
+                    ],
+                }
+            }))
+            .expect("serialize");
+            if write_frame(&mut stdout_lock, &body, 64 * 1024).is_err() {
+                return protocol_error_exit();
+            }
+            // Serve one request like `normal-echo` so the host can
+            // proceed past hello if it wishes, then exit.
+            let req_body = match read_frame_from_stdin(&mut stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return protocol_error_exit(),
+            };
+            if let Ok(envelope) = serde_json::from_slice::<Value>(&req_body) {
+                let id = envelope.get("id").cloned().unwrap_or(json!("req-0"));
+                let op = envelope.get("op").cloned().unwrap_or(json!("echo"));
+                let response = json!({
+                    "protocol": PROTOCOL_MAJOR,
+                    "id": id,
+                    "op": op,
+                    "payload": {"ok": true, "echoed": true}
+                });
+                let body = serde_json::to_vec(&response).expect("serialize");
+                let _ = write_frame(&mut stdout_lock, &body, 64 * 1024);
+            }
+            ExitCode::SUCCESS
+        }
+        "hello-evil-capability" => {
+            // Advertises a capability name carrying control bytes and
+            // a fake secret assignment. Refusal diagnostics must
+            // never render these bytes: the host identifies the
+            // offender by index only. Kept terse (no request service)
+            // so the host's shutdown path owns the exit.
+            let mut header = [0u8; 4];
+            if read_exact(&mut stdin_lock, &mut header).is_err() {
+                return protocol_error_exit();
+            }
+            let body = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["BAD\nCAP\x01SECRET=evil-sentinel-value"],
+                }
+            }))
+            .expect("serialize");
+            if write_frame(&mut stdout_lock, &body, 64 * 1024).is_err() {
+                return protocol_error_exit();
+            }
+            std::thread::sleep(Duration::from_secs(60));
             ExitCode::SUCCESS
         }
         "hello-then-eof" => {

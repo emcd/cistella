@@ -5,7 +5,9 @@
 
 use std::os::unix::fs::PermissionsExt;
 
+use cistella::framework::contract::Deadlines;
 use cistella::framework::discovery::discover_in;
+use cistella::framework::guest::host_external;
 
 fn dir_with(name: &str, mode: u32) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -76,4 +78,39 @@ fn escape_names_refuse() {
             "name {name:?} got: {error}"
         );
     }
+}
+
+#[test]
+fn host_external_missing_binary_spawns_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let deadlines = Deadlines {
+        hello: std::time::Duration::from_secs(1),
+        plan: std::time::Duration::from_secs(1),
+        apply: std::time::Duration::from_secs(1),
+        terminate_grace: std::time::Duration::from_secs(1),
+    };
+    let error = match host_external(dir.path(), "cistella-guest-absent", &[], &[], deadlines) {
+        Ok(_) => panic!("absence must refuse before spawn"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("cistella-guest-absent"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn host_external_escape_name_refuses() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let deadlines = Deadlines {
+        hello: std::time::Duration::from_secs(1),
+        plan: std::time::Duration::from_secs(1),
+        apply: std::time::Duration::from_secs(1),
+        terminate_grace: std::time::Duration::from_secs(1),
+    };
+    let error = match host_external(dir.path(), "../guest", &[], &[], deadlines) {
+        Ok(_) => panic!("escape must refuse before spawn"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("bare file name"), "got: {error}");
 }
