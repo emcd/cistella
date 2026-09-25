@@ -364,7 +364,11 @@ fn name_resolves_from_foreign_cwd_live() {
     wait_active(&id);
     assert_eq!(unit_label(&home, &id, "cistella.profile"), "default");
     let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = conduct.wait();
     guard.id = None;
     assert!(scratch_gone(&id));

@@ -175,7 +175,11 @@ fn spaced_directory_conduct() {
     );
 
     let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = conduct.wait();
     guard.id = None;
     assert!(scratch_gone(&id));
@@ -252,7 +256,11 @@ fn environment_values_verbatim() {
         "a=b c\"d'e 100% %h"
     );
     let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = conduct.wait();
     guard.id = None;
     assert!(scratch_gone(&id));
