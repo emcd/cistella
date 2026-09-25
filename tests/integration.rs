@@ -14,6 +14,8 @@ mod landlock_spike;
 mod lifecycle;
 #[path = "integration/mountprep.rs"]
 mod mountprep;
+#[path = "integration/podman_ancestry.rs"]
+mod podman_ancestry;
 #[path = "integration/prepare_peer.rs"]
 mod prepare_peer;
 #[path = "integration/protocol_peer.rs"]

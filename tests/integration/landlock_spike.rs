@@ -24,14 +24,14 @@
 //!     the wrapped process inherits the helper's PID, so `getppid`
 //!     on the wrapped process returns the helper's PID (which is
 //!     the helper itself, pre-exec).
-//!   - Podman/user-namespace rule preservation: **DEFERRED** to the
-//!     operator-authorized separate seat — this seat has no podman
-//!     available, and the question is whether Landlock rules
-//!     established in the helper's user namespace (which is the
-//!     container's, under `--userns=keep-id`) survive across
-//!     `execvp` into the harness process. Hypothesis: yes (Landlock
-//!     is enforced per-task at the kernel level, not per-namespace),
-//!     but unverified from this seat.
+//!   - Podman/user-namespace rule preservation: verified by
+//!     `podman_ancestry.rs` on the operator-authorized seat — the
+//!     helper applies its ruleset inside a `podman run
+//!     --userns=keep-id` container and the wrapped process observes
+//!     both admission and EACCES denial there. Landlock is enforced
+//!     per-task at the kernel level, not per-namespace, so the
+//!     restriction follows the thread through the runtime's
+//!     fork/exec chain and the helper's `execvp`.
 //!
 //! THIS FILE IS SCAFFOLD ONLY — no host-mutating runs from this seat
 //! until operator authorization lands for the separate seat.
