@@ -1,6 +1,6 @@
 ## 1. Guest hosting spine
 
-- [ ] 1.1 Implement sibling-relative guest discovery with typed pre-create refusal (no PATH search); state the trusted install-directory assumption and fail hello on guest/version mismatch.
+- [x] 1.1 Implement sibling-relative guest discovery with typed pre-create refusal (no PATH search); state the trusted install-directory assumption and fail hello on guest/version mismatch.
 - [ ] 1.2 Host external guests through the existing `GuestHost` (framed stdio, deadlines, kill/reap, pipe-EOF already owned there); add only what the wire path needs beyond it.
 - [ ] 1.3 Prove pre-exec recovery (kill/re-exec at create and initiate, converge by key) plus typed teardown after guest death during execute/await.
 
