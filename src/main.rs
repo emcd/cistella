@@ -858,22 +858,23 @@ fn conduct_session(
                 return Err(error);
             }
         };
-    // Wrapper exec failure: the harness never started (applied was
-    // attested, then the wrapper failed to exec and reported typed
-    // on the diagnostics channel). Report wrapper failure, never a
-    // harness outcome, converging like a launch failure.
+    // Transition failure: exec failed with cause, or the
+    // boundary stayed ambiguous (signal in the race window —
+    // operator-approved scope: exact fidelity holds only
+    // post-transition). Either way the harness never produced
+    // an outcome, so report the detail verbatim (it names
+    // itself: exec failure vs ambiguity) instead of a harness
+    // disposition, converging like a launch failure.
     if let Some(detail) = exec_failure {
         if let Err(teardown_err) =
             client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
         {
             report_release(release_client(client, &rendezvous_dir));
-            eprintln!("error: teardown after wrapper failure: {teardown_err}");
+            eprintln!("error: teardown after transition failure: {teardown_err}");
             return Ok(1);
         }
         report_release(release_client(client, &rendezvous_dir));
-        return Err(CistellaError::Runtime(format!(
-            "wrapper exec failed: {detail}"
-        )));
+        return Err(CistellaError::Runtime(detail));
     }
     // Shared teardown converges with `terminate` from another pane: the
     // unit may already be gone, which idempotent terminate/remove

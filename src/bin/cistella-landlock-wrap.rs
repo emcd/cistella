@@ -612,9 +612,17 @@ fn observe_transition(
                     "landlock-wrap: signal with {filled} partial errno bytes before transition"
                 );
             }
+            // Ambiguous by construction (wrapper pre-exec death
+            // vs harness death in the race window): label it
+            // transition-ambiguous, NOT wrapper failure — the
+            // host surfaces the detail verbatim without
+            // attributing either side. Genuine early-harness
+            // signals take this path too (operator-approved
+            // scope: exact signal fidelity is kept only
+            // post-transition).
             let line = serde_json::json!({
                 "transitioned": false,
-                "error": format!("child signalled before transition: {signal}"),
+                "error": format!("transition ambiguous: signal {signal}"),
             })
             .to_string()
                 + "\n";

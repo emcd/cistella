@@ -969,19 +969,19 @@ fn gate_drain_transition_failure_reports_detail() {
 }
 
 #[test]
-fn gate_drain_ambiguous_signal_reports_wrapper_failure() {
+fn gate_drain_ambiguous_signal_reports_transition_ambiguity() {
     use cistella::framework::hooks::gate_hook_attestation;
     use std::time::Duration;
     // The ambiguous race-window shape (indistinguishable
     // pre-exec wrapper death vs early harness signal) classifies
-    // conservatively as wrapper failure with cause — never a
-    // harness outcome, never silent.
+    // as transition ambiguity with cause — neither wrapper
+    // failure nor harness outcome, never silent.
     let (read, write) = nix::unistd::pipe().expect("pipe");
     let mut write: std::fs::File = write.into();
     use std::io::Write;
     write
         .write_all(
-            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":false,\"error\":\"child signalled before transition: SIGTERM\"}\n",
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":false,\"error\":\"transition ambiguous: signal SIGTERM\"}\n",
         )
         .expect("write script");
     drop(write);
@@ -990,6 +990,6 @@ fn gate_drain_ambiguous_signal_reports_wrapper_failure() {
     assert_eq!(abi, 7);
     assert_eq!(
         detail.as_deref(),
-        Some("child signalled before transition: SIGTERM")
+        Some("transition ambiguous: signal SIGTERM")
     );
 }
