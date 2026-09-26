@@ -42,6 +42,14 @@ Shutdown proof is part of the death observation: the dispatcher attempts bounded
 - **WHEN** a guest dies mid-create or mid-initiate with unknown applied state
 - **THEN** the framework re-execs the guest binary, presents the same key, and converges the resource to applied or clean
 
+#### Scenario: Pre-exec recovery replaces once, then fails stop
+- **WHEN** the replacement guest also dies during the retried create/initiate
+- **THEN** conduct fails stop with the second failure dominant (first retained as context) and converges by name; no further re-exec is attempted
+
+#### Scenario: Ambiguous launch submission never replays
+- **WHEN** the guest dies with an `execute_launch` call submitted and no terminal response
+- **THEN** the framework treats it as execution-boundary death (spawn precedes reply, so a harness may outlive the guest): typed teardown via the dead-guest path, never a re-launch; the harness is never run twice and no outcome is fabricated
+
 #### Scenario: Death during execute tears down typed
 - **WHEN** a guest dies after execute_launch or during await
 - **THEN** the framework kills any surviving harness side, converges to clean via typed teardown, and refuses handle redemption with a typed error; no outcome is fabricated
