@@ -46,6 +46,53 @@ const OP_BUDGET: Duration = Duration::from_secs(120);
 /// SIGTERM grace for disconnect-time convergence sweeps.
 const CONVERGE_GRACE: Duration = Duration::from_secs(30);
 
+/// Bound for the QA-only pre-ack hold below: expiry proceeds to
+/// send, so a missed kill fails the launch assertion loudly
+/// instead of hanging the suite.
+const PREACK_BOUND: Duration = Duration::from_secs(30);
+
+/// QA-only deterministic seam for the spawn-before-reply boundary
+/// (live recovery proofs): after a successful harness spawn and
+/// before the launch response is written, an armed hold.
+///
+/// Armed by two env gates (both inert by default): a host marker
+/// base dir plus a per-unit `arm` file `<base>/<unit>/arm` — the
+/// unit handle scopes parallel live tests, since no sibling
+/// session ever owns an arm file for its own handle. The hook
+/// writes `<base>/<unit>/entered-pre-ack` (spawn proven) and polls
+/// `<base>/<unit>/release-ack` until the bound. Tests SIGKILL
+/// inside the window without releasing. Handles outside the minted
+/// grammar skip the hook: untrusted path segments must never reach
+/// the filesystem.
+fn launch_hold_probe(unit_handle: &str) {
+    let base = match std::env::var("CISTELLA_QA_MARKER_DIR") {
+        Ok(base) => base,
+        Err(_) => return,
+    };
+    if unit_handle.is_empty()
+        || unit_handle.len() > 128
+        || !unit_handle
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    {
+        return;
+    }
+    let dir = std::path::Path::new(&base).join(unit_handle);
+    if !dir.join("arm").exists() {
+        return;
+    }
+    if std::fs::write(dir.join("entered-pre-ack"), "spawned").is_err() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + PREACK_BOUND;
+    while !dir.join("release-ack").exists() {
+        if std::time::Instant::now() > deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Runs the disconnect-time convergence sweep, reporting cleanup
 /// failure on stderr (human notes only, never protocol): exit 2
 /// must distinguish incomplete cleanup from a malformed frame.
@@ -300,6 +347,19 @@ fn main() -> ExitCode {
             continue;
         }
         let result = guest.dispatch(&envelope.op, &envelope.payload);
+        // QA-only launch hold: after a successful spawn, before
+        // the response is written (see `launch_hold_probe`). The
+        // op name comparison is exact; the unit handle comes from
+        // the payload and is grammar-checked inside the probe.
+        if envelope.op == cistella::isolators::wire::OP_EXECUTE_LAUNCH
+            && result.is_ok()
+            && let Some(handle) = envelope
+                .payload
+                .get("unit_handle")
+                .and_then(|handle| handle.as_str())
+        {
+            launch_hold_probe(handle);
+        }
         {
             let mut stdout = match writer.lock() {
                 Ok(stdout) => stdout,
