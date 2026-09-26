@@ -191,3 +191,92 @@ fn abort_exit_code_release_failed_clean_snapshot_fails() {
     use cistella::isolators::client::abort_exit_code;
     assert_eq!(abort_exit_code(false, false, true, 15), 1);
 }
+
+#[test]
+fn pre_exec_verdict_proven_first_death_recovers() {
+    // The only recoverable shape: unused replacement, proven
+    // death, certain shutdown. Conduct probes this BEFORE
+    // death_checked — a located unit is the expected survivor.
+    use cistella::isolators::client::pre_exec_recovery_verdict;
+    assert!(pre_exec_recovery_verdict(false, true, false));
+}
+
+#[test]
+fn pre_exec_verdict_used_replacement_never_reexecs() {
+    // Single bounded replacement for the whole pre-exec episode:
+    // a second death fails stop, never loops.
+    use cistella::isolators::client::pre_exec_recovery_verdict;
+    assert!(!pre_exec_recovery_verdict(true, true, false));
+}
+
+#[test]
+fn pre_exec_verdict_uncertain_never_reexecs() {
+    // Uncertain shutdown never adopts beside a possible-live
+    // mutator, even with the replacement still unused.
+    use cistella::isolators::client::pre_exec_recovery_verdict;
+    assert!(!pre_exec_recovery_verdict(false, true, true));
+    assert!(!pre_exec_recovery_verdict(false, false, true));
+}
+
+#[test]
+fn pre_exec_verdict_live_guest_never_reexecs() {
+    // A live-guest op failure is reported, not recovered: the
+    // guest still owns its tables and the error stands.
+    use cistella::isolators::client::pre_exec_recovery_verdict;
+    assert!(!pre_exec_recovery_verdict(false, false, false));
+}
+
+#[test]
+fn rehost_failure_err_dominates_regardless_of_residue() {
+    // A failed converge reports its concrete reason on either
+    // snapshot: its error carries why cleanup failed and is the
+    // most actionable signal.
+    use cistella::error::CistellaError;
+    use cistella::isolators::client::rehost_failure_verdict;
+    let original = || CistellaError::Runtime("re-host refused".to_string());
+    for residue_ok in [false, true] {
+        let teardown_err = CistellaError::Protocol("kill_group".to_string());
+        let reported =
+            rehost_failure_verdict(Err(teardown_err), residue_ok, original()).to_string();
+        assert_eq!(
+            reported, "protocol: kill_group",
+            "teardown error dominates, got: {reported}"
+        );
+    }
+}
+
+#[test]
+fn rehost_failure_ok_dirty_synthesizes_residue() {
+    // The essential gate: teardown-Ok with remaining residue must
+    // NEVER report the plain re-host error — the residue class
+    // dominates with the re-host fault rendered in.
+    use cistella::error::CistellaError;
+    use cistella::isolators::client::rehost_failure_verdict;
+    let original = CistellaError::Runtime("re-host refused".to_string());
+    let reported = rehost_failure_verdict(Ok(()), false, original).to_string();
+    assert!(
+        reported.contains("contract: re-host failure left residue"),
+        "residue class dominates, got: {reported}"
+    );
+    assert!(
+        reported.contains("runtime: re-host refused"),
+        "re-host fault retained in context, got: {reported}"
+    );
+}
+
+#[test]
+fn rehost_failure_ok_clean_keeps_original() {
+    // No residue, no teardown error: the re-host fault stands alone.
+    use cistella::error::CistellaError;
+    use cistella::isolators::client::rehost_failure_verdict;
+    let reported = rehost_failure_verdict(
+        Ok(()),
+        true,
+        CistellaError::Runtime("re-host refused".to_string()),
+    )
+    .to_string();
+    assert_eq!(
+        reported, "runtime: re-host refused",
+        "original stands, got: {reported}"
+    );
+}

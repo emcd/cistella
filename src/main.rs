@@ -255,6 +255,41 @@ fn report_release(outcome: Result<(), cistella::error::CistellaError>) {
     }
 }
 
+/// Retires a proven-dead pre-exec client and hosts a
+/// replacement under the still-held creation-window guard. Close
+/// (unconditional join/unlink) frees the rendezvous path, then a
+/// fresh host replays the same key. The first-death context
+/// reports to stderr at retire time; the second failure dominates
+/// downstream. Re-host failure converges directly by name with the
+/// lock-held half — the full converge would re-acquire the guard
+/// and deadlock — and a residue-dominant report.
+///
+/// Returns the fresh client, or the terminal error after
+/// converging (the caller drops the guard and reports).
+fn retire_and_rehost(
+    client: WireClient,
+    exe_dir: &std::path::Path,
+    rendezvous_dir: &std::path::Path,
+    container_name: &str,
+    session_id: &str,
+    first_error: &cistella::error::CistellaError,
+) -> Result<WireClient, cistella::error::CistellaError> {
+    eprintln!("error: pre-exec guest death ({first_error}): retiring client and re-hosting");
+    report_release(release_client(client, rendezvous_dir));
+    match WireClient::host(exe_dir, rendezvous_dir, Deadlines::default()) {
+        Ok(fresh) => Ok(fresh),
+        Err(rehost_error) => {
+            let teardown_result = cistella::runtime::teardown_inner(container_name, session_id);
+            let residue_ok = cistella::runtime::residue_gone(container_name, session_id);
+            Err(cistella::isolators::client::rehost_failure_verdict(
+                teardown_result,
+                residue_ok,
+                rehost_error,
+            ))
+        }
+    }
+}
+
 /// Implements `conduct`: mint, install under lock, start, exec, teardown.
 ///
 /// Ten parameters mirror the conduct CLI surface one-to-one; bundling
@@ -430,7 +465,7 @@ fn conduct_session(
         CistellaError::Runtime("driver binary has no parent directory".to_string())
     })?;
     let rendezvous_dir = std::env::temp_dir().join(format!("cistella-rdv-{id}"));
-    let client = match WireClient::host(exe_dir, &rendezvous_dir, Deadlines::default()) {
+    let mut client = match WireClient::host(exe_dir, &rendezvous_dir, Deadlines::default()) {
         Ok(client) => client,
         Err(error) => {
             let _ = std::fs::remove_dir(&rendezvous_dir);
@@ -464,69 +499,139 @@ fn conduct_session(
         env: env_extra,
         labels: merged_labels,
     };
-    let unit = match client.death_checked(client.create(&spec, &key)) {
-        Ok(handle) => handle,
-        Err(e) => {
-            // Quiesce before converging: a still-live guest with an
-            // in-flight mutating op (notably a timed-out create)
-            // could install past the direct teardown's residue
-            // check. Shutdown first (bounded), then converge, then
-            // report — the residue decision runs after the guest is
-            // gone, never beside a live mutator.
-            report_release(release_client(client, &rendezvous_dir));
-            drop(guard);
-            // Every failure past install runs teardown so no residue remains;
-            // a teardown failure with residue left behind dominates the report.
-            if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
-                && !cistella::runtime::residue_gone(&container_name, &id)
-            {
-                return Err(teardown_err);
+    // Pre-exec episode with a single bounded replacement:
+    // create + initiate converge by key, so proven guest death
+    // retires the client and replays the same key/spec once under the still-held guard. The retry
+    // mints a new framework handle; the guest adopts the surviving
+    // unit (handles differ, unit identity converges). No
+    // `death_checked` on the pre-retry attempt: a located unit is
+    // the expected survivor there, and the residue check would fail
+    // it before adopt converges. Terminal paths reapply the
+    // residue duty through the existing quiesce-converge shape.
+    let mut replacement_used = false;
+    let unit = loop {
+        match client.create(&spec, &key) {
+            Ok(handle) => {
+                if let Some(signum) = signals::pending_signal() {
+                    drop(guard);
+                    abort_startup(
+                        client,
+                        &rendezvous_dir,
+                        Some(&handle),
+                        &container_name,
+                        &id,
+                        signum,
+                    );
+                }
+                // Test-hook stall between install and start: a deterministic window for
+                // signal-during-startup regression, polling so signals abort promptly.
+                let delay = start_delay_ms();
+                let waited = std::time::Instant::now();
+                while waited.elapsed() < std::time::Duration::from_millis(delay) {
+                    if let Some(signum) = signals::pending_signal() {
+                        drop(guard);
+                        abort_startup(
+                            client,
+                            &rendezvous_dir,
+                            Some(&handle),
+                            &container_name,
+                            &id,
+                            signum,
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                match client.initiate(&handle, &key) {
+                    Ok(_) => break handle,
+                    Err(error) => {
+                        if cistella::isolators::client::pre_exec_recovery_verdict(
+                            replacement_used,
+                            client.guest_dead(),
+                            client.shutdown_uncertain(),
+                        ) {
+                            replacement_used = true;
+                            match retire_and_rehost(
+                                client,
+                                exe_dir,
+                                &rendezvous_dir,
+                                &container_name,
+                                &id,
+                                &error,
+                            ) {
+                                Ok(fresh) => {
+                                    client = fresh;
+                                    continue;
+                                }
+                                Err(terminal) => {
+                                    drop(guard);
+                                    return Err(terminal);
+                                }
+                            }
+                        }
+                        // Terminal initiate path: residue duty FIRST
+                        // (death_checked borrows the client), then
+                        // quiesce before converging, same as before: a
+                        // timed-out initiate leaves the guest live with an
+                        // in-flight start that must die before the residue check.
+                        let terminal = client.death_checked::<()>(Err(error)).unwrap_err();
+                        report_release(release_client(client, &rendezvous_dir));
+                        drop(guard);
+                        if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
+                            && !cistella::runtime::residue_gone(&container_name, &id)
+                        {
+                            return Err(teardown_err);
+                        }
+                        return Err(terminal);
+                    }
+                }
             }
-            return Err(e);
+            Err(error) => {
+                if cistella::isolators::client::pre_exec_recovery_verdict(
+                    replacement_used,
+                    client.guest_dead(),
+                    client.shutdown_uncertain(),
+                ) {
+                    replacement_used = true;
+                    match retire_and_rehost(
+                        client,
+                        exe_dir,
+                        &rendezvous_dir,
+                        &container_name,
+                        &id,
+                        &error,
+                    ) {
+                        Ok(fresh) => {
+                            client = fresh;
+                            continue;
+                        }
+                        Err(terminal) => {
+                            drop(guard);
+                            return Err(terminal);
+                        }
+                    }
+                }
+                // Terminal create path: residue duty FIRST
+                // (death_checked borrows the client), then quiesce
+                // before converging: a still-live guest with an
+                // in-flight mutating op (notably a timed-out create)
+                // could install past the direct teardown's residue
+                // check. Shutdown first (bounded), then converge, then
+                // report — the residue decision runs after the guest is
+                // gone, never beside a live mutator.
+                let terminal = client.death_checked::<()>(Err(error)).unwrap_err();
+                report_release(release_client(client, &rendezvous_dir));
+                drop(guard);
+                // Every failure past install runs teardown so no residue remains;
+                // a teardown failure with residue left behind dominates the report.
+                if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
+                    && !cistella::runtime::residue_gone(&container_name, &id)
+                {
+                    return Err(teardown_err);
+                }
+                return Err(terminal);
+            }
         }
     };
-    if let Some(signum) = signals::pending_signal() {
-        drop(guard);
-        abort_startup(
-            client,
-            &rendezvous_dir,
-            Some(&unit),
-            &container_name,
-            &id,
-            signum,
-        );
-    }
-    // Test-hook stall between install and start: a deterministic window for
-    // signal-during-startup regression, polling so signals abort promptly.
-    let delay = start_delay_ms();
-    let waited = std::time::Instant::now();
-    while waited.elapsed() < std::time::Duration::from_millis(delay) {
-        if let Some(signum) = signals::pending_signal() {
-            drop(guard);
-            abort_startup(
-                client,
-                &rendezvous_dir,
-                Some(&unit),
-                &container_name,
-                &id,
-                signum,
-            );
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if let Err(e) = client.death_checked(client.initiate(&unit, &key)) {
-        // Quiesce before converging, same as the create arm: a
-        // timed-out initiate leaves the guest live with an
-        // in-flight start that must die before the residue check.
-        report_release(release_client(client, &rendezvous_dir));
-        drop(guard);
-        if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
-            && !cistella::runtime::residue_gone(&container_name, &id)
-        {
-            return Err(teardown_err);
-        }
-        return Err(e);
-    }
     // Mountpoint preparation runs under the creation-window lock, before
     // the harness attaches. Authorization consumes the canonical emitted
     // volume targets (profile/CLI/session/scratch/credential volumes

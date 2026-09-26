@@ -109,6 +109,52 @@ pub fn abort_exit_code(
     }
 }
 
+/// Recovery verdict for a failed pre-exec op: exactly one
+/// bounded replacement on proven guest death (`guest_dead`
+/// without `shutdown_uncertain`); a used replacement, uncertain
+/// shutdown, or live-guest failure never re-execs. Conduct probes
+/// this BEFORE `death_checked` — on the recovery path a located
+/// unit is the expected adoptable survivor, not residue.
+///
+/// Public for the deterministic verdict pin (the branch decision
+/// pins directly instead of through a live guest).
+#[must_use]
+pub fn pre_exec_recovery_verdict(
+    replacement_used: bool,
+    guest_dead: bool,
+    shutdown_uncertain: bool,
+) -> bool {
+    !replacement_used && guest_dead && !shutdown_uncertain
+}
+
+/// Re-host failure verdict for the pre-exec recovery path: the
+/// teardown verdict stands on a clean snapshot, while residue
+/// overrides on a dirty one. A failed converge reports its
+/// concrete error regardless of the snapshot (its reason is the
+/// most actionable signal); a nominally successful teardown with
+/// remaining residue synthesizes the residue class with the
+/// re-host fault rendered in (partial cleanup or a concurrently
+/// recreated path must never hide behind it). Only teardown-Ok
+/// plus a clean snapshot keeps the re-host error. Deliberately
+/// distinct from [`select_teardown_error`], whose Ok+dirty-keeps
+/// shape serves the wire-teardown arms.
+///
+/// Public for the deterministic pin (Ok+dirty must name residue).
+#[must_use]
+pub fn rehost_failure_verdict(
+    teardown: Result<()>,
+    residue_ok: bool,
+    rehost_error: CistellaError,
+) -> CistellaError {
+    match (teardown, residue_ok) {
+        (Err(teardown_error), _) => teardown_error,
+        (Ok(()), false) => {
+            CistellaError::Contract(format!("re-host failure left residue: {rehost_error}"))
+        }
+        (Ok(()), true) => rehost_error,
+    }
+}
+
 /// External isolator client: guest process plus fd rendezvous.
 pub struct WireClient {
     /// Dispatcher command channel (all ops serialize here).
