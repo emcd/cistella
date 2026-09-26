@@ -45,3 +45,7 @@ mod terminal;
 mod version;
 #[path = "unit/wire_dispatch.rs"]
 mod wire_dispatch;
+#[path = "unit/wire_fake.rs"]
+mod wire_fake;
+#[path = "unit/wire_tombstone.rs"]
+mod wire_tombstone;

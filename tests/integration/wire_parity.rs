@@ -310,34 +310,19 @@ fn wire_parity_full_cycle_with_fidelity() {
     assert_eq!(snapshot.unit_identity, fixture.container);
     assert_eq!(snapshot.session_id, fixture.session_id);
 
-    // Teardown divergence (designed, pinned per side): the guest
-    // evicts the framework binding on remove, so post-remove ops
-    // refuse unknown-handle; the reference retains records and
-    // stays idempotent. Both converge; only the handle lifetime
-    // differs.
+    // Repeatable teardown through tombstones: terminate/remove
+    // twice succeed on both backends, and post-remove state reads
+    // Absent on both.
     let grace = Duration::from_secs(10);
     client.terminate(&handle, grace, &key).expect("terminate");
-    client.remove(&handle, &key).expect("remove");
-    let error = client
+    client
         .terminate(&handle, grace, &key)
-        .expect_err("wire re-terminate refuses evicted binding");
-    assert!(
-        matches!(error, cistella::error::CistellaError::Contract(_)),
-        "typed unknown-handle refusal, got: {error}"
-    );
-    let error = client
-        .remove(&handle, &key)
-        .expect_err("wire re-remove refuses evicted binding");
-    assert!(
-        matches!(error, cistella::error::CistellaError::Contract(_)),
-        "typed unknown-handle refusal, got: {error}"
-    );
-    let error = client
-        .state(&handle)
-        .expect_err("wire post-remove state refuses evicted binding");
-    assert!(
-        matches!(error, cistella::error::CistellaError::Contract(_)),
-        "typed unknown-handle refusal, got: {error}"
+        .expect("re-terminate");
+    client.remove(&handle, &key).expect("remove");
+    client.remove(&handle, &key).expect("re-remove");
+    assert_eq!(
+        client.state(&handle).expect("state after remove"),
+        LifecycleState::Absent
     );
     fixture.handle = None;
     assert!(
@@ -434,17 +419,16 @@ fn wire_parity_absent_converge_clears_orphan_scratch() {
     let handle = fixture.handle.clone().expect("unit handle");
     let key = ReconciliationKey::generate();
     let grace = Duration::from_secs(10);
-    // Converge once from live: terminate inside converge plus
-    // remove clear the unit, and the absent-with-scratch tail
-    // proves `remove` owns scratch (a pre-remove here would evict
-    // the binding and the wire converge could no longer run —
-    // designed divergence from the reference, see full-cycle).
+    // Full teardown, then plant orphan scratch: converge on the
+    // tombstoned unit must clear it rather than trust `state`
+    // alone (tombstone retains session identity for exactly this).
     client.terminate(&handle, grace, &key).expect("terminate");
+    client.remove(&handle, &key).expect("remove");
     let scratch = cistella::lock::scratch_dir(&fixture.session_id);
     std::fs::create_dir_all(&scratch).expect("plant orphan scratch");
     client
         .converge_clean(&handle, grace, &key)
-        .expect("converge clears scratch");
+        .expect("converge absent clears scratch");
     assert!(
         residue_gone(&fixture.container, &fixture.session_id),
         "orphan scratch cleared"
@@ -643,7 +627,11 @@ fn drive_cycle(
 
 /// Caller-owned converge for one driven cycle: terminate, remove,
 /// verify, and disarm only on the pinned predicate. The caller's
-/// name guard stays armed through any failure above this call.
+/// name guard stays armed through any failure above this call. The
+/// typed converge result and the post-remove state are asserted
+/// here (not just residue): a typed failure with a clean snapshot,
+/// or a non-Absent post-remove state, fails the transcript on
+/// either backend.
 fn converge_cycle(
     backend: &dyn Isolator,
     output: &CycleOutput,
@@ -653,16 +641,160 @@ fn converge_cycle(
     let grace = Duration::from_secs(10);
     let wire_ok = backend.terminate(&output.handle, grace, key).is_ok()
         && backend.remove(&output.handle, key).is_ok();
+    let post_state = backend.state(&output.handle);
     let residue_clean = residue_gone(&output.container, &output.session_id);
     if teardown_disarms(wire_ok, residue_clean) {
         guard.container_name = None;
         guard.session_id = None;
     }
     assert!(
+        wire_ok,
+        "cycle converge typed clean for {}",
+        output.container
+    );
+    assert!(
+        matches!(post_state, Ok(LifecycleState::Absent)),
+        "post-remove state reads Absent for {}",
+        output.container
+    );
+    assert!(
         residue_clean,
         "cycle leaves no residue for {}",
         output.container
     );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn wire_parity_removed_handle_create_refuses_live() {
+    // Live counterpart of the fast refusal pin, driven BELOW
+    // `WireClient` (which mints fresh handles by design and cannot
+    // address a tombstone): raw frames to the REAL guest binary
+    // holding the ORIGINAL handle. Same-handle create after remove
+    // refuses typed (no resurrection, no backend create), while the
+    // tombstone still reports absent. Declaration order keeps
+    // unwind safe: guard older than host, so the guest is
+    // killed/reaped before name-based converge.
+    use cistella::framework::contract::UnitHandle;
+    use cistella::framework::guest::host_external;
+    let Some(image) = fixture_image() else { return };
+    let key = ReconciliationKey::generate();
+    let worktree = TempDir::new().expect("worktree tempdir");
+    let (session, volumes) = plan_session(&image, &worktree, "marker");
+    let container = session.container_name();
+    let session_id = session.id.clone();
+    let spec = CreateSpec {
+        session,
+        volumes,
+        env: vec![],
+        labels: vec![],
+    };
+    let mut guard = LiveUnitGuard {
+        container_name: Some(container.clone()),
+        session_id: Some(session_id.clone()),
+    };
+    let dir = bins_dir();
+    let mut host = host_external(
+        &dir,
+        ISOLATOR_BIN,
+        &[],
+        &["isolator".to_string()],
+        Default::default(),
+    )
+    .expect("host real guest");
+    let timeout = Duration::from_secs(120);
+    let handle = UnitHandle::mint();
+    let spec_json = serde_json::to_value(&spec).expect("spec serializes");
+    // Raw exchange returns terminal payloads verbatim (`ok` or
+    // `error` envelopes): the test inspects envelope shape rather
+    // than expecting a redeemed `Result`.
+    let created = host
+        .exchange_mut()
+        .request(
+            "isolator.create",
+            serde_json::json!({
+                "unit_handle": handle.as_str(),
+                "spec": spec_json,
+                "reconciliation_key": key.as_str(),
+            }),
+            timeout,
+        )
+        .expect("raw create installs");
+    assert_eq!(
+        created
+            .get("ok")
+            .and_then(|ok| ok.get("unit_handle"))
+            .and_then(|handle| handle.as_str()),
+        Some(handle.as_str()),
+        "create echoes the held handle"
+    );
+    let removed = host
+        .exchange_mut()
+        .request(
+            "isolator.remove",
+            serde_json::json!({
+                "unit_handle": handle.as_str(),
+                "reconciliation_key": key.as_str(),
+            }),
+            timeout,
+        )
+        .expect("raw remove evicts");
+    assert!(
+        removed
+            .get("ok")
+            .and_then(|ok| ok.get("removed_attestation"))
+            .is_some(),
+        "removed attestation, got: {removed}"
+    );
+    // Identical AND divergent attempts refuse alike: the tombstone
+    // retains no key/spec, refusal is uniform.
+    for (what, attempt_key) in [
+        ("identical", key.clone()),
+        ("divergent", ReconciliationKey::generate()),
+    ] {
+        let refused = host
+            .exchange_mut()
+            .request(
+                "isolator.create",
+                serde_json::json!({
+                    "unit_handle": handle.as_str(),
+                    "spec": serde_json::to_value(&spec).expect("spec serializes"),
+                    "reconciliation_key": attempt_key.as_str(),
+                }),
+                timeout,
+            )
+            .expect("guest answers re-create");
+        let error = refused
+            .get("error")
+            .unwrap_or_else(|| panic!("{what} re-create refuses with error envelope"));
+        assert!(
+            error.to_string().contains("removed"),
+            "{what} refusal names removal, got: {error}"
+        );
+    }
+    let state = host
+        .exchange_mut()
+        .request(
+            "isolator.state",
+            serde_json::json!({"unit_handle": handle.as_str()}),
+            timeout,
+        )
+        .expect("tombstone still reports");
+    assert_eq!(
+        state
+            .get("ok")
+            .and_then(|ok| ok.get("lifecycle"))
+            .and_then(|lifecycle| lifecycle.as_str()),
+        Some("absent"),
+        "tombstone reports absent, got: {state}"
+    );
+    assert!(
+        residue_gone(&container, &session_id),
+        "no residue after refused re-create"
+    );
+    host.shutdown().expect("guest shuts down clean");
+    guard.container_name = None;
+    guard.session_id = None;
 }
 
 #[ignore = "live: requires systemd user manager and podman"]

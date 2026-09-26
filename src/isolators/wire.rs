@@ -14,7 +14,13 @@
 //! known framework handle replays idempotently; with an unknown
 //! handle but a known reconciliation key the guest adopts the
 //! located unit (re-exec convergence after guest restart); only an
-//! unknown handle plus an unlocated key creates.
+//! unknown handle plus an unlocated key creates. Successful
+//! `remove` evicts the live binding into a removal tombstone keyed
+//! by the original handle: identical convergent retries converge
+//! residue-free through idempotent backend cleanup (never
+//! resurrection), divergent live attempts — including same-handle
+//! create — refuse typed, and the retained local reaches only the
+//! backend tombstone.
 //!
 //! Awaiting is synchronous here: the guest binary wraps slow
 //! `await_result` calls with `{pending}` ticker frames at the
@@ -29,8 +35,12 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::error::{CistellaError, Result};
-use crate::framework::contract::{CancelFlag, ExecutionHandle, ReconciliationKey, UnitHandle};
-use crate::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use crate::framework::contract::{
+    CancelFlag, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
+};
+use crate::framework::isolator::{
+    CreateSpec, ExecutionOutcome, Isolator, StdioBinding, UnitSnapshot,
+};
 use crate::isolators::podman::PodmanIsolator;
 
 /// Wire op names (mirror the isolator-contract schemas).
@@ -181,16 +191,41 @@ pub struct IsolatorGuest<B = PodmanIsolator> {
     host_pid: u32,
 }
 
-/// Framework unit binding: local handle plus the attempt identity
-/// that created it.
+/// Live backend unit plus the attempt identity that created it.
 #[derive(Debug, Clone)]
-struct UnitBinding {
+struct LiveBinding {
     /// Local backend handle.
     local: UnitHandle,
     /// Reconciliation key of the creating attempt.
     key: ReconciliationKey,
     /// Creation spec of the creating attempt.
     spec: CreateSpec,
+}
+
+/// Framework unit binding: live backend handle plus the attempt
+/// identity that created it — or a removal tombstone. Eviction on
+/// remove clears the live binding (no handle resurrection); the
+/// tombstone retains the local for idempotent cleanup delegation
+/// plus the unit name for absent attestations, while same-handle
+/// create refuses instead of resurrecting.
+#[derive(Debug, Clone)]
+enum UnitBinding {
+    /// Live backend unit (boxed: the spec dwarfs the tombstone).
+    Live(Box<LiveBinding>),
+    /// Removal tombstone: live binding evicted, absence recorded.
+    /// Keyed by the original framework handle (the map key); the
+    /// retained local reaches the backend tombstone for idempotent
+    /// cleanup delegation only, and the identity feeds absent
+    /// attestations without backend reads.
+    Removed {
+        /// Local backend handle, retained ONLY for idempotent
+        /// cleanup delegation (`terminate`/`remove` re-runs clear
+        /// residue without resurrecting state; never resolved for
+        /// live operations).
+        local: UnitHandle,
+        /// Unit identity (container name) for attestations.
+        unit_identity: String,
+    },
 }
 
 /// Framework execution binding: local handle plus attempt identity.
@@ -262,24 +297,34 @@ impl<B: Isolator> IsolatorGuest<B> {
         self
     }
 
-    /// True when any framework handle is bound (live session state).
+    /// True when any framework handle is live (bound units or
+    /// executions). Tombstones are absence records, not live
+    /// state: a guest holding only tombstones exits quietly on
+    /// clean EOF.
     #[must_use]
     pub fn has_live_state(&self) -> bool {
         let tables = self.tables.lock().expect("guest table lock");
-        !(tables.units.is_empty() && tables.executions.is_empty())
+        let live_unit = tables
+            .units
+            .values()
+            .any(|binding| matches!(binding, UnitBinding::Live(_)));
+        live_unit || !tables.executions.is_empty()
     }
 
-    /// Converges every bound unit without live executions to clean,
-    /// best-effort in table order, then drops bindings for units
-    /// that converged.
-    ///
-    /// Units with live executions are left running and bound: a
-    /// disconnect is detach-without-kill, and only the framework's
-    /// typed teardown path may end them (never a guest-side sweep).
-    /// Units that fail terminate or remove keep their bindings, so
-    /// a second call still has handles for another attempt.
-    /// Executions follow their unit: cleared only when their unit
-    /// converges. The first backend failure reports.
+    /// Converges every LIVE bound unit without live executions to
+    /// clean, best-effort in table order, then drops the converged
+    /// bindings. Tombstones are already clean and never re-enter
+    /// the sweep; units with live executions are left running and
+    /// bound (disconnect is detach-without-kill, and only the
+    /// framework's typed teardown path may end them). Dropped
+    /// (not tombstoned): the sweep runs at disconnect, and the
+    /// guest exits right after, so no live guest serves those
+    /// handles again — repeatability across the sweep is the fresh
+    /// guest's adopt-or-create, keyed by reconciliation key.
+    /// Units that fail terminate or remove keep their live
+    /// bindings, so a second call still has handles for another
+    /// attempt. Executions follow their unit: cleared only when
+    /// their unit converges. The first backend failure reports.
     ///
     /// # Errors
     ///
@@ -296,7 +341,12 @@ impl<B: Isolator> IsolatorGuest<B> {
                 .units
                 .iter()
                 .filter(|(fw, _)| !live_units.contains(*fw))
-                .map(|(fw, binding)| (fw.clone(), binding.local.clone(), binding.key.clone()))
+                .filter_map(|(fw, binding)| match binding {
+                    UnitBinding::Live(live) => {
+                        Some((fw.clone(), live.local.clone(), live.key.clone()))
+                    }
+                    UnitBinding::Removed { .. } => None,
+                })
                 .collect()
         };
         let mut cleared: Vec<String> = Vec::new();
@@ -331,7 +381,8 @@ impl<B: Isolator> IsolatorGuest<B> {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Resolves a framework unit handle to its local handle.
+    /// Looks up a framework unit handle's binding (live or
+    /// tombstone).
     ///
     /// Grammar-checked before lookup: only minted-shape strings
     /// reach the table, and diagnostics echo validated handles or
@@ -341,17 +392,39 @@ impl<B: Isolator> IsolatorGuest<B> {
     ///
     /// Returns `CistellaError::Contract` on grammar violations or
     /// unknown handles, before any backend call.
-    fn resolve_unit(&self, handle: &UnitHandle) -> Result<UnitHandle> {
+    fn lookup_unit(&self, handle: &UnitHandle) -> Result<UnitBinding> {
         check_handle_grammar("unit", handle.as_str())?;
         self.tables
             .lock()
             .expect("guest table lock")
             .units
             .get(handle.as_str())
-            .map(|binding| binding.local.clone())
+            .cloned()
             .ok_or_else(|| {
                 CistellaError::Contract(format!("unknown unit handle: {}", handle.as_str()))
             })
+    }
+
+    /// Resolves a framework unit handle to its local handle.
+    ///
+    /// Grammar-checked before lookup: only minted-shape strings
+    /// reach the table, and diagnostics echo validated handles or
+    /// fixed messages, never raw wire bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Contract` on grammar violations,
+    /// unknown handles, or removed handles (tombstones answer
+    /// through their own arms, never by resurrecting a backend
+    /// handle), before any backend call.
+    fn resolve_unit(&self, handle: &UnitHandle) -> Result<UnitHandle> {
+        match self.lookup_unit(handle)? {
+            UnitBinding::Live(live) => Ok(live.local.clone()),
+            UnitBinding::Removed { .. } => Err(CistellaError::Contract(format!(
+                "unit handle removed: {}",
+                handle.as_str()
+            ))),
+        }
     }
 
     /// Resolves a framework execution handle to its local handle.
@@ -399,16 +472,33 @@ impl<B: Isolator> IsolatorGuest<B> {
                 {
                     let tables = self.tables.lock().expect("guest table lock");
                     if let Some(binding) = tables.units.get(&fw) {
-                        // Replay guard: the same handle replays only
-                        // the identical attempt; a different key or
-                        // spec refuses instead of rebinding the unit
-                        // out from under the first attempt.
-                        if binding.key != req.reconciliation_key || binding.spec != req.spec {
-                            return Err(CistellaError::Contract(format!(
-                                "unit handle bound to a different attempt: {fw}"
-                            )));
+                        match binding {
+                            UnitBinding::Live(live) => {
+                                // Replay guard: the same handle replays only
+                                // the identical attempt; a different key or
+                                // spec refuses instead of rebinding the unit
+                                // out from under the first attempt.
+                                if live.key != req.reconciliation_key || live.spec != req.spec {
+                                    return Err(CistellaError::Contract(format!(
+                                        "unit handle bound to a different attempt: {fw}"
+                                    )));
+                                }
+                                return Ok(serde_json::json!({"unit_handle": fw}));
+                            }
+                            UnitBinding::Removed { .. } => {
+                                // No re-create over a tombstone: the
+                                // handle's lifecycle ended at remove,
+                                // and a same-handle replay must not
+                                // resurrect the unit or rerun its side
+                                // effects. Fresh units arrive on fresh
+                                // handles (conduct mints per attempt;
+                                // adopt-or-create keys those); a stale
+                                // same-handle retry refuses instead.
+                                return Err(CistellaError::Contract(format!(
+                                    "unit handle removed: {fw}"
+                                )));
+                            }
                         }
-                        return Ok(serde_json::json!({"unit_handle": fw}));
                     }
                 }
                 let local = match self.backend.locate(&req.reconciliation_key)? {
@@ -417,11 +507,11 @@ impl<B: Isolator> IsolatorGuest<B> {
                 };
                 self.tables.lock().expect("guest table lock").units.insert(
                     fw.clone(),
-                    UnitBinding {
+                    UnitBinding::Live(Box::new(LiveBinding {
                         local,
                         key: req.reconciliation_key,
                         spec: req.spec,
-                    },
+                    })),
                 );
                 Ok(serde_json::json!({"unit_handle": fw}))
             }
@@ -573,48 +663,106 @@ impl<B: Isolator> IsolatorGuest<B> {
             }
             OP_INSPECT => {
                 let req: InspectWire = parse(op, payload)?;
-                let local = self.resolve_unit(&req.unit_handle)?;
-                let snapshot = self.backend.inspect(&local)?;
-                Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
+                match self.lookup_unit(&req.unit_handle)? {
+                    UnitBinding::Live(live) => {
+                        let snapshot = self.backend.inspect(&live.local)?;
+                        Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
+                    }
+                    UnitBinding::Removed { unit_identity, .. } => {
+                        // Tombstone reports absence without backend
+                        // contact: the unit is gone, so identity is
+                        // retained while session/image details read
+                        // empty (matching the reference backend's
+                        // post-remove rendering).
+                        let snapshot = UnitSnapshot {
+                            unit_identity,
+                            lifecycle: LifecycleState::Absent,
+                            active_state: "inactive".to_string(),
+                            session_id: String::new(),
+                            image: String::new(),
+                        };
+                        Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
+                    }
+                }
             }
             OP_STATE => {
                 let req: InspectWire = parse(op, payload)?;
-                let local = self.resolve_unit(&req.unit_handle)?;
-                let state = self.backend.state(&local)?;
-                Ok(serde_json::json!({"lifecycle":
-                    serde_json::to_value(state).expect("state serializes")}))
+                match self.lookup_unit(&req.unit_handle)? {
+                    UnitBinding::Live(live) => {
+                        let state = self.backend.state(&live.local)?;
+                        Ok(serde_json::json!({"lifecycle":
+                            serde_json::to_value(state).expect("state serializes")}))
+                    }
+                    UnitBinding::Removed { .. } => Ok(serde_json::json!({"lifecycle":
+                        serde_json::to_value(LifecycleState::Absent)
+                            .expect("state serializes")})),
+                }
             }
             OP_TERMINATE => {
                 let req: TerminateWire = parse(op, payload)?;
-                let local = self.resolve_unit(&req.unit_handle)?;
-                let grace = Duration::from_millis(req.grace_ms);
-                let attestation = self
-                    .backend
-                    .terminate(&local, grace, &req.reconciliation_key)?;
-                Ok(serde_json::json!({"stopped_attestation":
-                    serde_json::to_value(attestation).expect("attestation serializes")}))
+                match self.lookup_unit(&req.unit_handle)? {
+                    UnitBinding::Live(live) => {
+                        let grace = Duration::from_millis(req.grace_ms);
+                        let attestation =
+                            self.backend
+                                .terminate(&live.local, grace, &req.reconciliation_key)?;
+                        Ok(serde_json::json!({"stopped_attestation":
+                            serde_json::to_value(attestation).expect("attestation serializes")}))
+                    }
+                    UnitBinding::Removed { local, .. } => {
+                        // Repeatable teardown delegates to the
+                        // backend tombstone: idempotent cleanup
+                        // contact only (stray settle, never
+                        // resurrection).
+                        let grace = Duration::from_millis(req.grace_ms);
+                        let attestation =
+                            self.backend
+                                .terminate(&local, grace, &req.reconciliation_key)?;
+                        Ok(serde_json::json!({"stopped_attestation":
+                            serde_json::to_value(attestation).expect("attestation serializes")}))
+                    }
+                }
             }
             OP_REMOVE => {
                 let req: HandleKeyWire = parse(op, payload)?;
-                let local = self.resolve_unit(&req.unit_handle)?;
-                let attestation = self.backend.remove(&local, &req.reconciliation_key)?;
-                // Evict only after the backend confirms removal: the
-                // binding dies with the unit, while a failed remove
-                // keeps its handle for retry/reconciliation.
-                {
-                    let mut tables = self.tables.lock().expect("guest table lock");
-                    tables.units.remove(req.unit_handle.as_str());
+                let fw = req.unit_handle.as_str().to_string();
+                match self.lookup_unit(&req.unit_handle)? {
+                    UnitBinding::Live(live) => {
+                        let attestation =
+                            self.backend.remove(&live.local, &req.reconciliation_key)?;
+                        // Evict the live binding into a tombstone
+                        // only after the backend confirms removal; a
+                        // failed remove keeps the live handle for
+                        // retry/reconciliation. The tombstone retains
+                        // the local handle for idempotent cleanup
+                        // delegation below (never resolved for live
+                        // operations). Executions die with the unit
+                        // either way (never resurrected).
+                        {
+                            let mut tables = self.tables.lock().expect("guest table lock");
+                            tables.units.insert(
+                                fw.clone(),
+                                UnitBinding::Removed {
+                                    local: live.local.clone(),
+                                    unit_identity: attestation.unit_identity.clone(),
+                                },
+                            );
+                            tables.executions.retain(|_, binding| binding.unit != fw);
+                        }
+                        Ok(serde_json::json!({"removed_attestation":
+                            serde_json::to_value(attestation).expect("attestation serializes")}))
+                    }
+                    UnitBinding::Removed { local, .. } => {
+                        // Idempotent repeat delegates to the backend
+                        // tombstone so surviving residue (e.g. scratch
+                        // planted after the first remove) still
+                        // converges; absence re-attested, nothing
+                        // resurrected.
+                        let attestation = self.backend.remove(&local, &req.reconciliation_key)?;
+                        Ok(serde_json::json!({"removed_attestation":
+                            serde_json::to_value(attestation).expect("attestation serializes")}))
+                    }
                 }
-                {
-                    let mut tables = self.tables.lock().expect("guest table lock");
-                    let remaining: std::collections::HashSet<String> =
-                        tables.units.keys().cloned().collect();
-                    tables
-                        .executions
-                        .retain(|_, binding| remaining.contains(&binding.unit));
-                }
-                Ok(serde_json::json!({"removed_attestation":
-                    serde_json::to_value(attestation).expect("attestation serializes")}))
             }
             _ => Err(CistellaError::Contract(
                 "unknown isolator operation".to_string(),

@@ -47,6 +47,26 @@ struct UnitRecord {
     unit_name: String,
 }
 
+/// Handle-table entry: a live record plus, after successful
+/// remove, a removal tombstone. Eviction clears the live binding
+/// (no resurrection through it); the tombstone retains session
+/// identity so identical convergent retries report absent
+/// attestations and absent-with-scratch still converges by handle.
+#[derive(Debug, Clone)]
+enum UnitEntry {
+    /// Live backend unit.
+    Live(UnitRecord),
+    /// Removal tombstone: live binding evicted, absence recorded.
+    Removed {
+        /// Container name (unit identity for attestations).
+        container_name: String,
+        /// Session id (scratch ownership for re-converge).
+        session_id: String,
+        /// Quadlet unit file name (presence checks).
+        unit_name: String,
+    },
+}
+
 /// Pending launched execution awaiting `await_result`.
 ///
 /// The record (and, once collected, the outcome) lives until
@@ -65,8 +85,9 @@ struct PendingExec {
 
 /// Podman isolator backend (`podman` + Quadlet + systemd user manager).
 pub struct PodmanIsolator {
-    /// Issued handles to unit records.
-    units: Mutex<HashMap<UnitHandle, UnitRecord>>,
+    /// Issued handles to unit entries (live records plus removal
+    /// tombstones).
+    units: Mutex<HashMap<UnitHandle, UnitEntry>>,
     /// Reconciliation keys to handles (replacement-peer recovery).
     keys: Mutex<HashMap<ReconciliationKey, UnitHandle>>,
     /// Launched executions awaiting result collection.
@@ -99,12 +120,12 @@ impl PodmanIsolator {
         self.units
             .lock()
             .expect("unit table lock")
-            .insert(handle.clone(), record);
+            .insert(handle.clone(), UnitEntry::Live(record));
         handle
     }
 
-    /// Looks up the record for a handle.
-    fn record(&self, handle: &UnitHandle) -> Result<UnitRecord> {
+    /// Looks up the entry for a handle (live record or tombstone).
+    fn resolve(&self, handle: &UnitHandle) -> Result<UnitEntry> {
         self.units
             .lock()
             .expect("unit table lock")
@@ -115,12 +136,25 @@ impl PodmanIsolator {
             })
     }
 
+    /// Looks up the live record for a handle: tombstones refuse as
+    /// removed (convergent tombstone arms answer without a record;
+    /// live attempts on removed handles never re-enter the backend).
+    fn record(&self, handle: &UnitHandle) -> Result<UnitRecord> {
+        match self.resolve(handle)? {
+            UnitEntry::Live(record) => Ok(record),
+            UnitEntry::Removed { .. } => Err(CistellaError::Contract(format!(
+                "unit handle removed: {}",
+                handle.as_str()
+            ))),
+        }
+    }
+
     /// Records a handle/key pair after successful creation.
     fn register(&self, handle: UnitHandle, record: UnitRecord, key: &ReconciliationKey) {
         self.units
             .lock()
             .expect("unit table lock")
-            .insert(handle.clone(), record);
+            .insert(handle.clone(), UnitEntry::Live(record));
         self.keys
             .lock()
             .expect("key table lock")
@@ -576,7 +610,21 @@ impl Isolator for PodmanIsolator {
     }
 
     fn inspect(&self, handle: &UnitHandle) -> Result<UnitSnapshot> {
-        let record = self.record(handle)?;
+        // Tombstone reports absence without backend contact: the
+        // unit is gone, so identity is retained while session and
+        // image details read empty.
+        let record = match self.resolve(handle)? {
+            UnitEntry::Live(record) => record,
+            UnitEntry::Removed { container_name, .. } => {
+                return Ok(UnitSnapshot {
+                    unit_identity: container_name,
+                    lifecycle: LifecycleState::Absent,
+                    active_state: "inactive".to_string(),
+                    session_id: String::new(),
+                    image: String::new(),
+                });
+            }
+        };
         let (container, session_id, image) = inspect_container(&record.container_name)?;
         let props = query_unit_props(&format!("{}.service", record.container_name));
         let active_state = props
@@ -617,25 +665,51 @@ impl Isolator for PodmanIsolator {
         grace: Duration,
         _key: &ReconciliationKey,
     ) -> Result<StoppedAttestation> {
-        let record = self.record(handle)?;
+        // Live records converge for real; tombstones re-check the
+        // retained names (a stray recreated out-of-band still
+        // settles; absence reports clean without backend records).
+        let (container_name, unit_name) = match self.resolve(handle)? {
+            UnitEntry::Live(record) => (record.container_name, record.unit_name),
+            UnitEntry::Removed {
+                container_name,
+                unit_name,
+                ..
+            } => (container_name, unit_name),
+        };
         // Absent units succeed: a missing service with no container is
         // already stopped, which is the converged state.
-        if !unit_file_present(&record.unit_name) && !container_exists(&record.container_name)? {
+        if !unit_file_present(&unit_name) && !container_exists(&container_name)? {
             return Ok(StoppedAttestation {
-                unit_identity: record.container_name,
+                unit_identity: container_name,
             });
         }
-        stop_settle(&record.container_name, grace)?;
+        stop_settle(&container_name, grace)?;
         Ok(StoppedAttestation {
-            unit_identity: record.container_name,
+            unit_identity: container_name,
         })
     }
 
     fn remove(&self, handle: &UnitHandle, _key: &ReconciliationKey) -> Result<RemovedAttestation> {
-        let record = self.record(handle)?;
-        remove_unit_file(&record.container_name, &record.unit_name)?;
-        if !record.session_id.is_empty() {
-            remove_scratch(&record.session_id)?;
+        let entry = self.resolve(handle)?;
+        let (container_name, session_id, unit_name) = match &entry {
+            UnitEntry::Live(record) => (
+                record.container_name.clone(),
+                record.session_id.clone(),
+                record.unit_name.clone(),
+            ),
+            UnitEntry::Removed {
+                container_name,
+                session_id,
+                unit_name,
+            } => (
+                container_name.clone(),
+                session_id.clone(),
+                unit_name.clone(),
+            ),
+        };
+        remove_unit_file(&container_name, &unit_name)?;
+        if !session_id.is_empty() {
+            remove_scratch(&session_id)?;
         }
         // Execution records die with the unit: outcomes stay
         // replayable until `remove`, never after.
@@ -643,17 +717,38 @@ impl Isolator for PodmanIsolator {
             .lock()
             .expect("exec table lock")
             .retain(|_, pending| pending.unit != *handle);
+        if matches!(entry, UnitEntry::Live(_)) {
+            // Evict the live binding into a tombstone only after the
+            // filesystem confirms removal. Keys evict by value (the
+            // caller's key parameter is not necessarily the
+            // registered one); a later locate scans durable state
+            // instead of trusting this handle.
+            self.keys
+                .lock()
+                .expect("key table lock")
+                .retain(|_, bound| bound != handle);
+            self.units.lock().expect("unit table lock").insert(
+                handle.clone(),
+                UnitEntry::Removed {
+                    container_name: container_name.clone(),
+                    session_id: session_id.clone(),
+                    unit_name: unit_name.clone(),
+                },
+            );
+        }
         Ok(RemovedAttestation {
-            unit_identity: record.container_name,
+            unit_identity: container_name,
         })
     }
 
     fn locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
         // Memory hit is a hint, not proof: verify against durable
         // state before returning, or a stale entry could mask a
-        // reaped unit and greenlight a duplicate install.
+        // reaped unit and greenlight a duplicate install. Tombstones
+        // never satisfy the hint (removed means gone by definition);
+        // an entry pointing at one falls through to the scan.
         if let Some(handle) = self.keys.lock().expect("key table lock").get(key).cloned()
-            && let Ok(record) = self.record(&handle)
+            && let Ok(UnitEntry::Live(record)) = self.resolve(&handle)
         {
             let alive = container_exists(&record.container_name).unwrap_or(false)
                 || unit_file_present(&record.unit_name);

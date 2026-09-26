@@ -27,3 +27,23 @@ Harness stdio SHALL cross to the external guest as explicitly passed file descri
 #### Scenario: Harness bytes never enter the frame parser
 - **WHEN** a launched harness writes arbitrary output and reads stdin over PTY and piped transports
 - **THEN** no harness byte reaches the framed protocol parser in either mode
+
+### Requirement: Removal tombstones reconcile repeatability with eviction
+
+Successful `remove` SHALL evict the live unit binding and its executions on both backends, and record a minimal removal tombstone keyed by the original handle: identical `terminate`/`remove` retries on the tombstone converge residue-free through idempotent backend cleanup (never resurrection), divergent attempts (`initiate`, `execute_launch`, and same-handle `create` on a removed handle) refuse typed, and `state` reports `Absent` / `inspect` reports an absent snapshot. The tombstone retains session identity (container name, session id, local handle for backend delegation) so `converge_clean` on a removed handle still clears surviving scratch. Tombstones are process-scoped (guest lifetime / backend lifetime); no explicit tombstone eviction exists in 0.2. This composes the base repeatable-teardown rule with the base eviction rule: repeatability scopes to tombstones, eviction to live bindings.
+
+#### Scenario: Repeatable teardown on an evicted handle
+- **WHEN** terminate/remove runs against an already-removed handle
+- **THEN** both backends report success with absent attestations; no unit or execution is resurrected
+
+#### Scenario: Removed handles refuse live operations
+- **WHEN** initiate or execute_launch names a removed handle
+- **THEN** both backends refuse with a typed error; nothing spawns or starts
+
+#### Scenario: Absent-with-scratch converges by handle
+- **WHEN** scratch survives after remove and converge_clean names the removed handle
+- **THEN** both backends clear the scratch and report clean
+
+### MODIFIED Requirement: Replay scope after remove
+
+The base replay rule (identical replays succeed idempotently without re-executing) scopes to LIVE handles only: after a successful `remove`, ALL `create` with that handle refuses typed (`unit handle removed`), including byte-identical replays. A same-handle replay past remove would resurrect the unit and rerun its side effects; fresh units arrive on fresh handles (adopt-or-create keys those), so no legitimate flow re-presents a removed handle. Tombstones intentionally retain no key/spec: there is nothing to distinguish, refusal is uniform. This narrows the base replay promise on removed handles; the merged statement lives here with operator acceptance.

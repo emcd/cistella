@@ -832,6 +832,32 @@ impl Isolator for WireClient {
         Self::parse_typed("remove", attestation)
     }
 
+    fn converge_clean(
+        &self,
+        handle: &UnitHandle,
+        grace: Duration,
+        key: &ReconciliationKey,
+    ) -> Result<()> {
+        // Mirrors the reference override (never trust `state`
+        // alone): an `Absent` unit with surviving scratch is
+        // residue, not convergence. `remove` is idempotent through
+        // removal tombstones and owns both the unit file and
+        // scratch, so it closes every state including
+        // absent-with-residue.
+        match self.state(handle) {
+            Ok(LifecycleState::Absent) => {
+                self.remove(handle, key)?;
+                Ok(())
+            }
+            Ok(_) => {
+                self.terminate(handle, grace, key)?;
+                self.remove(handle, key)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
         // Local inspector query: needs no living guest, which is
         // exactly what post-exit residue checks require.

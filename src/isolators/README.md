@@ -22,11 +22,15 @@ when the guest dies, and how a replacement guest converges by key.
 Handles are framework-minted opaque strings end to end. The guest
 binds each framework handle to a local handle plus the attempt
 identity (reconciliation key, and spec/argv for create/launch) that
-created it. Guests never invent handles. Handle lifetimes differ by
-side, by design: `remove` evicts the framework binding guest-side
-(later ops on it refuse unknown-handle), while the reference
-backend retains records (later ops stay idempotent) — parity pins
-each side's contract, not identical outcomes.
+created it. Guests never invent handles. Successful `remove`
+evicts the live binding into a removal tombstone keyed by the
+original handle: identical `terminate`/`remove` retries delegate
+idempotent backend cleanup (residue-free convergence, never
+resurrection), `state`/`inspect` synthesize absence without backend
+contact, and divergent live attempts — including same-handle
+`create`, which must never resurrect — refuse typed. The retained
+local reaches only the backend tombstone. Both backends implement
+the same tombstone rule, so parity holds through teardown.
 
 ```mermaid
 flowchart LR
@@ -113,13 +117,13 @@ design — execution ownership (child, PTY binding, outcome) dies
 with the guest and must not be reaped from a stranger; the
 framework converges to clean via typed teardown instead.
 
-## Re-exec (task 2.3 — Advisory-concurred 2026-09-26, implementing)
+## Pre-exec recovery
 
-Goal: a guest death during pre-exec ops (create/initiate) converges
-by spawning a fresh guest and replaying the same key, instead of
-failing the session. Recorded decisions (Advisor consult):
+A guest death during pre-exec ops (create/initiate) converges by
+spawning a fresh guest and replaying the same key, instead of
+failing the session:
 
-- **Home: conduct retire-and-replace.** The dead client's latches
+- **Conduct retire-and-replace.** The dead client's latches
   stay immutable; conduct closes/retires it, hosts a fresh
   `WireClient` under the still-held creation-window guard, and
   replays the same key/spec with a NEW framework handle (adopt
@@ -139,8 +143,8 @@ failing the session. Recorded decisions (Advisor consult):
   spawns the harness (`podman exec`) BEFORE replying, so no-reply
   does not prove no execution existed — a spawned child may
   outlive the guest, and re-launch could run the harness twice.
-  Typed teardown, never replay; crash-after-spawn-before-reply
-  pins this. Narrow exception: provably LOCAL refusal before the
+  Typed teardown, never replay. Narrow exception: provably LOCAL
+  refusal before the
   op can reach the guest (fd clone/bundle send failure) is a
   local error, not a death — named separately, retries nothing.
 
