@@ -443,3 +443,79 @@ fn fault_kill_after_attest_dies_by_signal_without_execing() {
         "harness must never exec in the fault window"
     );
 }
+
+#[test]
+fn fast_harness_exit_relays_disposition() {
+    // Race-window pin: a harness that execs and exits before the
+    // supervisor's waitpid check must relay (transitioned + exit
+    // code), never misattribute as wrapper-death. /bin/true exits
+    // in microseconds — fast enough to win the race.
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(output.status.code(), Some(0), "fast exit relays clean");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
+
+#[test]
+fn signalled_harness_relays_signal() {
+    // Harness SIGTERM in the race window relays as session signal
+    // (death by SIGTERM, not an exit code): the QA fault seam pins
+    // the deterministic wrapper-death case separately.
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/dash")
+        .arg("-c")
+        .arg("kill -TERM $$")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(
+        output.status.signal(),
+        Some(15),
+        "harness SIGTERM relays as session signal"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}

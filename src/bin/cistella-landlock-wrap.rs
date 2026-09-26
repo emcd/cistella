@@ -563,14 +563,40 @@ fn observe_transition(
         TransitionSeen::Eof => {}
     }
     // EOF: exec'd (CLOEXEC closed the write end) or died (death
-    // closed it). waitpid disambiguates: alive means transitioned
-    // (a live pre-exec child still holds the write end open, so
-    // EOF could not have arrived); dead means wrapper-death
-    // before transition.
+    // closed it). waitpid disambiguates:
+    // - alive: transitioned (a live pre-exec child still holds
+    //   the write end open, so EOF could not have arrived);
+    // - exited: transitioned with the harness disposition (the
+    //   only way to reach EOF without errno bytes is exec-success
+    //   — a pre-exec exit always pairs with errno bytes before
+    //   `_exit(127)` — so a fast-exiting harness relays here,
+    //   already reaped, with no second wait);
+    // - signalled: ambiguous (wrapper pre-exec death vs harness
+    //   death in the race window). The deterministic wrapper-death
+    //   case pins via the QA fault seam; in production the
+    //   harness-signal scenario dominates, so relay as session
+    //   signal rather than fabricate certainty either way.
+    // A partial errno prefix with death keeps its bytes on
+    // stderr for debuggability.
     match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
         Ok(WaitStatus::StillAlive) => {}
+        Ok(WaitStatus::Exited(_, code)) => {
+            return emit_transitioned_and_exit(fd, code);
+        }
+        Ok(WaitStatus::Signaled(_, signal, _)) => {
+            if filled > 0 {
+                eprintln!(
+                    "landlock-wrap: signal with {filled} partial errno bytes before transition"
+                );
+            }
+            return relay_signal_and_exit(signal);
+        }
         Ok(status) => {
-            return fail_transition(fd, &format!("child died before transition: {status:?}"), 2);
+            return fail_transition(
+                fd,
+                &format!("child stopped before transition: {status:?}"),
+                2,
+            );
         }
         Err(_) => {
             return fail_transition(fd, "transition wait failed", 2);
@@ -578,37 +604,89 @@ fn observe_transition(
     }
     // Positive transition proof: emit, close diagnostics for EOF,
     // then supervise the harness to its disposition.
+    if let Err(code) = emit_transitioned(fd, child) {
+        return code;
+    }
+    match waitpid(child, None) {
+        Ok(status) => relay_disposition(status),
+        Err(_) => ExitCode::from(2),
+    }
+}
+
+/// Emits the positive transition proof and closes diagnostics
+/// for EOF. On write failure the child is killed first (it must
+/// not run unattested) and the path exits wrapper-failure.
+fn emit_transitioned(fd: RawFd, child: nix::unistd::Pid) -> Result<(), ExitCode> {
+    use nix::sys::wait::waitpid;
     let line = serde_json::json!({"transitioned": true}).to_string() + "\n";
     if diagnose(fd, &line).is_err() {
         let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
         let _ = waitpid(child, None);
         eprintln!("landlock-wrap: transition write failed");
-        return ExitCode::from(2);
+        return Err(ExitCode::from(2));
     }
     // SAFETY: borrowed fd close; the transition line already
     // landed, and no later parent path writes diagnostics.
     unsafe {
         nix::libc::close(fd);
     }
-    // Supervise to the harness disposition: exit codes relay
-    // verbatim; signals re-raise so the session reports the same
-    // signal the harness died by (SIGPIPE, ignored process-wide
-    // by the Rust runtime, maps back explicitly).
-    match waitpid(child, None) {
-        Ok(WaitStatus::Exited(_, code)) => ExitCode::from(code as u8),
-        Ok(WaitStatus::Signaled(_, signal, _)) => {
-            if signal == nix::sys::signal::Signal::SIGPIPE {
-                return ExitCode::from(128 + nix::libc::SIGPIPE as u8);
-            }
-            // SAFETY: re-raise a death the child already
-            // suffered; dispositions are default (except
-            // ignored SIGPIPE handled above).
-            unsafe {
-                nix::libc::signal(signal as nix::libc::c_int, nix::libc::SIG_DFL);
-                nix::libc::raise(signal as nix::libc::c_int);
-            }
-            ExitCode::from(128 + signal as u8)
-        }
+    Ok(())
+}
+
+/// Emits the transition proof for an already-reaped fast exit
+/// and relays its code (no second wait: the zombie is gone).
+fn emit_transitioned_and_exit(fd: RawFd, code: i32) -> ExitCode {
+    if emit_transitioned_for_reaped(fd).is_err() {
+        return ExitCode::from(2);
+    }
+    ExitCode::from(code as u8)
+}
+
+/// Emits the transition proof without a child to kill (the
+/// child already exited): a write failure still exits
+/// wrapper-failure, since the host must never see EOF without
+/// the proof line.
+fn emit_transitioned_for_reaped(fd: RawFd) -> Result<(), ExitCode> {
+    let line = serde_json::json!({"transitioned": true}).to_string() + "\n";
+    if diagnose(fd, &line).is_err() {
+        eprintln!("landlock-wrap: transition write failed");
+        return Err(ExitCode::from(2));
+    }
+    // SAFETY: borrowed fd close; the transition line already
+    // landed, and no later parent path writes diagnostics.
+    unsafe {
+        nix::libc::close(fd);
+    }
+    Ok(())
+}
+
+/// Relays a harness signal as the session disposition: re-raise
+/// so the session reports the same signal the harness died by
+/// (SIGPIPE, ignored process-wide by the Rust runtime, maps back
+/// explicitly instead).
+fn relay_signal_and_exit(signal: nix::sys::signal::Signal) -> ExitCode {
+    if signal == nix::sys::signal::Signal::SIGPIPE {
+        return ExitCode::from(128 + nix::libc::SIGPIPE as u8);
+    }
+    // SAFETY: re-raise a death already suffered (or accepted as
+    // harness-dominant); dispositions are default (except
+    // ignored SIGPIPE handled above).
+    unsafe {
+        nix::libc::signal(signal as nix::libc::c_int, nix::libc::SIG_DFL);
+        nix::libc::raise(signal as nix::libc::c_int);
+    }
+    ExitCode::from(128 + signal as u8)
+}
+
+/// Relays a reaped harness disposition: exit codes verbatim,
+/// signals via [`relay_signal_and_exit`], anything else as
+/// wrapper failure (unreachable through the blocking wait, kept
+/// for exhaustiveness).
+fn relay_disposition(status: nix::sys::wait::WaitStatus) -> ExitCode {
+    use nix::sys::wait::WaitStatus;
+    match status {
+        WaitStatus::Exited(_, code) => ExitCode::from(code as u8),
+        WaitStatus::Signaled(_, signal, _) => relay_signal_and_exit(signal),
         _ => ExitCode::from(2),
     }
 }
