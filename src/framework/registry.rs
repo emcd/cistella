@@ -16,7 +16,7 @@
 //! module resolves only.
 
 use std::io::Read;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
 use nix::fcntl::{OFlag, open};
@@ -132,14 +132,20 @@ pub fn digest_sibling(exe_dir: &Path, file_name: &str) -> Result<String> {
     Ok(hex)
 }
 
-/// Opens `O_NOFOLLOW` and reads with a hard bound: fstat on the FD
-/// refuses oversized files before buffering, and the bounded take
-/// refuses growth past the check. A terminal symlink refuses with
+/// Opens `O_NOFOLLOW|O_NONBLOCK` and reads with a hard bound.
+/// Ownership transfers to `OwnedFd` immediately, so every later
+/// `?` closes: an fstat error never leaks. `O_NONBLOCK` keeps an
+/// admitted-name FIFO from blocking the open on a writer; the
+/// fstat gate then refuses non-regular files (FIFO, directory,
+/// device — none is an executable blob) before any read. Size plus
+/// digest bind to the single owned FD: the fstat ceiling refuses
+/// oversized files before buffering, and the bounded take refuses
+/// growth past the check. A terminal symlink refuses with
 /// `Contract` (never follows); other open failures surface as `Io`.
 fn read_pinned(full: &Path) -> Result<Vec<u8>> {
     let raw = open(
         full,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
         Mode::empty(),
     )
     .map_err(|errno| {
@@ -151,10 +157,15 @@ fn read_pinned(full: &Path) -> Result<Vec<u8>> {
     })?;
     // SAFETY: freshly opened above, owned here, wrapped exactly
     // once (same discipline as the fd-channel accept path).
-    let size = fstat(raw)
-        .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?
-        .st_size;
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let stat =
+        fstat(fd.as_raw_fd()).map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+    if stat.st_mode & nix::libc::S_IFMT != nix::libc::S_IFREG {
+        return Err(CistellaError::Contract(
+            "admitted artifact must be a regular file".to_string(),
+        ));
+    }
+    let size = stat.st_size;
     if size < 0 || size as u64 > MAX_REGISTRY_BYTES {
         return Err(CistellaError::Contract(
             "artifact exceeds registry read ceiling".to_string(),

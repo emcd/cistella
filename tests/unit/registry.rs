@@ -100,6 +100,48 @@ fn symlink_at_admitted_name_refuses_without_following() {
 }
 
 #[test]
+fn fifo_at_admitted_name_refuses_without_hanging() {
+    use nix::sys::stat::Mode;
+    let dir = tempfile::tempdir().expect("scratch registry dir");
+    nix::unistd::mkfifo(
+        &dir.path().join(WRAPPER_FILE_NAME),
+        Mode::from_bits(0o644).expect("mode bits"),
+    )
+    .expect("mkfifo");
+    // O_NONBLOCK open returns at once; the fstat gate refuses the
+    // FIFO before any read or ceiling check — this test would hang
+    // on a blocking open.
+    let error = resolve(
+        dir.path(),
+        SHIPPED_REGISTRY_ID,
+        WRAPPER_FILE_NAME,
+        &"0".repeat(64),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("must be a regular file"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn directory_at_admitted_name_refuses() {
+    let dir = tempfile::tempdir().expect("scratch registry dir");
+    std::fs::create_dir(dir.path().join(WRAPPER_FILE_NAME)).expect("mkdir");
+    let error = resolve(
+        dir.path(),
+        SHIPPED_REGISTRY_ID,
+        WRAPPER_FILE_NAME,
+        &"0".repeat(64),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("must be a regular file"),
+        "got: {error}"
+    );
+}
+
+#[test]
 fn digest_mismatch_refuses() {
     let dir = scratch_registry(b"actual-bytes");
     let error = resolve(
