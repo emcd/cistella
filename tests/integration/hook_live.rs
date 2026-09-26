@@ -15,7 +15,7 @@ use tempfile::TempDir;
 use cistella::framework::contract::{CancelFlag, LifecycleState, ReconciliationKey};
 use cistella::framework::contract::{GuestHookRequest, HookArtifact, HookProbe, HookSource};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::{compose_hook_argv, parse_probe_report};
+use cistella::framework::prepare::{compose_hook_argv, full_grant_routes, parse_probe_report};
 use cistella::framework::registry::{
     STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME, digest_sibling, stage_hook_artifact,
 };
@@ -94,6 +94,10 @@ fn hook_fixture(image: &str) -> HookFixture {
     let proj = tree.path().join("proj");
     std::fs::create_dir_all(&proj).expect("proj dir");
     std::fs::create_dir_all(tree.path().join("sib")).expect("sib dir");
+    // Declared-RO directory under the FULL subtree (tier-2
+    // RO-under-RW alias pin): must exist on host (preflight
+    // shape) so the revision retention is what denies writes.
+    std::fs::create_dir_all(proj.join("ro-data")).expect("ro-data dir");
     std::fs::write(proj.join("seed"), "seed").expect("seed marker");
     let id = mint_session_id();
     // Stage exactly as the extension answers: observe the shipped
@@ -139,9 +143,31 @@ fn hook_fixture(image: &str) -> HookFixture {
             container_target: "/tmp/scratch".to_string(),
             mode: MountMode::Rw,
         },
+        // Declared-RO directory under the FULL subtree: revision
+        // retains Podman read-only (Landlock union cannot
+        // subtract the parent grant, so the VFS binding carries
+        // that enforcement).
+        MountTriple {
+            host_source: proj.join("ro-data").to_string_lossy().to_string(),
+            container_target: "/src/proj/ro-data".to_string(),
+            mode: MountMode::Ro,
+        },
+        // Declared-RW graft of the sibling (tier-2 graft
+        // admission pin): composes into a FULL carveout by
+        // declared intent.
+        MountTriple {
+            host_source: tree.path().join("sib").to_string_lossy().to_string(),
+            container_target: "/src/graft".to_string(),
+            mode: MountMode::Rw,
+        },
         staged_triple,
     ];
-    let revised = cistella::mount::revise_ro_for_confinement(&triples);
+    // Revision through the real FULL-route derivation (same set
+    // the conductor revises with): `/src` flips RW for
+    // materialization while `/src/proj/ro-data` retains RO.
+    let full_routes = full_grant_routes(&[fixture_hook()], &triples, tree.path(), &proj)
+        .expect("full routes derive");
+    let revised = cistella::mount::revise_ro_for_confinement(&triples, &full_routes);
     let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
         session,
@@ -260,7 +286,7 @@ fn hook_hooked_launch_attests_and_confines() {
     assert_eq!(subtree, vec!["/src/proj".to_string()]);
     // Admitted harness: marker inside the subtree, argv through
     // the real derivation (baseline included).
-    let admitted = hooked_argv(
+    let outcome = run_harness(
         &fixture,
         &[
             "sh".to_string(),
@@ -268,35 +294,6 @@ fn hook_hooked_launch_attests_and_confines() {
             "echo ok > /src/proj/marker".to_string(),
         ],
     );
-    let (diag_read, diag_write) =
-        nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).expect("diagnostics pipe");
-    let execution = {
-        use std::os::fd::AsFd;
-        fixture
-            .client()
-            .execute_launch_hooked(
-                &fixture.handle,
-                &admitted,
-                Some("/src/proj"),
-                StdioBinding::Inherit,
-                &fixture.key,
-                diag_write.as_fd(),
-            )
-            .expect("hooked launch")
-    };
-    drop(diag_write);
-    // Production gate (not first-line-only): attestation plus
-    // transitioned plus EOF through the real classifier.
-    let (abi, detail) =
-        cistella::framework::hooks::gate_hook_attestation(&diag_read, Duration::from_secs(30))
-            .expect("production gate passes");
-    assert!(abi >= 3, "attested ABI carries TRUNCATE");
-    assert_eq!(detail, None);
-    drop(diag_read);
-    let outcome = fixture
-        .client()
-        .await_result(&execution, &CancelFlag::default())
-        .expect("await admitted");
     assert!(
         matches!(outcome, ExecutionOutcome::Exited(0)),
         "admitted harness must exit 0, got {outcome:?}"
@@ -308,7 +305,7 @@ fn hook_hooked_launch_attests_and_confines() {
         "ok\n"
     );
     // Denied harness: sibling write fails, attestation still applied.
-    let denied = hooked_argv(
+    let outcome = run_harness(
         &fixture,
         &[
             "sh".to_string(),
@@ -316,33 +313,6 @@ fn hook_hooked_launch_attests_and_confines() {
             "echo escape > /src/sib/escape".to_string(),
         ],
     );
-    let (diag_read, diag_write) =
-        nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).expect("diagnostics pipe");
-    let execution = {
-        use std::os::fd::AsFd;
-        fixture
-            .client()
-            .execute_launch_hooked(
-                &fixture.handle,
-                &denied,
-                Some("/src/proj"),
-                StdioBinding::Inherit,
-                &fixture.key,
-                diag_write.as_fd(),
-            )
-            .expect("hooked launch")
-    };
-    drop(diag_write);
-    let (abi, detail) =
-        cistella::framework::hooks::gate_hook_attestation(&diag_read, Duration::from_secs(30))
-            .expect("production gate passes");
-    assert!(abi >= 3, "attested ABI carries TRUNCATE");
-    assert_eq!(detail, None);
-    drop(diag_read);
-    let outcome = fixture
-        .client()
-        .await_result(&execution, &CancelFlag::default())
-        .expect("await denied");
     assert!(
         !matches!(outcome, ExecutionOutcome::Exited(0)),
         "denied harness must fail, got {outcome:?}"
@@ -356,14 +326,56 @@ fn hook_hooked_launch_attests_and_confines() {
             .exists(),
         "denied file must not exist"
     );
+    // Graft admission (tier-2 declared-RW graft proof): the
+    // sibling content grafted RW at `/src/graft` admits writes
+    // by declared intent.
+    let outcome = run_harness(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo graft > /src/graft/marker".to_string(),
+        ],
+    );
+    assert!(
+        matches!(outcome, ExecutionOutcome::Exited(0)),
+        "graft harness must exit 0, got {outcome:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.proj.parent().expect("tree").join("sib/marker"))
+            .expect("graft marker readable")
+            .as_str(),
+        "graft\n"
+    );
+    // RO-under-RW alias denial (tier-2 retention proof): the
+    // declared-RO directory under the FULL subtree denies
+    // writes through the alias — the retained Podman read-only
+    // binding enforces what Landlock union cannot subtract.
+    let outcome = run_harness(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo escape > /src/proj/ro-data/escape".to_string(),
+        ],
+    );
+    assert!(
+        !matches!(outcome, ExecutionOutcome::Exited(0)),
+        "alias harness must fail, got {outcome:?}"
+    );
+    assert!(
+        !fixture.proj.join("ro-data/escape").exists(),
+        "alias file must not exist"
+    );
     fixture.teardown();
 }
 
-/// Composes the hooked launch argv through the real derivation
-/// (system baseline, ancestor, subtree, session mounts): the live
-/// test exercises the same argv the conductor builds.
-fn hooked_argv(fixture: &HookFixture, harness: &[String]) -> Vec<String> {
-    let hook = GuestHookRequest {
+/// The fixture hook request: staged-wrapper singleton prefix
+/// (same shape the extension answers with). Shared by the
+/// revision derivation and the argv composition so the two run
+/// on one hook.
+fn fixture_hook() -> GuestHookRequest {
+    GuestHookRequest {
         artifact: HookArtifact {
             kind: "digest-pinned-blob".to_string(),
             sha256: "unused-live".to_string(),
@@ -380,15 +392,58 @@ fn hooked_argv(fixture: &HookFixture, harness: &[String]) -> Vec<String> {
             timeout_ms: 10_000,
         },
         on_failure: "fail-pre-exec".to_string(),
-    };
+    }
+}
+
+/// Composes the hooked launch argv through the real derivation
+/// (system baseline, ancestor, subtree, session mounts): the live
+/// test exercises the same argv the conductor builds.
+fn hooked_argv(fixture: &HookFixture, harness: &[String]) -> Vec<String> {
     compose_hook_argv(
-        &[hook],
+        &[fixture_hook()],
         &fixture.triples,
         fixture.proj.parent().expect("tree"),
         &fixture.proj,
         harness,
     )
     .expect("compose hooked argv")
+}
+
+/// Runs one harness through a hooked launch: diagnostics pipe,
+/// execute, production attestation gate (ABI carries TRUNCATE,
+/// clean transition), then await. Returns the harness outcome
+/// for the caller to classify.
+fn run_harness(fixture: &HookFixture, harness: &[String]) -> ExecutionOutcome {
+    let argv = hooked_argv(fixture, harness);
+    let (diag_read, diag_write) =
+        nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).expect("diagnostics pipe");
+    let execution = {
+        use std::os::fd::AsFd;
+        fixture
+            .client()
+            .execute_launch_hooked(
+                &fixture.handle,
+                &argv,
+                Some("/src/proj"),
+                StdioBinding::Inherit,
+                &fixture.key,
+                diag_write.as_fd(),
+            )
+            .expect("hooked launch")
+    };
+    drop(diag_write);
+    // Production gate (not first-line-only): attestation plus
+    // transitioned plus EOF through the real classifier.
+    let (abi, detail) =
+        cistella::framework::hooks::gate_hook_attestation(&diag_read, Duration::from_secs(30))
+            .expect("production gate passes");
+    assert!(abi >= 3, "attested ABI carries TRUNCATE");
+    assert_eq!(detail, None);
+    drop(diag_read);
+    fixture
+        .client()
+        .await_result(&execution, &CancelFlag::default())
+        .expect("await harness")
 }
 
 /// Fixture image, skipped quietly when unresolvable (same shape as

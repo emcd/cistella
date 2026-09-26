@@ -564,3 +564,65 @@ fn gate_drain_ambiguous_signal_reports_transition_ambiguity() {
         Some("transition ambiguous: signal SIGTERM")
     );
 }
+
+#[test]
+fn full_grant_routes_mirror_compose_carveouts() {
+    use cistella::framework::prepare::full_grant_routes;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![
+        MountTriple {
+            host_source: "/home/op/src".to_string(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj".to_string(),
+            container_target: "/src/proj".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: "/tmp/scratch".to_string(),
+            container_target: "/tmp/scratch".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    // Subtree route plus the RW carveout targets (project graft
+    // and uncovered scratch); the RO ancestor is not FULL.
+    let full = full_grant_routes(
+        &[hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+    )
+    .unwrap();
+    assert_eq!(
+        full,
+        vec!["/src/proj".to_string(), "/tmp/scratch".to_string()]
+    );
+}
+
+#[test]
+fn refuse_extension_rw_mounts_gates_carveout_admission() {
+    use cistella::framework::prepare::refuse_extension_rw_mounts;
+    use cistella::mount::{MountMode, MountTriple};
+    let rw = MountTriple {
+        host_source: "/srv/data".to_string(),
+        container_target: "/data".to_string(),
+        mode: MountMode::Rw,
+    };
+    let ro = MountTriple {
+        host_source: "/run/vector/agentmux-bus".to_string(),
+        container_target: "/run/vector/agentmux-bus".to_string(),
+        mode: MountMode::Ro,
+    };
+    // An RW triple refuses (it would compose into a FULL
+    // carveout); RO contributions still merge (vectors pin the
+    // bus-socket shape).
+    let error = refuse_extension_rw_mounts(&[ro.clone(), rw]).unwrap_err();
+    assert!(error.to_string().contains("not admitted"), "got: {error}");
+    refuse_extension_rw_mounts(&[]).expect("empty passes");
+    refuse_extension_rw_mounts(&[ro]).expect("read-only passes");
+}

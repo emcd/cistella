@@ -683,24 +683,38 @@ pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
 /// Revises read-only directory mounts to read-write for the
 /// isolator when hook confinement stages (task 3.2, operator
 /// direction): the declared-RO `~/src` ancestor (and any other
-/// directory RO mount) reaches Podman as RW so submounts
-/// materialize, and the Landlock policy — derived from the
-/// ORIGINAL modes — enforces the intended RO in-container with
-/// carveouts. File-source triples keep their declared mode
+/// directory RO mount outside FULL grants) reaches Podman as RW
+/// so submounts materialize, and the Landlock policy — derived
+/// from the ORIGINAL modes — enforces the intended RO
+/// in-container with carveouts. A directory RO mount at or
+/// under a FULL-granted guest route keeps Podman read-only
+/// (tier-2 hardening): Landlock union semantics cannot
+/// subtract the parent FULL grant, and rights propagate across
+/// bind aliases, so the VFS binding carries that enforcement —
+/// flipping it would leave the RO source writable through the
+/// FULL route. File-source triples keep their declared mode
 /// (a file cannot root a `path_beneath` rule, so Landlock cannot
 /// carry their policy; Podman-level RO stays their enforcement).
 /// Targets and sources are untouched: only the mode flips, so
 /// routes translate identically either way. Callers validate and
 /// render the revised set while deriving policy from the
-/// original.
+/// original; callers run `ro_confinement_preflight` first so a
+/// contradictory RO-with-RW-descendant topology refuses before
+/// any revision.
 ///
 /// Pure over the triples (host directory check via metadata).
 #[must_use]
-pub fn revise_ro_for_confinement(triples: &[MountTriple]) -> Vec<MountTriple> {
+pub fn revise_ro_for_confinement(
+    triples: &[MountTriple],
+    full_routes: &[String],
+) -> Vec<MountTriple> {
     triples
         .iter()
         .map(|triple| {
-            if triple.mode == MountMode::Ro && std::path::Path::new(&triple.host_source).is_dir() {
+            if triple.mode == MountMode::Ro
+                && std::path::Path::new(&triple.host_source).is_dir()
+                && !under_full_route(&triple.container_target, full_routes)
+            {
                 MountTriple {
                     mode: MountMode::Rw,
                     ..triple.clone()
@@ -710,4 +724,52 @@ pub fn revise_ro_for_confinement(triples: &[MountTriple]) -> Vec<MountTriple> {
             }
         })
         .collect()
+}
+
+/// Whether a guest target sits at or under a FULL-granted route
+/// (same spelling composition grants on: exact match or
+/// `route/` prefix).
+fn under_full_route(target: &str, full_routes: &[String]) -> bool {
+    full_routes
+        .iter()
+        .any(|route| target == route || target.starts_with(&format!("{route}/")))
+}
+
+/// Refuses contradictory RO-under-FULL topologies pre-create
+/// (tier-2 hardening): a directory RO mount nested under a
+/// FULL-granted guest route with a declared read-write triple
+/// beneath its own target cannot hold — keeping the RO binding
+/// read-only would brick the RW descendant's materialization,
+/// and flipping it would expose the RO source through the
+/// FULL grant. Such topologies refuse with the conflicting
+/// pair named; the operator re-declares (moves the RW graft
+/// out from under the RO dir). Runs pre-create, so a refusal
+/// leaves no residue.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on the first contradictory pair.
+pub fn ro_confinement_preflight(triples: &[MountTriple], full_routes: &[String]) -> Result<()> {
+    for ro in triples {
+        if ro.mode != MountMode::Ro
+            || !std::path::Path::new(&ro.host_source).is_dir()
+            || !under_full_route(&ro.container_target, full_routes)
+        {
+            continue;
+        }
+        for rw in triples {
+            if rw.mode == MountMode::Rw
+                && rw.container_target != ro.container_target
+                && rw
+                    .container_target
+                    .starts_with(&format!("{}/", ro.container_target))
+            {
+                return Err(CistellaError::Mount(format!(
+                    "read-only {} under a full grant holds a read-write descendant {}: move the graft out",
+                    ro.container_target, rw.container_target
+                )));
+            }
+        }
+    }
+    Ok(())
 }
