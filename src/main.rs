@@ -861,10 +861,10 @@ fn conduct_session(
     // Transition failure: exec failed with cause, or the
     // boundary stayed ambiguous (signal in the race window —
     // operator-approved scope: exact fidelity holds only
-    // post-transition). Either way the harness never produced
-    // an outcome, so report the detail verbatim (it names
-    // itself: exec failure vs ambiguity) instead of a harness
-    // disposition, converging like a launch failure.
+    // post-transition). A harness outcome may exist but cannot
+    // be attributed safely, so report the detail verbatim (it
+    // names itself: exec failure vs ambiguity) instead of a
+    // harness disposition, converging like a launch failure.
     if let Some(detail) = exec_failure {
         if let Err(teardown_err) =
             client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
