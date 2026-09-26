@@ -14,5 +14,6 @@ pub mod isolator;
 pub mod policy;
 pub mod prepare;
 pub mod protocol;
+pub mod registry;
 pub mod signals;
 pub mod stream;

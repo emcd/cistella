@@ -98,8 +98,30 @@ pub(crate) fn run(
                     "mounts": [],
                     "policy_claims": [],
                     "guest_hooks": [
-                        {"order": 0, "argv_prefix": ["a"], "probe_op": "noop"},
-                        {"order": 0, "argv_prefix": ["b"], "probe_op": "noop"}
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        },
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        }
                     ]
                 }),
             );

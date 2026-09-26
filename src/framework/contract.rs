@@ -207,22 +207,79 @@ pub struct PolicyClaim {
     pub scope: Scope,
 }
 
+/// Hook artifact reference: digest-pinned executable blob.
+///
+/// The extension names the bytes; the framework resolves the
+/// registry, pins and hashes the file, and stages a verified copy.
+/// The digest binds the staged copy to the hashed bytes — the trust
+/// anchor stays the operator-owned install directory, never the
+/// extension's word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookArtifact {
+    /// Artifact kind; exactly `digest-pinned-blob`.
+    pub kind: String,
+    /// Expected SHA-256 over the registry bytes (64 lowercase hex).
+    pub sha256: String,
+    /// Registry id plus registry-relative path.
+    pub source: HookSource,
+}
+
+/// Registry coordinates for a hook artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookSource {
+    /// Framework-admitted registry id (admission at resolve time).
+    pub registry: String,
+    /// Registry-relative path (shape-checked at merge, escape-checked
+    /// at resolve).
+    pub path: String,
+}
+
+/// Guest-context capability probe descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookProbe {
+    /// Probe operation name.
+    pub op: String,
+    /// Probe budget in milliseconds (must be nonzero; the
+    /// framework-owned deadline owns the ceiling).
+    pub timeout_ms: u64,
+}
+
 /// One guest-hook request: pre-exec wrapper presence.
 ///
 /// The extension never selects channel numbers: ordering is an
 /// explicit sequence position, and the framework assigns the
-/// diagnostics channel in the accepted-plan response.
+/// diagnostics channel in the accepted-plan response. The schema is
+/// exact per the extension-protocol contract: deviations refuse.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuestHookRequest {
+    /// Digest-pinned wrapper artifact reference.
+    pub artifact: HookArtifact,
+    /// Staging owner; exactly `isolator-staged`.
+    pub staging: String,
     /// Composition position (framework-declared sequence; duplicate
     /// positions across hooks refuse at merge).
     pub order: u32,
     /// Wrapper argv prefix; harness argv appends verbatim after it.
+    /// The first element names the staged wrapper guest path.
     pub argv_prefix: Vec<String>,
-    /// Guest-context capability probe operation name.
-    pub probe_op: String,
+    /// Guest-context capability probe descriptor.
+    pub probe: HookProbe,
+    /// Probe/apply failure disposition; exactly `fail-pre-exec`.
+    pub on_failure: String,
 }
+
+/// Admitted hook artifact kind: content-pinned executable blob.
+pub const HOOK_ARTIFACT_KIND_BLOB: &str = "digest-pinned-blob";
+
+/// Admitted hook staging owner: the isolator stages pre-initiate.
+pub const HOOK_STAGING_ISOLATOR: &str = "isolator-staged";
+
+/// Admitted hook failure disposition: fail before execute.
+pub const HOOK_ON_FAILURE_PRE_EXEC: &str = "fail-pre-exec";
 
 /// The single prepare transaction: separately-typed contribution sets.
 ///
@@ -423,15 +480,63 @@ fn check_claims(claims: &[PolicyClaim]) -> Result<Vec<PolicyClaim>> {
 fn order_hooks(hooks: &[GuestHookRequest]) -> Result<Vec<GuestHookRequest>> {
     let mut seen: HashSet<u32> = HashSet::new();
     for hook in hooks {
+        if hook.artifact.kind != HOOK_ARTIFACT_KIND_BLOB {
+            return Err(CistellaError::Contract(format!(
+                "guest hook artifact kind must be {HOOK_ARTIFACT_KIND_BLOB}: order {}",
+                hook.order
+            )));
+        }
+        if !is_sha256_hex(&hook.artifact.sha256) {
+            return Err(CistellaError::Contract(format!(
+                "guest hook artifact sha256 must be 64 lowercase hex: order {}",
+                hook.order
+            )));
+        }
+        if hook.artifact.source.registry.is_empty() {
+            return Err(CistellaError::Contract(format!(
+                "guest hook artifact registry must not be empty: order {}",
+                hook.order
+            )));
+        }
+        if hook.artifact.source.path.is_empty() {
+            return Err(CistellaError::Contract(format!(
+                "guest hook artifact path must not be empty: order {}",
+                hook.order
+            )));
+        }
+        if hook.staging != HOOK_STAGING_ISOLATOR {
+            return Err(CistellaError::Contract(format!(
+                "guest hook staging must be {HOOK_STAGING_ISOLATOR}: order {}",
+                hook.order
+            )));
+        }
         if hook.argv_prefix.is_empty() {
             return Err(CistellaError::Contract(format!(
                 "guest hook argv prefix must not be empty: order {}",
                 hook.order
             )));
         }
-        if hook.probe_op.is_empty() {
+        if !hook.argv_prefix[0].starts_with('/') {
+            return Err(CistellaError::Contract(format!(
+                "guest hook argv prefix must name the absolute staged wrapper path: order {}",
+                hook.order
+            )));
+        }
+        if hook.probe.op.is_empty() {
             return Err(CistellaError::Contract(format!(
                 "guest hook probe op must not be empty: order {}",
+                hook.order
+            )));
+        }
+        if hook.probe.timeout_ms == 0 {
+            return Err(CistellaError::Contract(format!(
+                "guest hook probe timeout must be nonzero: order {}",
+                hook.order
+            )));
+        }
+        if hook.on_failure != HOOK_ON_FAILURE_PRE_EXEC {
+            return Err(CistellaError::Contract(format!(
+                "guest hook on_failure must be {HOOK_ON_FAILURE_PRE_EXEC}: order {}",
                 hook.order
             )));
         }
@@ -445,6 +550,14 @@ fn order_hooks(hooks: &[GuestHookRequest]) -> Result<Vec<GuestHookRequest>> {
     let mut ordered = hooks.to_vec();
     ordered.sort_by_key(|hook| hook.order);
     Ok(ordered)
+}
+
+/// Checks 64 lowercase hex (SHA-256 digest shape).
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Isolator lifecycle state.

@@ -35,6 +35,8 @@ mod prepare;
 mod profile_resolution;
 #[path = "unit/protocol.rs"]
 mod protocol;
+#[path = "unit/registry.rs"]
+mod registry;
 #[path = "unit/runtime.rs"]
 mod runtime;
 #[path = "unit/stream.rs"]
