@@ -218,6 +218,37 @@ pub fn wait_active(id: &str) {
     }
 }
 
+/// Waits until the harness process is running inside the session
+/// container (not just service-active). Killing conduct earlier
+/// races the guest-side execution binding: pre-execution the unit
+/// has no live execution and the guest's disconnect sweep
+/// legitimately converges it (spec: sweep-only-without-live-
+/// executions), so an orphan assertion would fail for want of an
+/// orphan, not for want of code. The binding insert follows the
+/// backend spawn by microseconds, so a visible harness means the
+/// binding is present deterministically. Matches the harness ARGV
+/// (`podman top` shows full command lines): counting processes is
+/// insufficient because container PID1 may itself be a sleeper
+/// (`podman-init -- sleep infinity` plus a `sleep infinity`
+/// child already read as header + two lines pre-harness).
+pub fn wait_harness(container: &str, argv: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let out = Command::new("podman")
+            .args(["top", container])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        if out.contains(argv) {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("harness {argv} never visible in {container}");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 pub fn unit_label(home: &str, id: &str, key: &str) -> String {
     let content = std::fs::read_to_string(unit_path(home, id)).expect("unit readable");
     let prefix = format!("Label={key}=");

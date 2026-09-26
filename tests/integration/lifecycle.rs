@@ -253,62 +253,6 @@ fn conduct_lifecycle_terminate_while_attached() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn inspect_postmortem_and_gc_reap_orphan() {
-    if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
-        return;
-    }
-    let worktree = TempDir::new().unwrap();
-    let worktree_str = worktree.path().to_string_lossy().to_string();
-    let home = home_dir();
-
-    let (mut conduct, id, mut guard) = spawn_conduct(&home, &worktree_str, &["--identity", "bob"]);
-    wait_active(&id);
-    let container = format!("cistella-{id}");
-
-    // SIGKILL conduct: no teardown runs, unit file and scratch remain.
-    conduct.kill().expect("kill conduct");
-    let _ = conduct.wait();
-    guard.id = None;
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(unit_path(&home, &id).exists(), "orphan unit remains");
-
-    // External stop simulating a crash: container gone (--rm), unit orphaned.
-    let out = Command::new("systemctl")
-        .args(["--user", "stop", &format!("{container}.service")])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(
-        unit_path(&home, &id).exists(),
-        "unit file outlives external stop"
-    );
-    assert!(!scratch_gone(&id), "scratch outlives external stop");
-
-    // inspect reads labels plus journald post-mortem from the orphan unit.
-    let out = run_cistella(&home, &["inspect", &id]);
-    assert!(
-        out.status.success(),
-        "inspect: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let txt = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(txt.contains(&container), "inspect names session: {txt}");
-
-    // gc reaps the orphaned unit and scratch without manual pre-cleanup.
-    let out = run_cistella(&home, &["gc"]);
-    assert!(
-        out.status.success(),
-        "gc: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(!unit_path(&home, &id).exists(), "gc removes orphan unit");
-    assert!(scratch_gone(&id), "gc removes orphan scratch");
-}
-
-#[ignore = "live: requires systemd user manager and podman"]
-#[test]
 fn name_resolves_from_foreign_cwd_live() {
     // A profile name resolves without a source checkout: the child runs
     // from a directory containing no `data/profiles`.
