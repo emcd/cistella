@@ -9,15 +9,19 @@
 //! - Ancestor (default): `--diagnostics-fd=N --allow-ro=P...
 //!   --allow-rw=P... -- CMD...` — set no-new-privs, build the
 //!   ruleset (R+X on every `--allow-ro` route, full rights on every
-//!   `--allow-rw` route), restrict, write the applied attestation
-//!   to `N`, close `N` on exec, and exec `CMD` in the same lineage
-//!   (no fork: the harness inherits the restriction). Any failure
-//!   reports on `N` (best effort) plus stderr and exits nonzero
-//!   WITHOUT execing — a harness never runs unconfined.
+//!   `--allow-rw` route), restrict, attest on `N`, then fork a
+//!   restricted child that execs `CMD` while the parent supervises
+//!   the exec transition (CLOEXEC err-pipe: errno bytes mean exec
+//!   failed; EOF with the child alive means transitioned) and
+//!   reports it typed on `N`. Any failure reports on `N` (best
+//!   effort) plus stderr and exits nonzero WITHOUT a running
+//!   harness — a harness never runs unconfined or unattested.
 //!
-//! Exit codes: 0 applied/probed; 1 unsupported kernel or apply
+//! Exit codes: 0 applied/probed (supervisor relays the harness
+//! disposition after transition); 1 unsupported kernel or apply
 //! failure; 2 post-apply failure (exec failed, attestation
-//! unwritable, diagnostics unsealable); 3 usage.
+//! unwritable, diagnostics unsealable, transition unproven);
+//! 3 usage.
 //!
 //! Raw `syscall(2)` glue mirrors the spike helper's proven shape
 //! (ABI-v1 struct notes there explain the v1/v3 layout choice);
@@ -27,7 +31,6 @@
 //! only the fields they know.
 
 use std::os::fd::{BorrowedFd, RawFd};
-use std::os::unix::process::CommandExt;
 use std::process::ExitCode;
 
 use cistella::framework::registry::{
@@ -207,16 +210,30 @@ fn diagnose(fd: RawFd, line: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Reports failure with a typed JSON line on diagnostics (best
+/// Reports a pre-attestation failure with a typed JSON line on diagnostics (best
 /// effort — a broken fd also fails the write, which is itself the
 /// signal) plus a stderr line, with the classification exit code.
-/// The harness never runs past this: every caller returns without
-/// execing.
-fn fail(fd: RawFd, error: &str, code: u8) -> ExitCode {
+/// Pre-attestation only: the host gate fails on this first line,
+/// so the harness never runs past it.
+/// Post-attestation failures use [`fail_transition`] (the
+/// transitioned vocabulary) so the host drain classifies them.
+fn fail_apply(fd: RawFd, error: &str, code: u8) -> ExitCode {
     // serde_json owns escaping: path/error text (profile- and
     // extension-influenced) can carry quotes, newlines, or
     // control bytes without corrupting the frame.
     let line = serde_json::json!({"applied": false, "error": error}).to_string() + "\n";
+    let _ = diagnose(fd, &line);
+    eprintln!("landlock-wrap: {error}");
+    ExitCode::from(code)
+}
+
+/// Reports a post-attestation transition failure with the
+/// transitioned vocabulary (`{"transitioned":false,...}`): the
+/// host drain classifies it as wrapper failure (harness never
+/// started), never a harness outcome. serde owns escaping as in
+/// [`fail_apply`].
+fn fail_transition(fd: RawFd, error: &str, code: u8) -> ExitCode {
+    let line = serde_json::json!({"transitioned": false, "error": error}).to_string() + "\n";
     let _ = diagnose(fd, &line);
     eprintln!("landlock-wrap: {error}");
     ExitCode::from(code)
@@ -303,10 +320,10 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     let fd = invocation.diagnostics;
     let abi = match kernel_abi() {
         Ok(abi) => abi,
-        Err(error) => return fail(fd, &format!("unsupported: {error}"), 1),
+        Err(error) => return fail_apply(fd, &format!("unsupported: {error}"), 1),
     };
     if abi < MIN_LANDLOCK_ABI {
-        return fail(
+        return fail_apply(
             fd,
             &format!("unsupported: kernel ABI {abi} below minimum {MIN_LANDLOCK_ABI}"),
             1,
@@ -317,7 +334,7 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     // discipline as the spike helper).
     let pr = unsafe { nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if pr != 0 {
-        return fail(
+        return fail_apply(
             fd,
             &format!(
                 "unsupported: prctl(PR_SET_NO_NEW_PRIVS): {}",
@@ -328,18 +345,18 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     }
     let ruleset = match create_ruleset() {
         Ok(ruleset) => ruleset,
-        Err(error) => return fail(fd, &format!("unsupported: {error}"), 1),
+        Err(error) => return fail_apply(fd, &format!("unsupported: {error}"), 1),
     };
     for path in &invocation.allow_ro {
         if let Err(error) = add_path_rule(ruleset, path, ANCESTOR_RIGHTS) {
             close_fd(ruleset);
-            return fail(fd, &format!("bad allow path: {error}"), 1);
+            return fail_apply(fd, &format!("bad allow path: {error}"), 1);
         }
     }
     for path in &invocation.allow_rw {
         if let Err(error) = add_path_rule(ruleset, path, SUBTREE_RIGHTS) {
             close_fd(ruleset);
-            return fail(fd, &format!("bad allow path: {error}"), 1);
+            return fail_apply(fd, &format!("bad allow path: {error}"), 1);
         }
     }
     // SAFETY: gate syscall; returns 0 or -1, no fd, no state
@@ -356,7 +373,7 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     // own reference to the enforced ruleset).
     close_fd(ruleset);
     if restricted != 0 {
-        return fail(
+        return fail_apply(
             fd,
             &format!(
                 "unsupported: landlock_restrict_self: {}",
@@ -390,40 +407,219 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     )
     .is_err()
     {
-        return fail(fd, "diagnostics seal failed", 2);
+        return fail_apply(fd, "diagnostics seal failed", 2);
     }
-    // Exec: the harness inherits the restriction in this same
-    // lineage (no fork). `exec` returns only the failure, which is
-    // a WRAPPER failure (the harness never started), reported
-    // typed on the still-open diagnostics fd before exit.
-    //
-    // Status-separation invariant (design): this function never
-    // returns SUCCESS — post-attestation paths exec or exit
-    // nonzero. A clean harness exit therefore proves the exec
-    // transition (only the harness could produce it). Signal
-    // deaths (wrapper SIGKILLed between seal and execve, or
-    // harness signalled later) report as session signals —
-    // truthful at session level, never fabricated clean outcomes.
-    // QA-only fault seam for that window (deterministic pin of
-    // the ambiguous case): with the env set, SIGKILL self after
-    // attesting instead of execing. Never set in production.
+    // QA-only fault seam for the seal-to-exec window
+    // (deterministic pin of the ambiguous case): with the env set,
+    // SIGKILL self after attesting instead of supervising. Never
+    // set in production.
     if std::env::var("CISTELLA_QA_WRAPPER_FAULT").as_deref() == Ok("kill-after-attest") {
         // SAFETY: intentional self-kill for the fault pin only.
         unsafe {
             nix::libc::raise(nix::libc::SIGKILL);
         }
     }
-    let error = std::process::Command::new(&invocation.command[0])
-        .args(&invocation.command[1..])
-        .exec();
-    let line = serde_json::json!({"applied": false, "error": format!("exec failed: {error}")})
-        .to_string()
-        + "\n";
-    let _ = diagnose(fd, &line);
-    eprintln!("landlock-wrap: exec failed: {error}");
-    ExitCode::from(2)
+    // Supervised transition: fork a restricted child that execs
+    // the harness while this parent observes the exec boundary
+    // over a CLOEXEC err-pipe and reports it typed on the
+    // diagnostics fd. Status-separation invariant (design):
+    // ancestor-mode paths after this point emit transition lines
+    // or exit nonzero — never a bare SUCCESS that could be
+    // mistaken for a harness outcome. A clean harness exit
+    // therefore proves the exec transition (only the harness
+    // could produce it); signal deaths report as session signals
+    // (truthful, never fabricated clean outcomes).
+    supervise_transition(fd, &invocation.command)
 }
 
+/// Forks the harness child and supervises the exec transition:
+/// the child execs (reporting errno on the err-pipe on failure),
+/// the parent classifies the boundary — errno bytes mean exec
+/// failed, EOF with the child alive means transitioned, EOF with
+/// the child dead means wrapper-death — and reports it typed
+/// before supervising the harness lifetime to its disposition.
+/// Post-fork child discipline: async-signal-safe calls only
+/// (close, raw write, execvp, _exit); all argv material is built
+/// pre-fork. Single-threaded throughout, so no fork-induced lock
+/// hazards.
+fn supervise_transition(fd: RawFd, command: &[String]) -> ExitCode {
+    use std::ffi::CString;
+    // Argv material pre-fork (allocation is not async-safe).
+    let c_argv: Vec<CString> = command
+        .iter()
+        .map(|arg| CString::new(arg.as_bytes()))
+        .collect::<Result<_, _>>()
+        .unwrap_or_default();
+    if c_argv.is_empty() {
+        return fail_transition(fd, "bad harness argv bytes", 3);
+    }
+    let mut c_argv_ptrs: Vec<*const nix::libc::c_char> =
+        c_argv.iter().map(|arg| arg.as_ptr()).collect();
+    c_argv_ptrs.push(std::ptr::null());
+    // Err-pipe, close-on-exec both ends: exec closes the write
+    // end (EOF means exec'd-or-dead, disambiguated by waitpid),
+    // and neither end leaks into the harness.
+    let (err_read, err_write) = match nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC) {
+        Ok((read, write)) => (read, write),
+        Err(_) => return fail_transition(fd, "transition pipe failed", 2),
+    };
+    use std::os::fd::AsRawFd;
+    let err_read_raw = err_read.as_raw_fd();
+    let err_write_raw = err_write.as_raw_fd();
+    match unsafe { nix::unistd::fork() } {
+        Err(_) => fail_transition(fd, "transition fork failed", 2),
+        Ok(nix::unistd::ForkResult::Child) => {
+            // Child: async-signal-safe only. Close the read end
+            // and our diagnostics copy (the parent owns the
+            // narrative; the child's diagnostics copy would
+            // defeat EOF), then exec.
+            unsafe {
+                nix::libc::close(err_read_raw);
+                nix::libc::close(fd);
+                nix::libc::execvp(c_argv_ptrs[0], c_argv_ptrs.as_ptr());
+                // Exec failed: report errno (4 bytes native
+                // endian; under PIPE_BUF so a single atomic
+                // write) and exit. Any write failure still
+                // exits nonzero below.
+                let errno = nix::errno::Errno::last_raw();
+                let bytes = errno.to_ne_bytes();
+                let _ = nix::libc::write(err_write_raw, bytes.as_ptr().cast(), bytes.len());
+                nix::libc::_exit(127);
+            }
+        }
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
+            // Parent: close the write end, observe the boundary.
+            std::mem::drop(err_write);
+            observe_transition(fd, err_read, child)
+        }
+    }
+}
+
+/// Observes the exec boundary on the err-pipe and supervises the
+/// harness lifetime. errno bytes mean exec failed (precise
+/// cause); EOF with the child alive means transitioned; EOF with
+/// the child dead means wrapper-death before transition. The
+/// transitioned line precedes diagnostics close, so the host's
+/// EOF arrives with positive proof attached; every other outcome
+/// reports typed and exits nonzero with the child reaped.
+fn observe_transition(
+    fd: RawFd,
+    err_read: std::os::fd::OwnedFd,
+    child: nix::unistd::Pid,
+) -> ExitCode {
+    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    use std::os::fd::{AsFd, AsRawFd};
+    // Bounded observation: exec resolves instantly; a wedged
+    // child (STOPped, lost) is killed and reported rather than
+    // hung on.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut errno_bytes = [0u8; 4];
+    let mut filled = 0usize;
+    let observed = loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or(std::time::Duration::ZERO);
+        let mut pollfds = [nix::poll::PollFd::new(
+            err_read.as_fd(),
+            nix::poll::PollFlags::POLLIN,
+        )];
+        let wait =
+            nix::poll::PollTimeout::try_from(remaining).unwrap_or(nix::poll::PollTimeout::ZERO);
+        match nix::poll::poll(&mut pollfds, wait) {
+            Ok(0) | Err(_) => break TransitionSeen::TimedOut,
+            Ok(_) => {}
+        }
+        let mut chunk = [0u8; 4];
+        // SAFETY: borrowed read-end, transient buffer; count
+        // checked below, no ownership transfer.
+        let count = unsafe {
+            nix::libc::read(err_read.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len())
+        };
+        if count < 0 {
+            break TransitionSeen::TimedOut;
+        }
+        if count == 0 {
+            break TransitionSeen::Eof;
+        }
+        let take = (count as usize).min(4 - filled);
+        errno_bytes[filled..filled + take].copy_from_slice(&chunk[..take]);
+        filled += take;
+        if filled == 4 {
+            break TransitionSeen::Errno(i32::from_ne_bytes(errno_bytes));
+        }
+    };
+    match observed {
+        TransitionSeen::Errno(errno) => {
+            // Exec failed with cause: reap, report typed, exit.
+            let _ = waitpid(child, None);
+            return fail_transition(fd, &format!("exec failed: {}", errno_name(errno)), 2);
+        }
+        TransitionSeen::TimedOut => {
+            // Wedged child: kill, reap, report typed.
+            let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+            let _ = waitpid(child, None);
+            return fail_transition(fd, "transition observation timed out", 2);
+        }
+        TransitionSeen::Eof => {}
+    }
+    // EOF: exec'd (CLOEXEC closed the write end) or died (death
+    // closed it). waitpid disambiguates: alive means transitioned
+    // (a live pre-exec child still holds the write end open, so
+    // EOF could not have arrived); dead means wrapper-death
+    // before transition.
+    match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+        Ok(WaitStatus::StillAlive) => {}
+        Ok(status) => {
+            return fail_transition(fd, &format!("child died before transition: {status:?}"), 2);
+        }
+        Err(_) => {
+            return fail_transition(fd, "transition wait failed", 2);
+        }
+    }
+    // Positive transition proof: emit, close diagnostics for EOF,
+    // then supervise the harness to its disposition.
+    let line = serde_json::json!({"transitioned": true}).to_string() + "\n";
+    if diagnose(fd, &line).is_err() {
+        let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+        let _ = waitpid(child, None);
+        eprintln!("landlock-wrap: transition write failed");
+        return ExitCode::from(2);
+    }
+    // SAFETY: borrowed fd close; the transition line already
+    // landed, and no later parent path writes diagnostics.
+    unsafe {
+        nix::libc::close(fd);
+    }
+    // Supervise to the harness disposition: exit codes relay
+    // verbatim; signals re-raise so the session reports the same
+    // signal the harness died by (SIGPIPE, ignored process-wide
+    // by the Rust runtime, maps back explicitly).
+    match waitpid(child, None) {
+        Ok(WaitStatus::Exited(_, code)) => ExitCode::from(code as u8),
+        Ok(WaitStatus::Signaled(_, signal, _)) => {
+            if signal == nix::sys::signal::Signal::SIGPIPE {
+                return ExitCode::from(128 + nix::libc::SIGPIPE as u8);
+            }
+            // SAFETY: re-raise a death the child already
+            // suffered; dispositions are default (except
+            // ignored SIGPIPE handled above).
+            unsafe {
+                nix::libc::signal(signal as nix::libc::c_int, nix::libc::SIG_DFL);
+                nix::libc::raise(signal as nix::libc::c_int);
+            }
+            ExitCode::from(128 + signal as u8)
+        }
+        _ => ExitCode::from(2),
+    }
+}
+
+/// Err-pipe observation outcomes: errno bytes, clean EOF, or
+/// bounded-wait expiry.
+enum TransitionSeen {
+    Errno(i32),
+    Eof,
+    TimedOut,
+}
 /// Closes one owned raw fd (best effort; pre-restriction, so the
 /// close succeeds normally).
 fn close_fd(fd: RawFd) {

@@ -120,19 +120,22 @@ fn drain_hook_diagnostics(
     buffered: Vec<u8>,
     timeout: std::time::Duration,
 ) -> Result<Option<String>> {
-    use crate::framework::prepare::check_diagnostics_trailing;
+    use crate::framework::prepare::check_transition_line;
     use std::os::fd::{AsFd, AsRawFd};
     let deadline = std::time::Instant::now() + timeout;
     let mut pending = buffered;
-    // The ceiling covers the whole stream, including bytes already
-    // buffered past the attestation line.
     let mut total = pending.len();
+    // Transition tracking: EOF proves nothing unless the
+    // transitioned line arrived first (a crash between
+    // attestation and transition emits nothing further).
+    let mut transitioned = false;
     loop {
         while let Some(position) = pending.iter().position(|&byte| byte == b'\n') {
             let line = String::from_utf8_lossy(&pending[..position]).into_owned();
             pending.drain(..=position);
-            if let Some(detail) = check_diagnostics_trailing(&line)? {
-                return Ok(Some(detail));
+            match check_transition_line(&line)? {
+                Some(detail) => return Ok(Some(detail)),
+                None => transitioned = true,
             }
         }
         if total > 64 * 1024 {
@@ -173,7 +176,16 @@ fn drain_hook_diagnostics(
             ));
         }
         if count == 0 {
-            return Ok(None);
+            // EOF ends the stream: success only with the
+            // transitioned line already seen (a crash between
+            // attestation and transition emits nothing further,
+            // and must not classify as success).
+            if transitioned {
+                return Ok(None);
+            }
+            return Err(CistellaError::Contract(
+                "transition unproven: EOF before transition".to_string(),
+            ));
         }
         total += count as usize;
         pending.extend_from_slice(&chunk[..count as usize]);
