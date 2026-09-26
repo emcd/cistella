@@ -8,7 +8,7 @@
 
 - [x] 2.1 Ship the Podman isolator `--bin` speaking `isolator.*` ops over the framed protocol.
 - [x] 2.2 Switch production `conduct` to the wire guest (live-proven 370/370: PTY+piped conduct, crash-after-create residue, orphan/gc, parallel load); fleet-deploy confidence comes later at the 4.1 dogfood gate, which this switch enables rather than precedes; the in-process impl stays as conformance reference. Session stdio crosses by explicit descriptor passing (`SCM_RIGHTS` bundle bound to the launch, PTY and piped modes preserved); the wire client SHALL check unit residue by reconciliation key after abnormal guest exit, SHALL fstat-and-hold only as defense-in-depth (fd identity is the proof), and supersedes `SessionPty` path-passing as the production mechanism (remove the path code rather than leaving a second route).
-- [ ] 2.3 Pin wire/reference parity in conformance (divergence fails the suite), including op-level recovery: kill/re-exec converging by key at create/initiate, and typed teardown after guest death during execute/await.
+- [x] 2.3 Pin wire/reference parity in conformance (divergence fails the suite), including op-level recovery: kill/re-exec converging by key at create/initiate, and typed teardown after guest death during execute/await (live-proven 396/396 full tier: 7 wire parity mirrors plus transcript diff, 6 recovery kill-proofs including conduct-episode re-host and no-ack never-replay, tombstone repeatability both backends; scans use version-stable inspect labels after the 4.9.3 ps-dialect find).
 
 ## 3. Landlock guest binary and confinement
 
