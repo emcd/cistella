@@ -34,23 +34,26 @@ pub struct SessionRecord {
     pub container_present: bool,
     /// Generic (non-`cistella.*`) labels from the unit file.
     pub generic_labels: Vec<(String, String)>,
-    /// Landlock-hooked session: companion exec via `enter` is
-    /// outside the confinement guarantee and refuses typed.
-    /// Absent on pre-hook units (defaults false, never errors).
-    pub hooked: bool,
+    /// Landlock-hook marker: `Some(true)` hooked, `Some(false)`
+    /// confidently absent (readable unit, no label), `None`
+    /// unknown (unreadable file or unexpected value — companion
+    /// exec refuses on anything but `Some(false)`).
+    pub hooked: Option<bool>,
 }
 
 /// Refuses companion exec into Landlock-hooked sessions: a plain
 /// `podman exec` is not a Landlock descendant, so it would write
 /// the revised-RW ancestor bind unconfined, bypassing the session
-/// guarantee. Route sidecars through the wrapper (future) or use
-/// the wrapped harness; never a bare exec here.
+/// guarantee. Only a confidently-plain record (`Some(false)`)
+/// passes; hooked AND unknown (unreadable marker, unexpected
+/// value) refuse. Route sidecars through the wrapper (future) or
+/// use the wrapped harness; never a bare exec here.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Contract` on hooked sessions.
+/// Returns `CistellaError::Contract` on hooked or unknown sessions.
 pub fn check_enter_allowed(record: &SessionRecord) -> Result<()> {
-    if record.hooked {
+    if record.hooked != Some(false) {
         return Err(CistellaError::Contract(
             "enter refused for Landlock-hooked sessions: companion exec is outside the confinement guarantee".to_string(),
         ));
@@ -195,10 +198,15 @@ pub fn list_sessions() -> Result<Vec<SessionRecord>> {
             container_name: container,
             active_state,
             id,
-            hooked: unit_file_label(&path, crate::session::LABEL_LANDLOCK)
-                .ok()
-                .flatten()
-                .is_some_and(|value| value == "hooked"),
+            // Fail-closed marker read: only a confidently absent
+            // label from a READABLE unit defaults plain. An
+            // unreadable file or an unexpected value is unknown,
+            // and unknown refuses companion exec below.
+            hooked: match unit_file_label(&path, crate::session::LABEL_LANDLOCK) {
+                Ok(Some(value)) if value == "hooked" => Some(true),
+                Ok(None) => Some(false),
+                Ok(Some(_)) | Err(_) => None,
+            },
         });
     }
     Ok(records)

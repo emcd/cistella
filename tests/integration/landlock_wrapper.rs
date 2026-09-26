@@ -353,3 +353,46 @@ fn exec_failure_reports_wrapper_error() {
         serde_json::from_str(lines.next().unwrap_or("")).expect("failure second");
     assert_eq!(failed.get("applied"), Some(&serde_json::Value::Bool(false)));
 }
+
+#[test]
+fn fault_kill_after_attest_dies_by_signal_without_execing() {
+    // Deterministic pin of the crash-between-seal-and-exec window:
+    // the wrapper attests, then SIGKILLs itself instead of execing.
+    // The process dies by signal (never a clean exit, never an
+    // exec): the host side must report session-signal, never a
+    // fabricated harness outcome.
+    let (_dir, allowed) = scratch_tree();
+    let marker = allowed.join("fault-marker");
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/python3")
+        .arg("-c")
+        .arg(format!("open({:?}, 'w')", marker))
+        .env("CISTELLA_QA_WRAPPER_FAULT", "kill-after-attest")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(
+        output.status.code(),
+        None,
+        "fault must die by signal, not exit"
+    );
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(output.status.signal(), Some(9), "fault must be SIGKILL");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let attested: serde_json::Value =
+        serde_json::from_str(stdout.lines().next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert!(
+        !marker.exists(),
+        "harness must never exec in the fault window"
+    );
+}

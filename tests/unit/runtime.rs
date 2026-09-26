@@ -31,7 +31,7 @@ fn test_record(id: &str, directory: &str) -> SessionRecord {
         active_state: "active".to_string(),
         container_present: true,
         generic_labels: vec![("agentmux.session".to_string(), "s1".to_string())],
-        hooked: false,
+        hooked: Some(false),
     }
 }
 
@@ -447,10 +447,10 @@ fn quadlet_marks_hooked_units() {
 }
 
 #[test]
-fn enter_refuses_hooked_sessions() {
+fn enter_refuses_hooked_and_unknown_sessions() {
     use cistella::registry::check_enter_allowed;
     let mut hooked = test_record("hooked-1", "/tmp/work");
-    hooked.hooked = true;
+    hooked.hooked = Some(true);
     let error = check_enter_allowed(&hooked).unwrap_err();
     assert!(
         error
@@ -459,4 +459,15 @@ fn enter_refuses_hooked_sessions() {
         "got: {error}"
     );
     check_enter_allowed(&test_record("plain-1", "/tmp/work")).unwrap();
+    // Unknown marker (unreadable file, unexpected value) refuses:
+    // only a confidently-plain record passes.
+    let mut unknown = test_record("unknown-1", "/tmp/work");
+    unknown.hooked = None;
+    let error = check_enter_allowed(&unknown).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("outside the confinement guarantee"),
+        "got: {error}"
+    );
 }

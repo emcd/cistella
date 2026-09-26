@@ -356,10 +356,12 @@ enum ProbeReport {
 /// duplicate fields and extra keys; the cross-field check below
 /// enforces the tagged pairing (abi+mask xor error). The mask
 /// repeats so the gate re-verifies the matrix at this second
-/// trust moment (probe ran earlier, in another process context);
-/// absolute floors apply (see below), not probe cross-checks —
-/// same-pipe provenance makes probe/apply mismatch impossible
-/// without fd compromise, which breaks every guarantee equally.
+/// trust moment (probe ran earlier as a separate `podman exec`
+/// on stdout, not the same pipe, so no same-pipe provenance is
+/// claimed). Independent absolute floors (ABI minimum, mask
+/// coverage) are the contract; exact probe/apply match is not
+/// required (the kernel ABI is fixed per boot, and wrapper
+/// construction enforces real adequacy).
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attestation {

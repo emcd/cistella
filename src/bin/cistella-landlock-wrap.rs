@@ -396,6 +396,23 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     // lineage (no fork). `exec` returns only the failure, which is
     // a WRAPPER failure (the harness never started), reported
     // typed on the still-open diagnostics fd before exit.
+    //
+    // Status-separation invariant (design): this function never
+    // returns SUCCESS — post-attestation paths exec or exit
+    // nonzero. A clean harness exit therefore proves the exec
+    // transition (only the harness could produce it). Signal
+    // deaths (wrapper SIGKILLed between seal and execve, or
+    // harness signalled later) report as session signals —
+    // truthful at session level, never fabricated clean outcomes.
+    // QA-only fault seam for that window (deterministic pin of
+    // the ambiguous case): with the env set, SIGKILL self after
+    // attesting instead of execing. Never set in production.
+    if std::env::var("CISTELLA_QA_WRAPPER_FAULT").as_deref() == Ok("kill-after-attest") {
+        // SAFETY: intentional self-kill for the fault pin only.
+        unsafe {
+            nix::libc::raise(nix::libc::SIGKILL);
+        }
+    }
     let error = std::process::Command::new(&invocation.command[0])
         .args(&invocation.command[1..])
         .exec();
