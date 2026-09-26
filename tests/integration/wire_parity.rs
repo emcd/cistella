@@ -694,7 +694,7 @@ fn wire_parity_removed_handle_create_refuses_live() {
         session_id: Some(session_id.clone()),
     };
     let dir = bins_dir();
-    let mut host = host_external(
+    let (mut host, _negotiated) = host_external(
         &dir,
         ISOLATOR_BIN,
         &[],

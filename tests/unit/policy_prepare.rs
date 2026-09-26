@@ -4,19 +4,23 @@
 //! claim partition, and `run_prepare` over a scripted exchange. All
 //! diagnostics assertions pin value-freedom (names only).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::json;
 
 use cistella::framework::contract::{MergeContext, Provenance, Scope, Severity};
 use cistella::framework::policy::{PolicySet, acceptance_set, evaluate_all};
-use cistella::framework::prepare::{parse_capability, run_prepare};
+use cistella::framework::prepare::{
+    EXTENSION_BIN, parse_capability, run_landlock_prepare, run_prepare,
+};
 use cistella::framework::protocol::{
     Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope,
     read_frame, write_frame,
 };
+use cistella::profile::{CredentialSurface, Profile};
 
 const FAST: Duration = Duration::from_secs(3);
 
@@ -443,4 +447,107 @@ fn capability_names_parse_and_ignore_unknowns() {
     );
     assert_eq!(parse_capability("time-travel"), None);
     let _ = (Scope::Universal, Severity::Suppressible);
+}
+
+/// Resolves the fake-guest example binary: `target/<profile>/examples/`
+/// sorted by mtime descending (same selection as the integration peer
+/// helper; the duplication is small and documented there).
+fn fake_guest_path() -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let my_path = std::env::current_exe().expect("current_exe");
+    let profile_dir = my_path
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile>/deps ancestors");
+    let examples_dir = profile_dir.join("examples");
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&examples_dir) {
+        for entry in entries {
+            let entry = entry.expect("dir entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("fake_guest") {
+                continue;
+            }
+            let after = &name["fake_guest".len()..];
+            if !after.is_empty() && !after.starts_with('-') {
+                continue;
+            }
+            let metadata = entry.metadata().expect("metadata");
+            if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
+                continue;
+            }
+            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+        }
+    }
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| {
+            panic!(
+                "fake_guest executable not found in {}; run `cargo build --examples` first",
+                examples_dir.display()
+            )
+        })
+}
+
+/// Stages the fake guest under the extension binary name in a
+/// scratch dir: discovery pins the bare name, never PATH.
+fn stage_extension_peer() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let staged = dir.path().join(EXTENSION_BIN);
+    std::fs::copy(fake_guest_path(), &staged).expect("stage peer");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(&staged).expect("meta").permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    std::fs::set_permissions(&staged, permissions).expect("exec bit");
+    dir
+}
+
+fn bare_profile() -> Profile {
+    Profile {
+        image: "localhost/cistella-test:latest".to_string(),
+        mounts: Vec::new(),
+        command: None,
+        environment_assignments: HashMap::new(),
+        environment_acceptances: Vec::new(),
+        credential_surface: CredentialSurface::None,
+        container_home: "/home/cistella".to_string(),
+        labels: HashMap::new(),
+    }
+}
+
+#[test]
+fn extension_prepare_merges_hook_and_shuts_down_clean() {
+    let dir = stage_extension_peer();
+    let mode = "--mode=extension-landlock-hook".to_string();
+    // `Ok` already proves clean shutdown: residue dominates inside
+    // `run_landlock_prepare`, so a stranded peer would fail here.
+    let evaluated =
+        run_landlock_prepare(dir.path(), &[mode], &bare_profile(), &[], &defaults()).unwrap();
+    assert_eq!(evaluated.merged.guest_hooks.len(), 1);
+    let hook = &evaluated.merged.guest_hooks[0];
+    assert_eq!(hook.order, 0);
+    assert_eq!(
+        hook.argv_prefix,
+        vec!["/run/cistella/hooks/landlock-wrap".to_string()]
+    );
+    assert!(evaluated.merged.environment.is_empty());
+    assert!(evaluated.merged.mounts.is_empty());
+}
+
+#[test]
+fn extension_prepare_without_hooks_capability_refuses() {
+    let dir = stage_extension_peer();
+    // Role-only hello passes closed negotiation but lacks the
+    // contribution: admission refuses before any prepare is sent,
+    // and the guest is reaped (Ok shutdown inside is residue-gated).
+    let mode = "--mode=extension-no-hooks".to_string();
+    let error =
+        run_landlock_prepare(dir.path(), &[mode], &bare_profile(), &[], &defaults()).unwrap_err();
+    assert!(
+        error.to_string().contains("must advertise guest-hooks"),
+        "got: {error}"
+    );
 }

@@ -102,6 +102,31 @@ pub(crate) fn run(
             }
             ExitCode::SUCCESS
         }
+        "extension-no-hooks" => {
+            // Role-only hello (landlock without guest-hooks): passes
+            // closed negotiation, then idles for the shutdown. Lets
+            // fast tests pin prepare admission refusal with a live
+            // subprocess and a clean reap.
+            let mut header = [0u8; 4];
+            if read_exact(&mut stdin_lock, &mut header).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let body = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["landlock"],
+                }
+            }))
+            .expect("serialize");
+            if write_frame(&mut stdout_lock, &body, 64 * 1024).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let _ = read_frame_from_stdin(&mut stdin_lock);
+            ExitCode::SUCCESS
+        }
         "hello-evil-capability" => {
             // Advertises a capability name carrying control bytes and
             // a fake secret assignment. Refusal diagnostics must

@@ -50,7 +50,7 @@ fn host_external_hello_negotiates() {
     ]
     .map(String::from)
     .to_vec();
-    let mut host = host_external(
+    let (mut host, _negotiated) = host_external(
         &dir,
         &name,
         &["--mode=hello-real-capabilities".to_string()],
@@ -132,7 +132,7 @@ fn host_external_bad_capability_refuses_clean() {
     // shared host state is not wedged by the refused guest. (This
     // proves no wedged state, not process reaping — reaping is
     // pinned by the liveness test below.)
-    let mut host = host_external(
+    let (mut host, negotiated) = host_external(
         &dir,
         &name,
         &["--mode=hello-real-capabilities".to_string()],
@@ -140,6 +140,12 @@ fn host_external_bad_capability_refuses_clean() {
         tight_deadlines(),
     )
     .expect("seat must negotiate after a refusal");
+    for name in &offered {
+        assert!(
+            negotiated.contains(name),
+            "negotiated set must carry offered {name}"
+        );
+    }
     assert!(host.shutdown().is_ok(), "shutdown must reap");
 }
 
@@ -236,7 +242,7 @@ fn host_external_peer_death_is_typed_bounded_and_rehostable() {
     ]
     .map(String::from)
     .to_vec();
-    let mut host = host_external(
+    let (mut host, _negotiated) = host_external(
         &dir,
         &name,
         &["--mode=hello-real-capabilities".to_string()],
@@ -272,7 +278,7 @@ fn host_external_peer_death_is_typed_bounded_and_rehostable() {
         host.shutdown().is_ok(),
         "shutdown after death must reap cleanly"
     );
-    let mut fresh = host_external(
+    let (mut fresh, _negotiated) = host_external(
         &dir,
         &name,
         &["--mode=hello-real-capabilities".to_string()],

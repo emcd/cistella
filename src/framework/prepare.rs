@@ -22,11 +22,12 @@ use serde::Deserialize;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::{
-    Capability, CapabilitySet, EnvContribution, GuestHookRequest, MergeContext, MountContribution,
-    MountMode, MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
+    Capability, CapabilitySet, Deadlines, EnvContribution, GuestHookRequest, MergeContext,
+    MountContribution, MountMode, MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
-use crate::framework::policy::PolicySet;
+use crate::framework::guest::host_external;
+use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::protocol::Exchange;
 
 /// Wire form of one environment contribution (provenance is injected
@@ -167,6 +168,92 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
         diagnostics,
         credentials,
     })
+}
+
+/// Extension binary name resolved sibling-relative to the driver.
+pub const EXTENSION_BIN: &str = "cistella-extension-landlock";
+
+/// Role capability offered to the extension guest.
+const EXTENSION_ROLE: &str = "landlock";
+
+/// Contribution capability the Landlock hook exercises.
+const EXTENSION_HOOKS: &str = "guest-hooks";
+
+/// Driver-injected env names reserved against extension
+/// contributions (unit-baked HOME, ssh-agent pointer, exec-time TERM).
+const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
+
+/// Runs the Landlock extension prepare transaction (task 3.1):
+/// hosts the real extension guest per-phase, admits on the
+/// guest-hooks contribution, merges centrally against the
+/// framework-owned baseline, and shuts the guest down. Hook staging
+/// and execution ride task 3.2; hooks return staged for the caller
+/// to hold.
+///
+/// `extra_args` rides the guest spawn (production passes none;
+/// tests select deterministic peer modes).
+///
+/// Admission checks the contribution type, not the role string:
+/// the pinned binary name plus the install-directory trust anchor
+/// already carry role identity, and only the hook contribution
+/// gates confinement behavior.
+///
+/// Residue dominance: a failed shutdown replaces the prepare
+/// outcome; only a clean shutdown preserves it.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on discovery, admission, or
+/// merge refusal, and `CistellaError::Protocol` on transport or
+/// shutdown failure.
+pub fn run_landlock_prepare(
+    exe_dir: &std::path::Path,
+    extra_args: &[String],
+    profile: &crate::profile::Profile,
+    triples: &[MountTriple],
+    policy: &PolicySet,
+) -> Result<EvaluatedPlan> {
+    let offered: Vec<String> = [EXTENSION_ROLE, EXTENSION_HOOKS]
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let (mut guest, negotiated) = host_external(
+        exe_dir,
+        EXTENSION_BIN,
+        extra_args,
+        &offered,
+        Deadlines::default(),
+    )?;
+    if !negotiated.contains(&EXTENSION_HOOKS.to_string()) {
+        guest.shutdown()?;
+        return Err(CistellaError::Contract(
+            "extension guest must advertise guest-hooks".to_string(),
+        ));
+    }
+    let mut reserved: HashSet<String> = profile.environment_assignments.keys().cloned().collect();
+    for name in &profile.environment_acceptances {
+        reserved.insert(name.clone());
+    }
+    for name in DRIVER_ENV {
+        reserved.insert(name.to_string());
+    }
+    let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec());
+    let acceptances = acceptance_set(&profile.environment_acceptances);
+    let outcome = run_prepare(
+        guest.exchange_mut(),
+        EXTENSION_BIN,
+        &negotiated,
+        &context,
+        policy,
+        &acceptances,
+        Deadlines::default().plan,
+    );
+    let shutdown = guest.shutdown();
+    match (outcome, shutdown) {
+        (Ok(plan), Ok(())) => Ok(plan),
+        (_, Err(residue)) => Err(residue),
+        (Err(error), Ok(())) => Err(error),
+    }
 }
 
 /// Builds the typed plan from wire shapes (shape checks only; merge

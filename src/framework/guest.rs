@@ -394,7 +394,7 @@ pub fn host_external(
     args: &[String],
     capabilities: &[String],
     deadlines: crate::framework::contract::Deadlines,
-) -> Result<GuestHost<ChildStdout, ChildStdin>> {
+) -> Result<(GuestHost<ChildStdout, ChildStdin>, Vec<String>)> {
     let path = discover_in(exe_dir, name)?;
     let mut host = GuestHost::spawn(&path, args, deadlines)?;
     let negotiated = match host.exchange_mut().hello(capabilities, deadlines.hello) {
@@ -409,7 +409,8 @@ pub fn host_external(
             );
         }
     }
-    Ok(host)
+    let capabilities = negotiated.capabilities.clone();
+    Ok((host, capabilities))
 }
 
 /// Shuts down after a hello-path refusal, letting residue dominate:
@@ -419,7 +420,7 @@ pub fn host_external(
 fn shutdown_return(
     mut host: GuestHost<ChildStdout, ChildStdin>,
     error: CistellaError,
-) -> Result<GuestHost<ChildStdout, ChildStdin>> {
+) -> Result<(GuestHost<ChildStdout, ChildStdin>, Vec<String>)> {
     host.shutdown()?;
     Err(error)
 }

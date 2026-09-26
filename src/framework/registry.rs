@@ -95,6 +95,24 @@ pub fn resolve(
     })
 }
 
+/// Reads one registry file and returns its lowercase hex SHA-256.
+///
+/// Sibling-binary reuse: the extension guest advertises the wrapper
+/// digest it observes without reimplementing hashing. Missing or
+/// unreadable files surface as `Io`; the caller fails closed.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Io` on read failure.
+pub fn digest_sibling(exe_dir: &Path, file_name: &str) -> Result<String> {
+    let bytes = std::fs::read(exe_dir.join(file_name))?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Ok(hex)
+}
 /// Rejects empty, absolute, and escaping registry paths; returns
 /// the relative join path. Diagnostics name the refusal class, not
 /// the offending bytes beyond the path itself (registry paths are
