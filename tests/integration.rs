@@ -24,6 +24,8 @@ mod podman_ancestry;
 mod prepare_peer;
 #[path = "integration/protocol_peer.rs"]
 mod protocol_peer;
+#[path = "integration/recovery.rs"]
+mod recovery;
 #[path = "integration/selectors.rs"]
 mod selectors;
 #[path = "integration/signals.rs"]
@@ -32,3 +34,5 @@ mod signals;
 mod transport;
 #[path = "integration/wire_death.rs"]
 mod wire_death;
+#[path = "integration/wire_parity.rs"]
+mod wire_parity;

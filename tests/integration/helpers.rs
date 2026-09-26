@@ -5,6 +5,85 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use cistella::isolators::client::WireClient;
+
+/// Close-on-unwind owner for `WireClient` (which has no Drop):
+/// holds the client from hosting until the test takes it for its
+/// explicit consuming close. Any panic in between closes
+/// at-most-once through Drop — `close(self)` consumes, so
+/// `Option::take` guarantees a single close, never double (not
+/// idempotence in the API sense, at-most-once in the ownership
+/// sense).
+pub struct CloseGuard(pub Option<WireClient>);
+
+impl CloseGuard {
+    #[must_use]
+    pub fn new(client: WireClient) -> Self {
+        Self(Some(client))
+    }
+
+    /// Borrows the held client for `&self` trait calls.
+    #[must_use]
+    pub fn get(&self) -> &WireClient {
+        self.0.as_ref().expect("client held")
+    }
+
+    /// Reclaims the client for its explicit consuming close.
+    #[must_use]
+    pub fn take(&mut self) -> WireClient {
+        self.0.take().expect("client held")
+    }
+}
+
+impl Drop for CloseGuard {
+    fn drop(&mut self) {
+        if let Some(client) = self.0.take() {
+            let _ = client.close();
+        }
+    }
+}
+
+/// Arc twin for thread-shared clients: Drop reclaims ONLY when
+/// uniquely held (all clones dropped, e.g. after joining). A still
+/// shared Arc (wedged thread) reports honestly instead of
+/// pretending to clean up — no safe consuming close exists there.
+pub struct ArcCloseGuard(pub Option<std::sync::Arc<WireClient>>);
+
+impl ArcCloseGuard {
+    #[must_use]
+    pub fn new(client: std::sync::Arc<WireClient>) -> Self {
+        Self(Some(client))
+    }
+
+    #[must_use]
+    pub fn get(&self) -> &std::sync::Arc<WireClient> {
+        self.0.as_ref().expect("client held")
+    }
+
+    #[must_use]
+    pub fn take(&mut self) -> std::sync::Arc<WireClient> {
+        self.0.take().expect("client held")
+    }
+}
+
+impl Drop for ArcCloseGuard {
+    fn drop(&mut self) {
+        if let Some(arc) = self.0.take() {
+            match std::sync::Arc::try_unwrap(arc) {
+                Ok(client) => {
+                    let _ = client.close();
+                }
+                Err(arc) => {
+                    eprintln!(
+                        "ArcCloseGuard: wedged holder; worker/rendezvous residue possible (refs={})",
+                        std::sync::Arc::strong_count(&arc),
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_cistella")
 }

@@ -22,7 +22,11 @@ when the guest dies, and how a replacement guest converges by key.
 Handles are framework-minted opaque strings end to end. The guest
 binds each framework handle to a local handle plus the attempt
 identity (reconciliation key, and spec/argv for create/launch) that
-created it. Guests never invent handles.
+created it. Guests never invent handles. Handle lifetimes differ by
+side, by design: `remove` evicts the framework binding guest-side
+(later ops on it refuse unknown-handle), while the reference
+backend retains records (later ops stay idempotent) — parity pins
+each side's contract, not identical outcomes.
 
 ```mermaid
 flowchart LR
