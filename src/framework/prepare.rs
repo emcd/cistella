@@ -29,6 +29,7 @@ use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_
 use crate::framework::guest::host_external;
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::protocol::Exchange;
+use crate::framework::registry::STAGED_WRAPPER_GUEST_PATH;
 
 /// Wire form of one environment contribution (provenance is injected
 /// by the host as the responding guest, never trusted from the wire).
@@ -249,11 +250,63 @@ pub fn run_landlock_prepare(
         Deadlines::default().plan,
     );
     let shutdown = guest.shutdown();
-    match (outcome, shutdown) {
-        (Ok(plan), Ok(())) => Ok(plan),
-        (_, Err(residue)) => Err(residue),
-        (Err(error), Ok(())) => Err(error),
+    let plan = match (outcome, shutdown) {
+        (Ok(plan), Ok(())) => plan,
+        (_, Err(residue)) => return Err(residue),
+        (Err(error), Ok(())) => return Err(error),
+    };
+    // Artifact-executable binding (3.2 handoff invariant, enforced
+    // from 3.1): the hook executable must be exactly the staged
+    // wrapper path — a correctly digest-pinned artifact with
+    // `argv_prefix[0]` naming `/bin/sh` (or any other absolute
+    // executable) would bypass confinement at composition. The
+    // prepare payload carries no session context, so session-blind
+    // extension args are never legitimate either: the prefix is the
+    // singleton staged path, and the framework composes all wrapper
+    // arguments at launch (task 3.2). Raw argv crosses verbatim by
+    // exec (no shell), so no byte-class filtering applies — the gate
+    // is structural identity, not content.
+    for hook in &plan.merged.guest_hooks {
+        check_hook_executable(hook)?;
     }
+    Ok(plan)
+}
+
+/// Checks one merged hook names exactly the staged wrapper
+/// executable (singleton prefix).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on any other executable or
+/// prefix length.
+pub fn check_hook_executable(hook: &GuestHookRequest) -> Result<()> {
+    if hook.argv_prefix.len() != 1 || hook.argv_prefix[0] != STAGED_WRAPPER_GUEST_PATH {
+        return Err(CistellaError::Contract(
+            "guest hook argv must name exactly the staged wrapper path".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Interim 3.1 fail-closed gate: refuses any requested hook
+/// delivery pre-create.
+///
+/// Hook staging, probe, and apply land in 3.2; until then a
+/// nonempty hook set must refuse rather than run the harness
+/// unconfined while confinement was requested. This call is
+/// replaced by staging in 3.2 — it must never survive alongside
+/// hook execution.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on a nonempty hook set.
+pub fn refuse_pending_hook_delivery(hooks: &[GuestHookRequest]) -> Result<()> {
+    if hooks.is_empty() {
+        return Ok(());
+    }
+    Err(CistellaError::Contract(
+        "landlock confinement requested but hook delivery is not yet implemented: refusing pre-create".to_string(),
+    ))
 }
 
 /// Builds the typed plan from wire shapes (shape checks only; merge

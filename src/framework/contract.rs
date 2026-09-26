@@ -281,6 +281,11 @@ pub const HOOK_STAGING_ISOLATOR: &str = "isolator-staged";
 /// Admitted hook failure disposition: fail before execute.
 pub const HOOK_ON_FAILURE_PRE_EXEC: &str = "fail-pre-exec";
 
+/// DoS bound on hook argv length: composition stays reviewable.
+/// Per-hook admission (e.g. the Landlock singleton executable)
+/// tightens further; this is the structural ceiling for all hooks.
+pub const MAX_HOOK_ARGV: usize = 16;
+
 /// The single prepare transaction: separately-typed contribution sets.
 ///
 /// At most one per session per extension. Untrusted input at every
@@ -513,6 +518,12 @@ fn order_hooks(hooks: &[GuestHookRequest]) -> Result<Vec<GuestHookRequest>> {
         if hook.argv_prefix.is_empty() {
             return Err(CistellaError::Contract(format!(
                 "guest hook argv prefix must not be empty: order {}",
+                hook.order
+            )));
+        }
+        if hook.argv_prefix.len() > MAX_HOOK_ARGV {
+            return Err(CistellaError::Contract(format!(
+                "guest hook argv prefix exceeds composition bound: order {}",
                 hook.order
             )));
         }

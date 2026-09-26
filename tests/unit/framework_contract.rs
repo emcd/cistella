@@ -8,9 +8,9 @@
 use cistella::framework::contract::{
     Assumption, BaselineBinding, Capability, CapabilitySet, ControlDeadline, Deadlines,
     EnvContribution, GuestHookRequest, HOOK_ARTIFACT_KIND_BLOB, HOOK_ON_FAILURE_PRE_EXEC,
-    HOOK_STAGING_ISOLATOR, HookArtifact, HookProbe, HookSource, MergeContext, MountContribution,
-    MountMode, MountTriple, Phase, PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Scope,
-    Severity, merge_prepare,
+    HOOK_STAGING_ISOLATOR, HookArtifact, HookProbe, HookSource, MAX_HOOK_ARGV, MergeContext,
+    MountContribution, MountMode, MountTriple, Phase, PolicyClaim, PreparePlan, Provenance,
+    ReconciliationKey, Scope, Severity, merge_prepare,
 };
 use cistella::framework::registry::{
     LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME,
@@ -453,5 +453,28 @@ fn hook_valid_shape_merges() {
     assert_eq!(
         merged.guest_hooks[0].argv_prefix,
         vec![STAGED_WRAPPER_GUEST_PATH.to_string()]
+    );
+}
+
+#[test]
+fn hook_oversize_argv_refuses() {
+    let prefix: Vec<String> = (0..MAX_HOOK_ARGV + 1)
+        .map(|i| format!("/bin/arg{i}"))
+        .collect();
+    let mut oversized = hook(1);
+    oversized.argv_prefix = prefix;
+    let plan = PreparePlan {
+        guest_hooks: vec![oversized],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("exceeds composition bound"),
+        "got: {error}"
     );
 }

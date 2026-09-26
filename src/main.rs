@@ -3,7 +3,7 @@
 use cistella::cli::{Cli, Command};
 use cistella::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::run_landlock_prepare;
+use cistella::framework::prepare::{refuse_pending_hook_delivery, run_landlock_prepare};
 use cistella::framework::signals;
 use cistella::isolators::client::WireClient;
 use cistella::isolators::podman::PodmanIsolator;
@@ -256,6 +256,28 @@ fn report_release(outcome: Result<(), cistella::error::CistellaError>) {
     }
 }
 
+/// Nested-under-RO availability preflight: admitted topologies start
+/// only when the intermediate chain pre-exists in the RO ancestor's
+/// host source. Callers run it pre-create, so a refusal leaves no
+/// residue.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on the first missing intermediate.
+fn nested_ro_preflight(triples: &[MountTriple]) -> Result<(), cistella::error::CistellaError> {
+    for check in cistella::mount::nested_ro_checks(triples) {
+        if let Some(missing) = cistella::mount::nested_ro_missing(&check) {
+            return Err(cistella::error::CistellaError::Mount(format!(
+                "nested mount {} under read-only {}: missing {}",
+                check.descendant,
+                check.ancestor,
+                missing.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Retires a proven-dead pre-exec client and hosts a
 /// replacement under the still-held creation-window guard. Close
 /// (unconditional join/unlink) frees the rendezvous path, then a
@@ -385,16 +407,7 @@ fn conduct_session(
     // only when the intermediate chain pre-exists in the RO ancestor's
     // host source. Runs after validation, before scratch creation or
     // unit install — a refusal leaves literally no residue.
-    for check in cistella::mount::nested_ro_checks(&triples) {
-        if let Some(missing) = cistella::mount::nested_ro_missing(&check) {
-            return Err(CistellaError::Mount(format!(
-                "nested mount {} under read-only {}: missing {}",
-                check.descendant,
-                check.ancestor,
-                missing.display()
-            )));
-        }
-    }
+    nested_ro_preflight(&triples)?;
     // Per-session scratch (XDG path, `/tmp` fallback; Label= tracks the id).
     let scratch_host = cistella::lock::scratch_dir(&id)
         .to_string_lossy()
@@ -417,16 +430,41 @@ fn conduct_session(
     let exe_dir = exe_dir.parent().ok_or_else(|| {
         CistellaError::Runtime("driver binary has no parent directory".to_string())
     })?;
-    // Landlock extension prepare (task 3.1): the real extension
-    // guest answers one transaction; merged env/mounts fan into the
-    // session plan below; hooks stage for 3.2 execution.
-    let evaluated = run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?;
-    triples.extend(evaluated.merged.mounts.clone());
-    let _landlock_hooks = evaluated.merged.guest_hooks;
-    let volumes = podman_volume_args(&triples, prof.home(), None);
+    // Credential-surface socket joins the occupied baseline BEFORE
+    // prepare: the central merge must see the SSH_AUTH_SOCK guest
+    // target, or an extension mount could collide past the gate.
+    // ssh_args is mixed ["--volume", "sock:sock:ro", "-e",
+    // "SSH_AUTH_SOCK=..."]; volumes join triples (rendered once
+    // below), env rides separately.
     let ssh_args = cistella::identity::ssh_agent_volume_args(&prof);
-    // ssh_args is mixed ["--volume", "sock:sock:ro", "-e", "SSH_AUTH_SOCK=..."]; split for Quadlet
-    let mut all_volumes = volumes;
+    let mut ssh_env = Vec::new();
+    let mut i = 0;
+    while i + 1 < ssh_args.len() {
+        let flag = &ssh_args[i];
+        let val = &ssh_args[i + 1];
+        if flag == "--volume" {
+            triples.push(cistella::mount::parse_mount_triple(val)?);
+        } else if flag == "-e" {
+            ssh_env.push(val.clone());
+        }
+        i += 2;
+    }
+    // Landlock extension prepare (task 3.1): the real extension
+    // guest answers one transaction; the central merge sees the
+    // full occupied baseline (profile, CLI, worktree, scratch, and
+    // credential-surface mounts alike). Merged env/mounts fan into
+    // the session plan below; requested hooks refuse pre-create
+    // until task 3.2 delivers staging and apply.
+    let evaluated = run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?;
+    refuse_pending_hook_delivery(&evaluated.merged.guest_hooks)?;
+    triples.extend(evaluated.merged.mounts.clone());
+    // Final joint topology gate: extension mounts plus credential
+    // volumes validate and preflight as one merged set — still
+    // pre-create, so a refusal leaves no residue.
+    cistella::mount::validate_mounts(&triples, prof.home())?;
+    nested_ro_preflight(&triples)?;
+    let volumes = podman_volume_args(&triples, prof.home(), None);
+    let all_volumes = volumes;
     let mut env_extra: Vec<String> = prof
         .environment_assignments
         .iter()
@@ -442,17 +480,10 @@ fn conduct_session(
     for (k, v) in &evaluated.merged.environment {
         env_extra.push(format!("{k}={v}"));
     }
-    let mut i = 0;
-    while i + 1 < ssh_args.len() {
-        let flag = &ssh_args[i];
-        let val = &ssh_args[i + 1];
-        if flag == "--volume" {
-            all_volumes.push(flag.clone());
-            all_volumes.push(val.clone());
-        } else if flag == "-e" {
-            env_extra.push(val.clone());
-        }
-        i += 2;
+    // Driver-injected socket pointer env rides last (split from
+    // ssh_args alongside the credential volume above).
+    for val in &ssh_env {
+        env_extra.push(val.clone());
     }
     // Profile `labels` table merges under CLI `--label` (one rule, CLI wins).
     let mut merged = prof.labels.iter().collect::<Vec<_>>();

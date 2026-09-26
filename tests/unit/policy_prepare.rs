@@ -11,10 +11,11 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use cistella::framework::contract::{MergeContext, Provenance, Scope, Severity};
+use cistella::framework::contract::{GuestHookRequest, MergeContext, Provenance, Scope, Severity};
 use cistella::framework::policy::{PolicySet, acceptance_set, evaluate_all};
 use cistella::framework::prepare::{
-    EXTENSION_BIN, parse_capability, run_landlock_prepare, run_prepare,
+    EXTENSION_BIN, check_hook_executable, parse_capability, refuse_pending_hook_delivery,
+    run_landlock_prepare, run_prepare,
 };
 use cistella::framework::protocol::{
     Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope,
@@ -550,4 +551,80 @@ fn extension_prepare_without_hooks_capability_refuses() {
         error.to_string().contains("must advertise guest-hooks"),
         "got: {error}"
     );
+}
+
+fn singleton_hook(prefix: Vec<String>) -> GuestHookRequest {
+    use cistella::framework::contract::{HookArtifact, HookProbe, HookSource};
+    GuestHookRequest {
+        artifact: HookArtifact {
+            kind: "digest-pinned-blob".to_string(),
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            source: HookSource {
+                registry: "shipped".to_string(),
+                path: "cistella-landlock-wrap".to_string(),
+            },
+        },
+        staging: "isolator-staged".to_string(),
+        order: 0,
+        argv_prefix: prefix,
+        probe: HookProbe {
+            op: "probe_capabilities".to_string(),
+            timeout_ms: 10_000,
+        },
+        on_failure: "fail-pre-exec".to_string(),
+    }
+}
+
+#[test]
+fn hook_executable_binding_accepts_staged_singleton() {
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    check_hook_executable(&hook).unwrap();
+}
+
+#[test]
+fn hook_executable_binding_refuses_shell() {
+    // Correctly pinned artifact, hostile executable: the digest
+    // bind is independent of the composition target.
+    let hook = singleton_hook(vec!["/bin/sh".to_string()]);
+    let error = check_hook_executable(&hook).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("exactly the staged wrapper path"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn hook_executable_binding_refuses_extension_args() {
+    // The prepare payload carries no session context, so
+    // session-blind extension args are never legitimate: the
+    // framework composes all wrapper arguments at launch.
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    let hook = singleton_hook(vec![
+        STAGED_WRAPPER_GUEST_PATH.to_string(),
+        "--allow-raw-io".to_string(),
+    ]);
+    let error = check_hook_executable(&hook).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("exactly the staged wrapper path"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn pending_hook_delivery_refuses_nonempty() {
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    // Interim 3.1 gate: requested confinement without delivery
+    // refuses pre-create rather than running unconfined.
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let error = refuse_pending_hook_delivery(&[hook]).unwrap_err();
+    assert!(
+        error.to_string().contains("refusing pre-create"),
+        "got: {error}"
+    );
+    refuse_pending_hook_delivery(&[]).unwrap();
 }
