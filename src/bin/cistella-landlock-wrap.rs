@@ -477,13 +477,29 @@ fn supervise_transition(fd: RawFd, command: &[String]) -> ExitCode {
                 nix::libc::close(err_read_raw);
                 nix::libc::close(fd);
                 nix::libc::execvp(c_argv_ptrs[0], c_argv_ptrs.as_ptr());
-                // Exec failed: report errno (4 bytes native
-                // endian; under PIPE_BUF so a single atomic
-                // write) and exit. Any write failure still
-                // exits nonzero below.
+                // Exec failed: report errno as exactly 4 bytes
+                // (under PIPE_BUF, but looped for EINTR all the
+                // same) and exit 127. Any unwritable pipe exits
+                // 126 instead — a code the parent never relays
+                // as a harness outcome (see below).
                 let errno = nix::errno::Errno::last_raw();
                 let bytes = errno.to_ne_bytes();
-                let _ = nix::libc::write(err_write_raw, bytes.as_ptr().cast(), bytes.len());
+                let mut written = 0usize;
+                while written < bytes.len() {
+                    let count = nix::libc::write(
+                        err_write_raw,
+                        bytes.as_ptr().add(written).cast(),
+                        bytes.len() - written,
+                    );
+                    if count < 0 {
+                        let retry = nix::errno::Errno::last_raw();
+                        if retry == nix::libc::EINTR {
+                            continue;
+                        }
+                        nix::libc::_exit(126);
+                    }
+                    written += count as usize;
+                }
                 nix::libc::_exit(127);
             }
         }
@@ -581,6 +597,14 @@ fn observe_transition(
     match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
         Ok(WaitStatus::StillAlive) => {}
         Ok(WaitStatus::Exited(_, code)) => {
+            // Exit 126 is the child's own exec-report failure
+            // (err-pipe unwritable): it never relays as a
+            // harness outcome. Every other pre-transition exit
+            // pairs with errno bytes (handled above), so a
+            // bare exit code here proves the harness ran it.
+            if code == 126 {
+                return fail_transition(fd, "exec report unwritable", 2);
+            }
             return emit_transitioned_and_exit(fd, code);
         }
         Ok(WaitStatus::Signaled(_, signal, _)) => {
