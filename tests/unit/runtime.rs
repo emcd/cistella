@@ -31,6 +31,7 @@ fn test_record(id: &str, directory: &str) -> SessionRecord {
         active_state: "active".to_string(),
         container_present: true,
         generic_labels: vec![("agentmux.session".to_string(), "s1".to_string())],
+        hooked: false,
     }
 }
 
@@ -43,7 +44,7 @@ fn quadlet_uses_tmpfs_key() {
         "--volume".to_string(),
         "/tmp/a:/work:rw".to_string(),
     ];
-    let unit = generate_quadlet_unit(&sess, &volumes, &[], &[], None).unwrap();
+    let unit = generate_quadlet_unit(&sess, &volumes, &[], &[], None, false).unwrap();
     assert!(
         unit.contains("Tmpfs=/home/cistella"),
         "Tmpfs stays raw (Quadlet quotes it for ExecStart itself), got {unit}"
@@ -62,12 +63,12 @@ fn quadlet_uses_tmpfs_key() {
 #[test]
 fn quadlet_bakes_reconciliation_key_label_before_install() {
     let sess = test_session();
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[], Some("key-abc123")).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], Some("key-abc123"), false).unwrap();
     assert!(
         unit.contains("Label=cistella.reconciliation-key=\"key-abc123\""),
         "key label baked pre-mutation for crash recovery, got {unit}"
     );
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None, false).unwrap();
     assert!(
         !unit.contains("cistella.reconciliation-key"),
         "no key label without a key"
@@ -77,7 +78,7 @@ fn quadlet_bakes_reconciliation_key_label_before_install() {
 #[test]
 fn quadlet_runs_container_under_init() {
     let sess = test_session();
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None, false).unwrap();
     // Scoped to the [Container] section: podman's minimal init as PID 1 forwards SIGTERM
     // to `sleep infinity` (bare PID 1 ignores it, stalling stop for the
     // full StopTimeout) and reaps zombies.
@@ -97,7 +98,7 @@ fn quadlet_runs_container_under_init() {
 #[test]
 fn quadlet_labels_present() {
     let sess = test_session();
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None, false).unwrap();
     assert!(unit.contains(&format!("Label=cistella.id=\"{}\"", sess.id)));
     assert!(unit.contains("Label=cistella.directory=\"/tmp/work\""));
     assert!(unit.contains("Label=cistella.profile=\"default\""));
@@ -111,7 +112,7 @@ fn quadlet_labels_present() {
 fn quadlet_driver_labels_last() {
     let sess = test_session();
     let generic = vec![("agentmux.session".to_string(), "s1".to_string())];
-    let unit = generate_quadlet_unit(&sess, &[], &[], &generic, None).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &generic, None, false).unwrap();
     let generic_pos = unit.find("Label=agentmux.session=").expect("generic label");
     let driver_pos = unit.find("Label=cistella.id=").expect("driver label");
     assert!(generic_pos < driver_pos, "driver-owned labels render last");
@@ -159,7 +160,7 @@ fn quadlet_command_label_survives_quoting() {
         "-c".to_string(),
         "echo \"a=b c'd\" > /tmp/edge_probe; sleep 60".to_string(),
     ];
-    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None).unwrap();
+    let unit = generate_quadlet_unit(&sess, &[], &[], &[], None, false).unwrap();
     let line = unit
         .lines()
         .find(|l| l.starts_with("Label=cistella.command="))
@@ -172,14 +173,14 @@ fn quadlet_command_label_survives_quoting() {
 fn quadlet_rejects_injection() {
     let mut sess = test_session();
     sess.identity = "a\n[Service]\nExec=bad".to_string();
-    assert!(generate_quadlet_unit(&sess, &[], &[], &[], None).is_err());
+    assert!(generate_quadlet_unit(&sess, &[], &[], &[], None, false).is_err());
 }
 
 #[test]
 fn quadlet_rejects_reserved_generic_label() {
     let sess = test_session();
     let generic = vec![("cistella.id".to_string(), "spoof".to_string())];
-    assert!(generate_quadlet_unit(&sess, &[], &[], &generic, None).is_err());
+    assert!(generate_quadlet_unit(&sess, &[], &[], &generic, None, false).is_err());
 }
 
 #[test]
@@ -428,4 +429,34 @@ fn preparation_authorized_resolved_binds_win_over_lexical() {
         cistella::prepare::preparation_authorized("/actual/data/deep", &lexical),
         "lexical comparison would allow — this is the gap resolved binds close"
     );
+}
+
+#[test]
+fn quadlet_marks_hooked_units() {
+    let sess = test_session();
+    let plain = generate_quadlet_unit(&sess, &[], &[], &[], None, false).unwrap();
+    assert!(
+        !plain.contains("cistella.landlock"),
+        "plain units carry no hook marker"
+    );
+    let hooked = generate_quadlet_unit(&sess, &[], &[], &[], None, true).unwrap();
+    assert!(
+        hooked.contains("Label=cistella.landlock=hooked"),
+        "hooked units carry the driver marker for companion refusal"
+    );
+}
+
+#[test]
+fn enter_refuses_hooked_sessions() {
+    use cistella::registry::check_enter_allowed;
+    let mut hooked = test_record("hooked-1", "/tmp/work");
+    hooked.hooked = true;
+    let error = check_enter_allowed(&hooked).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("outside the confinement guarantee"),
+        "got: {error}"
+    );
+    check_enter_allowed(&test_record("plain-1", "/tmp/work")).unwrap();
 }

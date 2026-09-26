@@ -351,15 +351,21 @@ enum ProbeReport {
     Unsupported(ProbeUnsupported),
 }
 
-/// Exact attestation shape: applied with ABI, or refused with a
-/// reason. Derived `Deserialize` rejects duplicate fields and
-/// extra keys; the cross-field check below enforces the tagged
-/// pairing (abi xor error).
+/// Exact attestation shape: applied with ABI and handled mask,
+/// or refused with a reason. Derived `Deserialize` rejects
+/// duplicate fields and extra keys; the cross-field check below
+/// enforces the tagged pairing (abi+mask xor error). The mask
+/// repeats so the gate re-verifies the matrix at this second
+/// trust moment (probe ran earlier, in another process context);
+/// absolute floors apply (see below), not probe cross-checks —
+/// same-pipe provenance makes probe/apply mismatch impossible
+/// without fd compromise, which breaks every guarantee equally.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attestation {
     applied: bool,
     abi: Option<u64>,
+    handled_fs_mask: Option<u64>,
     error: Option<String>,
 }
 
@@ -396,20 +402,41 @@ pub fn parse_probe_report(stdout: &[u8]) -> Result<()> {
     }
 }
 
-/// Parses one wrapper attestation line: returns the ABI on an
-/// exact applied shape. `applied:false` or any other shape refuses
-/// typed — session start never proceeds past a failed apply.
+/// Parses one wrapper attestation line: returns `(ABI, mask)` on
+/// an exact applied shape whose matrix meets the floor
+/// (ABI≥minimum, mask covering the required rights). `applied:false`
+/// or any other shape refuses typed — session start never proceeds
+/// past a failed apply or a short matrix, even attested.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Contract` on shape violation (including
-/// duplicate or unknown fields) or a negative attestation.
-pub fn parse_attestation_line(line: &str) -> Result<u64> {
+/// duplicate or unknown fields), a negative attestation, a low
+/// ABI, or a rights shortfall.
+pub fn parse_attestation_line(line: &str) -> Result<(u64, u64)> {
     let attestation: Attestation = serde_json::from_str(line)
         .map_err(|_| CistellaError::Contract("bad attestation: shape".to_string()))?;
-    match (attestation.applied, attestation.abi, attestation.error) {
-        (true, Some(abi), None) => Ok(abi),
-        (false, _, Some(error)) => Err(CistellaError::Contract(format!(
+    match (
+        attestation.applied,
+        attestation.abi,
+        attestation.handled_fs_mask,
+        attestation.error,
+    ) {
+        (true, Some(abi), Some(mask), None) => {
+            if abi < u64::from(MIN_LANDLOCK_ABI) {
+                return Err(CistellaError::Contract(format!(
+                    "applied attestation ABI {abi} below minimum {}",
+                    MIN_LANDLOCK_ABI
+                )));
+            }
+            if mask & REQUIRED_HANDLED_FS != REQUIRED_HANDLED_FS {
+                return Err(CistellaError::Contract(
+                    "applied attestation rights shortfall".to_string(),
+                ));
+            }
+            Ok((abi, mask))
+        }
+        (false, _, _, Some(error)) => Err(CistellaError::Contract(format!(
             "wrapper reported apply failure: {error}"
         ))),
         _ => Err(CistellaError::Contract(
@@ -612,17 +639,29 @@ pub fn compose_hook_argv(
     Ok(argv)
 }
 
-/// Extracts a wrapper exec-failure detail from one diagnostics
-/// line: `Some` only for the exact negative attestation shape
-/// (`applied:false` with a reason). Anything else — applied
-/// attestations, unparsable bytes, foreign shapes — yields `None`
-/// (only the wrapper writes here, and only its failure report
-/// matters downstream).
-#[must_use]
-pub fn exec_failure_detail(line: &str) -> Option<String> {
-    let attestation: Attestation = serde_json::from_str(line).ok()?;
-    match (attestation.applied, attestation.error) {
-        (false, Some(error)) => Some(error),
-        _ => None,
+/// Checks one post-attestation diagnostics line: `Ok(Some)` only
+/// for the exact exec-failure shape, `Ok(None)` for nothing —
+/// there is no admissible non-failure trailing line (the wrapper
+/// emits attestation, then silence or its failure report). Any
+/// other bytes refuse typed: a malformed stream cannot classify a
+/// launch successful.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on any line that is not the
+/// exact exec-failure shape.
+pub fn check_diagnostics_trailing(line: &str) -> Result<Option<String>> {
+    let attestation: Attestation = serde_json::from_str(line)
+        .map_err(|_| CistellaError::Contract("malformed diagnostics trailing".to_string()))?;
+    match (
+        attestation.applied,
+        attestation.abi,
+        attestation.handled_fs_mask,
+        attestation.error,
+    ) {
+        (false, _, _, Some(error)) => Ok(Some(error)),
+        _ => Err(CistellaError::Contract(
+            "malformed diagnostics trailing".to_string(),
+        )),
     }
 }

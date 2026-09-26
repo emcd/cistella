@@ -636,8 +636,8 @@ fn probe_report_gates_abi_and_mask() {
 fn attestation_line_parses_applied() {
     use cistella::framework::prepare::parse_attestation_line;
     assert_eq!(
-        parse_attestation_line(r#"{"applied":true,"abi":7}"#).unwrap(),
-        7
+        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767}"#).unwrap(),
+        (7, 32767)
     );
     let error =
         parse_attestation_line(r#"{"applied":false,"error":"bad allow path"}"#).unwrap_err();
@@ -748,14 +748,20 @@ fn compose_hook_argv_refuses_count_and_cover() {
 fn attestation_strict_schema_refuses_dups_and_extras() {
     use cistella::framework::prepare::parse_attestation_line;
     // Duplicate keys refuse (derived Deserialize rejects them).
-    let error = parse_attestation_line(r#"{"applied":true,"abi":7,"abi":8}"#).unwrap_err();
+    let error =
+        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"abi":8}"#)
+            .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
     // Unknown fields refuse.
-    let error =
-        parse_attestation_line(r#"{"applied":true,"abi":7,"harness_pid":123}"#).unwrap_err();
+    let error = parse_attestation_line(
+        r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"harness_pid":123}"#,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
     // Cross-shape mismatch refuses (applied:true must not carry error).
-    let error = parse_attestation_line(r#"{"applied":true,"abi":7,"error":"x"}"#).unwrap_err();
+    let error =
+        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"error":"x"}"#)
+            .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
     // Negative shape still reports.
     let error =
@@ -778,8 +784,7 @@ fn gate_drain_captures_exec_failure_and_ignores_noise() {
     let (read, write) = nix::unistd::pipe().expect("pipe");
     let mut write: std::fs::File = write.into();
     let script = concat!(
-        "{\"applied\":true,\"abi\":7}\n",
-        "not-json-noise\n",
+        "{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n",
         "{\"applied\":false,\"error\":\"exec failed: ENOENT\"}\n",
     );
     use std::io::Write;
@@ -800,7 +805,7 @@ fn gate_drain_clean_session_has_no_detail() {
     let mut write: std::fs::File = write.into();
     use std::io::Write;
     write
-        .write_all(b"{\"applied\":true,\"abi\":7}\n")
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
         .expect("write script");
     drop(write);
     let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate passes");
@@ -864,4 +869,60 @@ fn compose_baseline_grants_scratch_skips_files_and_siblings() {
             "true".to_string(),
         ]
     );
+}
+
+#[test]
+fn gate_drain_malformed_trailing_refuses() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    write
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\nnot-json-noise\n")
+        .expect("write script");
+    drop(write);
+    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    assert!(
+        error.to_string().contains("malformed diagnostics trailing"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn gate_drain_missing_eof_times_out_typed() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    // Attestation only, write end HELD OPEN (no EOF): the gate
+    // must not classify the launch successful without the
+    // exec-seal EOF. Short deadline keeps the pin fast.
+    write
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
+        .expect("write script");
+    write.flush().expect("flush");
+    let error = gate_hook_attestation(&read, Duration::from_millis(300)).unwrap_err();
+    assert!(error.to_string().contains("timed out"), "got: {error}");
+    drop(write);
+}
+
+#[test]
+fn gate_drain_overlong_refuses() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    // 70 KiB of newline-free bytes from a thread (pipe buffer
+    // would block a single-threaded writer past 64 KiB).
+    let filler = vec![b'x'; 70 * 1024];
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = write.write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n");
+        let _ = write.write_all(&filler);
+    });
+    let error = gate_hook_attestation(&read, Duration::from_secs(10)).unwrap_err();
+    assert!(error.to_string().contains("overlong"), "got: {error}");
+    let _ = writer.join();
 }

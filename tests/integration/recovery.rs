@@ -176,6 +176,7 @@ fn recovery_create_unknown_applied_converges() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     // Name guard older than the client guard: unwind closes the
     // guest before converging by name (see parity `launch_wire_unit`).
@@ -269,6 +270,7 @@ fn recovery_initiate_started_converges_by_adopt() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let mut guard = LiveUnitGuard {
         container_name: Some(container.clone()),
@@ -331,6 +333,7 @@ fn recovery_second_death_fails_stop_with_residue() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     // Name guard older than the client guard: unwind closes the
     // guest before converging by name.
@@ -406,6 +409,7 @@ fn recovery_launch_death_runs_harness_once() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     // Name guard older than the client guard: unwind closes the
     // guest before converging by name.
@@ -543,6 +547,7 @@ fn recovery_launch_noack_never_replays() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     // Name guard older than the Arc guard: unwind reclaims/closes
     // the guest before converging by name (Drop order is reverse

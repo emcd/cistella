@@ -87,45 +87,58 @@ pub fn gate_hook_attestation(
 ) -> Result<(u64, Option<String>)> {
     use std::os::fd::AsFd;
     let (line, rest) = read_attestation_line(read.as_fd(), timeout)?;
-    let abi = parse_attestation_line(&line)?;
+    let (abi, _mask) = parse_attestation_line(&line)?;
     if !rest.is_empty() {
         eprintln!(
             "hook diagnostics: {} trailing bytes after attestation",
             rest.len()
         );
     }
-    let exec_failure = drain_hook_diagnostics(read, rest, timeout);
+    let exec_failure = drain_hook_diagnostics(read, rest, timeout)?;
     eprintln!("hook confinement applied (Landlock ABI {abi})");
     Ok((abi, exec_failure))
 }
 
 /// Drains hook diagnostics to EOF under the deadline (64 KiB cap),
-/// watching for a wrapper exec-failure report. Infallible by
-/// design: the session already gated on the attestation, so a slow
-/// or chatty wrapper cannot fail a confined harness — and only the
-/// wrapper itself can write here (the fd seals at harness exec),
-/// so a negative report is always genuine. Returns the first
-/// exec-failure detail, if any.
+/// watching for a wrapper exec-failure report. Every exit is
+/// explicit: clean EOF with no negative report is the ONLY success
+/// (the exec-sealed fd's remaining writers are the wrapper alone —
+/// guest and framework copies close post-spawn/post-launch — so
+/// EOF proves the exec transition, and the attestation already
+/// proved apply). Timeout, read failure, overlong output, or a
+/// malformed trailing line are typed failures, never clean: an
+/// ambiguous stream cannot classify a launch successful, and no
+/// harness outcome is fabricated from it.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on timeout, overlong output,
+/// malformed trailing, or wait failure, and `CistellaError::Runtime`
+/// on read failure.
 fn drain_hook_diagnostics(
     read: &std::os::fd::OwnedFd,
     buffered: Vec<u8>,
     timeout: std::time::Duration,
-) -> Option<String> {
-    use crate::framework::prepare::exec_failure_detail;
+) -> Result<Option<String>> {
+    use crate::framework::prepare::check_diagnostics_trailing;
     use std::os::fd::{AsFd, AsRawFd};
     let deadline = std::time::Instant::now() + timeout;
     let mut pending = buffered;
-    let mut total = 0usize;
+    // The ceiling covers the whole stream, including bytes already
+    // buffered past the attestation line.
+    let mut total = pending.len();
     loop {
         while let Some(position) = pending.iter().position(|&byte| byte == b'\n') {
             let line = String::from_utf8_lossy(&pending[..position]).into_owned();
             pending.drain(..=position);
-            if let Some(detail) = exec_failure_detail(&line) {
-                return Some(detail);
+            if let Some(detail) = check_diagnostics_trailing(&line)? {
+                return Ok(Some(detail));
             }
         }
         if total > 64 * 1024 {
-            return None;
+            return Err(CistellaError::Contract(
+                "hook diagnostics overlong".to_string(),
+            ));
         }
         let remaining = deadline
             .checked_duration_since(std::time::Instant::now())
@@ -137,8 +150,16 @@ fn drain_hook_diagnostics(
         let wait =
             nix::poll::PollTimeout::try_from(remaining).unwrap_or(nix::poll::PollTimeout::ZERO);
         match nix::poll::poll(&mut pollfds, wait) {
-            Ok(0) => return None,
-            Err(_) => return None,
+            Ok(0) => {
+                return Err(CistellaError::Contract(
+                    "hook diagnostics drain timed out".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(CistellaError::Contract(format!(
+                    "hook diagnostics wait failed: {e}"
+                )));
+            }
             Ok(_) => {}
         }
         let mut chunk = [0u8; 8192];
@@ -146,8 +167,13 @@ fn drain_hook_diagnostics(
         // checked below, no ownership transfer.
         let count =
             unsafe { nix::libc::read(read.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
-        if count <= 0 {
-            return None;
+        if count < 0 {
+            return Err(CistellaError::Runtime(
+                "hook diagnostics read failed".to_string(),
+            ));
+        }
+        if count == 0 {
+            return Ok(None);
         }
         total += count as usize;
         pending.extend_from_slice(&chunk[..count as usize]);

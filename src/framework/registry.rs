@@ -130,12 +130,12 @@ pub fn stage_hook_artifact(
         std::fs::remove_dir_all(&dir)?;
     }
     std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    // Own the directory BEFORE any fallible step below: every
-    // later `?` drops the guard and removes the partial staging,
-    // so a failed copy or re-verification leaves no litter.
+    // Own the directory BEFORE any further fallible step (chmod
+    // included): every later `?` drops the guard and removes the
+    // partial staging, so no post-create failure leaks.
     let host_file = dir.join(WRAPPER_FILE_NAME);
     let guard = StagedHook { dir, host_file };
+    std::fs::set_permissions(&guard.dir, std::fs::Permissions::from_mode(0o700))?;
     std::fs::write(&guard.host_file, &pinned.bytes)?;
     std::fs::set_permissions(&guard.host_file, std::fs::Permissions::from_mode(0o700))?;
     let staged = std::fs::read(&guard.host_file)?;

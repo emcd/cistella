@@ -368,9 +368,18 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     // Attest BEFORE exec: the framework gates session start on
     // this line, and the write is a CHECKED pre-exec condition —
     // an unwritten attestation (broken fd) exits here without
-    // execing, never past it. Then seal the diagnostics fd so the
-    // harness never inherits it (close-on-exec yields EOF).
-    let attested = serde_json::json!({"applied": true, "abi": abi}).to_string() + "\n";
+    // execing, never past it. The attestation repeats the ABI and
+    // handled mask so the host re-verifies the matrix at this
+    // second trust moment (probe ran earlier, in another process
+    // context). Then seal the diagnostics fd so the harness
+    // never inherits it (close-on-exec yields EOF).
+    let attested = serde_json::json!({
+        "applied": true,
+        "abi": abi,
+        "handled_fs_mask": REQUIRED_HANDLED_FS,
+    })
+    .to_string()
+        + "\n";
     if diagnose(fd, &attested).is_err() {
         eprintln!("landlock-wrap: attestation write failed");
         return ExitCode::from(2);

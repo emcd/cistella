@@ -102,6 +102,7 @@ fn wire_client_two_inflight_calls_fail_typed_on_death() {
         volumes: vec![],
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let creator = {
         let client = std::sync::Arc::clone(&client);
@@ -195,6 +196,7 @@ fn wire_client_crash_after_create_residue_dominates() {
         volumes: vec![],
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let key = ReconciliationKey::generate();
     // Arm the name-based guard BEFORE create: a partial install
@@ -328,6 +330,7 @@ fn wire_client_send_timeout_is_fatal_and_latches() {
         volumes: vec![],
         env: pad,
         labels: vec![],
+        landlock_hooked: false,
     };
     let error = client
         .create(&spec, &ReconciliationKey::generate())
@@ -407,6 +410,7 @@ fn wire_client_oversize_refused_locally_latch_clear() {
         volumes: vec![],
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let error = client
         .create(&spec, &ReconciliationKey::generate())

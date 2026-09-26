@@ -431,6 +431,7 @@ impl Isolator for PodmanIsolator {
             &spec.env,
             &spec.labels,
             Some(key.as_str()),
+            spec.landlock_hooked,
         )?;
         // Scratch first, unit file second: any failure cleans what it
         // made, so create leaves no partial unit behind.

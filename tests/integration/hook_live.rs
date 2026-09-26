@@ -148,6 +148,7 @@ fn hook_fixture(image: &str) -> HookFixture {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: true,
     };
     let guard = HookUnitGuard {
         container_name: Some(container.clone()),
@@ -279,7 +280,7 @@ fn hook_hooked_launch_attests_and_confines() {
     };
     drop(diag_write);
     let line = test_attestation(&diag_read);
-    let abi = parse_attestation_line(&line).expect("applied attestation");
+    let (abi, _mask) = parse_attestation_line(&line).expect("applied attestation");
     assert!(abi >= 3, "attested ABI carries TRUNCATE");
     drop(diag_read);
     let outcome = fixture
