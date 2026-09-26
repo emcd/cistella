@@ -26,8 +26,8 @@ pub const LABEL_IMAGE: &str = "cistella.image";
 /// (seat-only units) carry no key label.
 pub const LABEL_RECONCILIATION_KEY: &str = "cistella.reconciliation-key";
 /// Landlock-hooked session marker: emitted only when hook staging
-/// delivered (companion exec via `enter` is outside the
-/// confinement guarantee and refuses typed on marked sessions).
+/// delivered. Records confinement state (companion exec via
+/// `enter` is outside the guarantee by operator decision).
 pub const LABEL_LANDLOCK: &str = "cistella.landlock";
 
 /// Reserved prefix: only the driver emits `cistella.*` labels.

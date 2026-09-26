@@ -71,7 +71,15 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             command,
         } => {
             let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
-            cistella::registry::check_enter_allowed(&record)?;
+            // Companion exec is deliberately OUTSIDE the Landlock
+            // guarantee (operator decision): the operator is
+            // trusted and already holds host-equivalent access, so
+            // restricting their own shell would be overengineering
+            // against no defended principal. Only the wrapped
+            // harness lineage is confined; a sidecar sees the
+            // Podman binds as mounted. The hooked marker on the
+            // record stays as confinement state (and as the signal
+            // a future wrapper-sidecar path will key on).
             let container = record.container_name;
             for (field, val) in [("session", &container)] {
                 if val.contains('\n') || val.contains('\r') || val.contains('\0') {

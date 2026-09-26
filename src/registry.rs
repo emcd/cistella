@@ -36,29 +36,11 @@ pub struct SessionRecord {
     pub generic_labels: Vec<(String, String)>,
     /// Landlock-hook marker: `Some(true)` hooked, `Some(false)`
     /// confidently absent (readable unit, no label), `None`
-    /// unknown (unreadable file or unexpected value — companion
-    /// exec refuses on anything but `Some(false)`).
+    /// unknown (unreadable file or unexpected value). Confinement
+    /// state for operators and future sidecar routing (companion
+    /// exec itself is outside the guarantee by operator decision;
+    /// see the `enter` path).
     pub hooked: Option<bool>,
-}
-
-/// Refuses companion exec into Landlock-hooked sessions: a plain
-/// `podman exec` is not a Landlock descendant, so it would write
-/// the revised-RW ancestor bind unconfined, bypassing the session
-/// guarantee. Only a confidently-plain record (`Some(false)`)
-/// passes; hooked AND unknown (unreadable marker, unexpected
-/// value) refuse. Route sidecars through the wrapper (future) or
-/// use the wrapped harness; never a bare exec here.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on hooked or unknown sessions.
-pub fn check_enter_allowed(record: &SessionRecord) -> Result<()> {
-    if record.hooked != Some(false) {
-        return Err(CistellaError::Contract(
-            "enter refused for Landlock-hooked sessions: companion exec is outside the confinement guarantee".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 impl SessionRecord {

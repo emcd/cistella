@@ -442,32 +442,6 @@ fn quadlet_marks_hooked_units() {
     let hooked = generate_quadlet_unit(&sess, &[], &[], &[], None, true).unwrap();
     assert!(
         hooked.contains("Label=cistella.landlock=hooked"),
-        "hooked units carry the driver marker for companion refusal"
-    );
-}
-
-#[test]
-fn enter_refuses_hooked_and_unknown_sessions() {
-    use cistella::registry::check_enter_allowed;
-    let mut hooked = test_record("hooked-1", "/tmp/work");
-    hooked.hooked = Some(true);
-    let error = check_enter_allowed(&hooked).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("outside the confinement guarantee"),
-        "got: {error}"
-    );
-    check_enter_allowed(&test_record("plain-1", "/tmp/work")).unwrap();
-    // Unknown marker (unreadable file, unexpected value) refuses:
-    // only a confidently-plain record passes.
-    let mut unknown = test_record("unknown-1", "/tmp/work");
-    unknown.hooked = None;
-    let error = check_enter_allowed(&unknown).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("outside the confinement guarantee"),
-        "got: {error}"
+        "hooked units carry the driver marker as confinement state"
     );
 }
