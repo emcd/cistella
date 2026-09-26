@@ -479,9 +479,11 @@ fn supervise_transition(fd: RawFd, command: &[String]) -> ExitCode {
                 nix::libc::execvp(c_argv_ptrs[0], c_argv_ptrs.as_ptr());
                 // Exec failed: report errno as exactly 4 bytes
                 // (under PIPE_BUF, but looped for EINTR all the
-                // same) and exit 127. Any unwritable pipe exits
-                // 126 instead — a code the parent never relays
-                // as a harness outcome (see below).
+                // same) and exit 127. An unwritable pipe kills
+                // self with SIGKILL instead of exiting with a
+                // code: no ordinary exit status is squatted as
+                // a transition sentinel, so every bare exit code
+                // the parent relays is genuinely the harness's.
                 let errno = nix::errno::Errno::last_raw();
                 let bytes = errno.to_ne_bytes();
                 let mut written = 0usize;
@@ -496,7 +498,8 @@ fn supervise_transition(fd: RawFd, command: &[String]) -> ExitCode {
                         if retry == nix::libc::EINTR {
                             continue;
                         }
-                        nix::libc::_exit(126);
+                        nix::libc::kill(nix::libc::getpid(), nix::libc::SIGKILL);
+                        nix::libc::_exit(127);
                     }
                     written += count as usize;
                 }
@@ -585,26 +588,22 @@ fn observe_transition(
     // - exited: transitioned with the harness disposition (the
     //   only way to reach EOF without errno bytes is exec-success
     //   — a pre-exec exit always pairs with errno bytes before
-    //   `_exit(127)` — so a fast-exiting harness relays here,
-    //   already reaped, with no second wait);
-    // - signalled: ambiguous (wrapper pre-exec death vs harness
-    //   death in the race window). The deterministic wrapper-death
-    //   case pins via the QA fault seam; in production the
-    //   harness-signal scenario dominates, so relay as session
-    //   signal rather than fabricate certainty either way.
+    //   `_exit(127)`, and report failure self-signals rather than
+    //   squatting an exit code — so a fast-exiting harness relays
+    //   here, already reaped, with no second wait);
+    // - signalled: ambiguous by construction (wrapper pre-exec
+    //   death vs harness death in the race window; /proc cannot
+    //   discriminate zombies). Emit the transition failure for
+    //   the typed record AND relay the signal for the session
+    //   disposition: genuine early-harness signals classify
+    //   conservatively as wrapper failure (documented scope —
+    //   the QA fault seam pins the deterministic wrapper-death
+    //   case), while the podman-visible death stays a signal.
     // A partial errno prefix with death keeps its bytes on
     // stderr for debuggability.
     match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
         Ok(WaitStatus::StillAlive) => {}
         Ok(WaitStatus::Exited(_, code)) => {
-            // Exit 126 is the child's own exec-report failure
-            // (err-pipe unwritable): it never relays as a
-            // harness outcome. Every other pre-transition exit
-            // pairs with errno bytes (handled above), so a
-            // bare exit code here proves the harness ran it.
-            if code == 126 {
-                return fail_transition(fd, "exec report unwritable", 2);
-            }
             return emit_transitioned_and_exit(fd, code);
         }
         Ok(WaitStatus::Signaled(_, signal, _)) => {
@@ -613,6 +612,13 @@ fn observe_transition(
                     "landlock-wrap: signal with {filled} partial errno bytes before transition"
                 );
             }
+            let line = serde_json::json!({
+                "transitioned": false,
+                "error": format!("child signalled before transition: {signal}"),
+            })
+            .to_string()
+                + "\n";
+            let _ = diagnose(fd, &line);
             return relay_signal_and_exit(signal);
         }
         Ok(status) => {

@@ -519,3 +519,39 @@ fn signalled_harness_relays_signal() {
         Some(&serde_json::Value::Bool(true))
     );
 }
+
+#[test]
+fn harness_exit_126_relays_as_harness_outcome() {
+    // No exit code is squatted as a transition sentinel: a
+    // harness exiting 126 relays as the harness outcome with a
+    // clean transition (report failure self-signals instead).
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/dash")
+        .arg("-c")
+        .arg("exit 126")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(output.status.code(), Some(126));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
