@@ -544,10 +544,14 @@ impl Isolator for PodmanIsolator {
         let record = self.record(handle)?;
         // Hooked launch: the diagnostics write-end crosses at its
         // natural number (see `prepare_diagnostics_hook`); plain
-        // launches keep the existing argv untouched.
+        // launches keep the existing argv untouched. The guest copy
+        // stays owned through spawn (dropped explicitly after):
+        // `prepare_diagnostics_hook` only borrows it, and an early
+        // drop would hand podman a closed-or-reused number.
         let mut argv = argv.to_vec();
-        let preserve = match diagnostics {
-            Some(diag) => Some(super::hook::prepare_diagnostics_hook(&diag, &mut argv)?),
+        let diagnostics_owned = diagnostics;
+        let preserve = match diagnostics_owned.as_ref() {
+            Some(diag) => Some(super::hook::prepare_diagnostics_hook(diag, &mut argv)?),
             None => None,
         };
         let args = match (workdir, preserve) {
@@ -607,6 +611,13 @@ impl Isolator for PodmanIsolator {
                 .spawn()
         }
         .map_err(|e| CistellaError::Runtime(format!("podman exec: {e}")))?;
+        // The guest copy closes here, after spawn: the forked podman
+        // client holds its own copies for `--preserve-fd`, and the
+        // container holds the preserved write end. Closing before
+        // spawn would hand podman a closed-or-reused number (whose
+        // CLOEXEC/write could then land on a stdio fd); closing here
+        // lets the framework observe EOF once the wrapper seals.
+        drop(diagnostics_owned);
         let execution = ExecutionHandle::mint();
         self.executions.lock().expect("exec table lock").insert(
             execution.clone(),

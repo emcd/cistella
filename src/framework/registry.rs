@@ -131,10 +131,14 @@ pub fn stage_hook_artifact(
     }
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    // Own the directory BEFORE any fallible step below: every
+    // later `?` drops the guard and removes the partial staging,
+    // so a failed copy or re-verification leaves no litter.
     let host_file = dir.join(WRAPPER_FILE_NAME);
-    std::fs::write(&host_file, &pinned.bytes)?;
-    std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o700))?;
-    let staged = std::fs::read(&host_file)?;
+    let guard = StagedHook { dir, host_file };
+    std::fs::write(&guard.host_file, &pinned.bytes)?;
+    std::fs::set_permissions(&guard.host_file, std::fs::Permissions::from_mode(0o700))?;
+    let staged = std::fs::read(&guard.host_file)?;
     let digest: [u8; 32] = Sha256::digest(&staged).into();
     if digest != pinned.sha256 {
         return Err(CistellaError::Contract(
@@ -142,17 +146,11 @@ pub fn stage_hook_artifact(
         ));
     }
     let triple = MountTriple {
-        host_source: host_file.to_string_lossy().into_owned(),
+        host_source: guard.host_file.to_string_lossy().into_owned(),
         container_target: STAGED_WRAPPER_GUEST_PATH.to_string(),
         mode: MountMode::Ro,
     };
-    Ok((
-        StagedHook {
-            dir,
-            host_file: host_file.clone(),
-        },
-        triple,
-    ))
+    Ok((guard, triple))
 }
 
 /// Digest-verified registry bytes plus their coordinates.

@@ -325,6 +325,44 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
     })
 }
 
+/// Exact `--probe` success shape: kernel ABI plus handled mask.
+/// Derived `Deserialize` rejects duplicate fields and (with
+/// `deny_unknown_fields`) any extra keys — the report is an exact
+/// contract, not a loose map.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProbeOk {
+    abi: u64,
+    handled_fs_mask: u64,
+}
+
+/// Exact `--probe` refusal shape: wrapper-observed unsupported reason.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProbeUnsupported {
+    unsupported: String,
+}
+
+/// Exact probe report: success or refusal, nothing else.
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum ProbeReport {
+    Ok(ProbeOk),
+    Unsupported(ProbeUnsupported),
+}
+
+/// Exact attestation shape: applied with ABI, or refused with a
+/// reason. Derived `Deserialize` rejects duplicate fields and
+/// extra keys; the cross-field check below enforces the tagged
+/// pairing (abi xor error).
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Attestation {
+    applied: bool,
+    abi: Option<u64>,
+    error: Option<String>,
+}
+
 /// Checks a wrapper `--probe` report: kernel ABI plus handled
 /// mask. Shortfall refuses typed (fail pre-execute); the mask is
 /// never narrowed to fit the kernel.
@@ -334,64 +372,50 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
 /// Returns `CistellaError::Contract` on shape violation,
 /// wrapper-reported unsupported, low ABI, or rights shortfall.
 pub fn parse_probe_report(stdout: &[u8]) -> Result<()> {
-    let report: serde_json::Value = serde_json::from_slice(stdout)
+    let report: ProbeReport = serde_json::from_slice(stdout)
         .map_err(|_| CistellaError::Contract("bad probe report: shape".to_string()))?;
-    if let Some(unsupported) = report.get("unsupported").and_then(|value| value.as_str()) {
-        return Err(CistellaError::Contract(format!(
-            "landlock unsupported: {unsupported}"
-        )));
+    match report {
+        ProbeReport::Unsupported(unsupported) => Err(CistellaError::Contract(format!(
+            "landlock unsupported: {}",
+            unsupported.unsupported
+        ))),
+        ProbeReport::Ok(ok) => {
+            if ok.abi < u64::from(MIN_LANDLOCK_ABI) {
+                return Err(CistellaError::Contract(format!(
+                    "landlock unsupported: kernel ABI {} below minimum {}",
+                    ok.abi, MIN_LANDLOCK_ABI
+                )));
+            }
+            if ok.handled_fs_mask & REQUIRED_HANDLED_FS != REQUIRED_HANDLED_FS {
+                return Err(CistellaError::Contract(
+                    "landlock unsupported: kernel rights shortfall".to_string(),
+                ));
+            }
+            Ok(())
+        }
     }
-    let abi = report
-        .get("abi")
-        .and_then(|value| value.as_u64())
-        .ok_or_else(|| CistellaError::Contract("bad probe report: shape".to_string()))?;
-    let mask = report
-        .get("handled_fs_mask")
-        .and_then(|value| value.as_u64())
-        .ok_or_else(|| CistellaError::Contract("bad probe report: shape".to_string()))?;
-    if abi < u64::from(MIN_LANDLOCK_ABI) {
-        return Err(CistellaError::Contract(format!(
-            "landlock unsupported: kernel ABI {abi} below minimum {}",
-            MIN_LANDLOCK_ABI
-        )));
-    }
-    if mask & REQUIRED_HANDLED_FS != REQUIRED_HANDLED_FS {
-        return Err(CistellaError::Contract(
-            "landlock unsupported: kernel rights shortfall".to_string(),
-        ));
-    }
-    Ok(())
 }
 
-/// Parses one wrapper attestation line
-/// (`{"applied":true,"abi":N}`): returns the ABI on success.
-/// `applied:false` or any other shape refuses typed — session
-/// start never proceeds past a failed apply.
+/// Parses one wrapper attestation line: returns the ABI on an
+/// exact applied shape. `applied:false` or any other shape refuses
+/// typed — session start never proceeds past a failed apply.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Contract` on shape violation or a
-/// negative attestation.
+/// Returns `CistellaError::Contract` on shape violation (including
+/// duplicate or unknown fields) or a negative attestation.
 pub fn parse_attestation_line(line: &str) -> Result<u64> {
-    let attestation: serde_json::Value = serde_json::from_str(line)
+    let attestation: Attestation = serde_json::from_str(line)
         .map_err(|_| CistellaError::Contract("bad attestation: shape".to_string()))?;
-    let applied = attestation
-        .get("applied")
-        .and_then(|value| value.as_bool())
-        .ok_or_else(|| CistellaError::Contract("bad attestation: shape".to_string()))?;
-    if !applied {
-        let detail = attestation
-            .get("error")
-            .and_then(|value| value.as_str())
-            .unwrap_or("apply failed");
-        return Err(CistellaError::Contract(format!(
-            "wrapper reported apply failure: {detail}"
-        )));
+    match (attestation.applied, attestation.abi, attestation.error) {
+        (true, Some(abi), None) => Ok(abi),
+        (false, _, Some(error)) => Err(CistellaError::Contract(format!(
+            "wrapper reported apply failure: {error}"
+        ))),
+        _ => Err(CistellaError::Contract(
+            "bad attestation: shape".to_string(),
+        )),
     }
-    attestation
-        .get("abi")
-        .and_then(|value| value.as_u64())
-        .ok_or_else(|| CistellaError::Contract("bad attestation: shape".to_string()))
 }
 
 /// Reads one attestation line from a diagnostics read-end under an
@@ -481,12 +505,31 @@ pub fn confinement_roots(
 }
 
 /// Composes one hooked launch argv: the admitted hook's staged
-/// executable, framework-owned wrapper args (guest routes for the
-/// ancestor as read-execute, for the subtree as full rights), the
-/// `--` separator, then the harness argv verbatim. Exactly one
-/// hook is supported (single wrapper chain); untranslatable roots
-/// refuse fail-closed. Pure: all inputs explicit, pinned fast
-/// without podman.
+/// executable, framework-owned wrapper args, the `--` separator,
+/// then the harness argv verbatim. Exactly one hook is supported
+/// (single wrapper chain); untranslatable roots refuse fail-closed.
+/// Pure: all inputs explicit, pinned fast without podman.
+///
+/// Wrapper args (operator-decided policy, mechanical composition):
+/// - `--allow-ro=/`: system baseline for the loader, interpreter,
+///   and libc (read plus execute, never write). Without it no
+///   ordinary harness starts; Landlock is default-deny.
+/// - ancestor guest routes as read-execute; subtree guest routes
+///   as full rights (the union exception).
+/// - other session mounts outside the ancestor domain, granted by
+///   profile mode (read-execute for read-only, full for
+///   read-write): the per-session scratch stays writable (2.2
+///   behavior), read-only data stays readable. Directory sources
+///   only — file mounts (sockets) cannot root a `path_beneath`
+///   rule and are skipped (unix-socket connect semantics under
+///   confinement are a dogfood risk, surfaced at use, never
+///   silently unconfined).
+/// - Sibling-domain triples (host source under the ancestor) grant
+///   nothing here: default-deny already covers their targets, and
+///   task 3.3 names unaccounted aliases with an explicit refusal.
+/// - `/tmp`, `$HOME` (container-private tmpfs), and `/dev/null`
+///   writes stay denied (outlets: `/tmp/scratch`): dogfood
+///   promotes only on evidence.
 ///
 /// # Errors
 ///
@@ -517,21 +560,59 @@ pub fn compose_hook_argv(
             "hook subtree untranslatable through the mount topology".to_string(),
         ));
     }
-    let mut argv = Vec::with_capacity(
-        hook.argv_prefix.len()
-            + ancestor_routes.len()
-            + subtree_routes.len()
-            + 1
-            + harness_argv.len(),
-    );
+    let mut argv = Vec::new();
     argv.extend(hook.argv_prefix.iter().cloned());
+    // System baseline first (fixed position, deterministic).
+    argv.push("--allow-ro=/".to_string());
     for route in &ancestor_routes {
         argv.push(format!("--allow-ro={route}"));
     }
     for route in &subtree_routes {
         argv.push(format!("--allow-rw={route}"));
     }
+    // Session mounts outside the ancestor domain, granted by
+    // profile mode. Host-side directory check: file sources skip
+    // (documented above).
+    let ancestor_canon = crate::mount::canonicalize_host_source(&ancestor_host.to_string_lossy());
+    for triple in triples {
+        let source = crate::mount::canonicalize_host_source(&triple.host_source);
+        if source.starts_with(&ancestor_canon) {
+            continue;
+        }
+        let covered = ancestor_routes
+            .iter()
+            .chain(subtree_routes.iter())
+            .any(|route| {
+                triple.container_target == *route
+                    || triple.container_target.starts_with(&format!("{route}/"))
+            });
+        if covered {
+            continue;
+        }
+        if !source.is_dir() {
+            continue;
+        }
+        match triple.mode {
+            MountMode::Ro => argv.push(format!("--allow-ro={}", triple.container_target)),
+            MountMode::Rw => argv.push(format!("--allow-rw={}", triple.container_target)),
+        }
+    }
     argv.push("--".to_string());
     argv.extend(harness_argv.iter().cloned());
     Ok(argv)
+}
+
+/// Extracts a wrapper exec-failure detail from one diagnostics
+/// line: `Some` only for the exact negative attestation shape
+/// (`applied:false` with a reason). Anything else — applied
+/// attestations, unparsable bytes, foreign shapes — yields `None`
+/// (only the wrapper writes here, and only its failure report
+/// matters downstream).
+#[must_use]
+pub fn exec_failure_detail(line: &str) -> Option<String> {
+    let attestation: Attestation = serde_json::from_str(line).ok()?;
+    match (attestation.applied, attestation.error) {
+        (false, Some(error)) => Some(error),
+        _ => None,
+    }
 }
