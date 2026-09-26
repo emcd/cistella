@@ -97,6 +97,12 @@ struct LaunchWire {
     workdir: Option<String>,
     /// Reconciliation key for this attempt.
     reconciliation_key: ReconciliationKey,
+    /// Hook launch: a second single-FD bundle (diagnostics
+    /// write-end) follows the stdio triple, forwarded into the
+    /// container at the conventional diagnostics fd. Absent on
+    /// plain launches (default false keeps older senders parsing).
+    #[serde(default)]
+    hook_diagnostics: bool,
 }
 
 /// `isolator.await_result` payload.
@@ -241,6 +247,9 @@ struct ExecBinding {
     argv: Vec<String>,
     /// Launch workdir of the launching attempt.
     workdir: Option<String>,
+    /// Whether the attempt carried hook diagnostics (a second
+    /// bundle follows the stdio triple on replay).
+    hooked: bool,
 }
 
 /// Framework-handle tables keyed by framework-issued strings.
@@ -283,9 +292,15 @@ impl<B: Isolator> IsolatorGuest<B> {
     /// consuming leaves a stale bundle for the next launch. Drained
     /// fds close on drop; drain failure is ignored because the
     /// original refusal reports either way.
-    fn drain_one_bundle(&self) {
+    /// Drains staged bundles after a pre-spawn refusal so the
+    /// channel stays aligned: one stdio triple, plus the
+    /// diagnostics single when the refused attempt was hooked.
+    fn drain_bundles(&self, hooked: bool) {
         if let Some(channel) = self.fd_channel.as_ref() {
             let _ = crate::framework::fdpass::recv_bundle(channel, DRAIN_BUDGET);
+            if hooked {
+                let _ = crate::framework::fdpass::recv_diagnostics_bundle(channel, DRAIN_BUDGET);
+            }
         }
     }
 
@@ -526,7 +541,11 @@ impl<B: Isolator> IsolatorGuest<B> {
                 let req: LaunchWire = match parse(op, payload) {
                     Ok(req) => req,
                     Err(error) => {
-                        self.drain_one_bundle();
+                        // Malformed payloads are framework bugs;
+                        // drain both bundles so a hooked attempt's
+                        // diagnostics single cannot desynchronize
+                        // the next launch.
+                        self.drain_bundles(true);
                         return Err(error);
                     }
                 };
@@ -540,7 +559,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                 let local = match self.resolve_unit(&req.unit_handle) {
                     Ok(local) => local,
                     Err(error) => {
-                        self.drain_one_bundle();
+                        self.drain_bundles(req.hook_diagnostics);
                         return Err(error);
                     }
                 };
@@ -553,13 +572,17 @@ impl<B: Isolator> IsolatorGuest<B> {
                         // returns its binding without spawning again;
                         // any divergence refuses instead of
                         // overwriting (and orphaning) a live child.
-                        // The replay still consumes its staged bundle
-                        // (validating the header) so the channel
-                        // stays aligned: an unread bundle would
-                        // desynchronize the next launch.
+                        // The replay still consumes its staged bundles
+                        // (validating the headers) so the channel
+                        // stays aligned: unread bundles would
+                        // desynchronize the next launch. The hook
+                        // flag joins the identity: a flag-mismatched
+                        // retry refuses rather than misrouting a
+                        // diagnostics single.
                         if binding.key == req.reconciliation_key
                             && binding.argv == req.argv
                             && binding.workdir == req.workdir
+                            && binding.hooked == req.hook_diagnostics
                         {
                             drop(tables);
                             let channel = self
@@ -577,6 +600,21 @@ impl<B: Isolator> IsolatorGuest<B> {
                                     "fd bundle bound to a different launch".to_string(),
                                 ));
                             }
+                            if req.hook_diagnostics {
+                                let (diagnostics, _) =
+                                    crate::framework::fdpass::recv_diagnostics_bundle(
+                                        channel,
+                                        crate::framework::fdpass::LAUNCH_BUNDLE_WAIT,
+                                    )?;
+                                if diagnostics.unit_handle != req.unit_handle.as_str()
+                                    || diagnostics.execution_handle != fw
+                                {
+                                    return Err(CistellaError::Contract(
+                                        "diagnostics bundle bound to a different launch"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
                             return Ok(serde_json::json!({"execution_handle": fw}));
                         }
                         return Err(CistellaError::Contract(format!(
@@ -589,7 +627,9 @@ impl<B: Isolator> IsolatorGuest<B> {
                 // own stdio is protocol pipes) and never by
                 // pathname. The bundle header must name this exact
                 // unit plus execution; anything else refuses before
-                // spawn. Channel presence was checked above.
+                // spawn. Hook launches stage a second single-FD
+                // bundle (diagnostics write-end) validated the same
+                // way. Channel presence was checked above.
                 let channel = self.fd_channel.as_ref().expect("fd channel checked above");
                 let (bundle, fds) = crate::framework::fdpass::recv_bundle(
                     channel,
@@ -601,6 +641,22 @@ impl<B: Isolator> IsolatorGuest<B> {
                     ));
                 }
                 let [stdin, stdout, stderr] = fds;
+                let diagnostics = if req.hook_diagnostics {
+                    let (header, fd) = crate::framework::fdpass::recv_diagnostics_bundle(
+                        channel,
+                        crate::framework::fdpass::LAUNCH_BUNDLE_WAIT,
+                    )?;
+                    if header.unit_handle != req.unit_handle.as_str()
+                        || header.execution_handle != fw
+                    {
+                        return Err(CistellaError::Contract(
+                            "diagnostics bundle bound to a different launch".to_string(),
+                        ));
+                    }
+                    Some(fd)
+                } else {
+                    None
+                };
                 // Conductor identity (pid, foreground pgid) with
                 // verified parentage: evaluated HERE in the guest
                 // (whose parent is conduct while the session lives),
@@ -629,6 +685,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                         stdin,
                         stdout,
                         stderr,
+                        diagnostics,
                         conductor,
                     },
                     &req.reconciliation_key,
@@ -645,6 +702,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                             key: req.reconciliation_key,
                             argv: req.argv,
                             workdir: req.workdir,
+                            hooked: req.hook_diagnostics,
                         },
                     );
                 Ok(serde_json::json!({"execution_handle": fw}))

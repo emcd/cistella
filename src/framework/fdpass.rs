@@ -172,11 +172,49 @@ pub fn send_bundle(
     fds: &[BorrowedFd<'_>; 3],
     timeout: Duration,
 ) -> Result<()> {
+    let raws: Vec<std::os::fd::RawFd> = fds.iter().map(|fd| fd.as_raw_fd()).collect();
+    send_raw(sock, header, &raws, timeout)
+}
+
+/// Sends one diagnostics bundle: header bytes plus exactly one FD
+/// (the diagnostics write-end) in a single `SCM_RIGHTS` message on
+/// the same channel. Same atomicity and bounds as [`send_bundle`];
+/// the header handles must name the launch the diagnostics belongs
+/// to, and the guest validates them identically.
+///
+/// Delivery convention (hook launches): the guest forwards the
+/// received fd at its natural number through `podman exec
+/// --preserve-fd={n}` (exact list — the range form would leak
+/// sibling-session fds into the container), clears its
+/// receive-side CLOEXEC at spawn, verifies the launch argv names
+/// the staged wrapper, and inserts `--diagnostics-fd={n}`
+/// immediately after it. No fixed fd number crosses the boundary,
+/// so parallel hooked launches share no mutable fd state.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on timeout and
+/// `CistellaError::Runtime` on send failure.
+pub fn send_diagnostics_bundle(
+    sock: &OwnedFd,
+    header: &BundleHeader,
+    fd: BorrowedFd<'_>,
+    timeout: Duration,
+) -> Result<()> {
+    send_raw(sock, header, &[fd.as_raw_fd()], timeout)
+}
+
+/// Shared send: header plus rights, atomically, bounded.
+fn send_raw(
+    sock: &OwnedFd,
+    header: &BundleHeader,
+    raws: &[std::os::fd::RawFd],
+    timeout: Duration,
+) -> Result<()> {
     use nix::poll::{PollFd, PollFlags, poll};
     let deadline = std::time::Instant::now() + timeout;
     let body =
         serde_json::to_vec(header).map_err(|e| CistellaError::Runtime(format!("header: {e}")))?;
-    let raws: Vec<std::os::fd::RawFd> = fds.iter().map(|fd| fd.as_raw_fd()).collect();
     let iov = [IoSlice::new(&body)];
     let sent = loop {
         let mut pollfds = [PollFd::new(sock.as_fd(), PollFlags::POLLOUT)];
@@ -197,7 +235,7 @@ pub fn send_bundle(
         match sendmsg::<UnixAddr>(
             sock.as_raw_fd(),
             &iov,
-            &[ControlMessage::ScmRights(&raws)],
+            &[ControlMessage::ScmRights(raws)],
             MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
             None,
         ) {
@@ -236,6 +274,48 @@ pub fn send_bundle(
 /// violations and `CistellaError::Runtime` on wait/receive
 /// failure.
 pub fn recv_bundle(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, [OwnedFd; 3])> {
+    let (header, fds) = recv_raw(sock, timeout)?;
+    if fds.len() != 3 {
+        return Err(CistellaError::Contract(format!(
+            "fd bundle must carry exactly 3 descriptors, got {}",
+            fds.len()
+        )));
+    }
+    let array: [OwnedFd; 3] = fds
+        .into_iter()
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("exactly 3 fds checked above");
+    Ok((header, array))
+}
+
+/// Receives one diagnostics bundle with a bounded wait: header
+/// plus exactly one FD (the diagnostics write-end), or refusal.
+/// Same atomicity and ownership discipline as [`recv_bundle`];
+/// the caller validates the header handles against the launch.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on shape/count/truncation
+/// violations and `CistellaError::Runtime` on wait/receive
+/// failure.
+pub fn recv_diagnostics_bundle(
+    sock: &OwnedFd,
+    timeout: Duration,
+) -> Result<(BundleHeader, OwnedFd)> {
+    let (header, mut fds) = recv_raw(sock, timeout)?;
+    if fds.len() != 1 {
+        return Err(CistellaError::Contract(format!(
+            "diagnostics bundle must carry exactly 1 descriptor, got {}",
+            fds.len()
+        )));
+    }
+    Ok((header, fds.pop().expect("exactly 1 fd checked above")))
+}
+
+/// Shared receive: one atomic message, rights owned immediately,
+/// header parsed. Count checks stay with the typed callers.
+fn recv_raw(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, Vec<OwnedFd>)> {
     use nix::poll::{PollFd, PollFlags, poll};
     let mut pollfds = [PollFd::new(sock.as_fd(), PollFlags::POLLIN)];
     let wait = nix::poll::PollTimeout::try_from(timeout)
@@ -301,16 +381,5 @@ pub fn recv_bundle(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, [
         })?;
         (header, fds)
     };
-    if fds.len() != 3 {
-        return Err(CistellaError::Contract(format!(
-            "fd bundle must carry exactly 3 descriptors, got {}",
-            fds.len()
-        )));
-    }
-    let array: [OwnedFd; 3] = fds
-        .into_iter()
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("exactly 3 fds checked above");
-    Ok((header, array))
+    Ok((header, fds))
 }
