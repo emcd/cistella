@@ -12,6 +12,8 @@ mod helpers;
 mod labels;
 #[path = "integration/landlock_spike.rs"]
 mod landlock_spike;
+#[path = "integration/landlock_wrapper.rs"]
+mod landlock_wrapper;
 #[path = "integration/lifecycle.rs"]
 mod lifecycle;
 #[path = "integration/mountprep.rs"]

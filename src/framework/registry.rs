@@ -38,6 +38,25 @@ pub const STAGED_WRAPPER_GUEST_PATH: &str = "/run/cistella/hooks/landlock-wrap";
 /// Canonical guest-context probe operation for the Landlock hook.
 pub const LANDLOCK_PROBE_OP: &str = "probe_capabilities";
 
+/// Minimum kernel Landlock ABI for the file-access matrix:
+/// `TRUNCATE` (bit 14) arrives at ABI 3.
+pub const MIN_LANDLOCK_ABI: u32 = 3;
+
+/// Handled file rights for the demonstration matrix: bits 0..=14
+/// (`EXECUTE` through `TRUNCATE`). Device, network, and scope
+/// controls stay out of scope by design: unhandled rights pass
+/// through, documented and reviewable, and the probe refuses any
+/// kernel below the TRUNCATE ABI rather than narrowing the mask.
+pub const REQUIRED_HANDLED_FS: u64 = (1 << 15) - 1;
+
+/// Ancestor-route rights: execute plus read (`EXECUTE` bit 0,
+/// `READ_FILE` bit 2, `READ_DIR` bit 3). Writes are denied by
+/// omission; the subtree exception grants the full matrix.
+pub const ANCESTOR_RIGHTS: u64 = (1 << 0) | (1 << 2) | (1 << 3);
+
+/// Subtree-route rights: the full demonstration matrix.
+pub const SUBTREE_RIGHTS: u64 = REQUIRED_HANDLED_FS;
+
 /// Finite admitted table: the only `(registry, path)` pairs that
 /// resolve. Grows only by code change plus review — never by
 /// extension input.
