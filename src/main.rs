@@ -463,11 +463,23 @@ fn conduct_session(
         _staged_guards.push(guard);
     }
     triples.extend(evaluated.merged.mounts.clone());
+    // Revision (task 3.2, operator direction): with hooks staged,
+    // directory RO triples reach Podman as RW so submounts
+    // materialize; the Landlock policy derives from the ORIGINAL
+    // modes (compose below reads `triples`). Without hooks the set
+    // passes through untouched — zero behavior change on plain
+    // sessions. Validation and rendering run on the revised set:
+    // they must reflect what Podman actually mounts.
+    let revised: Vec<MountTriple> = if evaluated.merged.guest_hooks.is_empty() {
+        triples.clone()
+    } else {
+        cistella::mount::revise_ro_for_confinement(&triples)
+    };
     // Final joint topology gate: extension mounts plus credential
     // volumes validate and preflight as one merged set — still
     // pre-create, so a refusal leaves no residue.
-    cistella::mount::validate_mounts(&triples, prof.home())?;
-    cistella::mount::nested_ro_preflight(&triples)?;
+    cistella::mount::validate_mounts(&revised, prof.home())?;
+    cistella::mount::nested_ro_preflight(&revised)?;
     // Hook launch plan (task 3.2): confinement roots plus wrapper
     // argv compose pre-create — an untranslatable topology, a
     // session outside the confinement root, or a bad shape refuses
@@ -485,7 +497,7 @@ fn conduct_session(
             &argv,
         )?)
     };
-    let volumes = podman_volume_args(&triples, prof.home(), None);
+    let volumes = podman_volume_args(&revised, prof.home(), None);
     let all_volumes = volumes;
     let mut env_extra: Vec<String> = prof
         .environment_assignments

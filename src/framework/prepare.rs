@@ -513,7 +513,16 @@ pub fn confinement_roots(
 /// Wrapper args (operator-decided policy, mechanical composition):
 /// - `--allow-ro=/`: system baseline for the loader, interpreter,
 ///   and libc (read plus execute, never write). Without it no
-///   ordinary harness starts; Landlock is default-deny.
+///   ordinary harness starts; Landlock is default-deny. The rule
+///   lands on the container rootfs (the image mount nothing else
+///   covers), not on any host path.
+/// - `--allow-rw=/dev`: device essentials (`null`, `zero`,
+///   `urandom`, `shm`, `pts`) need writes a read-only rule
+///   denies. Scoped to the container-private devtmpfs, where
+///   kernel capabilities neuter real device creation; file-level
+///   granularity is unexpressible (`path_beneath` needs directory
+///   roots), so the whole dir grants full. The one debatable
+///   entry: dogfood demotes it only on evidence.
 /// - ancestor guest routes as read-execute; subtree guest routes
 ///   as full rights (the union exception).
 /// - other session mounts outside the ancestor domain, granted by
@@ -564,6 +573,7 @@ pub fn compose_hook_argv(
     argv.extend(hook.argv_prefix.iter().cloned());
     // System baseline first (fixed position, deterministic).
     argv.push("--allow-ro=/".to_string());
+    argv.push("--allow-rw=/dev".to_string());
     for route in &ancestor_routes {
         argv.push(format!("--allow-ro={route}"));
     }

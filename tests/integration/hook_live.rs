@@ -126,10 +126,13 @@ fn hook_fixture(image: &str) -> HookFixture {
         .to_string_lossy()
         .to_string();
     let triples = vec![
+        // The broad mount declares RO (the 0.2 goal): revision
+        // converts it to RW for Podman while the Landlock policy
+        // enforces read-only with the subtree carveout.
         MountTriple {
             host_source: tree.path().to_string_lossy().to_string(),
             container_target: "/src".to_string(),
-            mode: MountMode::Rw,
+            mode: MountMode::Ro,
         },
         MountTriple {
             host_source: scratch,
@@ -138,7 +141,8 @@ fn hook_fixture(image: &str) -> HookFixture {
         },
         staged_triple,
     ];
-    let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
+    let revised = cistella::mount::revise_ro_for_confinement(&triples);
+    let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
         session,
         volumes,

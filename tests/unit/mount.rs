@@ -579,3 +579,41 @@ fn nested_ro_preflight_refuses_missing_chain() {
     ];
     nested_ro_preflight(&present).unwrap();
 }
+
+#[test]
+fn revise_ro_directories_for_confinement() {
+    use cistella::mount::{MountMode, MountTriple, revise_ro_for_confinement};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = dir.path().to_string_lossy().to_string();
+    let file = dir.path().join("sock");
+    std::fs::write(&file, b"x").expect("file");
+    let triples = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: file.to_string_lossy().to_string(),
+            container_target: "/run/agent.sock".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/work".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let revised = revise_ro_for_confinement(&triples);
+    // Directory RO flips (Podman materializes submounts under
+    // RW); file RO stays (Landlock cannot carry file policy, so
+    // Podman-level RO remains its enforcement); RW untouched.
+    // Targets and sources are identical either way.
+    assert_eq!(revised[0].mode, MountMode::Rw);
+    assert_eq!(revised[1].mode, MountMode::Ro);
+    assert_eq!(revised[2].mode, MountMode::Rw);
+    for (before, after) in triples.iter().zip(revised.iter()) {
+        assert_eq!(before.host_source, after.host_source);
+        assert_eq!(before.container_target, after.container_target);
+    }
+}

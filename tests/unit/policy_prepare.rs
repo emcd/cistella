@@ -686,6 +686,7 @@ fn compose_hook_argv_orders_wrapper_args_then_harness() {
         vec![
             STAGED_WRAPPER_GUEST_PATH.to_string(),
             "--allow-ro=/".to_string(),
+            "--allow-rw=/dev".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
             "--".to_string(),
@@ -855,6 +856,7 @@ fn compose_baseline_grants_scratch_skips_files_and_siblings() {
         vec![
             STAGED_WRAPPER_GUEST_PATH.to_string(),
             "--allow-ro=/".to_string(),
+            "--allow-rw=/dev".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
             "--allow-rw=/tmp/scratch".to_string(),

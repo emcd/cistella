@@ -44,3 +44,9 @@ Land as additive bins plus a conduct call-site switch; fleet profiles and sessio
 ## Decided Names
 
 - Extension guest: `cistella-extension-landlock` (task 3.1). Wrapper binary: `cistella-landlock-wrap` (task 3.2); staged RO in-guest at `/run/cistella/hooks/landlock-wrap`, resolved from the `shipped` registry (install sibling directory).
+
+## Confinement Direction (operator, 2026-09-26)
+
+- Landlock is the primary read-only layer over read-write mounts: the 0.2 goal is declaring the `~/src` ancestor mount RO and having the framework convert directory-RO triples to RW for Podman (so submounts materialize), while the in-container policy — derived from the ORIGINAL declared modes — enforces read-only with carveouts (subtree, scratch, session mounts). File-source triples keep Podman-level RO (a file cannot root a `path_beneath` rule). No Podman RO removal beyond the mechanical conversion: defense in depth stays for 0.2, fleet profiles untouched.
+- No new lifecycle phases: `prepare` is the pre-initialization engagement (extension answers, framework revises mounts, merge validates), and probe/apply/launch is the post-initialization engagement (guest-context probe, wrapper lineage apply with attestation, composed launch). The hook points enumerated at spec start suffice.
+- System baseline (operator-decided, mechanical composition): read-execute on the container rootfs (loader/interpreter/libc under default-deny), full rights on `/dev` (container-private devtmpfs; null/shm/ptmx function), full on the subtree and outside-ancestor read-write session mounts, read-execute on outside read-only mounts. `/tmp` and container `$HOME` writes stay denied (outlet: `/tmp/scratch`); the host-`/tmp`-subdir bind is deploy-side follow-up. Unix-socket connect semantics under confinement are an explicit dogfood risk.
