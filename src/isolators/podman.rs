@@ -392,6 +392,45 @@ impl Isolator for PodmanIsolator {
         // `HeldFiles` wires descriptors received over the
         // ancillary-fd channel (external guests, whose own stdio
         // is protocol pipes that must never carry harness bytes).
+        //
+        // Terminal foreground follows the routing: a harness on a
+        // session PTY must run in the caller's (foreground) process
+        // group — spawned from the guest's background group (kill
+        // semantics), its terminal I/O would stop with
+        // SIGTTIN/SIGTTOU instead of flowing. The guest passes a
+        // parentage-verified conductor pgid; this side re-checks
+        // terminal shape and refuses a TTY launch without one
+        // (silent background launch would stall). Piped sessions
+        // and in-process conduct never move (no terminal semantics,
+        // or already in the caller's group).
+        let foreground = match &stdio {
+            StdioBinding::HeldFiles {
+                stdin, conductor, ..
+            } => crate::framework::isolator::foreground_join(
+                crate::framework::isolator::is_session_tty(stdin),
+                *conductor,
+            ),
+            StdioBinding::Inherit => crate::framework::isolator::ForegroundJoin::Stay,
+        };
+        // Join target carries all three identities pre_exec
+        // verifies: our own pid (are we still the guest's child),
+        // the conductor pid (whose CURRENT pgid must match the
+        // capture), and the captured foreground pgid (the setpgid
+        // target). Comparing the guest's own pgid here would differ
+        // by design and refuse every launch.
+        let join_target: Option<(u32, u32, nix::unistd::Pid)> = match foreground {
+            crate::framework::isolator::ForegroundJoin::Join((conductor_pid, pgid)) => Some((
+                std::process::id(),
+                conductor_pid,
+                nix::unistd::Pid::from_raw(pgid as i32),
+            )),
+            crate::framework::isolator::ForegroundJoin::Stay => None,
+            crate::framework::isolator::ForegroundJoin::Refuse => {
+                return Err(CistellaError::Contract(
+                    "pty foreground group unavailable: no verified conductor".to_string(),
+                ));
+            }
+        };
         let (stdin, stdout, stderr) = match stdio {
             StdioBinding::Inherit => (
                 std::process::Stdio::inherit(),
@@ -402,6 +441,7 @@ impl Isolator for PodmanIsolator {
                 stdin,
                 stdout,
                 stderr,
+                ..
             } => (
                 std::process::Stdio::from(stdin),
                 std::process::Stdio::from(stdout),
@@ -421,11 +461,40 @@ impl Isolator for PodmanIsolator {
                 .stdin(stdin)
                 .stdout(stdout)
                 .stderr(stderr)
-                .pre_exec(|| {
+                .pre_exec(move || {
                     // The child resets to default so it still dies with the pane.
                     let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
                     let _ = sigaction(Signal::SIGHUP, &dfl);
                     let _ = sigaction(Signal::SIGTERM, &dfl);
+                    if let Some((guest_pid, conductor_pid, caller)) = join_target {
+                        // Identity, two independent questions: (1)
+                        // are we still the guest's child (parent
+                        // must equal the guest pid captured above);
+                        // (2) is the CONDUCTOR's current pgid still
+                        // the captured foreground pgid (comparing
+                        // the guest's own pgid here would differ by
+                        // design). Any drift refuses loudly rather
+                        // than joining a wrong group; setpgid
+                        // failure likewise propagates (spawn refuses
+                        // typed) instead of stalling silently with
+                        // SIGTTIN later.
+                        let ppid = nix::unistd::getppid();
+                        if ppid.as_raw() as u32 != guest_pid {
+                            return Err(std::io::Error::other(
+                                "pty join: reparented since capture",
+                            ));
+                        }
+                        let conductor = nix::unistd::Pid::from_raw(conductor_pid as i32);
+                        let current =
+                            nix::unistd::getpgid(Some(conductor)).map_err(std::io::Error::other)?;
+                        if current != caller {
+                            return Err(std::io::Error::other(
+                                "pty join: caller group drifted since capture",
+                            ));
+                        }
+                        nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), caller)
+                            .map_err(std::io::Error::other)?;
+                    }
                     Ok(())
                 })
                 .spawn()

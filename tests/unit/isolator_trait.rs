@@ -351,3 +351,33 @@ fn unit_dir_scan_refuses_failed_iteration() {
     let error = scan_unit_dir(vec![injected].into_iter(), "key-1").unwrap_err();
     assert!(error.to_string().contains("unit directory iteration"));
 }
+
+#[test]
+fn foreground_join_truth_table() {
+    // Terminal plus verified conductor joins; terminal without
+    // conductor refuses typed (a silent background launch would
+    // stall with SIGTTIN); piped never moves. In-process Inherit
+    // never consults this (already grouped).
+    use cistella::framework::isolator::{ForegroundJoin, foreground_join};
+    assert_eq!(
+        foreground_join(true, Some((5, 7))),
+        ForegroundJoin::Join((5, 7))
+    );
+    assert_eq!(foreground_join(true, None), ForegroundJoin::Refuse);
+    assert_eq!(foreground_join(false, Some((5, 7))), ForegroundJoin::Stay);
+    assert_eq!(foreground_join(false, None), ForegroundJoin::Stay);
+}
+
+#[test]
+fn verified_conductor_pgid_truth_table() {
+    // Parentage equality authenticates (a subreaper adoption fails
+    // even when it is not init); only then does a looked-up pgid
+    // pass through, and a failed lookup maps to None for the TTY
+    // branch to refuse downstream.
+    use cistella::framework::isolator::verified_conductor_pgid;
+    assert_eq!(verified_conductor_pgid(5, 5, Some(9)), Some((5, 9)));
+    assert_eq!(verified_conductor_pgid(5, 5, None), None);
+    assert_eq!(verified_conductor_pgid(5, 6, Some(9)), None);
+    assert_eq!(verified_conductor_pgid(5, 6, None), None);
+    assert_eq!(verified_conductor_pgid(5, 1, Some(9)), None);
+}

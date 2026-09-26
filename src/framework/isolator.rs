@@ -89,7 +89,66 @@ pub enum StdioBinding {
         stdout: std::os::fd::OwnedFd,
         /// Harness standard error.
         stderr: std::os::fd::OwnedFd,
+        /// Conductor identity (pid, foreground pgid) captured at
+        /// launch against the host_pid recorded at guest startup,
+        /// if available. The backend joins the foreground pgid
+        /// for terminal sessions (see `foreground_join`);
+        /// pre_exec re-verifies both halves before trusting them.
+        conductor: Option<(u32, u32)>,
     },
+}
+
+/// Foreground-join decision for a harness launch: join only with a
+/// verified conductor pgid on a terminal session; refuse a TTY
+/// launch without one (a silent background launch would stall with
+/// SIGTTIN instead); never move piped sessions (no terminal
+/// semantics). In-process `Inherit` launches never consult this
+/// (already in the caller's group).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ForegroundJoin {
+    /// Join this conductor (pid, foreground pgid) in the spawned child.
+    Join((u32, u32)),
+    /// Refuse the launch typed: no safe foreground exists.
+    Refuse,
+    /// Stay in the spawner's group.
+    Stay,
+}
+
+/// Decides the foreground join from session shape: terminal plus
+/// verified conductor joins, terminal without conductor refuses,
+/// piped stays. Pure decision seam — the truth table pins
+/// directly instead of through a live PTY.
+#[must_use]
+pub fn foreground_join(tty: bool, conductor: Option<(u32, u32)>) -> ForegroundJoin {
+    match (tty, conductor) {
+        (true, Some(identity)) => ForegroundJoin::Join(identity),
+        (true, None) => ForegroundJoin::Refuse,
+        (false, _) => ForegroundJoin::Stay,
+    }
+}
+
+/// Maps a parentage observation to verified conductor identity
+/// (pid, pgid): the parent must still be the conductor recorded at
+/// guest startup (a subreaper adoption fails the equality even when
+/// it is not init), and only then does a looked-up pgid pass
+/// through with its pid. A failed lookup maps to None here; the
+/// TTY branch turns that into [`ForegroundJoin::Refuse`]
+/// downstream.
+#[must_use]
+pub fn verified_conductor_pgid(parent: u32, host: u32, pgid: Option<u32>) -> Option<(u32, u32)> {
+    if parent == host {
+        pgid.map(|pgid| (parent, pgid))
+    } else {
+        None
+    }
+}
+
+/// True when the session input is a terminal: the harness must run
+/// in the caller's (foreground) process group for terminal I/O to
+/// flow instead of stopping with SIGTTIN/SIGTTOU.
+#[must_use]
+pub fn is_session_tty<Fd: std::os::fd::AsFd + std::os::fd::AsRawFd>(fd: &Fd) -> bool {
+    nix::unistd::isatty(fd.as_raw_fd()).unwrap_or(false)
 }
 
 /// Initiate attestation: proof the unit started.

@@ -173,6 +173,12 @@ pub struct IsolatorGuest<B = PodmanIsolator> {
     /// Ancillary-fd channel for launch stdio bundles (production
     /// guest only; absent in unit tests, where launches refuse).
     fd_channel: Option<std::os::fd::OwnedFd>,
+    /// Conductor pid recorded at guest startup (the guest's parent
+    /// is conduct while the session lives). Launch-time parentage
+    /// must still equal this: a subreaper adoption passes a
+    /// `parent != 1` check but is not conduct, so equality — not
+    /// non-init — authenticates the foreground pgid source.
+    host_pid: u32,
 }
 
 /// Framework unit binding: local handle plus the attempt identity
@@ -220,6 +226,7 @@ impl IsolatorGuest<PodmanIsolator> {
             backend: PodmanIsolator::new(),
             tables: std::sync::Mutex::new(Tables::default()),
             fd_channel: None,
+            host_pid: std::os::unix::process::parent_id(),
         }
     }
 }
@@ -232,6 +239,7 @@ impl<B: Isolator> IsolatorGuest<B> {
             backend,
             tables: std::sync::Mutex::new(Tables::default()),
             fd_channel: None,
+            host_pid: std::os::unix::process::parent_id(),
         }
     }
 
@@ -503,6 +511,26 @@ impl<B: Isolator> IsolatorGuest<B> {
                     ));
                 }
                 let [stdin, stdout, stderr] = fds;
+                // Conductor identity (pid, foreground pgid) with
+                // verified parentage: evaluated HERE in the guest
+                // (whose parent is conduct while the session lives),
+                // never one generation deeper where getppid returns
+                // the guest itself. A failed lookup maps to None;
+                // the TTY branch turns that into a typed refusal
+                // downstream rather than a silent background launch.
+                // The pid travels so pre_exec can verify the
+                // conductor's CURRENT pgid against the captured one
+                // (comparing the guest's own pgid would differ by
+                // design and refuse every launch).
+                let parent = std::os::unix::process::parent_id();
+                let pgid = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(parent as i32)))
+                    .ok()
+                    .map(|pgid| pgid.as_raw() as u32);
+                let conductor = crate::framework::isolator::verified_conductor_pgid(
+                    parent,
+                    self.host_pid,
+                    pgid,
+                );
                 let launched = self.backend.execute_launch(
                     &local,
                     &req.argv,
@@ -511,6 +539,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                         stdin,
                         stdout,
                         stderr,
+                        conductor,
                     },
                     &req.reconciliation_key,
                 )?;
