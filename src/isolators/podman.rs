@@ -164,9 +164,19 @@ impl PodmanIsolator {
     /// then unit files (crash-after-install leaves a file with no
     /// container).
     ///
+    /// Template-dialect discipline: `ps --format` field selection
+    /// varies by version (4.9.3 has no `.Config` on ps rows), so ps
+    /// lists NAMES ONLY and every candidate is verified through
+    /// `inspect` (`json` template func plus `index` on present keys
+    /// is version-stable). The label filter is an optimization
+    /// only: adoption requires the key label to verify, never
+    /// trusts the filter output.
+    ///
     /// Fail-closed: spawn/query/read failures refuse with a typed
     /// error instead of reporting absence. A missing unit directory
-    /// is clean absence (no units ever installed), not failure.
+    /// is clean absence (no units ever installed), not failure. A
+    /// candidate that vanishes mid-scan skips (its absence is real);
+    /// any other query failure refuses.
     ///
     /// # Errors
     ///
@@ -180,7 +190,7 @@ impl PodmanIsolator {
                 "--filter",
                 &format!("label={}={}", LABEL_RECONCILIATION_KEY, key.as_str()),
                 "--format",
-                "{{.Names}} {{index .Config.Labels \"cistella.id\"}}",
+                "{{.Names}}",
             ])
             .output()
             .map_err(|e| CistellaError::Runtime(format!("podman ps for key: {e}")))?;
@@ -191,7 +201,22 @@ impl PodmanIsolator {
             )));
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        if let Some((name, sid)) = find_key_in_ps_output(&text) {
+        for name in find_container_names(&text) {
+            let Some(labels) = inspect_labels(&name)? else {
+                continue;
+            };
+            let hit = labels
+                .get(LABEL_RECONCILIATION_KEY)
+                .and_then(|label| label.as_str())
+                == Some(key.as_str());
+            if !hit {
+                continue;
+            }
+            let sid = labels
+                .get(LABEL_ID)
+                .and_then(|label| label.as_str())
+                .unwrap_or_default()
+                .to_string();
             return Ok(Some(self.adopt_key(key, &name, &sid)));
         }
         let Some(dir) = quadlet_dir() else {
@@ -224,19 +249,50 @@ impl PodmanIsolator {
     }
 }
 
-/// Parses `podman ps` name/id lines for the first entry with a real
-/// session id (podman's `<no value>` missing marker never matches).
+/// Parses names-only `podman ps` output into candidate container
+/// names (one per non-empty line). Label verification happens per
+/// candidate through `inspect_labels`, never through ps field
+/// rendering.
 #[must_use]
-pub fn find_key_in_ps_output(text: &str) -> Option<(String, String)> {
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        if let (Some(name), Some(sid)) = (parts.next(), parts.next())
-            && !sid.starts_with('<')
-        {
-            return Some((name.to_string(), sid.to_string()));
+pub fn find_container_names(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Reads one container's config labels as a JSON map (`json`
+/// template func is version-stable, unlike ps field selection).
+/// Returns `None` when the container vanished mid-scan (its
+/// absence is real, not failure); any other query failure refuses
+/// fail-closed.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on spawn failure, inspect
+/// failure for a present container, or unparsable output.
+fn inspect_labels(name: &str) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+    let out = Command::new("podman")
+        .args(["inspect", "--format", "{{json .Config.Labels}}", name])
+        .output()
+        .map_err(|e| CistellaError::Runtime(format!("podman inspect labels: {e}")))?;
+    if !out.status.success() {
+        // Vanished between ps and inspect reads as absence; a
+        // present-but-uninspectable container refuses (fail-closed:
+        // an uncertain scan must never greenlight a duplicate).
+        let gone = !container_exists(name).unwrap_or(true);
+        if gone {
+            return Ok(None);
         }
+        return Err(CistellaError::Runtime(format!(
+            "podman inspect labels {name} failed while container exists: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
     }
-    None
+    serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&out.stdout)
+        .map(Some)
+        .map_err(|e| CistellaError::Runtime(format!("podman inspect labels {name}: {e}")))
 }
 
 /// Scans one unit directory for a key label.

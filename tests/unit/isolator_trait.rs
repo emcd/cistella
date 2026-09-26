@@ -281,15 +281,16 @@ fn capabilities_gate_matches_contract() {
 }
 
 #[test]
-fn ps_output_parsing_skips_missing_markers() {
-    use cistella::isolators::podman::find_key_in_ps_output;
+fn ps_output_parsing_yields_candidate_names() {
+    // Names-only ps output: label verification happens per
+    // candidate through inspect, never through ps rendering.
+    use cistella::isolators::podman::find_container_names;
+    assert_eq!(find_container_names("cistella-abc\n"), vec!["cistella-abc"]);
     assert_eq!(
-        find_key_in_ps_output("cistella-abc abc123\n"),
-        Some(("cistella-abc".to_string(), "abc123".to_string()))
+        find_container_names("cistella-abc\n\n  \ncistella-def\n"),
+        vec!["cistella-abc", "cistella-def"]
     );
-    // Podman's `<no value>` marker never matches.
-    assert_eq!(find_key_in_ps_output("cistella-abc <no value>\n"), None);
-    assert_eq!(find_key_in_ps_output(""), None);
+    assert!(find_container_names("").is_empty());
 }
 
 #[test]
