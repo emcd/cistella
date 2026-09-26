@@ -544,3 +544,38 @@ fn guest_routes_empty_without_cover() {
     let routes = guest_routes_for_host(&triples, std::path::Path::new("/elsewhere"));
     assert!(routes.is_empty(), "untranslatable paths yield no routes");
 }
+
+#[test]
+fn nested_ro_preflight_refuses_missing_chain() {
+    use cistella::mount::{MountMode, MountTriple, nested_ro_preflight};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = dir.path().to_string_lossy().to_string();
+    let triples = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/a".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/sub/missing"),
+            container_target: "/a/sub".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let error = nested_ro_preflight(&triples).unwrap_err();
+    assert!(error.to_string().contains("nested mount"), "got: {error}");
+    std::fs::create_dir_all(format!("{host}/sub")).expect("sub dir");
+    let present = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/a".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/sub"),
+            container_target: "/a/sub".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    nested_ro_preflight(&present).unwrap();
+}

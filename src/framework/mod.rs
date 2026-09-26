@@ -10,6 +10,7 @@ pub mod credentials;
 pub mod discovery;
 pub mod fdpass;
 pub mod guest;
+pub mod hooks;
 pub mod isolator;
 pub mod policy;
 pub mod prepare;

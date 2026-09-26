@@ -14,8 +14,7 @@ use serde_json::json;
 use cistella::framework::contract::{GuestHookRequest, MergeContext, Provenance, Scope, Severity};
 use cistella::framework::policy::{PolicySet, acceptance_set, evaluate_all};
 use cistella::framework::prepare::{
-    EXTENSION_BIN, check_hook_executable, parse_capability, refuse_pending_hook_delivery,
-    run_landlock_prepare, run_prepare,
+    EXTENSION_BIN, check_hook_executable, parse_capability, run_landlock_prepare, run_prepare,
 };
 use cistella::framework::protocol::{
     Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope,
@@ -616,15 +615,129 @@ fn hook_executable_binding_refuses_extension_args() {
 }
 
 #[test]
-fn pending_hook_delivery_refuses_nonempty() {
-    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
-    // Interim 3.1 gate: requested confinement without delivery
-    // refuses pre-create rather than running unconfined.
-    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
-    let error = refuse_pending_hook_delivery(&[hook]).unwrap_err();
+fn probe_report_gates_abi_and_mask() {
+    use cistella::framework::prepare::parse_probe_report;
+    parse_probe_report(br#"{"abi":7,"handled_fs_mask":32767}"#).unwrap();
+    let error = parse_probe_report(br#"{"abi":2,"handled_fs_mask":32767}"#).unwrap_err();
+    assert!(error.to_string().contains("below minimum"), "got: {error}");
+    let error = parse_probe_report(br#"{"abi":7,"handled_fs_mask":8191}"#).unwrap_err();
     assert!(
-        error.to_string().contains("refusing pre-create"),
+        error.to_string().contains("rights shortfall"),
         "got: {error}"
     );
-    refuse_pending_hook_delivery(&[]).unwrap();
+    let error =
+        parse_probe_report(br#"{"unsupported":"landlock_create_ruleset: ENOSYS"}"#).unwrap_err();
+    assert!(error.to_string().contains("unsupported"), "got: {error}");
+    let error = parse_probe_report(br#"{"abi":"seven"}"#).unwrap_err();
+    assert!(error.to_string().contains("shape"), "got: {error}");
+}
+
+#[test]
+fn attestation_line_parses_applied() {
+    use cistella::framework::prepare::parse_attestation_line;
+    assert_eq!(
+        parse_attestation_line(r#"{"applied":true,"abi":7}"#).unwrap(),
+        7
+    );
+    let error =
+        parse_attestation_line(r#"{"applied":false,"error":"bad allow path"}"#).unwrap_err();
+    assert!(error.to_string().contains("apply failure"), "got: {error}");
+    let error = parse_attestation_line("not json").unwrap_err();
+    assert!(error.to_string().contains("shape"), "got: {error}");
+}
+
+#[test]
+fn confinement_roots_require_src_tree() {
+    use cistella::framework::prepare::confinement_roots;
+    use std::path::Path;
+    let (ancestor, subtree) =
+        confinement_roots(Path::new("/home/op"), "/home/op/src/proj").unwrap();
+    assert_eq!(ancestor, Path::new("/home/op/src"));
+    assert_eq!(subtree, Path::new("/home/op/src/proj"));
+    let error = confinement_roots(Path::new("/home/op"), "/srv/other").unwrap_err();
+    assert!(
+        error.to_string().contains("confinement root"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn compose_hook_argv_orders_wrapper_args_then_harness() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![MountTriple {
+        host_source: "/home/op/src".to_string(),
+        container_target: "/src".to_string(),
+        mode: MountMode::Rw,
+    }];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &["sh".to_string(), "-c".to_string(), "echo hi".to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        argv,
+        vec![
+            STAGED_WRAPPER_GUEST_PATH.to_string(),
+            "--allow-ro=/src".to_string(),
+            "--allow-rw=/src/proj".to_string(),
+            "--".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo hi".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compose_hook_argv_refuses_count_and_cover() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![MountTriple {
+        host_source: "/home/op/src".to_string(),
+        container_target: "/src".to_string(),
+        mode: MountMode::Rw,
+    }];
+    let error = compose_hook_argv(
+        &[],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("exactly one hook"),
+        "got: {error}"
+    );
+    let error = compose_hook_argv(
+        &[hook.clone(), hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("exactly one hook"),
+        "got: {error}"
+    );
+    let error = compose_hook_argv(
+        &[singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()])],
+        &[],
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &[],
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("untranslatable"), "got: {error}");
 }

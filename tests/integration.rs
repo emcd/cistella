@@ -8,6 +8,8 @@ mod design_vectors;
 mod guest_hosting;
 #[path = "integration/helpers.rs"]
 mod helpers;
+#[path = "integration/hook_live.rs"]
+mod hook_live;
 #[path = "integration/labels.rs"]
 mod labels;
 #[path = "integration/landlock_spike.rs"]

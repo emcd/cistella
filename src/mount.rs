@@ -658,3 +658,24 @@ pub fn guest_routes_for_host(triples: &[MountTriple], host_path: &std::path::Pat
     routes.dedup();
     routes
 }
+/// Nested-under-RO availability preflight: admitted topologies start
+/// only when the intermediate chain pre-exists in the RO ancestor's
+/// host source. Callers run it pre-create, so a refusal leaves no
+/// residue.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on the first missing intermediate.
+pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
+    for check in nested_ro_checks(triples) {
+        if let Some(missing) = nested_ro_missing(&check) {
+            return Err(CistellaError::Mount(format!(
+                "nested mount {} under read-only {}: missing {}",
+                check.descendant,
+                check.ancestor,
+                missing.display()
+            )));
+        }
+    }
+    Ok(())
+}

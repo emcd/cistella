@@ -3,7 +3,7 @@
 use cistella::cli::{Cli, Command};
 use cistella::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::{refuse_pending_hook_delivery, run_landlock_prepare};
+use cistella::framework::prepare::{compose_hook_argv, confinement_roots, run_landlock_prepare};
 use cistella::framework::signals;
 use cistella::isolators::client::WireClient;
 use cistella::isolators::podman::PodmanIsolator;
@@ -256,28 +256,6 @@ fn report_release(outcome: Result<(), cistella::error::CistellaError>) {
     }
 }
 
-/// Nested-under-RO availability preflight: admitted topologies start
-/// only when the intermediate chain pre-exists in the RO ancestor's
-/// host source. Callers run it pre-create, so a refusal leaves no
-/// residue.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Mount` on the first missing intermediate.
-fn nested_ro_preflight(triples: &[MountTriple]) -> Result<(), cistella::error::CistellaError> {
-    for check in cistella::mount::nested_ro_checks(triples) {
-        if let Some(missing) = cistella::mount::nested_ro_missing(&check) {
-            return Err(cistella::error::CistellaError::Mount(format!(
-                "nested mount {} under read-only {}: missing {}",
-                check.descendant,
-                check.ancestor,
-                missing.display()
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// Retires a proven-dead pre-exec client and hosts a
 /// replacement under the still-held creation-window guard. Close
 /// (unconditional join/unlink) frees the rendezvous path, then a
@@ -393,7 +371,9 @@ fn conduct_session(
     };
     let mut triples = prof.mounts.clone();
     triples.push(MountTriple {
-        host_source: directory,
+        // Cloned: the launch-time confinement derivation re-reads
+        // the canonical session directory below.
+        host_source: directory.clone(),
         container_target: worktree_target.clone(),
         mode: MountMode::Rw,
     });
@@ -407,7 +387,7 @@ fn conduct_session(
     // only when the intermediate chain pre-exists in the RO ancestor's
     // host source. Runs after validation, before scratch creation or
     // unit install — a refusal leaves literally no residue.
-    nested_ro_preflight(&triples)?;
+    cistella::mount::nested_ro_preflight(&triples)?;
     // Per-session scratch (XDG path, `/tmp` fallback; Label= tracks the id).
     let scratch_host = cistella::lock::scratch_dir(&id)
         .to_string_lossy()
@@ -453,16 +433,31 @@ fn conduct_session(
     // guest answers one transaction; the central merge sees the
     // full occupied baseline (profile, CLI, worktree, scratch, and
     // credential-surface mounts alike). Merged env/mounts fan into
-    // the session plan below; requested hooks refuse pre-create
-    // until task 3.2 delivers staging and apply.
+    // the session plan below; requested hooks stage here (task
+    // 3.2) and execute at launch.
     let evaluated = run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?;
-    refuse_pending_hook_delivery(&evaluated.merged.guest_hooks)?;
+    // Hook staging (task 3.2, replaces the interim refuse gate):
+    // each requested hook resolves to a private verified copy
+    // mounted RO at the known guest path before create. The guards
+    // live for the session; Drop owns cleanup on every exit, and
+    // staging failure refuses pre-create.
+    let mut _staged_guards = Vec::new();
+    for hook in &evaluated.merged.guest_hooks {
+        let (guard, triple) = cistella::framework::registry::stage_hook_artifact(
+            exe_dir,
+            &id,
+            hook.order,
+            &hook.artifact,
+        )?;
+        triples.push(triple);
+        _staged_guards.push(guard);
+    }
     triples.extend(evaluated.merged.mounts.clone());
     // Final joint topology gate: extension mounts plus credential
     // volumes validate and preflight as one merged set — still
     // pre-create, so a refusal leaves no residue.
     cistella::mount::validate_mounts(&triples, prof.home())?;
-    nested_ro_preflight(&triples)?;
+    cistella::mount::nested_ro_preflight(&triples)?;
     let volumes = podman_volume_args(&triples, prof.home(), None);
     let all_volumes = volumes;
     let mut env_extra: Vec<String> = prof
@@ -675,6 +670,30 @@ fn conduct_session(
             }
         }
     };
+    // Guest-context capability probe (task 3.2): the staged
+    // wrapper reports its kernel ABI plus handled mask from inside
+    // the running container. Shortfall fails pre-execute typed;
+    // plain sessions skip entirely. Failure converges lock-held
+    // like the preparation failure below (guard still live).
+    if !evaluated.merged.guest_hooks.is_empty()
+        && let Err(error) = cistella::framework::hooks::probe_landlock_wrapper(
+            &container_name,
+            Deadlines::default().apply,
+        )
+    {
+        let teardown_result = client.teardown_unit(&unit, grace, &key, &container_name, &id, true);
+        let residue_ok = cistella::runtime::residue_gone(&container_name, &id);
+        let uncertain = client.shutdown_uncertain();
+        drop(guard);
+        let error = cistella::isolators::client::select_teardown_error(
+            teardown_result,
+            error,
+            residue_ok,
+            uncertain,
+        );
+        report_release(release_client(client, &rendezvous_dir));
+        return Err(error);
+    }
     // Mountpoint preparation runs under the creation-window lock, before
     // the harness attaches. Authorization consumes the canonical emitted
     // volume targets (profile/CLI/session/scratch/credential volumes
@@ -736,13 +755,57 @@ fn conduct_session(
     // before reporting: a dead guest converges directly (wire ops
     // cannot run without it), and the death-checked error — residue
     // dominating when the exit left units — is the report.
-    let execution = match client.death_checked(client.execute_launch(
-        &unit,
-        &argv,
-        Some(&worktree_target),
-        StdioBinding::Inherit,
-        &key,
-    )) {
+    // Hooked launch (task 3.2): framework-owned wrapper args around
+    // the verbatim harness argv, a diagnostics pipe in a second
+    // bundle, and session start gated on the wrapper's applied
+    // attestation. A failed apply never execs, so teardown past a
+    // gate failure converges an empty execution.
+    let attempt = if evaluated.merged.guest_hooks.is_empty() {
+        client.death_checked(client.execute_launch(
+            &unit,
+            &argv,
+            Some(&worktree_target),
+            StdioBinding::Inherit,
+            &key,
+        ))
+    } else {
+        let home = std::env::var("HOME")
+            .map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
+        let (ancestor_host, subtree_host) =
+            confinement_roots(std::path::Path::new(&home), &directory)?;
+        let launch_argv = compose_hook_argv(
+            &evaluated.merged.guest_hooks,
+            &triples,
+            &ancestor_host,
+            &subtree_host,
+            &argv,
+        )?;
+        let (diag_read, diag_write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
+            .map_err(|e| CistellaError::Runtime(format!("diagnostics pipe: {e}")))?;
+        let result = {
+            use std::os::fd::AsFd;
+            client.death_checked(client.execute_launch_hooked(
+                &unit,
+                &launch_argv,
+                Some(&worktree_target),
+                StdioBinding::Inherit,
+                &key,
+                diag_write.as_fd(),
+            ))
+        };
+        // Our write-end copy closes here: the guest holds its own
+        // bundle copy, so EOF still tracks the wrapper's seal.
+        drop(diag_write);
+        match result {
+            Ok(execution) => cistella::framework::hooks::gate_hook_attestation(
+                &diag_read,
+                Deadlines::default().apply,
+            )
+            .map(|_| execution),
+            Err(error) => Err(error),
+        }
+    };
+    let execution = match attempt {
         Ok(execution) => execution,
         Err(error) => {
             if let Err(teardown_err) =
