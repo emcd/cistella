@@ -6,8 +6,6 @@
 use std::process::Command;
 use std::time::Duration;
 
-use tempfile::TempDir;
-
 use super::helpers::*;
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -17,7 +15,7 @@ fn inspect_postmortem_and_gc_reap_orphan() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 

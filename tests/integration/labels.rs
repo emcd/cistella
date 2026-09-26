@@ -3,8 +3,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use tempfile::TempDir;
-
 use super::helpers::*;
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -46,7 +44,7 @@ fn gc_inspect_failure_fails_closed() {
         .unwrap();
     }
 
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let (mut conduct, id, mut guard) =
         spawn_conduct(&home, &worktree_str, &["--identity", "alice"]);
@@ -94,7 +92,7 @@ fn command_label_edge_round_trip_live() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
@@ -148,7 +146,7 @@ fn spaced_directory_conduct() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let spaced = worktree.path().join("my dir");
     std::fs::create_dir(&spaced).unwrap();
     std::fs::write(spaced.join("README.md"), "# test").unwrap();
@@ -220,7 +218,7 @@ fn environment_values_verbatim() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = worktree.path().join("env.toml");

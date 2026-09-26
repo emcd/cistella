@@ -65,12 +65,12 @@ pub const SUBTREE_RIGHTS: u64 = REQUIRED_HANDLED_FS;
 /// extension input.
 const ADMITTED: &[(&str, &str)] = &[(SHIPPED_REGISTRY_ID, WRAPPER_FILE_NAME)];
 
-/// Refusal ceiling for registry reads: a wrapper binary is small;
-/// an oversized registry file refuses rather than buffering
-/// unboundedly. Enforced on the opened FD (fstat) and again on the
-/// read itself (bounded take), so replacement or growth past the
-/// check still refuses.
-const MAX_REGISTRY_BYTES: u64 = 16 * 1024 * 1024;
+/// Refusal ceiling for registry reads: bounds memory on a
+/// swapped file. Sized for debug binaries with symbols (tens of
+/// MB; the release wrapper is ~635KB) — the security properties
+/// (exact admission, nofollow, regular-file, digest bind) do not
+/// depend on it.
+const MAX_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Staged hook artifact: private per-session verified copy plus
 /// its host path. Drop removes the staging directory best-effort,

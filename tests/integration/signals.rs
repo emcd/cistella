@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use tempfile::TempDir;
-
 use super::helpers::*;
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -18,7 +16,7 @@ fn signal_during_startup_tears_down() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
@@ -80,7 +78,7 @@ fn terminate_races_creation_waits() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
@@ -149,7 +147,7 @@ fn sighup_conduct_tears_down() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 

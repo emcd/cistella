@@ -1,7 +1,5 @@
 //! Selector grammar: ambiguity and exclusivity.
 
-use tempfile::TempDir;
-
 use super::helpers::*;
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -11,7 +9,7 @@ fn selectors_ambiguous_and_exclusive() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // Per-run label values: the registry is shared fleet-wide, so static
