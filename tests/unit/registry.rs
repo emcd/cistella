@@ -223,3 +223,72 @@ fn digest_sibling_refuses_symlink_closed() {
         "got: {error}"
     );
 }
+
+fn test_artifact(sha256: &str) -> cistella::framework::contract::HookArtifact {
+    use cistella::framework::contract::{HookArtifact, HookSource};
+    HookArtifact {
+        kind: "digest-pinned-blob".to_string(),
+        sha256: sha256.to_string(),
+        source: HookSource {
+            registry: SHIPPED_REGISTRY_ID.to_string(),
+            path: WRAPPER_FILE_NAME.to_string(),
+        },
+    }
+}
+
+#[test]
+fn stage_copies_verifies_and_guards_cleanup() {
+    use cistella::framework::registry::{STAGED_WRAPPER_GUEST_PATH, stage_hook_artifact};
+    use cistella::mount::MountMode;
+    // Nonempty bytes: SHA-256 of "abc".
+    const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let exe = tempfile::tempdir().expect("exe dir");
+    std::fs::write(exe.path().join(WRAPPER_FILE_NAME), b"abc").expect("wrapper bytes");
+    let (staged, triple) =
+        stage_hook_artifact(exe.path(), "sess-1", 0, &test_artifact(ABC_SHA)).unwrap();
+    assert!(staged.host_file.is_file(), "staged file exists");
+    assert_eq!(
+        triple.container_target, STAGED_WRAPPER_GUEST_PATH,
+        "staged volume lands at the known guest path"
+    );
+    assert_eq!(triple.mode, MountMode::Ro, "staged volume mounts read-only");
+    assert!(
+        triple
+            .host_source
+            .starts_with(std::env::temp_dir().to_string_lossy().as_ref()),
+        "staging lives under the temp dir"
+    );
+    let dir = staged.host_file.parent().expect("parent").to_path_buf();
+    drop(staged);
+    assert!(!dir.exists(), "guard Drop removes the staging dir");
+}
+
+#[test]
+fn stage_digest_mismatch_leaves_no_dir() {
+    use cistella::framework::registry::stage_hook_artifact;
+    let exe = tempfile::tempdir().expect("exe dir");
+    std::fs::write(exe.path().join(WRAPPER_FILE_NAME), b"actual").expect("wrapper bytes");
+    let before: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .expect("temp list")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("cistella-stage-"))
+        })
+        .collect();
+    let error =
+        stage_hook_artifact(exe.path(), "sess-2", 0, &test_artifact(&"0".repeat(64))).unwrap_err();
+    assert!(
+        error.to_string().contains("digest mismatch"),
+        "got: {error}"
+    );
+    let after: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .expect("temp list")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("cistella-stage-"))
+        })
+        .collect();
+    assert_eq!(before, after, "refused staging plants no directory");
+}

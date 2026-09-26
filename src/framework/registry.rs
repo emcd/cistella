@@ -17,13 +17,16 @@
 
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use nix::fcntl::{OFlag, open};
 use nix::sys::stat::{Mode, fstat};
 use sha2::{Digest, Sha256};
 
 use crate::error::{CistellaError, Result};
+use crate::framework::contract::HookArtifact;
+use crate::mount::{MountMode, MountTriple};
 
 /// Admitted registry id: the installed sibling directory.
 pub const SHIPPED_REGISTRY_ID: &str = "shipped";
@@ -68,6 +71,89 @@ const ADMITTED: &[(&str, &str)] = &[(SHIPPED_REGISTRY_ID, WRAPPER_FILE_NAME)];
 /// read itself (bounded take), so replacement or growth past the
 /// check still refuses.
 const MAX_REGISTRY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Staged hook artifact: private per-session verified copy plus
+/// its host path. Drop removes the staging directory best-effort,
+/// so every conduct exit (success, error, unwind) converges
+/// without litter; staged bytes never outlive the session.
+#[derive(Debug)]
+pub struct StagedHook {
+    dir: PathBuf,
+    /// Staged host file (bind-mounted RO at the guest path).
+    pub host_file: PathBuf,
+}
+
+impl Drop for StagedHook {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Stages one hook artifact for a session: resolves (exact
+/// admission, digest bind), copies into a private `0700`
+/// per-session directory (suffixed by hook order, so parallel
+/// hooks never share a file), re-hashes the staged bytes (closing
+/// the read-then-stage window), and returns the scope guard plus
+/// the RO volume triple for the known guest path.
+/// The guard's Drop owns cleanup; callers hold it for the session.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on admission/digest/ceiling
+/// refusal or staged re-verification mismatch, and
+/// `CistellaError::Io` on staging I/O failure.
+pub fn stage_hook_artifact(
+    exe_dir: &Path,
+    session_tag: &str,
+    order: u32,
+    artifact: &HookArtifact,
+) -> Result<(StagedHook, MountTriple)> {
+    let pinned = resolve(
+        exe_dir,
+        &artifact.source.registry,
+        &artifact.source.path,
+        &artifact.sha256,
+    )?;
+    let safe: String = session_tag
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if safe.is_empty() {
+        return Err(CistellaError::Contract(
+            "staging tag must not be empty".to_string(),
+        ));
+    }
+    let dir = std::env::temp_dir().join(format!("cistella-stage-{safe}-{order}"));
+    // Our namespace, our tag: a pre-existing dir is stale crash
+    // litter from a dead session, removed before re-staging.
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    let host_file = dir.join(WRAPPER_FILE_NAME);
+    std::fs::write(&host_file, &pinned.bytes)?;
+    std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o700))?;
+    let staged = std::fs::read(&host_file)?;
+    let digest: [u8; 32] = Sha256::digest(&staged).into();
+    if digest != pinned.sha256 {
+        return Err(CistellaError::Contract(
+            "staged artifact digest mismatch".to_string(),
+        ));
+    }
+    let triple = MountTriple {
+        host_source: host_file.to_string_lossy().into_owned(),
+        container_target: STAGED_WRAPPER_GUEST_PATH.to_string(),
+        mode: MountMode::Ro,
+    };
+    Ok((
+        StagedHook {
+            dir,
+            host_file: host_file.clone(),
+        },
+        triple,
+    ))
+}
 
 /// Digest-verified registry bytes plus their coordinates.
 #[derive(Debug, Clone)]

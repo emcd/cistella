@@ -623,3 +623,38 @@ pub fn canonicalize_host_source(path: &str) -> PathBuf {
     }
     PathBuf::from(path)
 }
+
+/// Derives every guest-visible route of one host path through the
+/// validated mount topology (task 3.2/3.3): canonicalize the host
+/// path, find every triple whose canonical source equals or
+/// ancestors it, and join the remainder onto the canonical
+/// container target. Keep-id identity still translates (no
+/// shortcut): the mapping is structural, never assumed. Multiple
+/// covering triples yield multiple routes (second binds stay
+/// visible); no covering triple yields no routes (the caller
+/// refuses untranslatable paths fail-closed).
+#[must_use]
+pub fn guest_routes_for_host(triples: &[MountTriple], host_path: &std::path::Path) -> Vec<String> {
+    let host = canonicalize_host_source(&host_path.to_string_lossy());
+    let mut routes = Vec::new();
+    for triple in triples {
+        let source = canonicalize_host_source(&triple.host_source);
+        if let Ok(remainder) = host.strip_prefix(&source) {
+            let target = canonicalize_container_target(&triple.container_target);
+            // An empty remainder joins as a trailing slash; the
+            // route is the target itself then.
+            let route = if remainder.as_os_str().is_empty() {
+                target
+            } else {
+                std::path::Path::new(&target)
+                    .join(remainder)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            routes.push(route);
+        }
+    }
+    routes.sort();
+    routes.dedup();
+    routes
+}
