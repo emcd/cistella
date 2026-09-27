@@ -280,3 +280,145 @@ fn rehost_failure_ok_clean_keeps_original() {
         "original stands, got: {reported}"
     );
 }
+
+#[test]
+fn preserve_fd_probe_requires_singular_flag() {
+    use cistella::transport::exec_help_supports_preserve_fd;
+    // Singular list form DEFINED (indented option line,
+    // repeatable and `=` spellings): probe passes.
+    assert!(exec_help_supports_preserve_fd(
+        "  --preserve-fd FD1,...\n  --preserve-fds N\n"
+    ));
+    assert!(exec_help_supports_preserve_fd("--preserve-fd=9\n"));
+    // Plural-only (podman 4.9.x): probe fails — the count form
+    // would leak sibling-session fds, so it never satisfies.
+    assert!(!exec_help_supports_preserve_fd(
+        "  --preserve-fds N\n  --workdir PATH\n"
+    ));
+    // Prose merely MENTIONING the singular flag never satisfies
+    // (fail-open gate): only a definition line counts.
+    assert!(!exec_help_supports_preserve_fd(
+        "This build does not support --preserve-fd\n"
+    ));
+    assert!(!exec_help_supports_preserve_fd(
+        "See --preserve-fd for another release\n"
+    ));
+    // Near-miss spellings never satisfy (prefix token, suffixed
+    // token, empty input).
+    assert!(!exec_help_supports_preserve_fd("--preserve-fd2\n"));
+    assert!(!exec_help_supports_preserve_fd(""));
+}
+
+#[test]
+fn plural_strategy_selects_count_form() {
+    use cistella::transport::{PreserveStrategy, exec_hooked_args, exec_hooked_plain_args};
+    // Singular keeps the exact list form at the natural number;
+    // plural composes the bare count (write-end pre-duped onto
+    // fd 3 by the backend, so no number crosses).
+    let singular = exec_hooked_args(
+        "ctr",
+        "/src/proj",
+        &["sh".to_string()],
+        PreserveStrategy::Singular,
+        9,
+    );
+    assert!(
+        singular.contains(&"--preserve-fd=9".to_string()),
+        "{singular:?}"
+    );
+    assert!(
+        !singular
+            .iter()
+            .any(|flag| flag.starts_with("--preserve-fds")),
+        "{singular:?}"
+    );
+    let plural = exec_hooked_args(
+        "ctr",
+        "/src/proj",
+        &["sh".to_string()],
+        PreserveStrategy::Plural,
+        9,
+    );
+    assert!(
+        plural.contains(&"--preserve-fds=1".to_string()),
+        "{plural:?}"
+    );
+    assert!(
+        !plural.iter().any(|flag| flag.starts_with("--preserve-fd=")),
+        "{plural:?}"
+    );
+    let plain = exec_hooked_plain_args("ctr", &["sh".to_string()], PreserveStrategy::Plural, 9);
+    assert!(plain.contains(&"--preserve-fds=1".to_string()), "{plain:?}");
+}
+
+#[test]
+fn plural_precondition_finds_stray_inheritable() {
+    use cistella::transport::plural_inheritable_violation;
+    // Only stdio plus the diagnostics fd: clean (stdio flags
+    // never matter, diag is exempt at any number).
+    assert_eq!(
+        plural_inheritable_violation(9, &[(0, false), (1, false), (2, false), (9, false)]),
+        None
+    );
+    assert_eq!(
+        plural_inheritable_violation(3, &[(0, false), (3, false), (4, true), (5, true)]),
+        None
+    );
+    // One stray inheritable fd: named (lowest first).
+    assert_eq!(
+        plural_inheritable_violation(9, &[(0, false), (4, true), (5, false), (9, false)]),
+        Some(5)
+    );
+    assert_eq!(
+        plural_inheritable_violation(9, &[(3, false), (9, false)]),
+        Some(3)
+    );
+    assert_eq!(plural_inheritable_violation(9, &[]), None);
+}
+
+#[test]
+fn hook_spawn_lock_serializes_sections() {
+    use cistella::isolators::hook::lock_hook_spawn;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Four threads contend the process-wide section: the
+    // observed concurrency inside never exceeds one (mutex
+    // correctness makes this deterministic, not timing).
+    let inside = AtomicUsize::new(0);
+    let max = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for _ in 0..25 {
+                    let _guard = lock_hook_spawn().expect("section acquires");
+                    let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    max.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_micros(50));
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+        }
+    });
+    assert_eq!(max.load(Ordering::SeqCst), 1, "sections never overlap");
+    // Sequential re-acquire after release: no self-deadlock.
+    drop(lock_hook_spawn().expect("re-acquire"));
+}
+
+#[test]
+fn runtime_matrix_admits_characterized_cells_only() {
+    use cistella::isolators::hook::runtime_admitted;
+    use cistella::transport::PreserveStrategy::{Plural, Singular};
+    // Singular exact-fd forwarding: crun only (docs +
+    // uncharacterized risk elsewhere).
+    assert!(runtime_admitted(Singular, "crun"));
+    assert!(!runtime_admitted(Singular, "runc"));
+    assert!(!runtime_admitted(Singular, "runsc"));
+    assert!(!runtime_admitted(Singular, ""));
+    // Plural path: crun plus runc (both hand-characterized on
+    // podman 4.9.3 — identical semantics); anything else
+    // refuses.
+    assert!(runtime_admitted(Plural, "crun"));
+    assert!(runtime_admitted(Plural, "runc"));
+    assert!(!runtime_admitted(Plural, "runsc"));
+    assert!(!runtime_admitted(Plural, "youki"));
+    assert!(!runtime_admitted(Plural, ""));
+}
