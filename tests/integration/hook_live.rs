@@ -124,6 +124,11 @@ fn hook_fixture(image: &str) -> HookFixture {
     // its target, so only the retained Podman read-only
     // binding denies writes.
     std::fs::create_dir_all(proj.join("secret")).expect("secret dir");
+    // Seed files inside both RO aliases: the denial runs below
+    // first prove readability (mount materialized — rules out
+    // ENOENT false-passes) and only then prove unwritability.
+    std::fs::write(proj.join("ro-data/seed"), "seed").expect("ro-data seed");
+    std::fs::write(proj.join("secret/seed"), "seed").expect("secret seed");
     std::fs::write(proj.join("seed"), "seed").expect("seed marker");
     let id = mint_session_id();
     // Stage exactly as the extension answers: observe the shipped
@@ -415,6 +420,20 @@ fn hook_hooked_launch_attests_and_confines() {
     // subtree, bound outside all FULL routes, denies writes —
     // the retained Podman read-only binding enforces what the
     // subtree FULL would otherwise admit through the alias.
+    // Read first (mount materialized — an ENOENT false-pass
+    // cannot satisfy a successful read), then write-denied.
+    let outcome = run_harness(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat /extra/secret/seed".to_string(),
+        ],
+    );
+    assert!(
+        matches!(outcome, ExecutionOutcome::Exited(0)),
+        "alias read must exit 0, got {outcome:?}"
+    );
     let outcome = run_harness(
         &fixture,
         &[
@@ -435,6 +454,19 @@ fn hook_hooked_launch_attests_and_confines() {
     // declared-RO directory under the FULL subtree denies
     // writes through the alias — the retained Podman read-only
     // binding enforces what Landlock union cannot subtract.
+    // Read first (same ENOENT discipline as the secret run).
+    let outcome = run_harness(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat /src/proj/ro-data/seed".to_string(),
+        ],
+    );
+    assert!(
+        matches!(outcome, ExecutionOutcome::Exited(0)),
+        "alias read must exit 0, got {outcome:?}"
+    );
     let outcome = run_harness(
         &fixture,
         &[
