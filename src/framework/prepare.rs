@@ -678,21 +678,24 @@ fn compute_grants(
         if source.is_file() {
             continue;
         }
+        // Grant computation runs on canonical target spellings —
+        // the same form rendering emits and routes derive in —
+        // so a non-canonical declaration (`/x/../work/ro-data`,
+        // duplicate slashes, dot segments) cannot dodge coverage
+        // or mint a second rule spelling for one mount.
+        let target = crate::mount::canonicalize_container_target(&triple.container_target);
         let under_ancestor = source.starts_with(&ancestor_canon) && source != ancestor_canon;
         let outside_ancestor = !source.starts_with(&ancestor_canon);
         let covered = ancestor_routes
             .iter()
             .chain(subtree_routes.iter())
-            .any(|route| {
-                triple.container_target == *route
-                    || triple.container_target.starts_with(&format!("{route}/"))
-            });
+            .any(|route| target == *route || target.starts_with(&format!("{route}/")));
         match triple.mode {
             // Read-write carveouts: under-ancestor submounts
             // (project tree, state dirs, per-project grafts) and
             // uncovered outside mounts (scratch) alike.
             MountMode::Rw if under_ancestor || (outside_ancestor && !covered) => {
-                carveouts.push((GrantKind::Full, triple.container_target.clone()));
+                carveouts.push((GrantKind::Full, target));
             }
             // Read-only readability: uncovered outside mounts,
             // plus under-ancestor mounts whose targets lie
@@ -700,7 +703,7 @@ fn compute_grants(
             // readable; default-deny would brick it). Targets
             // under routes stay covered by their route's rule.
             MountMode::Ro if !covered => {
-                carveouts.push((GrantKind::Read, triple.container_target.clone()));
+                carveouts.push((GrantKind::Read, target));
             }
             _ => {}
         }
@@ -712,12 +715,22 @@ fn compute_grants(
     })
 }
 
-/// Guest targets receiving FULL Landlock rights: the subtree
-/// routes plus every read-write carveout target. The revision
-/// consumes this set to retain Podman read-only on RO mounts
-/// nested under FULL routes (Landlock union cannot subtract, so
-/// the VFS binding carries that enforcement). Pure; refuses
-/// exactly as composition does.
+/// Fixed FULL baselines every hooked launch grants outside the
+/// mount topology (system composition): guest targets receiving
+/// full rights unconditionally. Shared with the RO-retention
+/// revision so FULL accounting is complete — retention and
+/// preflight must see every FULL route, not just
+/// topology-derived ones. (`/` stays excluded: it grants
+/// read-execute, which union-safely denies writes.)
+const FULL_BASELINE_ROUTES: &[&str] = &["/dev"];
+
+/// Guest targets receiving FULL Landlock rights: the fixed
+/// baselines, the subtree routes, plus every read-write
+/// carveout target. The revision consumes this set to retain
+/// Podman read-only on RO mounts nested under FULL routes
+/// (Landlock union cannot subtract, so the VFS binding carries
+/// that enforcement). Pure; refuses exactly as composition
+/// does.
 ///
 /// # Errors
 ///
@@ -730,7 +743,11 @@ pub fn full_grant_routes(
     subtree_host: &std::path::Path,
 ) -> Result<Vec<String>> {
     let grants = compute_grants(hooks, triples, ancestor_host, subtree_host)?;
-    let mut full: Vec<String> = grants.subtree_routes;
+    let mut full: Vec<String> = FULL_BASELINE_ROUTES
+        .iter()
+        .map(|route| route.to_string())
+        .collect();
+    full.extend(grants.subtree_routes);
     for (kind, target) in grants.carveouts {
         if kind == GrantKind::Full && !full.contains(&target) {
             full.push(target);
@@ -750,9 +767,14 @@ pub fn compose_hook_argv(
     let hook = &hooks[0];
     let mut argv = Vec::new();
     argv.extend(hook.argv_prefix.iter().cloned());
-    // System baseline first (fixed position, deterministic).
+    // System baseline first (fixed position, deterministic):
+    // read-execute on the container rootfs, full rights on the
+    // fixed FULL baselines (rendered from the shared set the
+    // revision accounts, so composition and retention agree).
     argv.push("--allow-ro=/".to_string());
-    argv.push("--allow-rw=/dev".to_string());
+    for baseline in FULL_BASELINE_ROUTES {
+        argv.push(format!("--allow-rw={baseline}"));
+    }
     // Exact-duplicate flags collapse (first occurrence wins);
     // nested overlaps stay (union semantics need both the
     // ancestor read-execute and the carveout full rights).

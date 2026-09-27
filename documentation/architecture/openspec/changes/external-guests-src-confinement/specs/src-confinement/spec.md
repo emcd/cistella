@@ -2,7 +2,7 @@
 
 ### Requirement: Guest-visible topology translation
 
-Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct SHALL translate the canonical host ancestor/subtree through the validated guest mount topology to every guest-visible route before restricting. Profiles with unaccounted aliases (symlinked ancestors, second bind mounts into the same sibling) SHALL refuse pre-create rather than confine partially. R+X ancestor plus full-rights subtree is correct union semantics only within one verified layer and a complete path view.
+Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct SHALL translate the canonical host ancestor/subtree through the validated guest mount topology to every guest-visible route before restricting. Profiles with UNTRANSLATABLE aliases (symlinked ancestors with no guest route, undescribable shapes) SHALL refuse pre-create rather than confine partially. A second bind mount into the same sibling that DOES translate admits or denies BY DECLARED MODE: declared read-write grafts compose into full-rights carveouts (accounted, admitted), while second routes with no declared carveout stay denied. R+X ancestor plus full-rights subtree is correct union semantics only within one verified layer and a complete path view.
 
 #### Scenario: Rules land on the guest target
 - **WHEN** the guest mount topology maps the host ancestor to a different guest target path

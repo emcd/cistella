@@ -589,8 +589,9 @@ fn full_grant_routes_mirror_compose_carveouts() {
             mode: MountMode::Rw,
         },
     ];
-    // Subtree route plus the RW carveout targets (project graft
-    // and uncovered scratch); the RO ancestor is not FULL.
+    // Fixed FULL baselines, subtree route, plus the RW
+    // carveout targets (project graft and uncovered scratch);
+    // the RO ancestor is not FULL.
     let full = full_grant_routes(
         &[hook],
         &triples,
@@ -600,7 +601,11 @@ fn full_grant_routes_mirror_compose_carveouts() {
     .unwrap();
     assert_eq!(
         full,
-        vec!["/src/proj".to_string(), "/tmp/scratch".to_string()]
+        vec![
+            "/dev".to_string(),
+            "/src/proj".to_string(),
+            "/tmp/scratch".to_string()
+        ]
     );
 }
 
@@ -625,4 +630,62 @@ fn refuse_extension_rw_mounts_gates_carveout_admission() {
     assert!(error.to_string().contains("not admitted"), "got: {error}");
     refuse_extension_rw_mounts(&[]).expect("empty passes");
     refuse_extension_rw_mounts(&[ro]).expect("read-only passes");
+}
+
+#[test]
+fn compose_canonicalizes_target_spellings_for_coverage() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    // Traversal, duplicate-slash, and dot-segment spellings of
+    // targets under the FULL subtree: grant computation runs on
+    // canonical forms, so the RO alias is covered (no stray
+    // subtract-incapable RO rule) and the RW carveout emits
+    // canonical.
+    let triples = vec![
+        MountTriple {
+            host_source: "/home/op/src".to_string(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj".to_string(),
+            container_target: "/src/proj".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj/ro-data".to_string(),
+            container_target: "/src/../src/proj/ro-data".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/g".to_string(),
+            container_target: "/src//g/./x".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &[],
+    )
+    .unwrap();
+    assert!(
+        !argv
+            .iter()
+            .any(|flag| flag.contains("..") || flag.contains("//")),
+        "no raw alias spelling reaches argv: {argv:?}"
+    );
+    assert!(
+        !argv.contains(&"--allow-ro=/src/proj/ro-data".to_string()),
+        "covered RO alias emits no rule: {argv:?}"
+    );
+    assert!(
+        argv.contains(&"--allow-rw=/src/g/x".to_string()),
+        "RW carveout emits canonical: {argv:?}"
+    );
 }

@@ -726,13 +726,16 @@ pub fn revise_ro_for_confinement(
         .collect()
 }
 
-/// Whether a guest target sits at or under a FULL-granted route
-/// (same spelling composition grants on: exact match or
-/// `route/` prefix).
+/// Whether a guest target sits at or under a FULL-granted route.
+/// Compares canonical spellings — the same form routes derive in
+/// and rendering emits — so a non-canonical declaration
+/// (`/x/../work/ro-data`, duplicate slashes, dot segments)
+/// cannot dodge retention.
 fn under_full_route(target: &str, full_routes: &[String]) -> bool {
+    let canon = canonicalize_container_target(target);
     full_routes
         .iter()
-        .any(|route| target == route || target.starts_with(&format!("{route}/")))
+        .any(|route| canon == *route || canon.starts_with(&format!("{route}/")))
 }
 
 /// Refuses contradictory RO-under-FULL topologies pre-create
@@ -757,12 +760,15 @@ pub fn ro_confinement_preflight(triples: &[MountTriple], full_routes: &[String])
         {
             continue;
         }
+        // Descendant comparison runs on canonical spellings
+        // (same rationale as retention): alias spellings of the
+        // same target still collide.
+        let ro_canon = canonicalize_container_target(&ro.container_target);
         for rw in triples {
+            let rw_canon = canonicalize_container_target(&rw.container_target);
             if rw.mode == MountMode::Rw
-                && rw.container_target != ro.container_target
-                && rw
-                    .container_target
-                    .starts_with(&format!("{}/", ro.container_target))
+                && rw_canon != ro_canon
+                && rw_canon.starts_with(&format!("{ro_canon}/"))
             {
                 return Err(CistellaError::Mount(format!(
                     "read-only {} under a full grant holds a read-write descendant {}: move the graft out",
