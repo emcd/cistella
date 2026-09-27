@@ -128,6 +128,16 @@ impl GuestHost<ChildStdout, ChildStdin> {
         let exec_path = format!("/proc/self/fd/{exec_fd}");
         let mut child = unsafe {
             Command::new(&exec_path)
+                // argv[0] carries the real executable path, not the
+                // fd path: multicall dispatchers (Ubuntu 26.04+
+                // uutils coreutils) select the applet by argv[0]
+                // basename, and `/proc/self/fd/N` matches nothing
+                // (instant exit 1 with born-dead pipes).
+                // Single-call binaries ignore argv[0], so this is
+                // behavior-preserving everywhere else. Execution
+                // still binds the pinned fd — only the name rides
+                // along, never a path resolution.
+                .arg0(executable.as_os_str())
                 .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

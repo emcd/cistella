@@ -767,3 +767,43 @@ fn stderr_flood_does_not_deadlock() {
     host.exchange_mut().hello(&[], FAST).unwrap();
     host.shutdown().unwrap();
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn spawn_presents_executable_path_as_argv0() {
+    // Multicall dispatchers (Ubuntu 26.04+ uutils coreutils)
+    // select the applet by argv[0] basename: exec'ing the
+    // pinned fd must still present the real utility name, or
+    // the dispatcher exits 1 instantly with born-dead pipes.
+    // Pins argv[0] via the child's /proc cmdline (fixed at
+    // exec; pre-exec reads show the parent's args, so poll
+    // for the exec to land). A shebang probe cannot model
+    // this: the kernel re-derives the interpreter's script
+    // argument from the exec path, bypassing argv[0].
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sleep"),
+        &["30".to_string()],
+        Deadlines::default(),
+    )
+    .unwrap();
+    let pid = host.pid();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let observed = loop {
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let argv0 = cmdline
+            .split(|byte| *byte == 0)
+            .next()
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default()
+            .to_string();
+        if argv0 == "/bin/sleep" || std::time::Instant::now() > deadline {
+            break argv0;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        observed, "/bin/sleep",
+        "argv[0] must be the executable path, not the fd path"
+    );
+    host.shutdown().unwrap();
+}
