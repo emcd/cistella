@@ -1,0 +1,69 @@
+name: probe-runners
+
+# Read-only runner characterization: versions, OCI runtime, kernel +
+# Landlock ABI, systemd user manager, rootless smoke. No repo checkout,
+# no suite runs, no mutations — evidence for live-tier CI planning.
+# Run manually per platform while triaging runner-specific failures.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ["ubuntu-24.04", "ubuntu-24.04-arm", "ubuntu-26.04", "ubuntu-26.04-arm"]
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Podman and OCI runtimes
+        # Engine version plus the selected OCI runtime (name and path)
+        # and both candidate binaries. Missing crun is not a failure
+        # here — presence/absence is the signal.
+        run: |
+          set -eu
+          podman --version
+          podman info --format '{{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Path}}'
+          crun --version || echo "crun: absent"
+          runc --version || echo "runc: absent"
+
+      - name: Kernel and Landlock ABI
+        # Release plus Landlock enablement (dmesg/journalctl) plus the
+        # ABI version probe: landlock_create_ruleset(NULL, 0,
+        # LANDLOCK_CREATE_RULESET_VERSION) returns the ABI (ENOSYS =
+        # unsupported, EOPNOTSUPP = disabled). Best effort throughout.
+        run: |
+          set -eu
+          uname -r
+          dmesg 2>/dev/null | grep -i landlock || journalctl -kb -g landlock 2>/dev/null || echo "landlock: no kernel message"
+          python3 -c "
+          import ctypes, errno
+          try:
+              libc = ctypes.CDLL('libc.so.6', use_errno=True)
+              r = libc.syscall(444, None, 0, 1)
+              if r < 0:
+                  e = ctypes.get_errno()
+                  print('landlock ABI probe:', 'ENOSYS (unsupported)' if e == errno.ENOSYS else 'EOPNOTSUPP (disabled)' if e == errno.EOPNOTSUPP else f'errno {e}')
+              else:
+                  print(f'landlock ABI: {r}')
+          except Exception as exc:
+              print(f'landlock ABI probe inconclusive: {exc}')
+          "
+
+      - name: Systemd user manager
+        # Same lingering step as the live tier: starts the runner
+        # user's manager without an active login.
+        run: |
+          set -eu
+          sudo loginctl enable-linger "$USER"
+          systemctl --user is-system-running --wait
+
+      - name: Rootless smoke
+        # One ephemeral container proves user namespaces, cgroupv2
+        # delegation, and image pull end to end.
+        run: |
+          set -eu
+          podman run --rm docker.io/library/hello-world:latest > /dev/null
+          echo "rootless smoke: ok"
