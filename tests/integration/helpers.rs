@@ -503,3 +503,16 @@ fn dir_names_filtered(dir: &std::path::Path, prefix: Option<&str>) -> Vec<String
     names.sort();
     names
 }
+
+/// Session worktree tempdir anchored under `~/src`: hooked
+/// conducts refuse sessions outside the confinement root, so live
+/// fixtures must look like real sessions (`TempDir::new_in`,
+/// auto-cleaned, unique per test). Plain sessions behave
+/// identically either way, so this helper is uniform.
+pub fn src_worktree() -> tempfile::TempDir {
+    let root = std::env::var("HOME")
+        .map(|home| PathBuf::from(home).join("src"))
+        .expect("HOME for live fixtures");
+    std::fs::create_dir_all(&root).expect("~/src exists for live fixtures");
+    tempfile::TempDir::new_in(&root).expect("src worktree")
+}

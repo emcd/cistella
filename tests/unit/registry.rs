@@ -178,7 +178,7 @@ fn oversized_registry_file_refuses_without_reading() {
     let dir = tempfile::tempdir().expect("scratch registry dir");
     let admitted = dir.path().join(WRAPPER_FILE_NAME);
     let file = std::fs::File::create(&admitted).expect("registry file");
-    file.set_len(17 * 1024 * 1024).expect("sparse size");
+    file.set_len(65 * 1024 * 1024).expect("sparse size");
     drop(file);
     let error = resolve(
         dir.path(),

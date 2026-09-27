@@ -14,7 +14,7 @@ fn conduct_exit_passthrough_and_mint() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
@@ -149,7 +149,7 @@ fn conduct_lifecycle_terminate_while_attached() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     std::fs::write(worktree.path().join("README.md"), "# test").unwrap();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
@@ -261,7 +261,7 @@ fn name_resolves_from_foreign_cwd_live() {
         return;
     }
     let foreign = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
@@ -338,7 +338,7 @@ fn configuration_directory_plumbing_live() {
          mounts = []\n",
     )
     .unwrap();
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let config_str = config.path().to_string_lossy().to_string();
@@ -368,7 +368,7 @@ fn harness_runs_in_worktree_target_live() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
@@ -424,7 +424,7 @@ fn project_name_template_live() {
          mode = \"ro\"\n",
     )
     .unwrap();
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let config_str = config.path().to_string_lossy().to_string();
@@ -498,7 +498,7 @@ fn terminate_stops_promptly_without_sigkill() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 
@@ -576,7 +576,7 @@ fn template_env_and_labels_resolve_live() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let home_var = std::env::var("HOME").expect("HOME set");
@@ -657,7 +657,7 @@ fn environment_acceptances_forward_live() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 
@@ -726,7 +726,7 @@ fn environment_acceptances_absent_refuses_residue_free() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 
@@ -836,7 +836,7 @@ fn template_namespaces_resolve_live() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let home_var = std::env::var("HOME").expect("HOME set");

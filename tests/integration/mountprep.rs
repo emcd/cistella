@@ -14,7 +14,7 @@ fn mountpoint_parents_prepared_for_siblings() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let deep_host = TempDir::new().unwrap();
@@ -75,7 +75,7 @@ fn mountpoint_host_alias_conducts() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // Host-side aliasing is benign: a triple whose host source traverses
@@ -143,7 +143,7 @@ fn mountpoint_nested_ro_excluded() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // An unrelated RO bind subtree must emerge from preparation byte
@@ -217,7 +217,7 @@ fn mountpoint_noncanonical_spelling_prepared() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let deep_host = TempDir::new().unwrap();
@@ -271,7 +271,7 @@ fn mountpoint_prepare_timeout_fails_closed() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let deep_host = TempDir::new().unwrap();
@@ -338,7 +338,7 @@ fn nested_ro_preexisting_chain_succeeds() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // Full intermediate chain pre-exists in the RO source: preflight
@@ -402,7 +402,7 @@ fn nested_ro_missing_chain_refuses_pre_mutation() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // Intermediate link absent in the RO source: conduct refuses with a
@@ -524,7 +524,7 @@ fn nested_ro_symlinked_source_resolves() {
     }
     // Ancestor host source behind a symlink: canonicalization supplies
     // the resolved namespace and the preexisting chain passes.
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let real = TempDir::new().unwrap();
@@ -583,7 +583,7 @@ fn nested_rw_under_rw_conducts() {
         eprintln!("skip: systemd user manager not available");
         return;
     }
-    let worktree = TempDir::new().unwrap();
+    let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // The seat-restart shape: a wholesale RW profile ancestor with the
