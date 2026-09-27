@@ -334,6 +334,14 @@ fn conduct_session(
     // Accepted pairs are post-substitution by construction (resolution
     // already expanded templates) and never template-scanned.
     let accepted_env = prof.snapshot_acceptances()?;
+    // Guest selection (profile-declared): the isolator table
+    // admits the backend, the extensions list admits prepare
+    // guests. Unknown names and duplicate extensions refuse
+    // here, before any session/runtime mutation. No declared
+    // extensions means pure Podman behavior (2.x path — the
+    // Landlock guest never spawns, no hooks stage).
+    prof.resolve_isolator()?;
+    let extensions = prof.resolve_extensions()?;
     let generic: Vec<(String, String)> = labels
         .iter()
         .map(|a| parse_cli_label(a))
@@ -422,13 +430,28 @@ fn conduct_session(
         }
         i += 2;
     }
-    // Landlock extension prepare (task 3.1): the real extension
-    // guest answers one transaction; the central merge sees the
-    // full occupied baseline (profile, CLI, worktree, scratch, and
+    // Landlock extension prepare (task 3.1): only for profiles
+    // declaring it. The real extension guest answers one
+    // transaction; the central merge sees the full occupied
+    // baseline (profile, CLI, worktree, scratch, and
     // credential-surface mounts alike). Merged env/mounts fan into
     // the session plan below; requested hooks stage here (task
-    // 3.2) and execute at launch.
-    let evaluated = run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?;
+    // 3.2) and execute at launch. Undeclared: the empty plan —
+    // pure Podman behavior, no guest spawned.
+    let evaluated = if extensions.contains(&cistella::profile::ExtensionId::Landlock) {
+        run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?
+    } else {
+        cistella::framework::prepare::EvaluatedPlan {
+            merged: cistella::framework::contract::MergedPlan {
+                environment: Vec::new(),
+                mounts: Vec::new(),
+                policy_claims: Vec::new(),
+                guest_hooks: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+            credentials: Vec::new(),
+        }
+    };
     // Hook staging (task 3.2, replaces the interim refuse gate):
     // each requested hook resolves to a private verified copy
     // mounted RO at the known guest path before create. The guards

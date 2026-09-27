@@ -831,3 +831,89 @@ fn qualified_spans_need_no_bare_grandfather() {
     let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
     assert!(err.to_string().contains("bare template span"), "{err}");
 }
+
+#[test]
+fn guest_tables_default_plain() {
+    use cistella::profile::IsolatorId;
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = write_profile(dir.path(), "plain", "localhost/cistella/opencode:example");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let prof: cistella::profile::Profile = toml::from_str(&text).expect("minimal parses");
+    // Absent tables: podman backend, no guests — 0.1.x profiles
+    // run unchanged on the plain 2.x path.
+    assert_eq!(prof.resolve_isolator().unwrap(), IsolatorId::Podman);
+    assert!(prof.resolve_extensions().unwrap().is_empty());
+}
+
+#[test]
+fn guest_tables_admit_declared_landlock() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("hooked.toml");
+    std::fs::write(
+        &path,
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential-surface = \"none\"\n\
+         mounts = []\n\
+         [isolator]\n\
+         name = \"podman\"\n\
+         [[extensions]]\n\
+         name = \"landlock\"\n",
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let prof: cistella::profile::Profile = toml::from_str(&text).expect("tables parse");
+    use cistella::profile::{ExtensionId, IsolatorId};
+    assert_eq!(prof.resolve_isolator().unwrap(), IsolatorId::Podman);
+    assert_eq!(
+        prof.resolve_extensions().unwrap(),
+        vec![ExtensionId::Landlock]
+    );
+}
+
+#[test]
+fn guest_tables_refuse_unknown_and_duplicate() {
+    // Unknown isolator refuses naming it.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("bad-iso.toml");
+    std::fs::write(
+        &path,
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential-surface = \"none\"\n\
+         mounts = []\n\
+         [isolator]\n\
+         name = \"docker\"\n",
+    )
+    .unwrap();
+    let prof: cistella::profile::Profile =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).expect("parses");
+    let error = prof.resolve_isolator().unwrap_err();
+    assert!(error.to_string().contains("docker"), "got: {error}");
+    // Unknown extension refuses (a typo can never silently
+    // plain a meant-hooked session); duplicates refuse.
+    for (name, toml_name, expect) in [
+        ("landlok", "bad-ext.toml", "landlok"),
+        ("landlock", "dup-ext.toml", "duplicate"),
+    ] {
+        let path = dir.path().join(toml_name);
+        let second = if expect == "duplicate" {
+            "         [[extensions]]\n         name = \"landlock\"\n"
+        } else {
+            ""
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "image = \"localhost/cistella/opencode:example\"\n\
+                 credential-surface = \"none\"\n\
+                 mounts = []\n\
+                 [[extensions]]\n\
+                 name = \"{name}\"\n{second}"
+            ),
+        )
+        .unwrap();
+        let prof: cistella::profile::Profile =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).expect("parses");
+        let error = prof.resolve_extensions().unwrap_err();
+        assert!(error.to_string().contains(expect), "got: {error}");
+    }
+}

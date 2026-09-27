@@ -84,6 +84,12 @@ fn bare_profile() -> Profile {
         credential_surface: CredentialSurface::None,
         container_home: "/home/cistella".to_string(),
         labels: HashMap::new(),
+        isolator: cistella::profile::IsolatorConfig {
+            name: "podman".to_string(),
+        },
+        extensions: vec![cistella::profile::ExtensionConfig {
+            name: "landlock".to_string(),
+        }],
     }
 }
 

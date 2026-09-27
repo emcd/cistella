@@ -668,6 +668,10 @@ fn same_tree_rw_graft_refuses_pre_create() {
             "image = \"localhost/cistella/opencode:example\"\n\
              credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
+             [isolator]\n\
+             name = \"podman\"\n\
+             [[extensions]]\n\
+             name = \"landlock\"\n\
              [[mounts]]\n\
              host-source = \"{src_root}\"\n\
              container-target = \"/src\"\n\
@@ -705,5 +709,74 @@ fn same_tree_rw_graft_refuses_pre_create() {
         !String::from_utf8_lossy(&survey.stdout).contains("cistella-"),
         "no residue session for refused conduct: {}",
         String::from_utf8_lossy(&survey.stdout)
+    );
+}
+
+/// Hooked conduct happy path through real conduct: a declared
+/// Landlock session confines end-to-end (create, stage,
+/// initiate, hooked launch, teardown). The harness proves
+/// hookedness intrinsically: the staged wrapper path exists
+/// ONLY in hooked sessions (staging mounts it per-session),
+/// so the probe gate passes if and only if this session
+/// confined — a plain session would skip the branch and print
+/// nothing. The admitted marker proves the harness ran; the
+/// DENIED line proves the ancestor rule denied.
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn hooked_conduct_confines_declared_session() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let src_root = format!("{home}/src");
+    let profile = worktree.path().join("tmpl-hooked-happy.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [isolator]\n\
+             name = \"podman\"\n\
+             [[extensions]]\n\
+             name = \"landlock\"\n\
+             [[mounts]]\n\
+             host-source = \"{src_root}\"\n\
+             container-target = \"/src\"\n\
+             mode = \"ro\"\n",
+        ),
+    )
+    .unwrap();
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "sh",
+            "-c",
+            "echo ok > marker; if /run/cistella/hooks/landlock-wrap --probe; then echo bad > /src/escape || echo DENIED; fi",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "hooked conduct must exit 0: {stderr}");
+    assert!(
+        stdout.contains("DENIED"),
+        "ancestor rule must deny through the hooked session: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.path().join("marker"))
+            .expect("admitted marker readable")
+            .as_str(),
+        "ok\n"
     );
 }

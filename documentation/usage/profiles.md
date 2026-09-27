@@ -33,6 +33,12 @@ CARGO_HOME = '{{core:container-home}}/.cargo'
 
 [labels]                                       # generic labels; `cistella.` prefix refused
 'my.tag' = '{{core:project-name}}'
+
+[isolator]                                     # backend selection (default podman; only podman today)
+name = 'podman'
+
+[[extensions]]                                 # declared guests (default none = pure Podman behavior)
+name = 'landlock'                              # only landlock today; unknown names refuse
 ```
 
 - `container-home` is canonicalized; sensitive roots (`/`, `/etc` and
