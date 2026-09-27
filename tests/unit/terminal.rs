@@ -375,3 +375,30 @@ fn plural_precondition_finds_stray_inheritable() {
     );
     assert_eq!(plural_inheritable_violation(9, &[]), None);
 }
+
+#[test]
+fn hook_spawn_lock_serializes_sections() {
+    use cistella::isolators::hook::lock_hook_spawn;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Four threads contend the process-wide section: the
+    // observed concurrency inside never exceeds one (mutex
+    // correctness makes this deterministic, not timing).
+    let inside = AtomicUsize::new(0);
+    let max = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for _ in 0..25 {
+                    let _guard = lock_hook_spawn().expect("section acquires");
+                    let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    max.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_micros(50));
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+        }
+    });
+    assert_eq!(max.load(Ordering::SeqCst), 1, "sections never overlap");
+    // Sequential re-acquire after release: no self-deadlock.
+    drop(lock_hook_spawn().expect("re-acquire"));
+}

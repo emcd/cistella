@@ -184,10 +184,11 @@ pub fn plural_inheritable_violation(
 /// podman client — and therefore `--preserve-fds=1` after the
 /// pre-exec dup-to-3 — can carry nothing but stdio and the
 /// diagnostics write-end into the container. Runs pre-spawn in
-/// the guest (the single CLOEXEC-clearing happens before it, and
-/// no concurrent clearing exists, so the census cannot race).
-/// Doubles as a regression tripwire: future code adding an
-/// inheritable fd refuses loudly here instead of leaking it.
+/// the guest under the hook-spawn lock (concurrent hook spawns
+/// serialize there, so no other launch can clear between this
+/// census and spawn). Doubles as a regression tripwire: future
+/// code adding an inheritable fd refuses loudly here instead
+/// of leaking it.
 ///
 /// # Errors
 ///

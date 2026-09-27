@@ -554,9 +554,13 @@ impl Isolator for PodmanIsolator {
         // Preservation strategy resolves before hook prep:
         // singular where advertised, plural otherwise (old
         // podman selects, never refuses); the plural
-        // precondition asserts inside, every launch.
-        let hooked =
-            super::hook::resolve_hooked_preservation(diagnostics_owned.as_ref(), &mut argv)?;
+        // precondition asserts inside, every launch. The held
+        // guard serializes concurrent hook spawns process-wide
+        // through our spawn below (drop at fn end).
+        let super::hook::HookedPreservation {
+            hooked,
+            guard: _hook_guard,
+        } = super::hook::resolve_hooked_preservation(diagnostics_owned.as_ref(), &mut argv)?;
         let args = match (workdir, hooked) {
             (Some(target), None) => {
                 crate::transport::exec_harness_args(&record.container_name, target, &argv)

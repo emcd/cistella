@@ -106,32 +106,69 @@ fn oci_runtime_name() -> Result<String> {
     Ok(name)
 }
 
+/// Process-wide hook-spawn critical section (tier-1 pushback):
+/// the fd table is process-wide, so concurrent hooked spawns —
+/// in this backend or another instance in the same process —
+/// must serialize their census-to-spawn windows, or one
+/// launch could census while another clears its diagnostics
+/// fd (spurious refusal at best, cross-launch inheritance at
+/// worst). Plain spawns never clear CLOEXEC and stay outside.
+/// The held guard is returned with the bundle so the section
+/// spans through spawn; the per-launch assertion remains the
+/// tripwire for out-of-section inheritable fds (fail-closed,
+/// never silent).
+pub fn lock_hook_spawn() -> Result<std::sync::MutexGuard<'static, ()>> {
+    static HOOK_SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    HOOK_SPAWN_LOCK
+        .lock()
+        .map_err(|_| CistellaError::Contract("hook spawn lock poisoned".to_string()))
+}
+
+/// Resolved hook preservation for one launch: the strategy
+/// plus the natural diagnostics fd number for the exec argv
+/// (or nothing without a diagnostics fd), with the hook-spawn
+/// lock held through the caller's spawn.
+pub struct HookedPreservation {
+    /// Strategy and natural fd, or `None` without diagnostics.
+    pub hooked: Option<(PreserveStrategy, RawFd)>,
+    /// Held hook-spawn lock (drop after spawn releases).
+    pub guard: std::sync::MutexGuard<'static, ()>,
+}
+
 /// Resolves the preservation strategy and prepares diagnostics
 /// forwarding for one hooked launch (or nothing without a
 /// diagnostics fd): strategy resolution first (the prep inserts
 /// the strategy's diagnostics-fd number — natural on singular,
 /// [`PLURAL_DIAG_FD`] on plural), then the plural precondition
-/// asserted every launch pre-spawn. Returns the strategy plus
-/// the natural fd number for the exec argv.
+/// asserted every launch pre-spawn. The returned guard holds
+/// the hook-spawn lock through the caller's spawn (drop after
+/// spawn releases the section; await never holds it).
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Runtime` on detection/census failure
-/// and `CistellaError::Contract` on runtime, wrapper, or
-/// precondition refusal.
+/// and `CistellaError::Contract` on runtime, wrapper,
+/// precondition, or lock refusal.
 pub fn resolve_hooked_preservation(
     diagnostics: Option<&OwnedFd>,
     argv: &mut Vec<String>,
-) -> Result<Option<(PreserveStrategy, RawFd)>> {
+) -> Result<HookedPreservation> {
+    let guard = lock_hook_spawn()?;
     let Some(diag) = diagnostics else {
-        return Ok(None);
+        return Ok(HookedPreservation {
+            hooked: None,
+            guard,
+        });
     };
     let resolved = resolve_preserve_strategy()?;
     let natural = prepare_diagnostics_hook(diag, argv, resolved)?;
     if resolved == PreserveStrategy::Plural {
         assert_plural_inheritable_only(natural)?;
     }
-    Ok(Some((resolved, natural)))
+    Ok(HookedPreservation {
+        hooked: Some((resolved, natural)),
+        guard,
+    })
 }
 
 /// Collapses the diagnostics write-end onto [`PLURAL_DIAG_FD`]
