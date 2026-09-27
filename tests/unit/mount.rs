@@ -604,11 +604,11 @@ fn revise_ro_directories_for_confinement() {
             mode: MountMode::Rw,
         },
     ];
-    let revised = revise_ro_for_confinement(&triples);
-    // Directory RO flips (Podman materializes submounts under
-    // RW); file RO stays (Landlock cannot carry file policy, so
-    // Podman-level RO remains its enforcement); RW untouched.
-    // Targets and sources are identical either way.
+    let revised = revise_ro_for_confinement(&triples, &["/work".to_string()]);
+    // Directory RO outside FULL flips (Podman materializes
+    // submounts under RW); file RO stays (Landlock cannot carry
+    // file policy, so Podman-level RO remains its enforcement);
+    // RW untouched. Targets and sources are identical either way.
     assert_eq!(revised[0].mode, MountMode::Rw);
     assert_eq!(revised[1].mode, MountMode::Ro);
     assert_eq!(revised[2].mode, MountMode::Rw);
@@ -616,4 +616,115 @@ fn revise_ro_directories_for_confinement() {
         assert_eq!(before.host_source, after.host_source);
         assert_eq!(before.container_target, after.container_target);
     }
+}
+
+#[test]
+fn revise_retains_ro_under_full_routes() {
+    use cistella::mount::{MountMode, MountTriple, revise_ro_for_confinement};
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
+    let host = dir.path().to_string_lossy().to_string();
+    let triples = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/ro-data"),
+            container_target: "/src/proj/ro-data".to_string(),
+            mode: MountMode::Ro,
+        },
+    ];
+    // `/src/proj` receives FULL (subtree route): the nested RO
+    // dir keeps Podman read-only (Landlock union cannot
+    // subtract the parent grant, so the VFS binding carries
+    // that enforcement); the ancestor outside FULL still flips
+    // for submount materialization.
+    let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()]);
+    assert_eq!(revised[0].mode, MountMode::Rw);
+    assert_eq!(revised[1].mode, MountMode::Ro);
+}
+
+#[test]
+fn ro_confinement_preflight_refuses_rw_descendant() {
+    use cistella::mount::{MountMode, MountTriple, ro_confinement_preflight};
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
+    let host = dir.path().to_string_lossy().to_string();
+    let ro = MountTriple {
+        host_source: format!("{host}/ro-data"),
+        container_target: "/src/proj/ro-data".to_string(),
+        mode: MountMode::Ro,
+    };
+    let rw = MountTriple {
+        host_source: format!("{host}/ro-data/scratch"),
+        container_target: "/src/proj/ro-data/scratch".to_string(),
+        mode: MountMode::Rw,
+    };
+    let full = vec!["/src/proj".to_string()];
+    // Contradictory topology (RW graft under retained-RO dir)
+    // refuses with both targets named; clean topologies pass.
+    let error = ro_confinement_preflight(&[ro.clone(), rw], &full).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("/src/proj/ro-data"), "got: {text}");
+    assert!(text.contains("/src/proj/ro-data/scratch"), "got: {text}");
+    ro_confinement_preflight(&[ro], &full).expect("retained RO without RW descendant passes");
+}
+
+#[test]
+fn revise_retains_ro_for_alias_spellings_and_dev() {
+    use cistella::mount::{MountMode, MountTriple, revise_ro_for_confinement};
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
+    std::fs::create_dir_all(dir.path().join("dev-data")).expect("dev-data");
+    let host = dir.path().to_string_lossy().to_string();
+    let triples = vec![
+        // Traversal spelling of a target under FULL `/src/proj`:
+        // canonical comparison retains Podman read-only.
+        MountTriple {
+            host_source: format!("{host}/ro-data"),
+            container_target: "/src/../src/proj/ro-data".to_string(),
+            mode: MountMode::Ro,
+        },
+        // Declared-RO directory under the fixed FULL `/dev`
+        // baseline: retained (Landlock `/dev` FULL cannot
+        // subtract, so the VFS binding carries enforcement).
+        MountTriple {
+            host_source: format!("{host}/dev-data"),
+            container_target: "/dev/ro-data".to_string(),
+            mode: MountMode::Ro,
+        },
+    ];
+    let revised =
+        revise_ro_for_confinement(&triples, &["/dev".to_string(), "/src/proj".to_string()]);
+    assert_eq!(revised[0].mode, MountMode::Ro);
+    assert_eq!(revised[1].mode, MountMode::Ro);
+}
+
+#[test]
+fn ro_confinement_preflight_collides_alias_spellings() {
+    use cistella::mount::{MountMode, MountTriple, ro_confinement_preflight};
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
+    let host = dir.path().to_string_lossy().to_string();
+    let ro = MountTriple {
+        host_source: format!("{host}/ro-data"),
+        container_target: "/src/proj/ro-data".to_string(),
+        mode: MountMode::Ro,
+    };
+    // Same target through dot-segment spelling: canonical
+    // comparison still collides with the retained-RO dir.
+    let rw = MountTriple {
+        host_source: format!("{host}/ro-data/scratch"),
+        container_target: "/src//proj/./ro-data/scratch".to_string(),
+        mode: MountMode::Rw,
+    };
+    let full = vec!["/src/proj".to_string()];
+    ro_confinement_preflight(std::slice::from_ref(&ro), &full).expect("clean passes");
+    let error = ro_confinement_preflight(&[ro, rw], &full).unwrap_err();
+    assert!(
+        error.to_string().contains("read-write descendant"),
+        "got: {error}"
+    );
 }

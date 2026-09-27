@@ -250,6 +250,9 @@ fn compose_hook_argv_orders_wrapper_args_then_harness() {
         &["sh".to_string(), "-c".to_string(), "echo hi".to_string()],
     )
     .unwrap();
+    // The read-write ancestor binding carves FULL on its own
+    // route (declarations authoritative); routes render first,
+    // then carveouts, then the harness.
     assert_eq!(
         argv,
         vec![
@@ -258,6 +261,7 @@ fn compose_hook_argv_orders_wrapper_args_then_harness() {
             "--allow-rw=/dev".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
+            "--allow-rw=/src".to_string(),
             "--".to_string(),
             "sh".to_string(),
             "-c".to_string(),
@@ -388,13 +392,17 @@ fn compose_declared_mounts_grant_by_mode() {
     use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
     use cistella::mount::{MountMode, MountTriple};
     use std::path::Path;
-    // Declared mounts grant by declared mode: scratch outside the
+    // Declared mounts grant by declared mode: the read-write
+    // ancestor binding grants full on its own route (declarations
+    // are authoritative — a validated RW triple left read-only
+    // would fail declared-admissible writes); scratch outside the
     // ancestor domain with RW grants full; a socket file is
-    // skipped (cannot root path_beneath); a read-write sibling
-    // submount under the ancestor grants full as a declared
-    // carveout (operator doctrine: declaration is intent); a
-    // read-only submount under the ancestor grants nothing (the
-    // ancestor read-execute rule denies).
+    // skipped (cannot root path_beneath); an outside host source
+    // bound inside the ancestor route (`/opt/state` at
+    // `/src/state`) grants full wherever it sits; a read-write
+    // sibling submount under the ancestor grants full as a
+    // declared carveout; a read-only submount under the ancestor
+    // grants nothing (the ancestor read-execute rule denies).
     let scratch = tempfile::tempdir().expect("scratch dir");
     let socket = tempfile::NamedTempFile::new().expect("socket stand-in");
     let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
@@ -420,6 +428,11 @@ fn compose_declared_mounts_grant_by_mode() {
             mode: MountMode::Rw,
         },
         MountTriple {
+            host_source: "/opt/state".to_string(),
+            container_target: "/src/state".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
             host_source: "/home/op/src/ro-data".to_string(),
             container_target: "/rodata".to_string(),
             mode: MountMode::Ro,
@@ -441,8 +454,10 @@ fn compose_declared_mounts_grant_by_mode() {
             "--allow-rw=/dev".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
+            "--allow-rw=/src".to_string(),
             "--allow-rw=/tmp/scratch".to_string(),
             "--allow-rw=/other".to_string(),
+            "--allow-rw=/src/state".to_string(),
             "--allow-ro=/rodata".to_string(),
             "--".to_string(),
             "true".to_string(),
@@ -562,5 +577,137 @@ fn gate_drain_ambiguous_signal_reports_transition_ambiguity() {
     assert_eq!(
         detail.as_deref(),
         Some("transition ambiguous: signal SIGTERM")
+    );
+}
+
+#[test]
+fn full_grant_routes_mirror_compose_carveouts() {
+    use cistella::framework::prepare::full_grant_routes;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![
+        MountTriple {
+            host_source: "/home/op/src".to_string(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj".to_string(),
+            container_target: "/src/proj".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: "/opt/state".to_string(),
+            container_target: "/src/state".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: "/tmp/scratch".to_string(),
+            container_target: "/tmp/scratch".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    // Fixed FULL baselines, subtree route, plus the RW
+    // carveout targets (project graft, outside source bound
+    // inside the ancestor route, and uncovered scratch);
+    // the RO ancestor is not FULL.
+    let full = full_grant_routes(
+        &[hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+    )
+    .unwrap();
+    assert_eq!(
+        full,
+        vec![
+            "/dev".to_string(),
+            "/src/proj".to_string(),
+            "/src/state".to_string(),
+            "/tmp/scratch".to_string()
+        ]
+    );
+}
+
+#[test]
+fn refuse_extension_rw_mounts_gates_carveout_admission() {
+    use cistella::framework::prepare::refuse_extension_rw_mounts;
+    use cistella::mount::{MountMode, MountTriple};
+    let rw = MountTriple {
+        host_source: "/srv/data".to_string(),
+        container_target: "/data".to_string(),
+        mode: MountMode::Rw,
+    };
+    let ro = MountTriple {
+        host_source: "/run/vector/agentmux-bus".to_string(),
+        container_target: "/run/vector/agentmux-bus".to_string(),
+        mode: MountMode::Ro,
+    };
+    // An RW triple refuses (it would compose into a FULL
+    // carveout); RO contributions still merge (vectors pin the
+    // bus-socket shape).
+    let error = refuse_extension_rw_mounts(&[ro.clone(), rw]).unwrap_err();
+    assert!(error.to_string().contains("not admitted"), "got: {error}");
+    refuse_extension_rw_mounts(&[]).expect("empty passes");
+    refuse_extension_rw_mounts(&[ro]).expect("read-only passes");
+}
+
+#[test]
+fn compose_canonicalizes_target_spellings_for_coverage() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    // Traversal, duplicate-slash, and dot-segment spellings of
+    // targets under the FULL subtree: grant computation runs on
+    // canonical forms, so the RO alias is covered (no stray
+    // subtract-incapable RO rule) and the RW carveout emits
+    // canonical.
+    let triples = vec![
+        MountTriple {
+            host_source: "/home/op/src".to_string(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj".to_string(),
+            container_target: "/src/proj".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj/ro-data".to_string(),
+            container_target: "/src/../src/proj/ro-data".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/g".to_string(),
+            container_target: "/src//g/./x".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &[],
+    )
+    .unwrap();
+    assert!(
+        !argv
+            .iter()
+            .any(|flag| flag.contains("..") || flag.contains("//")),
+        "no raw alias spelling reaches argv: {argv:?}"
+    );
+    assert!(
+        !argv.contains(&"--allow-ro=/src/proj/ro-data".to_string()),
+        "covered RO alias emits no rule: {argv:?}"
+    );
+    assert!(
+        argv.contains(&"--allow-rw=/src/g/x".to_string()),
+        "RW carveout emits canonical: {argv:?}"
     );
 }

@@ -157,6 +157,18 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     let credentials = admit_all(&response.credentials)?;
     let plan = build_plan(response, &provenance)?;
     let merged = merge_prepare(plan, &advertised, context)?;
+    // Extension read-write mounts are never admitted (tier-2
+    // hardening): merged mounts are extension-provided by
+    // construction — profile/CLI/session triples ride the occupied
+    // baseline, never the plan — and no Mounts policy admission
+    // exists, so an RW triple here would compose into a FULL
+    // Landlock carveout on untrusted say-so. Read-only
+    // contributions still merge (vectors pin the bus-socket
+    // shape): they cannot grant writes through compose, and the
+    // RO-under-FULL retention keeps their Podman binding
+    // read-only. Remove this refusal only with explicit policy
+    // admission for extension mounts.
+    refuse_extension_rw_mounts(&merged.mounts)?;
     let contributed: Vec<String> = merged
         .environment
         .iter()
@@ -285,6 +297,26 @@ pub fn check_hook_executable(hook: &GuestHookRequest) -> Result<()> {
     if hook.argv_prefix.len() != 1 || hook.argv_prefix[0] != STAGED_WRAPPER_GUEST_PATH {
         return Err(CistellaError::Contract(
             "guest hook argv must name exactly the staged wrapper path".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses extension read-write mount contributions: merged
+/// mounts are extension-provided by construction, and no Mounts
+/// policy admission exists, so an RW triple would compose into a
+/// FULL Landlock carveout on untrusted say-so. Pure over the
+/// merged mount set; diagnostics name the contribution type,
+/// never paths.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on the first RW triple.
+pub fn refuse_extension_rw_mounts(mounts: &[MountTriple]) -> Result<()> {
+    if mounts.iter().any(|t| t.mode == MountMode::Rw) {
+        return Err(CistellaError::Contract(
+            "extension read-write mount contributions are not admitted: no Mounts policy admission exists"
+                .to_string(),
         ));
     }
     Ok(())
@@ -554,21 +586,28 @@ pub fn confinement_roots(
 ///   entry: dogfood demotes it only on evidence.
 /// - ancestor guest routes as read-execute; subtree guest routes
 ///   as full rights (the union exception).
-/// - RW carveouts: every read-write triple whose host source lies
-///   strictly under the ancestor (project subtree, declared
-///   submounts such as state dirs or per-project grafts under
-///   shared read-only trees) grants full rights on its guest
-///   target. The ancestor bind itself is never a carveout (it
-///   equals, not undercuts, the ancestor).
+/// - RW carveouts: EVERY declared read-write directory grants
+///   full rights on its guest target, wherever it sits — the
+///   project subtree, the read-write ancestor binding itself,
+///   per-project grafts under shared read-only trees, outside
+///   host sources bound inside ancestor routes (`/opt/state`
+///   at `/src/state`), uncovered scratch alike. Declarations
+///   are authoritative intent: a validated RW triple left
+///   read-only would fail writes the operator declared
+///   admissible.
 /// - RO readability: every read-only triple whose target lies
 ///   outside all routes grants read-execute (declared content
 ///   must stay readable; default-deny would brick it). Targets
-///   under routes stay covered by the ancestor rule, which
-///   denies. Profile declarations are authoritative intent
-///   (operator/seat-owned); Landlock enforces them, it does not
-///   second-guess them. Proven files skip (sockets cannot root a
-///   `path_beneath` rule); not-yet-existing paths grant by mode
-///   (a wrong-kind materialization fails loudly at apply).
+///   under RO ancestor routes stay covered by that rule, which
+///   denies writes at the Landlock layer; targets under FULL
+///   routes carry no subtracted rule (union semantics forbid
+///   it) and rely on the retained Podman read-only binding
+///   instead (see the revision). Profile declarations are
+///   authoritative intent (operator/seat-owned); Landlock
+///   enforces them, it does not second-guess them. Proven files
+///   skip (sockets cannot root a `path_beneath` rule);
+///   not-yet-existing paths grant by mode (a wrong-kind
+///   materialization fails loudly at apply).
 /// - `/tmp`, `$HOME` (container-private tmpfs), and `/dev/null`
 ///   writes stay denied (outlets: `/tmp/scratch`): dogfood
 ///   promotes only on evidence.
@@ -579,19 +618,43 @@ pub fn confinement_roots(
 ///
 /// Returns `CistellaError::Contract` on hook count, empty routes,
 /// or untranslatable roots.
-pub fn compose_hook_argv(
+/// One decided Landlock grant: full rights or read-execute on a
+/// guest target, in triple order (rendering dedups first-wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantKind {
+    Full,
+    Read,
+}
+
+/// Decided grants over the mount topology: ancestor
+/// read-execute routes, subtree full-rights routes, and the
+/// per-triple carveout/readability decisions in triple order.
+/// Shared by argv composition and the RO-retention revision so
+/// the two cannot disagree on which guest targets receive FULL.
+struct GrantSet {
+    ancestor_routes: Vec<String>,
+    subtree_routes: Vec<String>,
+    carveouts: Vec<(GrantKind, String)>,
+}
+
+/// Computes the decided grants (pure; refuses exactly as
+/// composition does on hook count and untranslatable roots).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on hook count, empty routes,
+/// or untranslatable roots.
+fn compute_grants(
     hooks: &[GuestHookRequest],
     triples: &[MountTriple],
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
-    harness_argv: &[String],
-) -> Result<Vec<String>> {
+) -> Result<GrantSet> {
     if hooks.len() != 1 {
         return Err(CistellaError::Contract(
             "hook launch supports exactly one hook".to_string(),
         ));
     }
-    let hook = &hooks[0];
     let ancestor_routes = crate::mount::guest_routes_for_host(triples, ancestor_host);
     if ancestor_routes.is_empty() {
         return Err(CistellaError::Contract(
@@ -604,11 +667,122 @@ pub fn compose_hook_argv(
             "hook subtree untranslatable through the mount topology".to_string(),
         ));
     }
+    // Declared mounts, granted by declared mode (operator-owned
+    // intent; Landlock enforces, never second-guesses). Only
+    // proven files skip: a file cannot root a `path_beneath`
+    // rule, and sockets surface at use (documented on the
+    // composer). Not-yet-existing paths grant by mode
+    // (fail-closed: a wrong-kind materialization fails loudly at
+    // apply, never silently unconfined).
+    let mut carveouts = Vec::new();
+    for triple in triples {
+        // Proven files skip: a file cannot root a `path_beneath`
+        // rule, and sockets surface at use.
+        let source = crate::mount::canonicalize_host_source(&triple.host_source);
+        if source.is_file() {
+            continue;
+        }
+        // Grant computation runs on canonical target spellings —
+        // the same form rendering emits and routes derive in —
+        // so a non-canonical declaration (`/x/../work/ro-data`,
+        // duplicate slashes, dot segments) cannot dodge coverage
+        // or mint a second rule spelling for one mount.
+        let target = crate::mount::canonicalize_container_target(&triple.container_target);
+        let covered = ancestor_routes
+            .iter()
+            .chain(subtree_routes.iter())
+            .any(|route| target == *route || target.starts_with(&format!("{route}/")));
+        match triple.mode {
+            // Read-write carveouts: EVERY declared read-write
+            // directory grants full rights on its guest target,
+            // wherever it sits — under-ancestor grafts, the
+            // read-write ancestor binding itself, outside mounts
+            // bound inside ancestor routes (`/opt/state` at
+            // `/src/state`), uncovered scratch alike. Declarations
+            // are authoritative intent: a validated RW triple the
+            // ruleset left read-only would fail writes the
+            // operator declared admissible.
+            MountMode::Rw => {
+                carveouts.push((GrantKind::Full, target));
+            }
+            // Read-only readability: uncovered outside mounts,
+            // plus under-ancestor mounts whose targets lie
+            // outside every route (declared content must stay
+            // readable; default-deny would brick it). Targets
+            // under routes stay covered by their route's rule.
+            MountMode::Ro if !covered => {
+                carveouts.push((GrantKind::Read, target));
+            }
+            _ => {}
+        }
+    }
+    Ok(GrantSet {
+        ancestor_routes,
+        subtree_routes,
+        carveouts,
+    })
+}
+
+/// Fixed FULL baselines every hooked launch grants outside the
+/// mount topology (system composition): guest targets receiving
+/// full rights unconditionally. Shared with the RO-retention
+/// revision so FULL accounting is complete — retention and
+/// preflight must see every FULL route, not just
+/// topology-derived ones. (`/` stays excluded: it grants
+/// read-execute, which union-safely denies writes.)
+const FULL_BASELINE_ROUTES: &[&str] = &["/dev"];
+
+/// Guest targets receiving FULL Landlock rights: the fixed
+/// baselines, the subtree routes, plus every read-write
+/// carveout target. The revision consumes this set to retain
+/// Podman read-only on RO mounts nested under FULL routes
+/// (Landlock union cannot subtract, so the VFS binding carries
+/// that enforcement). Pure; refuses exactly as composition
+/// does.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on hook count, empty routes,
+/// or untranslatable roots.
+pub fn full_grant_routes(
+    hooks: &[GuestHookRequest],
+    triples: &[MountTriple],
+    ancestor_host: &std::path::Path,
+    subtree_host: &std::path::Path,
+) -> Result<Vec<String>> {
+    let grants = compute_grants(hooks, triples, ancestor_host, subtree_host)?;
+    let mut full: Vec<String> = FULL_BASELINE_ROUTES
+        .iter()
+        .map(|route| route.to_string())
+        .collect();
+    full.extend(grants.subtree_routes);
+    for (kind, target) in grants.carveouts {
+        if kind == GrantKind::Full && !full.contains(&target) {
+            full.push(target);
+        }
+    }
+    Ok(full)
+}
+
+pub fn compose_hook_argv(
+    hooks: &[GuestHookRequest],
+    triples: &[MountTriple],
+    ancestor_host: &std::path::Path,
+    subtree_host: &std::path::Path,
+    harness_argv: &[String],
+) -> Result<Vec<String>> {
+    let grants = compute_grants(hooks, triples, ancestor_host, subtree_host)?;
+    let hook = &hooks[0];
     let mut argv = Vec::new();
     argv.extend(hook.argv_prefix.iter().cloned());
-    // System baseline first (fixed position, deterministic).
+    // System baseline first (fixed position, deterministic):
+    // read-execute on the container rootfs, full rights on the
+    // fixed FULL baselines (rendered from the shared set the
+    // revision accounts, so composition and retention agree).
     argv.push("--allow-ro=/".to_string());
-    argv.push("--allow-rw=/dev".to_string());
+    for baseline in FULL_BASELINE_ROUTES {
+        argv.push(format!("--allow-rw={baseline}"));
+    }
     // Exact-duplicate flags collapse (first occurrence wins);
     // nested overlaps stay (union semantics need both the
     // ancestor read-execute and the carveout full rights).
@@ -617,50 +791,16 @@ pub fn compose_hook_argv(
             argv.push(flag);
         }
     };
-    for route in &ancestor_routes {
+    for route in &grants.ancestor_routes {
         push_unique(format!("--allow-ro={route}"));
     }
-    for route in &subtree_routes {
+    for route in &grants.subtree_routes {
         push_unique(format!("--allow-rw={route}"));
     }
-    // Declared mounts, granted by declared mode (operator-owned
-    // intent; Landlock enforces, never second-guesses). Only
-    // proven files skip: a file cannot root a `path_beneath`
-    // rule, and sockets surface at use (documented above).
-    // Not-yet-existing paths grant by mode (fail-closed: a
-    // wrong-kind materialization fails loudly at apply, never
-    // silently unconfined).
-    let ancestor_canon = crate::mount::canonicalize_host_source(&ancestor_host.to_string_lossy());
-    for triple in triples {
-        let source = crate::mount::canonicalize_host_source(&triple.host_source);
-        if source.is_file() {
-            continue;
-        }
-        let under_ancestor = source.starts_with(&ancestor_canon) && source != ancestor_canon;
-        let outside_ancestor = !source.starts_with(&ancestor_canon);
-        let covered = ancestor_routes
-            .iter()
-            .chain(subtree_routes.iter())
-            .any(|route| {
-                triple.container_target == *route
-                    || triple.container_target.starts_with(&format!("{route}/"))
-            });
-        match triple.mode {
-            // Read-write carveouts: under-ancestor submounts
-            // (project tree, state dirs, per-project grafts) and
-            // uncovered outside mounts (scratch) alike.
-            MountMode::Rw if under_ancestor || (outside_ancestor && !covered) => {
-                push_unique(format!("--allow-rw={}", triple.container_target));
-            }
-            // Read-only readability: uncovered outside mounts,
-            // plus under-ancestor mounts whose targets lie
-            // outside every route (declared content must stay
-            // readable; default-deny would brick it). Targets
-            // under routes stay covered by the ancestor rule.
-            MountMode::Ro if !covered => {
-                push_unique(format!("--allow-ro={}", triple.container_target));
-            }
-            _ => {}
+    for (kind, target) in grants.carveouts {
+        match kind {
+            GrantKind::Full => push_unique(format!("--allow-rw={target}")),
+            GrantKind::Read => push_unique(format!("--allow-ro={target}")),
         }
     }
     argv.push("--".to_string());

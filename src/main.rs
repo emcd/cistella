@@ -448,15 +448,26 @@ fn conduct_session(
     triples.extend(evaluated.merged.mounts.clone());
     // Revision (task 3.2, operator direction): with hooks staged,
     // directory RO triples reach Podman as RW so submounts
-    // materialize; the Landlock policy derives from the ORIGINAL
-    // modes (compose below reads `triples`). Without hooks the set
-    // passes through untouched — zero behavior change on plain
+    // materialize — except RO dirs at or under FULL-granted guest
+    // routes, which keep Podman read-only (tier-2 hardening:
+    // Landlock union cannot subtract the parent FULL grant, so
+    // the VFS binding carries that enforcement). The contradictory
+    // RO-with-RW-descendant topology refuses pre-create. The
+    // Landlock policy derives from the ORIGINAL modes (compose
+    // below reads `triples`). Without hooks the set passes
+    // through untouched — zero behavior change on plain
     // sessions. Validation and rendering run on the revised set:
     // they must reflect what Podman actually mounts.
     let revised: Vec<MountTriple> = if evaluated.merged.guest_hooks.is_empty() {
         triples.clone()
     } else {
-        cistella::mount::revise_ro_for_confinement(&triples)
+        let full_routes = cistella::framework::hooks::hook_full_routes(
+            &evaluated.merged.guest_hooks,
+            &triples,
+            &directory,
+        )?;
+        cistella::mount::ro_confinement_preflight(&triples, &full_routes)?;
+        cistella::mount::revise_ro_for_confinement(&triples, &full_routes)
     };
     // Final joint topology gate: extension mounts plus credential
     // volumes validate and preflight as one merged set — still

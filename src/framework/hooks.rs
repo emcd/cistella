@@ -228,6 +228,29 @@ pub fn plan_hook_argv(
     compose_hook_argv(hooks, triples, &ancestor_host, &subtree_host, harness_argv)
 }
 
+/// Full-grant guest targets for the RO-retention revision
+/// (tier-2 hardening): home confinement roots plus
+/// `full_grant_routes`, derived from the same roots the argv
+/// composition uses so revision and policy cannot disagree.
+/// Runs pre-create; an untranslatable topology or a session
+/// outside the confinement root refuses with no unit.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on missing `HOME` and
+/// `CistellaError::Contract` on roots/grant refusal.
+pub fn hook_full_routes(
+    hooks: &[crate::framework::contract::GuestHookRequest],
+    triples: &[crate::mount::MountTriple],
+    directory: &str,
+) -> crate::error::Result<Vec<String>> {
+    use crate::framework::prepare::{confinement_roots, full_grant_routes};
+    let home = std::env::var("HOME")
+        .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
+    let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
+    full_grant_routes(hooks, triples, &ancestor_host, &subtree_host)
+}
+
 /// Creates the diagnostics pipe post-host (a pre-host pipe would
 /// leak into the guest's inherited fds and defeat EOF).
 ///
