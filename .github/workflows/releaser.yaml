@@ -39,11 +39,11 @@ jobs:
           components: rustfmt, clippy
 
       - name: Check Formatting
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-24.04'
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-24.04'
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
@@ -82,9 +82,10 @@ jobs:
         # unproven ground for systemd user sessions plus rootless
         # Podman, so the authoritative live gate stays the host
         # pre-push hook until a self-hosted runner exists.
+        # `--no-fail-fast`: one flake must not hide the other results.
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast
 
   pre-push:
     # The release workflow is a superset of the qa workflow: in addition
