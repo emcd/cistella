@@ -785,7 +785,7 @@ fn gate_drain_captures_exec_failure_and_ignores_noise() {
     let mut write: std::fs::File = write.into();
     let script = concat!(
         "{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n",
-        "{\"applied\":false,\"error\":\"exec failed: ENOENT\"}\n",
+        "{\"transitioned\":false,\"error\":\"exec failed: ENOENT\"}\n",
     );
     use std::io::Write;
     write.write_all(script.as_bytes()).expect("write script");
@@ -805,7 +805,9 @@ fn gate_drain_clean_session_has_no_detail() {
     let mut write: std::fs::File = write.into();
     use std::io::Write;
     write
-        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
+        .write_all(
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":true}\n",
+        )
         .expect("write script");
     drop(write);
     let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate passes");
@@ -925,4 +927,69 @@ fn gate_drain_overlong_refuses() {
     let error = gate_hook_attestation(&read, Duration::from_secs(10)).unwrap_err();
     assert!(error.to_string().contains("overlong"), "got: {error}");
     let _ = writer.join();
+}
+
+#[test]
+fn gate_drain_eof_without_transition_refuses() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    // Attestation then EOF with NO transitioned line (crash
+    // between seal and exec): must not classify as success.
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    write
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
+        .expect("write script");
+    drop(write);
+    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    assert!(
+        error.to_string().contains("transition unproven"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn gate_drain_transition_failure_reports_detail() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    write
+        .write_all(
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":false,\"error\":\"child died\"}\n",
+        )
+        .expect("write script");
+    drop(write);
+    let (abi, detail) =
+        gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate reads failure");
+    assert_eq!(abi, 7);
+    assert_eq!(detail.as_deref(), Some("child died"));
+}
+
+#[test]
+fn gate_drain_ambiguous_signal_reports_transition_ambiguity() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    // The ambiguous race-window shape (indistinguishable
+    // pre-exec wrapper death vs early harness signal) classifies
+    // as transition ambiguity with cause — neither wrapper
+    // failure nor harness outcome, never silent.
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    write
+        .write_all(
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":false,\"error\":\"transition ambiguous: signal SIGTERM\"}\n",
+        )
+        .expect("write script");
+    drop(write);
+    let (abi, detail) =
+        gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate reads failure");
+    assert_eq!(abi, 7);
+    assert_eq!(
+        detail.as_deref(),
+        Some("transition ambiguous: signal SIGTERM")
+    );
 }

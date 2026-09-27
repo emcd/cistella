@@ -641,27 +641,34 @@ pub fn compose_hook_argv(
     Ok(argv)
 }
 
+/// Exact transition shape: the supervisor's exec-boundary
+/// report. Derived `Deserialize` rejects duplicate fields and
+/// extra keys; the cross-field check below enforces the tagged
+/// pairing (error xor clean).
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Transitioned {
+    transitioned: bool,
+    error: Option<String>,
+}
+
 /// Checks one post-attestation diagnostics line: `Ok(Some)` only
-/// for the exact exec-failure shape, `Ok(None)` for nothing —
-/// there is no admissible non-failure trailing line (the wrapper
-/// emits attestation, then silence or its failure report). Any
-/// other bytes refuse typed: a malformed stream cannot classify a
-/// launch successful.
+/// for the exact transition-failure shape, `Ok(None)` for the
+/// exact clean-transition shape. There is no admissible third
+/// shape (the supervisor emits exactly one transition line):
+/// anything else refuses typed, so a malformed stream can never
+/// classify a launch successful.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Contract` on any line that is not the
-/// exact exec-failure shape.
-pub fn check_diagnostics_trailing(line: &str) -> Result<Option<String>> {
-    let attestation: Attestation = serde_json::from_str(line)
+/// Returns `CistellaError::Contract` on any line that is not
+/// exactly one of the two transition shapes.
+pub fn check_transition_line(line: &str) -> Result<Option<String>> {
+    let transitioned: Transitioned = serde_json::from_str(line)
         .map_err(|_| CistellaError::Contract("malformed diagnostics trailing".to_string()))?;
-    match (
-        attestation.applied,
-        attestation.abi,
-        attestation.handled_fs_mask,
-        attestation.error,
-    ) {
-        (false, _, _, Some(error)) => Ok(Some(error)),
+    match (transitioned.transitioned, transitioned.error) {
+        (true, None) => Ok(None),
+        (false, Some(error)) => Ok(Some(error)),
         _ => Err(CistellaError::Contract(
             "malformed diagnostics trailing".to_string(),
         )),

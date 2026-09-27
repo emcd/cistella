@@ -321,9 +321,10 @@ fn broken_diagnostics_exits_without_execing() {
 
 #[test]
 fn exec_failure_reports_wrapper_error() {
-    // Applied, sealed, then a bad harness path: exit 2 with a
-    // typed applied:false second line (wrapper failure, never a
-    // harness outcome).
+    // Applied, supervised, then a bad harness path: exit 2 with a
+    // typed transitioned:false second line (wrapper failure, never
+    // a harness outcome). The transitioned vocabulary (not
+    // applied:false) classifies post-attestation failures.
     let (_dir, allowed) = scratch_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
@@ -350,8 +351,54 @@ fn exec_failure_reports_wrapper_error() {
         Some(&serde_json::Value::Bool(true))
     );
     let failed: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("failure second");
-    assert_eq!(failed.get("applied"), Some(&serde_json::Value::Bool(false)));
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        failed.get("transitioned"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert!(
+        failed
+            .get("error")
+            .and_then(|error| error.as_str())
+            .is_some()
+    );
+}
+
+#[test]
+fn success_emits_transitioned_true() {
+    // Positive exec-transition proof shape: attestation, then the
+    // supervisor's transitioned:true, then EOF. The host gate
+    // requires all three.
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/python3")
+        .arg("-c")
+        .arg("pass")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert_eq!(lines.next(), None, "stream ends after transition");
 }
 
 #[test]
@@ -394,5 +441,117 @@ fn fault_kill_after_attest_dies_by_signal_without_execing() {
     assert!(
         !marker.exists(),
         "harness must never exec in the fault window"
+    );
+}
+
+#[test]
+fn fast_harness_exit_relays_disposition() {
+    // Race-window pin: a harness that execs and exits before the
+    // supervisor's waitpid check must relay (transitioned + exit
+    // code), never misattribute as wrapper-death. /bin/true exits
+    // in microseconds — fast enough to win the race.
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(output.status.code(), Some(0), "fast exit relays clean");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
+
+#[test]
+fn signalled_harness_relays_signal() {
+    // Harness SIGTERM in the race window relays as session signal
+    // (death by SIGTERM, not an exit code): the QA fault seam pins
+    // the deterministic wrapper-death case separately.
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/dash")
+        .arg("-c")
+        .arg("kill -TERM $$")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(
+        output.status.signal(),
+        Some(15),
+        "harness SIGTERM relays as session signal"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
+
+#[test]
+fn harness_exit_126_relays_as_harness_outcome() {
+    // No exit code is squatted as a transition sentinel: a
+    // harness exiting 126 relays as the harness outcome with a
+    // clean transition (report failure self-signals instead).
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/dash")
+        .arg("-c")
+        .arg("exit 126")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(output.status.code(), Some(126));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let transitioned: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+    assert_eq!(
+        transitioned.get("transitioned"),
+        Some(&serde_json::Value::Bool(true))
     );
 }

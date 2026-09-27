@@ -15,7 +15,7 @@ use tempfile::TempDir;
 use cistella::framework::contract::{CancelFlag, LifecycleState, ReconciliationKey};
 use cistella::framework::contract::{GuestHookRequest, HookArtifact, HookProbe, HookSource};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::{compose_hook_argv, parse_attestation_line, parse_probe_report};
+use cistella::framework::prepare::{compose_hook_argv, parse_probe_report};
 use cistella::framework::registry::{
     STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME, digest_sibling, stage_hook_artifact,
 };
@@ -185,10 +185,26 @@ impl HookFixture {
     }
 
     fn teardown(&mut self) {
-        let client = self.client.take().expect("client live");
+        // No-op-safe: explicit end-of-test teardown takes the
+        // client; Drop re-entry finds None. Best-effort on every
+        // path (wire errors ignored, teardown converges).
+        let Some(client) = self.client.take() else {
+            return;
+        };
         let _ = client.terminate(&self.handle, Default::default(), &self.key);
         let _ = client.remove(&self.handle, &self.key);
         let _ = client.close();
+    }
+}
+
+impl Drop for HookFixture {
+    /// Close-on-unwind: a live assertion panic still terminates,
+    /// removes, and closes through the client (then the name
+    /// guard converges by name and staging drops) — no leaked
+    /// guest worker, socket, unit, or staging dir. Mirrors the
+    /// 2.3 fixture discipline.
+    fn drop(&mut self) {
+        self.teardown();
     }
 }
 
@@ -203,16 +219,6 @@ fn podman_exec(container: &str, argv: &[&str]) -> std::process::Output {
         .stderr(Stdio::piped())
         .output()
         .expect("podman exec must spawn")
-}
-
-/// Reads one attestation line from a diagnostics read-end (test
-/// copy of the conduct gate: bounded wait, first line only).
-fn test_attestation(read: &std::os::fd::OwnedFd) -> String {
-    use cistella::framework::prepare::read_attestation_line;
-    use std::os::fd::AsFd;
-    let (line, _) =
-        read_attestation_line(read.as_fd(), Duration::from_secs(30)).expect("attestation line");
-    line
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -279,9 +285,13 @@ fn hook_hooked_launch_attests_and_confines() {
             .expect("hooked launch")
     };
     drop(diag_write);
-    let line = test_attestation(&diag_read);
-    let (abi, _mask) = parse_attestation_line(&line).expect("applied attestation");
+    // Production gate (not first-line-only): attestation plus
+    // transitioned plus EOF through the real classifier.
+    let (abi, detail) =
+        cistella::framework::hooks::gate_hook_attestation(&diag_read, Duration::from_secs(30))
+            .expect("production gate passes");
     assert!(abi >= 3, "attested ABI carries TRUNCATE");
+    assert_eq!(detail, None);
     drop(diag_read);
     let outcome = fixture
         .client()
@@ -323,8 +333,11 @@ fn hook_hooked_launch_attests_and_confines() {
             .expect("hooked launch")
     };
     drop(diag_write);
-    let line = test_attestation(&diag_read);
-    parse_attestation_line(&line).expect("applied attestation");
+    let (abi, detail) =
+        cistella::framework::hooks::gate_hook_attestation(&diag_read, Duration::from_secs(30))
+            .expect("production gate passes");
+    assert!(abi >= 3, "attested ABI carries TRUNCATE");
+    assert_eq!(detail, None);
     drop(diag_read);
     let outcome = fixture
         .client()
