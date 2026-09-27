@@ -352,28 +352,27 @@ fn plural_strategy_selects_count_form() {
 }
 
 #[test]
-fn plural_precondition_finds_stray_inheritable() {
-    use cistella::transport::plural_inheritable_violation;
-    // Only stdio plus the diagnostics fd: clean (stdio flags
-    // never matter, diag is exempt at any number).
-    assert_eq!(
-        plural_inheritable_violation(9, &[(0, false), (1, false), (2, false), (9, false)]),
-        None
-    );
-    assert_eq!(
-        plural_inheritable_violation(3, &[(0, false), (3, false), (4, true), (5, true)]),
-        None
-    );
-    // One stray inheritable fd: named (lowest first).
-    assert_eq!(
-        plural_inheritable_violation(9, &[(0, false), (4, true), (5, false), (9, false)]),
-        Some(5)
-    );
-    assert_eq!(
-        plural_inheritable_violation(9, &[(3, false), (9, false)]),
-        Some(3)
-    );
-    assert_eq!(plural_inheritable_violation(9, &[]), None);
+fn diag_inheritable_gate_covers_owned_pipe() {
+    use cistella::transport::assert_diag_inheritable;
+    use std::os::fd::AsRawFd;
+    // Owned pipe, CLOEXEC cleared (the prepared state): passes.
+    // CLOEXEC set (unprepared): refuses naming preservation —
+    // deterministic on owned fds, no table dependence.
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+        let current = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFD).expect("getfd");
+        let cleared =
+            nix::fcntl::FdFlag::from_bits_retain(current) & !nix::fcntl::FdFlag::FD_CLOEXEC;
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(cleared)).expect("clear");
+        assert_diag_inheritable(fd).expect("inheritable passes");
+        let set = nix::fcntl::FdFlag::from_bits_retain(current) | nix::fcntl::FdFlag::FD_CLOEXEC;
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(set)).expect("set");
+        let error = assert_diag_inheritable(fd).unwrap_err();
+        assert!(
+            error.to_string().contains("preservation refused"),
+            "got: {error}"
+        );
+    }
 }
 
 #[test]

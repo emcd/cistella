@@ -3,12 +3,14 @@
 //! The guest forwards the hook diagnostics write-end into the
 //! container at its natural fd number on the singular path
 //! (duped onto [`PLURAL_DIAG_FD`] pre-exec on the plural path): argv verification
-//! (re-checking the prepare-time binding at composition), crun
-//! detection for exact-fd preservation, receive-side CLOEXEC
-//! clearing, and `--diagnostics-fd` insertion. Lives apart from
+//! (re-checking the prepare-time binding at composition),
+//! strategy-dependent runtime admission (singular crun-only,
+//! plural crun-or-runc on characterization), receive-side
+//! CLOEXEC clearing, and `--diagnostics-fd` insertion. Lives apart from
 //! the Podman backend so the backend file stays under its line
-//! budget; called once per hooked launch (no shared mutable fd
-//! state, so parallel hooked launches need no lock).
+//! budget; called once per hooked launch under the process-wide
+//! hook-spawn lock (concurrent launches serialize their
+//! check-to-spawn windows).
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::process::Command;
@@ -17,15 +19,14 @@ use nix::fcntl::{FcntlArg, FdFlag};
 
 use crate::error::{CistellaError, Result};
 use crate::transport::{
-    PLURAL_DIAG_FD, PreserveStrategy, assert_plural_inheritable_only, resolve_preserve_strategy,
+    PLURAL_DIAG_FD, PreserveStrategy, assert_diag_inheritable, resolve_preserve_strategy,
 };
 
 /// Prepares diagnostics forwarding for a hooked launch:
 /// verifies argv[0] names the staged wrapper (re-checking the
-/// prepare-time binding at composition), requires the crun
-/// runtime (exact-fd preservation is crun-only per podman docs;
-/// the plural path keeps the same gate in Phase 1 — runc
-/// characterization is a pending spike, not an allowance),
+/// prepare-time binding at composition), admits the runtime by
+/// strategy ([`runtime_admitted`]: singular crun-only,
+/// plural crun-or-runc on characterization),
 /// clears receive-side CLOEXEC so the forked podman client
 /// carries the fd, and inserts `--diagnostics-fd={n}`
 /// immediately after the wrapper executable: the natural number
@@ -124,14 +125,14 @@ fn oci_runtime_name() -> Result<String> {
 /// Process-wide hook-spawn critical section (tier-1 pushback):
 /// the fd table is process-wide, so concurrent hooked spawns —
 /// in this backend or another instance in the same process —
-/// must serialize their census-to-spawn windows, or one
-/// launch could census while another clears its diagnostics
-/// fd (spurious refusal at best, cross-launch inheritance at
-/// worst). Plain spawns never clear CLOEXEC and stay outside.
+/// must serialize their check-to-spawn windows, or one
+/// launch could check while another clears its diagnostics
+/// fd (spurious refusal at best, a misplaced dup at worst).
+/// Plain spawns never clear CLOEXEC and stay outside.
 /// The held guard is returned with the bundle so the section
-/// spans through spawn; the per-launch assertion remains the
-/// tripwire for out-of-section inheritable fds (fail-closed,
-/// never silent).
+/// spans through spawn; the per-launch diagnostics check
+/// remains the tripwire for clearing regressions
+/// (fail-closed, never silent).
 pub fn lock_hook_spawn() -> Result<std::sync::MutexGuard<'static, ()>> {
     static HOOK_SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     HOOK_SPAWN_LOCK
@@ -154,16 +155,19 @@ pub struct HookedPreservation {
 /// forwarding for one hooked launch (or nothing without a
 /// diagnostics fd): strategy resolution first (the prep inserts
 /// the strategy's diagnostics-fd number — natural on singular,
-/// [`PLURAL_DIAG_FD`] on plural), then the plural precondition
-/// asserted every launch pre-spawn. The returned guard holds
+/// [`PLURAL_DIAG_FD`] on plural), then the diagnostics fd
+/// itself checked inheritable every launch pre-spawn (the
+/// load-bearing fact for preservation on either path; ambient
+/// tables are podman-side-only by dup+N mechanics, so no
+/// whole-table census). The returned guard holds
 /// the hook-spawn lock through the caller's spawn (drop after
 /// spawn releases the section; await never holds it).
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Runtime` on detection/census failure
+/// Returns `CistellaError::Runtime` on detection/fcntl failure
 /// and `CistellaError::Contract` on runtime, wrapper,
-/// precondition, or lock refusal.
+/// inheritable, or lock refusal.
 pub fn resolve_hooked_preservation(
     diagnostics: Option<&OwnedFd>,
     argv: &mut Vec<String>,
@@ -177,9 +181,7 @@ pub fn resolve_hooked_preservation(
     };
     let resolved = resolve_preserve_strategy()?;
     let natural = prepare_diagnostics_hook(diag, argv, resolved)?;
-    if resolved == PreserveStrategy::Plural {
-        assert_plural_inheritable_only(natural)?;
-    }
+    assert_diag_inheritable(natural)?;
     Ok(HookedPreservation {
         hooked: Some((resolved, natural)),
         guard,
@@ -189,8 +191,9 @@ pub fn resolve_hooked_preservation(
 /// Collapses the diagnostics write-end onto [`PLURAL_DIAG_FD`]
 /// child-side (parent fd 3 may be live) so `--preserve-fds=1`
 /// forwards exactly `{0,1,2,3}`. Runs in the spawn pre-exec
-/// hook; the pre-spawn assertion proved nothing else
-/// inheritable. Only async-signal-safe calls (dup2, close).
+/// hook; dup+N mechanics (not a table census) bound the
+/// forwarded set to `{0,1,2,3}`. Only async-signal-safe
+/// calls (dup2, close).
 pub fn dup_plural_diag(diag: RawFd) -> std::io::Result<()> {
     if diag != PLURAL_DIAG_FD {
         nix::unistd::dup2(diag, PLURAL_DIAG_FD).map_err(std::io::Error::from)?;
