@@ -308,3 +308,70 @@ fn preserve_fd_probe_requires_singular_flag() {
     assert!(!exec_help_supports_preserve_fd("--preserve-fd2\n"));
     assert!(!exec_help_supports_preserve_fd(""));
 }
+
+#[test]
+fn plural_strategy_selects_count_form() {
+    use cistella::transport::{PreserveStrategy, exec_hooked_args, exec_hooked_plain_args};
+    // Singular keeps the exact list form at the natural number;
+    // plural composes the bare count (write-end pre-duped onto
+    // fd 3 by the backend, so no number crosses).
+    let singular = exec_hooked_args(
+        "ctr",
+        "/src/proj",
+        &["sh".to_string()],
+        PreserveStrategy::Singular,
+        9,
+    );
+    assert!(
+        singular.contains(&"--preserve-fd=9".to_string()),
+        "{singular:?}"
+    );
+    assert!(
+        !singular
+            .iter()
+            .any(|flag| flag.starts_with("--preserve-fds")),
+        "{singular:?}"
+    );
+    let plural = exec_hooked_args(
+        "ctr",
+        "/src/proj",
+        &["sh".to_string()],
+        PreserveStrategy::Plural,
+        9,
+    );
+    assert!(
+        plural.contains(&"--preserve-fds=1".to_string()),
+        "{plural:?}"
+    );
+    assert!(
+        !plural.iter().any(|flag| flag.starts_with("--preserve-fd=")),
+        "{plural:?}"
+    );
+    let plain = exec_hooked_plain_args("ctr", &["sh".to_string()], PreserveStrategy::Plural, 9);
+    assert!(plain.contains(&"--preserve-fds=1".to_string()), "{plain:?}");
+}
+
+#[test]
+fn plural_precondition_finds_stray_inheritable() {
+    use cistella::transport::plural_inheritable_violation;
+    // Only stdio plus the diagnostics fd: clean (stdio flags
+    // never matter, diag is exempt at any number).
+    assert_eq!(
+        plural_inheritable_violation(9, &[(0, false), (1, false), (2, false), (9, false)]),
+        None
+    );
+    assert_eq!(
+        plural_inheritable_violation(3, &[(0, false), (3, false), (4, true), (5, true)]),
+        None
+    );
+    // One stray inheritable fd: named (lowest first).
+    assert_eq!(
+        plural_inheritable_violation(9, &[(0, false), (4, true), (5, false), (9, false)]),
+        Some(5)
+    );
+    assert_eq!(
+        plural_inheritable_violation(9, &[(3, false), (9, false)]),
+        Some(3)
+    );
+    assert_eq!(plural_inheritable_violation(9, &[]), None);
+}

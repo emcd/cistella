@@ -64,7 +64,7 @@ pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> 
 }
 
 /// Whether `podman exec --help` text advertises the singular
-/// `--preserve-fd` list form: some line must DEFINES it —
+/// `--preserve-fd` list form: some line must DEFINE it —
 /// leading whitespace, then exactly `--preserve-fd`, then an
 /// option-field delimiter (end of line, space, tab, `=`, `,`).
 /// A bare token anywhere is not enough: prose merely mentioning
@@ -118,13 +118,117 @@ pub fn check_podman_preserve_fd() -> Result<()> {
     Ok(())
 }
 
+/// Diagnostics fd number inside the container on the plural
+/// path: the pre-exec dup collapses the write-end onto 3 so
+/// `--preserve-fds=1` forwards exactly `{0,1,2,3}` (proven
+/// contiguous `[3,3+N)` semantics: any gap fails closed).
+pub const PLURAL_DIAG_FD: std::os::fd::RawFd = 3;
+
+/// Preservation strategy for one hooked launch, resolved from
+/// the seat podman (stock-24.04 goal: no non-distro
+/// requirement for confinement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreserveStrategy {
+    /// Exact list form (podman advertising singular
+    /// `--preserve-fd`, crun runtime): forwards only the named
+    /// fd at its natural number. Preferred wherever available
+    /// — robust regardless of the guest fd table.
+    Singular,
+    /// Count form (older podman): `--preserve-fds=1` with the
+    /// write-end duped onto [`PLURAL_DIAG_FD`] pre-exec, gated
+    /// by [`assert_plural_inheritable_only`]. Safe only with
+    /// the assertion holding every launch (no sampling).
+    Plural,
+}
+
+/// Resolves the preservation strategy: singular where the seat
+/// podman advertises it, plural otherwise (the plural count
+/// form is ancient — present wherever hooked launches run
+/// locally). A podman that cannot even run `--help` fails
+/// Runtime (both paths need podman); a missing singular flag
+/// is not an error here, it selects the plural path.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` when podman cannot run.
+pub fn resolve_preserve_strategy() -> Result<PreserveStrategy> {
+    match check_podman_preserve_fd() {
+        Ok(()) => Ok(PreserveStrategy::Singular),
+        Err(CistellaError::Contract(_)) => Ok(PreserveStrategy::Plural),
+        Err(other) => Err(other),
+    }
+}
+
+/// Pure decision half of the plural precondition: given
+/// `(fd, cloexec)` entries, returns the first fd ≥3 that is
+/// inheritable and is not `diag` (`None` when the child would
+/// inherit exactly stdio plus the diagnostics fd). Stdio
+/// entries never violate regardless of flags. Pinned directly;
+/// the census wrapper below supplies real entries.
+#[must_use]
+pub fn plural_inheritable_violation(
+    diag: std::os::fd::RawFd,
+    entries: &[(std::os::fd::RawFd, bool)],
+) -> Option<std::os::fd::RawFd> {
+    let mut sorted = entries.to_vec();
+    sorted.sort();
+    sorted
+        .into_iter()
+        .find(|(number, cloexec)| *number >= 3 && *number != diag && !cloexec)
+        .map(|(number, _)| number)
+}
+
+/// Asserts the podman-child inheritable set is exactly the
+/// diagnostics fd (plural-path precondition, every launch): all
+/// fds ≥3 other than `diag` must carry CLOEXEC, so the forked
+/// podman client — and therefore `--preserve-fds=1` after the
+/// pre-exec dup-to-3 — can carry nothing but stdio and the
+/// diagnostics write-end into the container. Runs pre-spawn in
+/// the guest (the single CLOEXEC-clearing happens before it, and
+/// no concurrent clearing exists, so the census cannot race).
+/// Doubles as a regression tripwire: future code adding an
+/// inheritable fd refuses loudly here instead of leaking it.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` naming the offending fd
+/// and `CistellaError::Runtime` on census failure.
+pub fn assert_plural_inheritable_only(diag: std::os::fd::RawFd) -> Result<()> {
+    let dir = std::fs::read_dir("/proc/self/fd")
+        .map_err(|e| CistellaError::Runtime(format!("fd table census: {e}")))?;
+    let mut entries = Vec::new();
+    for entry in dir {
+        let entry = entry.map_err(|e| CistellaError::Runtime(format!("fd table census: {e}")))?;
+        let number: std::os::fd::RawFd =
+            entry.file_name().to_string_lossy().parse().map_err(|_| {
+                CistellaError::Runtime("fd table census: non-numeric entry".to_string())
+            })?;
+        if number < 3 || number == diag {
+            continue;
+        }
+        let flags = nix::fcntl::fcntl(number, nix::fcntl::FcntlArg::F_GETFD)
+            .map_err(|e| CistellaError::Runtime(format!("fd table census: {e}")))?;
+        let cloexec = nix::fcntl::FdFlag::from_bits_retain(flags) & nix::fcntl::FdFlag::FD_CLOEXEC
+            != nix::fcntl::FdFlag::empty();
+        entries.push((number, cloexec));
+    }
+    if let Some(offender) = plural_inheritable_violation(diag, &entries) {
+        return Err(CistellaError::Contract(format!(
+            "unexpected inheritable fd {offender} at hooked spawn: plural preservation refused"
+        )));
+    }
+    Ok(())
+}
+
 /// Builds hooked-launch exec args without a workdir override:
-/// as [`exec_args`] plus the exact `--preserve-fd` (same
-/// list-form rationale as [`exec_hooked_args`]).
+/// as [`exec_args`] plus the preservation flag for the
+/// strategy (exact singular list form, or the plural count
+/// form with the write-end pre-duped onto [`PLURAL_DIAG_FD`]).
 #[must_use]
 pub fn exec_hooked_plain_args(
     container: &str,
     command: &[String],
+    strategy: PreserveStrategy,
     preserve_fd: std::os::fd::RawFd,
 ) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
@@ -132,22 +236,31 @@ pub fn exec_hooked_plain_args(
     args.extend([
         "-i".to_string(),
         "-t".to_string(),
-        format!("--preserve-fd={preserve_fd}"),
+        match strategy {
+            PreserveStrategy::Singular => format!("--preserve-fd={preserve_fd}"),
+            PreserveStrategy::Plural => "--preserve-fds=1".to_string(),
+        },
         container.to_string(),
     ]);
     args.extend(command.iter().cloned());
     args
 }
-/// exact `--preserve-fd={fd}` for the diagnostics write-end. The
-/// list form (not `--preserve-fds=N`) forwards only the named fd —
+/// Builds hooked-launch exec args with a workdir override:
+/// exact `--preserve-fd={fd}` for the diagnostics write-end on
+/// the singular path; `--preserve-fds=1` (write-end pre-duped
+/// onto [`PLURAL_DIAG_FD`]) on the plural path. The singular
+/// list form (not the range) forwards only the named fd —
 /// the range form would leak sibling-session descriptors held by
-/// the guest into the container. Crun-only per podman docs; the
-/// backend refuses other runtimes typed before spawn.
+/// the guest into the container, so the plural path holds only
+/// with [`assert_plural_inheritable_only`] green every launch.
+/// Crun-only per podman docs on the singular path; the backend
+/// refuses other runtimes typed before spawn.
 #[must_use]
 pub fn exec_hooked_args(
     container: &str,
     workdir: &str,
     command: &[String],
+    strategy: PreserveStrategy,
     preserve_fd: std::os::fd::RawFd,
 ) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
@@ -155,7 +268,10 @@ pub fn exec_hooked_args(
     args.extend([
         "-i".to_string(),
         "-t".to_string(),
-        format!("--preserve-fd={preserve_fd}"),
+        match strategy {
+            PreserveStrategy::Singular => format!("--preserve-fd={preserve_fd}"),
+            PreserveStrategy::Plural => "--preserve-fds=1".to_string(),
+        },
         "--workdir".to_string(),
         workdir.to_string(),
         container.to_string(),

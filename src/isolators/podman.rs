@@ -551,29 +551,30 @@ impl Isolator for PodmanIsolator {
         // drop would hand podman a closed-or-reused number.
         let mut argv = argv.to_vec();
         let diagnostics_owned = diagnostics;
-        let preserve = match diagnostics_owned.as_ref() {
-            Some(diag) => Some(super::hook::prepare_diagnostics_hook(diag, &mut argv)?),
-            None => None,
-        };
-        // Podman floor for hooked launches: the exact `--preserve-fd`
-        // list form (never the range form — sibling-fd leak) needs a
-        // podman that advertises it. Refuse typed pre-spawn; a
-        // flag-parse death downstream would misread as wrapper
-        // failure (proven on podman 4.9.3).
-        if preserve.is_some() {
-            crate::transport::check_podman_preserve_fd()?;
-        }
-        let args = match (workdir, preserve) {
+        // Preservation strategy resolves before hook prep:
+        // singular where advertised, plural otherwise (old
+        // podman selects, never refuses); the plural
+        // precondition asserts inside, every launch.
+        let hooked =
+            super::hook::resolve_hooked_preservation(diagnostics_owned.as_ref(), &mut argv)?;
+        let args = match (workdir, hooked) {
             (Some(target), None) => {
                 crate::transport::exec_harness_args(&record.container_name, target, &argv)
             }
             (None, None) => crate::transport::exec_args(&record.container_name, &argv),
-            (Some(target), Some(fd)) => {
-                crate::transport::exec_hooked_args(&record.container_name, target, &argv, fd)
-            }
-            (None, Some(fd)) => {
-                crate::transport::exec_hooked_plain_args(&record.container_name, &argv, fd)
-            }
+            (Some(target), Some((strategy, fd))) => crate::transport::exec_hooked_args(
+                &record.container_name,
+                target,
+                &argv,
+                strategy,
+                fd,
+            ),
+            (None, Some((strategy, fd))) => crate::transport::exec_hooked_plain_args(
+                &record.container_name,
+                &argv,
+                strategy,
+                fd,
+            ),
         };
         let child = unsafe {
             Command::new("podman")
@@ -614,6 +615,12 @@ impl Isolator for PodmanIsolator {
                         }
                         nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), caller)
                             .map_err(std::io::Error::other)?;
+                    }
+                    if let Some((crate::transport::PreserveStrategy::Plural, diag)) = hooked {
+                        // Plural: dup onto fd 3 child-side (parent
+                        // fd 3 may be live); assertion proved the
+                        // table clean pre-spawn.
+                        super::hook::dup_plural_diag(diag)?;
                     }
                     Ok(())
                 })

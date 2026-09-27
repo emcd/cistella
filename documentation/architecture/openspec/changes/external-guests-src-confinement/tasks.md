@@ -13,7 +13,7 @@
 ## 3. Landlock guest binary and confinement
 
 - [ ] 3.1 Ship the Landlock extension `--bin` answering `prepare` with contributions plus a guest-hook request.
-- [ ] 3.2 Deliver the wrapper as exec ancestor with probe/apply and the dedicated diagnostics channel (probe by guest-context exec after initiate; apply inside the launching wrapper lineage only, never a separate exec; diagnostics on a fourth framework-owned launch-bundle FD forwarded via exact `podman exec --preserve-fd` — podman floor probed with typed pre-spawn refusal, plural range form rejected as sibling-fd leak).
+- [ ] 3.2 Deliver the wrapper as exec ancestor with probe/apply and the dedicated diagnostics channel (probe by guest-context exec after initiate; apply inside the launching wrapper lineage only, never a separate exec; diagnostics on a fourth framework-owned launch-bundle FD — exact `--preserve-fd` where advertised with crun, else `--preserve-fds=1` with pre-exec dup-to-3 under an every-launch fd-table assertion; runc pending characterization).
 - [ ] 3.3 Translate host ancestor/subtree through the validated guest mount topology; grant declared mounts by declared mode (carveouts generalize: every RW directory mount); refuse undescribable shapes (untranslatable paths) pre-create.
 - [ ] 3.4 Prove `~/src` subtree confinement with the full denial matrix (write, create, unlink/rename, truncate at the required ABI minimum; fail pre-exec when unavailable) plus same-path pre/post restriction controls, an alternate-bind-path case on a sibling WITHOUT a declared read-write carveout, a declared-RW graft admission proof, and an RO-under-FULL alias write-denial proof.
 
