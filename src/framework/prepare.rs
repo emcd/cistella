@@ -29,6 +29,9 @@ use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_
 use crate::framework::guest::host_external;
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::protocol::Exchange;
+use crate::framework::registry::{
+    MIN_LANDLOCK_ABI, REQUIRED_HANDLED_FS, STAGED_WRAPPER_GUEST_PATH,
+};
 
 /// Wire form of one environment contribution (provenance is injected
 /// by the host as the responding guest, never trusted from the wire).
@@ -249,11 +252,42 @@ pub fn run_landlock_prepare(
         Deadlines::default().plan,
     );
     let shutdown = guest.shutdown();
-    match (outcome, shutdown) {
-        (Ok(plan), Ok(())) => Ok(plan),
-        (_, Err(residue)) => Err(residue),
-        (Err(error), Ok(())) => Err(error),
+    let plan = match (outcome, shutdown) {
+        (Ok(plan), Ok(())) => plan,
+        (_, Err(residue)) => return Err(residue),
+        (Err(error), Ok(())) => return Err(error),
+    };
+    // Artifact-executable binding (3.2 handoff invariant, enforced
+    // from 3.1): the hook executable must be exactly the staged
+    // wrapper path — a correctly digest-pinned artifact with
+    // `argv_prefix[0]` naming `/bin/sh` (or any other absolute
+    // executable) would bypass confinement at composition. The
+    // prepare payload carries no session context, so session-blind
+    // extension args are never legitimate either: the prefix is the
+    // singleton staged path, and the framework composes all wrapper
+    // arguments at launch (task 3.2). Raw argv crosses verbatim by
+    // exec (no shell), so no byte-class filtering applies — the gate
+    // is structural identity, not content.
+    for hook in &plan.merged.guest_hooks {
+        check_hook_executable(hook)?;
     }
+    Ok(plan)
+}
+
+/// Checks one merged hook names exactly the staged wrapper
+/// executable (singleton prefix).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on any other executable or
+/// prefix length.
+pub fn check_hook_executable(hook: &GuestHookRequest) -> Result<()> {
+    if hook.argv_prefix.len() != 1 || hook.argv_prefix[0] != STAGED_WRAPPER_GUEST_PATH {
+        return Err(CistellaError::Contract(
+            "guest hook argv must name exactly the staged wrapper path".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Builds the typed plan from wire shapes (shape checks only; merge
@@ -289,4 +323,215 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
         policy_claims: response.policy_claims,
         guest_hooks: response.guest_hooks,
     })
+}
+
+/// Checks a wrapper `--probe` report: kernel ABI plus handled
+/// mask. Shortfall refuses typed (fail pre-execute); the mask is
+/// never narrowed to fit the kernel.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on shape violation,
+/// wrapper-reported unsupported, low ABI, or rights shortfall.
+pub fn parse_probe_report(stdout: &[u8]) -> Result<()> {
+    let report: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|_| CistellaError::Contract("bad probe report: shape".to_string()))?;
+    if let Some(unsupported) = report.get("unsupported").and_then(|value| value.as_str()) {
+        return Err(CistellaError::Contract(format!(
+            "landlock unsupported: {unsupported}"
+        )));
+    }
+    let abi = report
+        .get("abi")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| CistellaError::Contract("bad probe report: shape".to_string()))?;
+    let mask = report
+        .get("handled_fs_mask")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| CistellaError::Contract("bad probe report: shape".to_string()))?;
+    if abi < u64::from(MIN_LANDLOCK_ABI) {
+        return Err(CistellaError::Contract(format!(
+            "landlock unsupported: kernel ABI {abi} below minimum {}",
+            MIN_LANDLOCK_ABI
+        )));
+    }
+    if mask & REQUIRED_HANDLED_FS != REQUIRED_HANDLED_FS {
+        return Err(CistellaError::Contract(
+            "landlock unsupported: kernel rights shortfall".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Parses one wrapper attestation line
+/// (`{"applied":true,"abi":N}`): returns the ABI on success.
+/// `applied:false` or any other shape refuses typed — session
+/// start never proceeds past a failed apply.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on shape violation or a
+/// negative attestation.
+pub fn parse_attestation_line(line: &str) -> Result<u64> {
+    let attestation: serde_json::Value = serde_json::from_str(line)
+        .map_err(|_| CistellaError::Contract("bad attestation: shape".to_string()))?;
+    let applied = attestation
+        .get("applied")
+        .and_then(|value| value.as_bool())
+        .ok_or_else(|| CistellaError::Contract("bad attestation: shape".to_string()))?;
+    if !applied {
+        let detail = attestation
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("apply failed");
+        return Err(CistellaError::Contract(format!(
+            "wrapper reported apply failure: {detail}"
+        )));
+    }
+    attestation
+        .get("abi")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| CistellaError::Contract("bad attestation: shape".to_string()))
+}
+
+/// Reads one attestation line from a diagnostics read-end under an
+/// absolute deadline: polls for readability, accumulates to the
+/// first newline (64 KiB cap), and returns the line plus any
+/// already-buffered trailing bytes (they belong to the drain
+/// phase, never discarded). EOF before the newline refuses typed
+/// (the wrapper died before attesting); timeout refuses typed.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on EOF, timeout, overlong
+/// output, or wait failure, and `CistellaError::Runtime` on read
+/// failure.
+pub fn read_attestation_line(
+    read: std::os::fd::BorrowedFd<'_>,
+    timeout: std::time::Duration,
+) -> Result<(String, Vec<u8>)> {
+    use nix::poll::{PollFd, PollFlags, poll};
+    use std::os::fd::{AsFd, AsRawFd};
+    let deadline = std::time::Instant::now() + timeout;
+    let mut buffered = Vec::new();
+    loop {
+        if let Some(position) = buffered.iter().position(|&byte| byte == b'\n') {
+            let line = String::from_utf8_lossy(&buffered[..position]).into_owned();
+            let rest = buffered[position + 1..].to_vec();
+            return Ok((line, rest));
+        }
+        if buffered.len() > 64 * 1024 {
+            return Err(CistellaError::Contract(
+                "hook diagnostics overlong before attestation".to_string(),
+            ));
+        }
+        let wait = nix::poll::PollTimeout::try_from(
+            deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or(std::time::Duration::ZERO),
+        )
+        .map_err(|_| CistellaError::Runtime("attestation wait out of range".to_string()))?;
+        let mut pollfds = [PollFd::new(read.as_fd(), PollFlags::POLLIN)];
+        let ready = poll(&mut pollfds, wait)
+            .map_err(|e| CistellaError::Contract(format!("attestation wait failed: {e}")))?;
+        if ready == 0 {
+            return Err(CistellaError::Contract(
+                "hook attestation timed out".to_string(),
+            ));
+        }
+        let mut chunk = [0u8; 8192];
+        let raw = read.as_fd().as_raw_fd();
+        // SAFETY: borrowed read-end, transient buffer, return
+        // checked below; no ownership transfer.
+        let count = unsafe { nix::libc::read(raw, chunk.as_mut_ptr().cast(), chunk.len()) };
+        if count < 0 {
+            return Err(CistellaError::Runtime(
+                "diagnostics read failed".to_string(),
+            ));
+        }
+        if count == 0 {
+            return Err(CistellaError::Contract(
+                "hook diagnostics closed before attestation".to_string(),
+            ));
+        }
+        buffered.extend_from_slice(&chunk[..count as usize]);
+    }
+}
+
+/// Derives the confinement roots: the `~/src` ancestor plus the
+/// canonical session subtree. Sessions outside the operator's src
+/// tree refuse fail-closed (no translatable ancestor exists).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` when the session directory
+/// leaves the confinement root.
+pub fn confinement_roots(
+    home: &std::path::Path,
+    session_dir: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let ancestor = home.join("src");
+    let subtree = std::path::PathBuf::from(session_dir);
+    if !subtree.starts_with(&ancestor) {
+        return Err(CistellaError::Contract(
+            "session outside ~/src confinement root".to_string(),
+        ));
+    }
+    Ok((ancestor, subtree))
+}
+
+/// Composes one hooked launch argv: the admitted hook's staged
+/// executable, framework-owned wrapper args (guest routes for the
+/// ancestor as read-execute, for the subtree as full rights), the
+/// `--` separator, then the harness argv verbatim. Exactly one
+/// hook is supported (single wrapper chain); untranslatable roots
+/// refuse fail-closed. Pure: all inputs explicit, pinned fast
+/// without podman.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on hook count, empty routes,
+/// or untranslatable roots.
+pub fn compose_hook_argv(
+    hooks: &[GuestHookRequest],
+    triples: &[MountTriple],
+    ancestor_host: &std::path::Path,
+    subtree_host: &std::path::Path,
+    harness_argv: &[String],
+) -> Result<Vec<String>> {
+    if hooks.len() != 1 {
+        return Err(CistellaError::Contract(
+            "hook launch supports exactly one hook".to_string(),
+        ));
+    }
+    let hook = &hooks[0];
+    let ancestor_routes = crate::mount::guest_routes_for_host(triples, ancestor_host);
+    if ancestor_routes.is_empty() {
+        return Err(CistellaError::Contract(
+            "hook ancestor untranslatable through the mount topology".to_string(),
+        ));
+    }
+    let subtree_routes = crate::mount::guest_routes_for_host(triples, subtree_host);
+    if subtree_routes.is_empty() {
+        return Err(CistellaError::Contract(
+            "hook subtree untranslatable through the mount topology".to_string(),
+        ));
+    }
+    let mut argv = Vec::with_capacity(
+        hook.argv_prefix.len()
+            + ancestor_routes.len()
+            + subtree_routes.len()
+            + 1
+            + harness_argv.len(),
+    );
+    argv.extend(hook.argv_prefix.iter().cloned());
+    for route in &ancestor_routes {
+        argv.push(format!("--allow-ro={route}"));
+    }
+    for route in &subtree_routes {
+        argv.push(format!("--allow-rw={route}"));
+    }
+    argv.push("--".to_string());
+    argv.extend(harness_argv.iter().cloned());
+    Ok(argv)
 }

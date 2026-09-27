@@ -521,29 +521,46 @@ impl Isolator for PodmanIsolator {
                 ));
             }
         };
-        let (stdin, stdout, stderr) = match stdio {
+        let (stdin, stdout, stderr, diagnostics) = match stdio {
             StdioBinding::Inherit => (
                 std::process::Stdio::inherit(),
                 std::process::Stdio::inherit(),
                 std::process::Stdio::inherit(),
+                None,
             ),
             StdioBinding::HeldFiles {
                 stdin,
                 stdout,
                 stderr,
+                diagnostics,
                 ..
             } => (
                 std::process::Stdio::from(stdin),
                 std::process::Stdio::from(stdout),
                 std::process::Stdio::from(stderr),
+                diagnostics,
             ),
         };
         let record = self.record(handle)?;
-        let args = match workdir {
-            Some(target) => {
-                crate::transport::exec_harness_args(&record.container_name, target, argv)
+        // Hooked launch: the diagnostics write-end crosses at its
+        // natural number (see `prepare_diagnostics_hook`); plain
+        // launches keep the existing argv untouched.
+        let mut argv = argv.to_vec();
+        let preserve = match diagnostics {
+            Some(diag) => Some(super::hook::prepare_diagnostics_hook(&diag, &mut argv)?),
+            None => None,
+        };
+        let args = match (workdir, preserve) {
+            (Some(target), None) => {
+                crate::transport::exec_harness_args(&record.container_name, target, &argv)
             }
-            None => crate::transport::exec_args(&record.container_name, argv),
+            (None, None) => crate::transport::exec_args(&record.container_name, &argv),
+            (Some(target), Some(fd)) => {
+                crate::transport::exec_hooked_args(&record.container_name, target, &argv, fd)
+            }
+            (None, Some(fd)) => {
+                crate::transport::exec_hooked_plain_args(&record.container_name, &argv, fd)
+            }
         };
         let child = unsafe {
             Command::new("podman")

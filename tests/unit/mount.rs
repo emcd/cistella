@@ -495,3 +495,87 @@ fn nested_ro_missing_names_first_offender() {
         Some(ro_base.join("present").join("absent"))
     );
 }
+
+#[test]
+fn guest_routes_translate_subtree_through_topology() {
+    use cistella::mount::{MountMode, MountTriple, guest_routes_for_host};
+    let triples = vec![MountTriple {
+        host_source: "/home/op/src".to_string(),
+        container_target: "/src".to_string(),
+        mode: MountMode::Rw,
+    }];
+    let routes = guest_routes_for_host(&triples, std::path::Path::new("/home/op/src/proj"));
+    assert_eq!(routes, vec!["/src/proj".to_string()]);
+}
+
+#[test]
+fn guest_routes_cover_identity_and_second_binds() {
+    use cistella::mount::{MountMode, MountTriple, guest_routes_for_host};
+    // Keep-id identity still translates (no shortcut): the mapping
+    // is structural. A second bind of the same subtree yields a
+    // second route; both stay visible for rule derivation.
+    let triples = vec![
+        MountTriple {
+            host_source: "/home/op/src".to_string(),
+            container_target: "/home/op/src".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: "/home/op/src/proj".to_string(),
+            container_target: "/second/proj".to_string(),
+            mode: MountMode::Ro,
+        },
+    ];
+    let routes = guest_routes_for_host(&triples, std::path::Path::new("/home/op/src/proj"));
+    assert_eq!(
+        routes,
+        vec!["/home/op/src/proj".to_string(), "/second/proj".to_string()]
+    );
+}
+
+#[test]
+fn guest_routes_empty_without_cover() {
+    use cistella::mount::{MountMode, MountTriple, guest_routes_for_host};
+    let triples = vec![MountTriple {
+        host_source: "/home/op/src".to_string(),
+        container_target: "/src".to_string(),
+        mode: MountMode::Rw,
+    }];
+    let routes = guest_routes_for_host(&triples, std::path::Path::new("/elsewhere"));
+    assert!(routes.is_empty(), "untranslatable paths yield no routes");
+}
+
+#[test]
+fn nested_ro_preflight_refuses_missing_chain() {
+    use cistella::mount::{MountMode, MountTriple, nested_ro_preflight};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = dir.path().to_string_lossy().to_string();
+    let triples = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/a".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/sub/missing"),
+            container_target: "/a/sub".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let error = nested_ro_preflight(&triples).unwrap_err();
+    assert!(error.to_string().contains("nested mount"), "got: {error}");
+    std::fs::create_dir_all(format!("{host}/sub")).expect("sub dir");
+    let present = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/a".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/sub"),
+            container_target: "/a/sub".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    nested_ro_preflight(&present).unwrap();
+}

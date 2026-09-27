@@ -437,3 +437,63 @@ fn dead_peer_send_is_typed() {
         output.status
     );
 }
+
+#[test]
+fn diagnostics_bundle_round_trip() {
+    use cistella::framework::fdpass::{recv_diagnostics_bundle, send_diagnostics_bundle};
+    let (a, b) = pair();
+    let one = null_fd();
+    send_diagnostics_bundle(
+        &a,
+        &header("unit09", "exec09"),
+        one.as_fd(),
+        Duration::from_secs(2),
+    )
+    .expect("send");
+    let (got_header, got_fd) =
+        recv_diagnostics_bundle(&b, Duration::from_secs(2)).expect("receive");
+    assert_eq!(got_header, header("unit09", "exec09"));
+    assert!(
+        nix::sys::stat::fstat(got_fd.as_raw_fd()).is_ok(),
+        "received diagnostics fd is a live reference"
+    );
+}
+
+#[test]
+fn diagnostics_bundle_wrong_count_refuses() {
+    use cistella::framework::fdpass::recv_diagnostics_bundle;
+    let (a, b) = pair();
+    let fds = [null_fd(), null_fd(), null_fd()];
+    let borrowed = [fds[0].as_fd(), fds[1].as_fd(), fds[2].as_fd()];
+    send_bundle(
+        &a,
+        &header("unit10", "exec10"),
+        &borrowed,
+        Duration::from_secs(2),
+    )
+    .expect("send");
+    let error = recv_diagnostics_bundle(&b, Duration::from_secs(2)).expect_err("3 fds must refuse");
+    assert!(
+        error.to_string().contains("exactly 1 descriptor"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn stdio_bundle_rejects_diagnostics_single() {
+    use cistella::framework::fdpass::send_diagnostics_bundle;
+    let (a, b) = pair();
+    let one = null_fd();
+    send_diagnostics_bundle(
+        &a,
+        &header("unit11", "exec11"),
+        one.as_fd(),
+        Duration::from_secs(2),
+    )
+    .expect("send");
+    let error = recv_bundle(&b, Duration::from_secs(2)).expect_err("1 fd must refuse as triple");
+    assert!(
+        error.to_string().contains("exactly 3 descriptors"),
+        "got: {error}"
+    );
+}

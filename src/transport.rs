@@ -61,6 +61,52 @@ pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> 
     args
 }
 
+/// Builds hooked-launch exec args without a workdir override:
+/// as [`exec_args`] plus the exact `--preserve-fd` (same
+/// list-form rationale as [`exec_hooked_args`]).
+#[must_use]
+pub fn exec_hooked_plain_args(
+    container: &str,
+    command: &[String],
+    preserve_fd: std::os::fd::RawFd,
+) -> Vec<String> {
+    let mut args = vec!["exec".to_string()];
+    args.extend(env_forward_args());
+    args.extend([
+        "-i".to_string(),
+        "-t".to_string(),
+        format!("--preserve-fd={preserve_fd}"),
+        container.to_string(),
+    ]);
+    args.extend(command.iter().cloned());
+    args
+}
+/// exact `--preserve-fd={fd}` for the diagnostics write-end. The
+/// list form (not `--preserve-fds=N`) forwards only the named fd —
+/// the range form would leak sibling-session descriptors held by
+/// the guest into the container. Crun-only per podman docs; the
+/// backend refuses other runtimes typed before spawn.
+#[must_use]
+pub fn exec_hooked_args(
+    container: &str,
+    workdir: &str,
+    command: &[String],
+    preserve_fd: std::os::fd::RawFd,
+) -> Vec<String> {
+    let mut args = vec!["exec".to_string()];
+    args.extend(env_forward_args());
+    args.extend([
+        "-i".to_string(),
+        "-t".to_string(),
+        format!("--preserve-fd={preserve_fd}"),
+        "--workdir".to_string(),
+        workdir.to_string(),
+        container.to_string(),
+    ]);
+    args.extend(command.iter().cloned());
+    args
+}
+
 /// Builds `podman run -d --userns=keep-id --label ...` args for the spike.
 ///
 /// Driver's `run` generates a Quadlet unit instead; this helper is for the

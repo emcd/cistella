@@ -89,6 +89,10 @@ pub enum StdioBinding {
         stdout: std::os::fd::OwnedFd,
         /// Harness standard error.
         stderr: std::os::fd::OwnedFd,
+        /// Hook diagnostics write-end, forwarded into the container
+        /// at its natural number via exact `--preserve-fd` (never
+        /// the range form). `None` on plain launches.
+        diagnostics: Option<std::os::fd::OwnedFd>,
         /// Conductor identity (pid, foreground pgid) captured at
         /// launch against the host_pid recorded at guest startup,
         /// if available. The backend joins the foreground pgid

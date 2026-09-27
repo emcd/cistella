@@ -7,6 +7,7 @@
 pub mod client;
 pub mod close;
 pub mod dispatch;
+pub mod hook;
 pub mod podman;
 pub mod quadlet;
 pub mod wire;

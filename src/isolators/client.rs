@@ -44,7 +44,9 @@ use crate::error::{CistellaError, Result};
 use crate::framework::contract::{
     CancelFlag, Deadlines, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
 };
-use crate::framework::fdpass::{BundleHeader, accept_authenticated, bind_rendezvous, send_bundle};
+use crate::framework::fdpass::{
+    BundleHeader, accept_authenticated, bind_rendezvous, send_bundle, send_diagnostics_bundle,
+};
 use crate::framework::guest::host_external;
 use crate::framework::isolator::{
     CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
@@ -196,6 +198,103 @@ pub struct WireClient {
 }
 
 impl WireClient {
+    /// Hooked launch: as [`Isolator::execute_launch`] plus a
+    /// diagnostics write-end carried in a second header-bound
+    /// bundle and a launch payload flagging hook diagnostics for
+    /// the guest. Inherent, not trait: the reference backend never
+    /// takes diagnostics, and production conduct calls this
+    /// directly when hooks are staged.
+    ///
+    /// # Errors
+    ///
+    /// Same classes as the trait launch (bundle send, guest
+    /// refusal, handle mismatch).
+    pub fn execute_launch_hooked(
+        &self,
+        handle: &UnitHandle,
+        argv: &[String],
+        workdir: Option<&str>,
+        stdio: StdioBinding,
+        key: &ReconciliationKey,
+        diagnostics: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<ExecutionHandle> {
+        self.launch_inner(handle, argv, workdir, stdio, key, Some(diagnostics))
+    }
+
+    /// Shared launch: bundle(s) first, op awaited second (the guest
+    /// blocks in recv after receiving the op, so awaiting the op
+    /// response before sending would deadlock).
+    fn launch_inner(
+        &self,
+        handle: &UnitHandle,
+        argv: &[String],
+        workdir: Option<&str>,
+        stdio: StdioBinding,
+        key: &ReconciliationKey,
+        diagnostics: Option<std::os::fd::BorrowedFd<'_>>,
+    ) -> Result<ExecutionHandle> {
+        self.record_key(key);
+        // Bundle first, op awaited second: the guest blocks in
+        // recv_bundle after receiving the op, so awaiting the op
+        // response before sending would deadlock. Originals are
+        // retained structurally (conduct holds its stdio).
+        let (stdin, stdout, stderr) = match &stdio {
+            StdioBinding::Inherit => {
+                let stdin = std::io::stdin();
+                let stdout = std::io::stdout();
+                let stderr = std::io::stderr();
+                use std::os::fd::AsFd;
+                (
+                    stdin.as_fd().try_clone_to_owned(),
+                    stdout.as_fd().try_clone_to_owned(),
+                    stderr.as_fd().try_clone_to_owned(),
+                )
+            }
+            StdioBinding::HeldFiles { .. } => {
+                return Err(CistellaError::Contract(
+                    "wire client takes Inherit only".to_string(),
+                ));
+            }
+        };
+        let (stdin, stdout, stderr) = (stdin?, stdout?, stderr?);
+        let execution = ExecutionHandle::mint();
+        use std::os::fd::AsFd;
+        let header = BundleHeader {
+            unit_handle: handle.as_str().to_string(),
+            execution_handle: execution.as_str().to_string(),
+        };
+        send_bundle(
+            &self.fd_sock,
+            &header,
+            &[stdin.as_fd(), stdout.as_fd(), stderr.as_fd()],
+            self.deadlines.apply,
+        )?;
+        if let Some(diag) = diagnostics {
+            send_diagnostics_bundle(&self.fd_sock, &header, diag, self.deadlines.apply)?;
+        }
+        let payload = self.roundtrip(
+            crate::isolators::wire::OP_EXECUTE_LAUNCH,
+            serde_json::json!({
+                "unit_handle": handle.as_str(),
+                "execution_handle": execution.as_str(),
+                "argv": argv,
+                "workdir": workdir,
+                "reconciliation_key": key.as_str(),
+                "hook_diagnostics": diagnostics.is_some(),
+            }),
+            self.deadlines.apply,
+        )?;
+        let echoed = payload
+            .get("execution_handle")
+            .and_then(|handle| handle.as_str())
+            .ok_or_else(|| CistellaError::Contract("bad launch response: shape".to_string()))?;
+        if echoed != execution.as_str() {
+            return Err(CistellaError::Contract(
+                "launch echoed a different handle".to_string(),
+            ));
+        }
+        Ok(execution)
+    }
     /// Hosts the isolator guest and connects the fd channel:
     /// bind rendezvous, spawn plus hello, accept with pid binding.
     ///
@@ -655,62 +754,7 @@ impl Isolator for WireClient {
         stdio: StdioBinding,
         key: &ReconciliationKey,
     ) -> Result<ExecutionHandle> {
-        self.record_key(key);
-        // Bundle first, op awaited second: the guest blocks in
-        // recv_bundle after receiving the op, so awaiting the op
-        // response before sending would deadlock. Originals are
-        // retained structurally (conduct holds its stdio).
-        let (stdin, stdout, stderr) = match &stdio {
-            StdioBinding::Inherit => {
-                let stdin = std::io::stdin();
-                let stdout = std::io::stdout();
-                let stderr = std::io::stderr();
-                use std::os::fd::AsFd;
-                (
-                    stdin.as_fd().try_clone_to_owned(),
-                    stdout.as_fd().try_clone_to_owned(),
-                    stderr.as_fd().try_clone_to_owned(),
-                )
-            }
-            StdioBinding::HeldFiles { .. } => {
-                return Err(CistellaError::Contract(
-                    "wire client takes Inherit only".to_string(),
-                ));
-            }
-        };
-        let (stdin, stdout, stderr) = (stdin?, stdout?, stderr?);
-        let execution = ExecutionHandle::mint();
-        use std::os::fd::AsFd;
-        send_bundle(
-            &self.fd_sock,
-            &BundleHeader {
-                unit_handle: handle.as_str().to_string(),
-                execution_handle: execution.as_str().to_string(),
-            },
-            &[stdin.as_fd(), stdout.as_fd(), stderr.as_fd()],
-            self.deadlines.apply,
-        )?;
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_EXECUTE_LAUNCH,
-            serde_json::json!({
-                "unit_handle": handle.as_str(),
-                "execution_handle": execution.as_str(),
-                "argv": argv,
-                "workdir": workdir,
-                "reconciliation_key": key.as_str(),
-            }),
-            self.deadlines.apply,
-        )?;
-        let echoed = payload
-            .get("execution_handle")
-            .and_then(|handle| handle.as_str())
-            .ok_or_else(|| CistellaError::Contract("bad launch response: shape".to_string()))?;
-        if echoed != execution.as_str() {
-            return Err(CistellaError::Contract(
-                "launch echoed a different handle".to_string(),
-            ));
-        }
-        Ok(execution)
+        self.launch_inner(handle, argv, workdir, stdio, key, None)
     }
 
     fn await_result(
