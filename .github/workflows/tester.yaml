@@ -158,8 +158,9 @@ jobs:
       - name: Spike strace one failing test
         # QA-DIAG (temporary): process/dup/exec trace of a single
         # cat_loopback run; shows the execve errno or the exit path.
-        # Runs only when inputs.spike-exec is true.
-        if: inputs.spike-exec
+        # Runs when inputs.spike-exec is true, even if tests failed
+        # (always() — the trace is most needed exactly then).
+        if: always() && inputs.spike-exec
         run: |
           set -eu
           command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
@@ -175,9 +176,9 @@ jobs:
         # GuestHost pattern (O_RDONLY open, CLOEXEC-clear, setpgid,
         # exec /proc/self/fd/N) with pipe stdio. (ii)-only deaths
         # implicate our setup; both implicate kernel/image below;
-        # neither implicates the harness above.
-        # Runs only when inputs.spike-exec is true.
-        if: inputs.spike-exec
+        # neither implicates the harness above. Runs with always()
+        # for the same reason as the strace step.
+        if: always() && inputs.spike-exec
         run: |
           python3 - <<'PYEOF'
           import fcntl, os, time
