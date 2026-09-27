@@ -205,6 +205,19 @@ fn hook_fixture(image: &str) -> HookFixture {
             container_target: "/src/graft".to_string(),
             mode: MountMode::Rw,
         },
+        // Second guest-visible bind into the sibling WITHOUT
+        // a declared read-write carveout (denial-matrix
+        // alternate route): declared RO, flipped RW for
+        // Podman by the revision (outside every FULL grant),
+        // so a read-execute readability rule — not a FULL
+        // carveout, not a retained RO binding — denies writes.
+        // The Landlock layer, not the VFS binding, carries
+        // this denial.
+        MountTriple {
+            host_source: tree.path().join("sib").to_string_lossy().to_string(),
+            container_target: "/alt/sib".to_string(),
+            mode: MountMode::Ro,
+        },
         staged_triple,
     ];
     // Revision through the real FULL sets (same sets the
@@ -310,6 +323,116 @@ fn hook_probe_reports_matrix_in_container() {
     let out = podman_exec(&fixture.container, &[STAGED_WRAPPER_GUEST_PATH, "--probe"]);
     assert!(out.status.success(), "probe must exit 0 in-container");
     parse_probe_report(&out.stdout).expect("probe matrix gates");
+    fixture.teardown();
+}
+
+/// Denial matrix: every write-capable operation fails
+/// EACCES under the ruleset with same-path pre/post
+/// controls attributing each denial to Landlock (not a
+/// pre-existing kernel wall), plus the alternate-bind
+/// route without a carveout. Write/create/unlink/rename/
+/// truncate at the attested ABI floor (run_harness already
+/// gates ABI >= 3 for TRUNCATE; insufficient ABI fails
+/// pre-execute through the probe's typed Unsupported,
+/// fast-pinned, unproducible on supporting kernels).
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn hook_denial_matrix_confines() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let Some(image) = fixture_image_opt() else {
+        return;
+    };
+    let mut fixture = hook_fixture(&image);
+    let tree = fixture.proj.parent().expect("tree").to_path_buf();
+    // Both sibling routes translate through the validated
+    // topology: the primary bind and the carveout-free
+    // alternate bind.
+    let sib_routes = cistella::mount::guest_routes_for_host(&fixture.triples, &tree.join("sib"));
+    assert_eq!(
+        sib_routes,
+        vec!["/alt/sib".to_string(), "/src/sib".to_string()]
+    );
+    // Pre/post control helper: the same guest-visible path
+    // writes clean through companion exec (unconfined, same
+    // uid and mounts — proves no kernel wall), then fails
+    // through the hooked harness after restrictions apply.
+    let pre_write = |guest_path: &str, bytes: &str| {
+        let out = podman_exec(
+            &fixture.container,
+            &["sh", "-c", &format!("printf '%s' '{bytes}' > {guest_path}")],
+        );
+        assert!(
+            out.status.success(),
+            "pre-restriction write must succeed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let post_denied = |guest_path: &str, script: &str| {
+        let outcome = run_harness(
+            &fixture,
+            &["sh".to_string(), "-c".to_string(), script.to_string()],
+        );
+        assert!(
+            !matches!(outcome, ExecutionOutcome::Exited(0)),
+            "restricted {guest_path} operation must fail, got {outcome:?}"
+        );
+    };
+    // WRITE with pre/post control on the primary route.
+    pre_write("/src/sib/ctl", "pre");
+    std::fs::remove_file(tree.join("sib/ctl")).expect("clean control marker");
+    post_denied("/src/sib/ctl", "echo post > /src/sib/ctl");
+    assert!(
+        !tree.join("sib/ctl").exists(),
+        "denied write must not materialize"
+    );
+    // CREATE: fresh names fail and stay absent.
+    post_denied("/src/sib/new", "touch /src/sib/new");
+    assert!(
+        !tree.join("sib/new").exists(),
+        "denied create must not materialize"
+    );
+    // UNLINK: a pre-existing file survives the denied remove.
+    pre_write("/src/sib/victim", "victim");
+    post_denied("/src/sib/victim", "rm /src/sib/victim");
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/victim")).expect("victim readable"),
+        "victim",
+        "denied unlink must leave the file"
+    );
+    // RENAME: source stays, destination never appears.
+    pre_write("/src/sib/orig", "orig");
+    post_denied("/src/sib/orig", "mv /src/sib/orig /src/sib/moved");
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/orig")).expect("orig readable"),
+        "orig",
+        "denied rename must leave the source"
+    );
+    assert!(
+        !tree.join("sib/moved").exists(),
+        "denied rename must not materialize the destination"
+    );
+    // TRUNCATE via shell redirection (O_TRUNC without
+    // WRITE_FILE — the ABI-3 right the floor requires):
+    // content must survive byte-exact.
+    pre_write("/src/sib/trunc", "0123456789");
+    post_denied("/src/sib/trunc", ": > /src/sib/trunc");
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/trunc")).expect("trunc readable"),
+        "0123456789",
+        "denied truncate must leave content intact"
+    );
+    // Alternate-bind route without a carveout: same
+    // pre/post discipline through the second bind.
+    pre_write("/alt/sib/ctl", "pre");
+    std::fs::remove_file(tree.join("sib/ctl")).expect("clean alt control marker");
+    post_denied("/alt/sib/ctl", "echo post > /alt/sib/ctl");
+    assert!(
+        !tree.join("sib/ctl").exists(),
+        "denied alternate-route write must not materialize"
+    );
     fixture.teardown();
 }
 
