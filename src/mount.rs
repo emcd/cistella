@@ -742,13 +742,17 @@ pub fn graft_alias_preflight(
 /// directory RO mount outside FULL grants) reaches Podman as RW
 /// so submounts materialize, and the Landlock policy — derived
 /// from the ORIGINAL modes — enforces the intended RO
-/// in-container with carveouts. A directory RO mount at or
-/// under a FULL-granted guest route keeps Podman read-only
-/// (tier-2 hardening): Landlock union semantics cannot
-/// subtract the parent FULL grant, and rights propagate across
-/// bind aliases, so the VFS binding carries that enforcement —
-/// flipping it would leave the RO source writable through the
-/// FULL route. File-source triples keep their declared mode
+/// in-container with carveouts. A directory RO mount keeps
+/// Podman read-only when EITHER its guest target sits at or
+/// under a FULL-granted route, OR its host source sits at or
+/// under a FULL-backed source (tier-2 hardening): Landlock
+/// union semantics cannot subtract a FULL grant, and rules are
+/// dentry-based and mount-agnostic — an RO source under FULL
+/// content (e.g. inside the project subtree) is FULL through
+/// every alias regardless of its own target, so flipping its
+/// binding would admit writes the declaration denies. The VFS
+/// binding carries the enforcement the union cannot.
+/// File-source triples keep their declared mode
 /// (a file cannot root a `path_beneath` rule, so Landlock cannot
 /// carry their policy; Podman-level RO stays their enforcement).
 /// Targets and sources are untouched: only the mode flips, so
@@ -763,23 +767,60 @@ pub fn graft_alias_preflight(
 pub fn revise_ro_for_confinement(
     triples: &[MountTriple],
     full_routes: &[String],
+    full_sources: &[std::path::PathBuf],
 ) -> Vec<MountTriple> {
     triples
         .iter()
         .map(|triple| {
-            if triple.mode == MountMode::Ro
-                && std::path::Path::new(&triple.host_source).is_dir()
-                && !under_full_route(&triple.container_target, full_routes)
+            let directory =
+                triple.mode == MountMode::Ro && std::path::Path::new(&triple.host_source).is_dir();
+            if !directory {
+                return triple.clone();
+            }
+            let source = canonicalize_host_source(&triple.host_source);
+            if under_full_route(&triple.container_target, full_routes)
+                || under_full_source(&source, full_sources)
             {
+                triple.clone()
+            } else {
                 MountTriple {
                     mode: MountMode::Rw,
                     ..triple.clone()
                 }
-            } else {
-                triple.clone()
             }
         })
         .collect()
+}
+
+/// Canonical host sources whose content Landlock grants
+/// FULL: the subtree source (subtree rule) plus every
+/// read-write directory triple's source (its carveout). A
+/// read-only directory at or under any of these is FULL at the
+/// dentry layer through every alias — regardless of its own
+/// guest target — so the revision must retain its Podman
+/// binding read-only (the VFS binding carries the enforcement
+/// Landlock union cannot subtract). Pure over the triples.
+#[must_use]
+pub fn full_grant_sources(triples: &[MountTriple], subtree_host: &std::path::Path) -> Vec<PathBuf> {
+    let mut sources = vec![canonicalize_host_source(&subtree_host.to_string_lossy())];
+    for triple in triples {
+        if triple.mode == MountMode::Rw && std::path::Path::new(&triple.host_source).is_dir() {
+            let source = canonicalize_host_source(&triple.host_source);
+            if !sources.contains(&source) {
+                sources.push(source);
+            }
+        }
+    }
+    sources
+}
+
+/// Whether a canonical host source sits at or under a
+/// FULL-backed source (component-wise, same spelling the
+/// revision retains on).
+fn under_full_source(source: &std::path::Path, full_sources: &[PathBuf]) -> bool {
+    full_sources
+        .iter()
+        .any(|root| source == root || source.starts_with(root))
 }
 
 /// Whether a guest target sits at or under a FULL-granted route.
@@ -795,25 +836,31 @@ fn under_full_route(target: &str, full_routes: &[String]) -> bool {
 }
 
 /// Refuses contradictory RO-under-FULL topologies pre-create
-/// (tier-2 hardening): a directory RO mount nested under a
-/// FULL-granted guest route with a declared read-write triple
-/// beneath its own target cannot hold — keeping the RO binding
-/// read-only would brick the RW descendant's materialization,
-/// and flipping it would expose the RO source through the
-/// FULL grant. Such topologies refuse with the conflicting
-/// pair named; the operator re-declares (moves the RW graft
-/// out from under the RO dir). Runs pre-create, so a refusal
-/// leaves no residue.
+/// (tier-2 hardening): a directory RO mount retained read-only
+/// — by FULL target coverage OR FULL-backed source — with a
+/// declared read-write triple beneath its own target cannot
+/// hold — keeping the RO binding read-only would brick the RW
+/// descendant's materialization, and flipping it would expose
+/// the RO source through the FULL grant. Such topologies
+/// refuse with the conflicting pair named; the operator
+/// re-declares (moves the RW graft out from under the RO dir).
+/// Runs pre-create, so a refusal leaves no residue.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Mount` on the first contradictory pair.
-pub fn ro_confinement_preflight(triples: &[MountTriple], full_routes: &[String]) -> Result<()> {
+pub fn ro_confinement_preflight(
+    triples: &[MountTriple],
+    full_routes: &[String],
+    full_sources: &[std::path::PathBuf],
+) -> Result<()> {
     for ro in triples {
-        if ro.mode != MountMode::Ro
-            || !std::path::Path::new(&ro.host_source).is_dir()
-            || !under_full_route(&ro.container_target, full_routes)
-        {
+        if ro.mode != MountMode::Ro || !std::path::Path::new(&ro.host_source).is_dir() {
+            continue;
+        }
+        let retained = under_full_route(&ro.container_target, full_routes)
+            || under_full_source(&canonicalize_host_source(&ro.host_source), full_sources);
+        if !retained {
             continue;
         }
         // Descendant comparison runs on canonical spellings

@@ -467,13 +467,13 @@ fn conduct_session(
         // mount-agnostic) — contradictory declarations refuse
         // before revision, validation, or unit.
         cistella::framework::hooks::hook_graft_alias_preflight(&triples, &directory)?;
-        let full_routes = cistella::framework::hooks::hook_full_routes(
+        let sets = cistella::framework::hooks::hook_full_sets(
             &evaluated.merged.guest_hooks,
             &triples,
             &directory,
         )?;
-        cistella::mount::ro_confinement_preflight(&triples, &full_routes)?;
-        cistella::mount::revise_ro_for_confinement(&triples, &full_routes)
+        cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
+        cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
     };
     // Final joint topology gate: extension mounts plus credential
     // volumes validate and preflight as one merged set — still

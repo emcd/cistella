@@ -118,6 +118,12 @@ fn hook_fixture(image: &str) -> HookFixture {
     // RO-under-RW alias pin): must exist on host (preflight
     // shape) so the revision retention is what denies writes.
     std::fs::create_dir_all(proj.join("ro-data")).expect("ro-data dir");
+    // Declared-RO directory inside the FULL subtree bound
+    // outside all FULL routes (reverse-direction alias pin):
+    // its dentries are FULL through the subtree rule whatever
+    // its target, so only the retained Podman read-only
+    // binding denies writes.
+    std::fs::create_dir_all(proj.join("secret")).expect("secret dir");
     std::fs::write(proj.join("seed"), "seed").expect("seed marker");
     let id = mint_session_id();
     // Stage exactly as the extension answers: observe the shipped
@@ -172,6 +178,16 @@ fn hook_fixture(image: &str) -> HookFixture {
             container_target: "/src/proj/ro-data".to_string(),
             mode: MountMode::Ro,
         },
+        // Declared-RO directory inside the FULL subtree bound
+        // outside all FULL routes (reverse-direction alias):
+        // retained Podman read-only by FULL-backed source —
+        // the subtree FULL would otherwise admit through the
+        // alias whatever the target-side rule says.
+        MountTriple {
+            host_source: proj.join("secret").to_string_lossy().to_string(),
+            container_target: "/extra/secret".to_string(),
+            mode: MountMode::Ro,
+        },
         // Declared-RW graft of disjoint content (tier-2 graft
         // admission pin): composes into a FULL carveout by
         // declared intent. The source MUST sit outside the
@@ -186,12 +202,14 @@ fn hook_fixture(image: &str) -> HookFixture {
         },
         staged_triple,
     ];
-    // Revision through the real FULL-route derivation (same set
-    // the conductor revises with): `/src` flips RW for
-    // materialization while `/src/proj/ro-data` retains RO.
+    // Revision through the real FULL sets (same sets the
+    // conductor revises with): `/src` flips RW for
+    // materialization while `/src/proj/ro-data` (FULL target)
+    // and `/extra/secret` (FULL-backed source) retain RO.
     let full_routes = full_grant_routes(&[fixture_hook()], &triples, tree.path(), &proj)
         .expect("full routes derive");
-    let revised = cistella::mount::revise_ro_for_confinement(&triples, &full_routes);
+    let full_sources = cistella::mount::full_grant_sources(&triples, &proj);
+    let revised = cistella::mount::revise_ro_for_confinement(&triples, &full_routes, &full_sources);
     let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
         session,
@@ -292,7 +310,8 @@ fn hook_probe_reports_matrix_in_container() {
 
 /// Hooked launch attests applied and confines: admitted write
 /// succeeds, unaliased sibling write fails, disjoint graft
-/// admits, retained-RO alias denies — all under attestation.
+/// admits, FULL-sourced RO alias denies, retained-RO alias
+/// denies — all under attestation.
 /// The sibling denial path carries no RW alias anywhere (no
 /// graft of its source): any FULL alias would admit through
 /// it at the dentry layer, so the fixture keeps them disjoint
@@ -390,6 +409,27 @@ fn hook_hooked_launch_attests_and_confines() {
             .join("sib/marker")
             .exists(),
         "graft marker must not appear in the tree"
+    );
+    // RO-source alias denial (reverse-direction retention
+    // proof): the declared-RO directory inside the FULL
+    // subtree, bound outside all FULL routes, denies writes —
+    // the retained Podman read-only binding enforces what the
+    // subtree FULL would otherwise admit through the alias.
+    let outcome = run_harness(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo escape > /extra/secret/escape".to_string(),
+        ],
+    );
+    assert!(
+        !matches!(outcome, ExecutionOutcome::Exited(0)),
+        "alias harness must fail, got {outcome:?}"
+    );
+    assert!(
+        !fixture.proj.join("secret/escape").exists(),
+        "alias file must not exist"
     );
     // RO-under-RW alias denial (tier-2 retention proof): the
     // declared-RO directory under the FULL subtree denies
