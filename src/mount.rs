@@ -691,10 +691,11 @@ pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
 /// the sibling path). Such topologies refuse with the triple
 /// named: move the grafted content outside the tree (disjoint
 /// dentries, e.g. `/opt/state`) or inside the subtree
-/// (already FULL). Path-based over the declared topology:
-/// adversarial bind-mount aliases sharing dentries under
-/// different paths evade this check — dev+ino hardening rides
-/// task 3.3. Hooked sessions only (plain Podman binds enforce
+/// (already FULL). The spelling check runs first; the
+/// dentry-identity leg ([`crate::mount_alias`]) closes the
+/// bind-mount shapes spellings cannot see (same dentry under
+/// another path, subtree escapes through a bind). Hooked
+/// sessions only (plain Podman binds enforce
 /// per-mount with no dentry union); runs pre-create, so a
 /// refusal leaves no residue.
 ///
@@ -733,7 +734,7 @@ pub fn graft_alias_preflight(
             )));
         }
     }
-    Ok(())
+    crate::mount_alias::refuse_dentry_aliased_grafts(triples, ancestor_host, subtree_host)
 }
 
 /// Revises read-only directory mounts to read-write for the

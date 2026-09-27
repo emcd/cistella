@@ -12,6 +12,7 @@ pub mod identity;
 pub mod isolators;
 pub mod lock;
 pub mod mount;
+pub mod mount_alias;
 pub mod preflight;
 pub mod prepare;
 pub mod profile;

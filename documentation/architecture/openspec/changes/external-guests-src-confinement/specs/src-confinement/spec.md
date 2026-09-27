@@ -55,6 +55,14 @@ Modifies the subtree-confinement guarantee above under explicit operator directi
 - **WHEN** a profile grafts ancestor-tree content read-write outside the subtree (same host source bound twice with different rights)
 - **THEN** conduct refuses pre-create with a typed error; no session starts with an aliased grant
 
+#### Scenario: Bind-mount alias refuses pre-create
+- **WHEN** a profile grafts ancestor-tree content read-write through a bind-mount path outside the subtree (same dentry, different path — canonical spellings diverge, `st_dev`/`st_ino` or filesystem-relative containment agree)
+- **THEN** conduct refuses pre-create with a typed error naming the graft target; no session starts with an aliased grant
+
+#### Scenario: Subtree escape refuses pre-create
+- **WHEN** a profile declares a read-write graft path-wise inside the subtree whose dentry sits outside it (a bind escape mounted under the subtree)
+- **THEN** conduct refuses pre-create with a typed error naming the graft target; the carveout never grants undeclared content
+
 #### Scenario: Companion shell outside the guarantee
 - **WHEN** the operator enters a hooked session via companion exec
 - **THEN** the shell runs unconfined (no Landlock rules apply); the session marker records confinement state only
