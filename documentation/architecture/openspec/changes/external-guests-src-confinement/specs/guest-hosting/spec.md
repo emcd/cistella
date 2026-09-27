@@ -12,6 +12,10 @@ Conduct SHALL host exactly the isolator and extensions a profile declares (`[iso
 - **WHEN** a profile declares the `landlock` extension
 - **THEN** the Landlock guest answers prepare and its hook stages before create, and the session conducts on the hooked path
 
+#### Scenario: Selected-but-empty hooks refuse pre-create
+- **WHEN** a profile declares the `landlock` extension but the guest answers zero hooks (malformed, buggy, or replaced guest)
+- **THEN** conduct refuses pre-create with a typed error (never a silent plain session); the selection guarantees engagement
+
 #### Scenario: Unknown guest refuses pre-create
 - **WHEN** a profile names an isolator or extension outside the admitted set
 - **THEN** conduct refuses pre-create with a typed error naming the declaration; no session starts undeclared-unhooked
