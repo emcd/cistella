@@ -90,6 +90,9 @@ struct HookFixture {
     triples: Vec<MountTriple>,
     proj: PathBuf,
     graft_src: PathBuf,
+    /// Guest path of the staged denial-probe helper
+    /// (`/opt/probe/deny_probe*`).
+    probe: String,
     #[allow(dead_code)]
     guard: HookUnitGuard,
 }
@@ -131,6 +134,20 @@ fn hook_fixture(image: &str) -> HookFixture {
     std::fs::write(proj.join("secret/seed"), "seed").expect("secret seed");
     std::fs::write(proj.join("seed"), "seed").expect("seed marker");
     let id = mint_session_id();
+    // Stage the denial-probe helper for exact-syscall
+    // pre/post controls: resolve the built example binary,
+    // mount its parent dir read-only (disjoint dentries —
+    // target/ never aliases tree content; RO skips the
+    // alias guard and composes only readability), and run
+    // it by exact filename in-container.
+    let probe_host = example_binary("deny_probe");
+    let probe_name = probe_host
+        .file_name()
+        .expect("probe filename")
+        .to_string_lossy()
+        .to_string();
+    let probe = format!("/opt/probe/{probe_name}");
+    let probe_parent = probe_host.parent().expect("probe parent dir");
     // Stage exactly as the extension answers: observe the shipped
     // digest, then stage the admitted bytes.
     let exe = bins_dir();
@@ -218,6 +235,13 @@ fn hook_fixture(image: &str) -> HookFixture {
             container_target: "/alt/sib".to_string(),
             mode: MountMode::Ro,
         },
+        // Denial-probe helper staging (read-only, disjoint
+        // content — target/ never aliases the tree).
+        MountTriple {
+            host_source: probe_parent.to_string_lossy().to_string(),
+            container_target: "/opt/probe".to_string(),
+            mode: MountMode::Ro,
+        },
         staged_triple,
     ];
     // Revision through the real FULL sets (same sets the
@@ -263,6 +287,7 @@ fn hook_fixture(image: &str) -> HookFixture {
         triples,
         proj,
         graft_src: graft_dir,
+        probe,
         guard,
     }
 }
@@ -326,15 +351,19 @@ fn hook_probe_reports_matrix_in_container() {
     fixture.teardown();
 }
 
-/// Denial matrix: every write-capable operation fails
-/// EACCES under the ruleset with same-path pre/post
-/// controls attributing each denial to Landlock (not a
-/// pre-existing kernel wall), plus the alternate-bind
-/// route without a carveout. Write/create/unlink/rename/
-/// truncate at the attested ABI floor (run_harness already
-/// gates ABI >= 3 for TRUNCATE; insufficient ABI fails
-/// pre-execute through the probe's typed Unsupported,
-/// fast-pinned, unproducible on supporting kernels).
+/// Denial matrix: every write-capable operation fails with
+/// machine-readable EACCES under the ruleset, each with a
+/// same-operation unconfined control on the same guest path
+/// attributing the denial to Landlock (not a pre-existing
+/// kernel wall), plus the alternate-bind route without a
+/// carveout. The probe helper performs exact syscalls
+/// (including `O_RDONLY|O_TRUNC`, the ABI-3 shape shell
+/// redirection cannot express) and records `OK` or
+/// `ERRNO=<n>` to a result file; any other errno fails.
+/// ABI floor rides the per-harness ABI >= 3 gate (TRUNCATE
+/// right); insufficient ABI fails pre-execute through the
+/// probe's typed Unsupported, fast-pinned, unproducible on
+/// supporting kernels.
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn hook_denial_matrix_confines() {
@@ -355,83 +384,167 @@ fn hook_denial_matrix_confines() {
         sib_routes,
         vec!["/alt/sib".to_string(), "/src/sib".to_string()]
     );
-    // Pre/post control helper: the same guest-visible path
-    // writes clean through companion exec (unconfined, same
-    // uid and mounts — proves no kernel wall), then fails
-    // through the hooked harness after restrictions apply.
-    let pre_write = |guest_path: &str, bytes: &str| {
-        let out = podman_exec(
-            &fixture.container,
-            &["sh", "-c", &format!("printf '%s' '{bytes}' > {guest_path}")],
-        );
+    // Probe plumbing: the helper records one machine line
+    // per invocation to a result file under the FULL
+    // subtree (writable in both contexts); the harness
+    // itself exits 0 having reported, so the RESULT carries
+    // the verdict, never the exit code. Same binary, same
+    // op, same path, same uid and mounts in both contexts:
+    // companion exec proves the operation, hooked harness
+    // proves the denial.
+    let result_host = |tag: &str| fixture.proj.join(format!("probe-{tag}.out"));
+    let result_guest = |tag: &str| format!("/src/proj/probe-{tag}.out");
+    let probe_argv = |tag: &str, op: &[&str]| {
+        let mut argv = vec![fixture.probe.clone(), result_guest(tag), op[0].to_string()];
+        argv.extend(op[1..].iter().map(|arg| (*arg).to_string()));
+        argv
+    };
+    let read_result = |tag: &str| {
+        std::fs::read_to_string(result_host(tag))
+            .unwrap_or_else(|_| panic!("probe {tag} must record a result"))
+            .trim()
+            .to_string()
+    };
+    // Unconfined control: the exact op must succeed outside
+    // restrictions, recording `OK`.
+    let pre_ok = |tag: &str, op: &[&str]| {
+        let result = result_guest(tag);
+        let mut exec_argv = vec![fixture.probe.as_str(), result.as_str(), op[0]];
+        exec_argv.extend_from_slice(&op[1..]);
+        let out = podman_exec(&fixture.container, &exec_argv);
         assert!(
             out.status.success(),
-            "pre-restriction write must succeed: {}",
+            "probe spawn must succeed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        assert_eq!(read_result(tag), "OK", "unconfined {op:?} must succeed");
     };
-    let post_denied = |guest_path: &str, script: &str| {
-        let outcome = run_harness(
-            &fixture,
-            &["sh".to_string(), "-c".to_string(), script.to_string()],
-        );
+    // Confined attempt: the helper must run (exit 0 having
+    // reported) and record exactly EACCES — any other errno
+    // (ENOENT, EROFS, tool failure) fails the case.
+    let post_denied = |tag: &str, op: &[&str]| {
+        let outcome = run_harness(&fixture, &probe_argv(tag, op));
         assert!(
-            !matches!(outcome, ExecutionOutcome::Exited(0)),
-            "restricted {guest_path} operation must fail, got {outcome:?}"
+            matches!(outcome, ExecutionOutcome::Exited(0)),
+            "probe harness must report, got {outcome:?}"
+        );
+        assert_eq!(
+            read_result(tag),
+            "ERRNO=13",
+            "confined {op:?} must fail EACCES"
         );
     };
-    // WRITE with pre/post control on the primary route.
-    pre_write("/src/sib/ctl", "pre");
-    std::fs::remove_file(tree.join("sib/ctl")).expect("clean control marker");
-    post_denied("/src/sib/ctl", "echo post > /src/sib/ctl");
-    assert!(
-        !tree.join("sib/ctl").exists(),
-        "denied write must not materialize"
+    // WRITE open of a pre-existing file (no create or
+    // truncate flags — denied exactly by WRITE_FILE):
+    // unconfined open replaces the first byte (proves the
+    // write landed), content is restored, confined open
+    // records EACCES with content byte-exact.
+    std::fs::write(tree.join("sib/w"), "0123456789").expect("w fixture content");
+    pre_ok("write-pre", &["open-wronly", "/src/sib/w"]);
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/w")).expect("w readable"),
+        "x123456789",
+        "unconfined write must replace the first byte"
     );
-    // CREATE: fresh names fail and stay absent.
-    post_denied("/src/sib/new", "touch /src/sib/new");
+    std::fs::write(tree.join("sib/w"), "0123456789").expect("restore w content");
+    post_denied("write-post", &["open-wronly", "/src/sib/w"]);
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/w")).expect("w readable"),
+        "0123456789",
+        "denied write must leave content intact"
+    );
+    std::fs::remove_file(tree.join("sib/w")).expect("clean w marker");
+    // CREATE of a fresh name with pre/post control.
+    pre_ok("create-pre", &["create-excl", "/src/sib/new"]);
+    assert!(
+        tree.join("sib/new").exists(),
+        "unconfined create must materialize"
+    );
+    std::fs::remove_file(tree.join("sib/new")).expect("clean created file");
+    post_denied("create-post", &["create-excl", "/src/sib/new"]);
     assert!(
         !tree.join("sib/new").exists(),
         "denied create must not materialize"
     );
-    // UNLINK: a pre-existing file survives the denied remove.
-    pre_write("/src/sib/victim", "victim");
-    post_denied("/src/sib/victim", "rm /src/sib/victim");
+    // UNLINK: unconfined remove works (proves the op), then
+    // the victim is restored for the confined attempt, which
+    // must leave it byte-exact. Victim setup is host-side
+    // fixture (creation itself is proved by create-excl).
+    std::fs::write(tree.join("sib/victim"), "x").expect("victim fixture content");
+    pre_ok("unlink-pre", &["unlink", "/src/sib/victim"]);
+    assert!(
+        !tree.join("sib/victim").exists(),
+        "unconfined unlink must remove"
+    );
+    std::fs::write(tree.join("sib/victim"), "x").expect("restore victim content");
+    post_denied("unlink-post", &["unlink", "/src/sib/victim"]);
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/victim")).expect("victim readable"),
-        "victim",
+        "x",
         "denied unlink must leave the file"
     );
-    // RENAME: source stays, destination never appears.
-    pre_write("/src/sib/orig", "orig");
-    post_denied("/src/sib/orig", "mv /src/sib/orig /src/sib/moved");
+    // RENAME: unconfined move works both directions (the
+    // restore uses the same op), then the confined move
+    // must leave source in place and destination absent.
+    std::fs::write(tree.join("sib/orig"), "x").expect("orig fixture content");
+    pre_ok("rename-pre", &["rename", "/src/sib/orig", "/src/sib/moved"]);
+    assert!(
+        !tree.join("sib/orig").exists() && tree.join("sib/moved").exists(),
+        "unconfined rename must move"
+    );
+    pre_ok(
+        "rename-restore",
+        &["rename", "/src/sib/moved", "/src/sib/orig"],
+    );
+    post_denied(
+        "rename-post",
+        &["rename", "/src/sib/orig", "/src/sib/moved"],
+    );
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/orig")).expect("orig readable"),
-        "orig",
+        "x",
         "denied rename must leave the source"
     );
     assert!(
         !tree.join("sib/moved").exists(),
         "denied rename must not materialize the destination"
     );
-    // TRUNCATE via shell redirection (O_TRUNC without
-    // WRITE_FILE — the ABI-3 right the floor requires):
-    // content must survive byte-exact.
-    pre_write("/src/sib/trunc", "0123456789");
-    post_denied("/src/sib/trunc", ": > /src/sib/trunc");
+    // TRUNCATE with exactly O_RDONLY|O_TRUNC (the ABI-3
+    // shape shell redirection cannot express): unconfined
+    // open empties the file (proves truncation happened),
+    // content is restored, confined open records EACCES
+    // with content byte-exact.
+    std::fs::write(tree.join("sib/trunc"), "0123456789").expect("trunc fixture content");
+    pre_ok("trunc-pre", &["open-ro-trunc", "/src/sib/trunc"]);
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/trunc")).expect("trunc readable"),
+        "",
+        "unconfined O_RDONLY|O_TRUNC must empty the file"
+    );
+    std::fs::write(tree.join("sib/trunc"), "0123456789").expect("restore trunc content");
+    post_denied("trunc-post", &["open-ro-trunc", "/src/sib/trunc"]);
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/trunc")).expect("trunc readable"),
         "0123456789",
         "denied truncate must leave content intact"
     );
     // Alternate-bind route without a carveout: same
-    // pre/post discipline through the second bind.
-    pre_write("/alt/sib/ctl", "pre");
-    std::fs::remove_file(tree.join("sib/ctl")).expect("clean alt control marker");
-    post_denied("/alt/sib/ctl", "echo post > /alt/sib/ctl");
-    assert!(
-        !tree.join("sib/ctl").exists(),
-        "denied alternate-route write must not materialize"
+    // pre/post discipline through the second bind, with
+    // the file present for both (pure open reports ENOENT
+    // on missing paths, not EACCES).
+    std::fs::write(tree.join("sib/ctl"), "0123456789").expect("alt fixture content");
+    pre_ok("alt-pre", &["open-wronly", "/alt/sib/ctl"]);
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/ctl")).expect("ctl readable"),
+        "x123456789",
+        "unconfined alternate-route write must replace the first byte"
+    );
+    std::fs::write(tree.join("sib/ctl"), "0123456789").expect("restore ctl content");
+    post_denied("alt-post", &["open-wronly", "/alt/sib/ctl"]);
+    assert_eq!(
+        std::fs::read_to_string(tree.join("sib/ctl")).expect("ctl readable"),
+        "0123456789",
+        "denied alternate-route write must leave content intact"
     );
     fixture.teardown();
 }

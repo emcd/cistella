@@ -544,6 +544,56 @@ fn dir_names_filtered(dir: &std::path::Path, prefix: Option<&str>) -> Vec<String
     names
 }
 
+/// Resolves a built example binary (newest-mtime executable match).
+///
+/// Requires `cargo build --examples` first for filtered runs
+/// (`cargo test --test unit` does not build examples; full
+/// `cargo nextest run` does via the default target set).
+pub fn example_binary(name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let my_path = std::env::current_exe().expect("current_exe");
+    let examples_dir = my_path
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile>/deps ancestors")
+        .join("examples");
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&examples_dir) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+                continue;
+            }
+            let metadata = entry.metadata().expect("metadata");
+            if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
+                continue;
+            }
+            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+        }
+    }
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
+    // Prefer the deterministic canonical path (bare name)
+    // when present; newest-mtime hashed matches are the
+    // fallback for incremental filtered runs.
+    if let Some((_, path)) = candidates
+        .iter()
+        .find(|(_, path)| path.file_name().is_some_and(|file| file == name))
+        .cloned()
+    {
+        return path;
+    }
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| {
+            panic!(
+                "example binary {name} not found in {}; run `cargo build --examples` first",
+                examples_dir.display()
+            )
+        })
+}
+
 /// Session worktree tempdir anchored under `~/src`: hooked
 /// conducts refuse sessions outside the confinement root, so live
 /// fixtures must look like real sessions (`TempDir::new_in`,
