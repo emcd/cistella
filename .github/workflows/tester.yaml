@@ -167,9 +167,13 @@ jobs:
           cargo test --release --locked --test unit --no-run 2>&1 | tail -1
           BIN="$(ls -t target/release/deps/unit-* | grep -vE '\.(d|rlib|rmeta)$' | head -1)"
           echo "tracing: $BIN"
-          strace -f -e trace=process,dup,dup2,fcntl,close,close_range,execve -o /tmp/strace-cat.log "$BIN" protocol::cat_loopback_negotiates_and_round_trips --exact --nocapture || true
-          echo "--- execve/exit lines ---"
-          grep -E "execve|exit_group|+++ exited|--- SIG" /tmp/strace-cat.log | head -30 || true
+          strace -f -e trace=process,dup,dup2,fcntl,close,close_range,execve,open,openat,read,write,exit_group -o /tmp/strace-cat.log "$BIN" protocol::slow_guest_times_out_and_reaps --exact --nocapture || true
+          echo "--- guest execve plus following 40 lines ---"
+          grep -n 'execve("/proc' /tmp/strace-cat.log | head -3 || true
+          for ln in $(grep -n 'execve("/proc' /tmp/strace-cat.log | cut -d: -f1 | head -3); do
+            echo "=== context from line $ln ===";
+            sed -n "${ln},$((ln + 40))p" /tmp/strace-cat.log;
+          done
 
       - name: Spike fork-pattern death count
         # QA-DIAG (temporary): 2000x plain fork+exec vs exact
