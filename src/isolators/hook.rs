@@ -19,7 +19,7 @@ use nix::fcntl::{FcntlArg, FdFlag};
 
 use crate::error::{CistellaError, Result};
 use crate::transport::{
-    PLURAL_DIAG_FD, PreserveStrategy, assert_plural_inheritable_only, resolve_preserve_strategy,
+    PLURAL_DIAG_FD, PreserveStrategy, assert_diag_inheritable, resolve_preserve_strategy,
 };
 
 /// Prepares diagnostics forwarding for a hooked launch:
@@ -155,16 +155,19 @@ pub struct HookedPreservation {
 /// forwarding for one hooked launch (or nothing without a
 /// diagnostics fd): strategy resolution first (the prep inserts
 /// the strategy's diagnostics-fd number — natural on singular,
-/// [`PLURAL_DIAG_FD`] on plural), then the plural precondition
-/// asserted every launch pre-spawn. The returned guard holds
+/// [`PLURAL_DIAG_FD`] on plural), then the diagnostics fd
+/// itself checked inheritable every launch pre-spawn (the
+/// load-bearing fact for preservation on either path; ambient
+/// tables are podman-side-only by dup+N mechanics, so no
+/// whole-table census). The returned guard holds
 /// the hook-spawn lock through the caller's spawn (drop after
 /// spawn releases the section; await never holds it).
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Runtime` on detection/census failure
+/// Returns `CistellaError::Runtime` on detection/fcntl failure
 /// and `CistellaError::Contract` on runtime, wrapper,
-/// precondition, or lock refusal.
+/// inheritable, or lock refusal.
 pub fn resolve_hooked_preservation(
     diagnostics: Option<&OwnedFd>,
     argv: &mut Vec<String>,
@@ -178,9 +181,7 @@ pub fn resolve_hooked_preservation(
     };
     let resolved = resolve_preserve_strategy()?;
     let natural = prepare_diagnostics_hook(diag, argv, resolved)?;
-    if resolved == PreserveStrategy::Plural {
-        assert_plural_inheritable_only(natural)?;
-    }
+    assert_diag_inheritable(natural)?;
     Ok(HookedPreservation {
         hooked: Some((resolved, natural)),
         guard,
