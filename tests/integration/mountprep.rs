@@ -780,3 +780,148 @@ fn hooked_conduct_confines_declared_session() {
         "ok\n"
     );
 }
+
+/// Live adversarial-bind refusal (3.4 part 2): a REAL bind
+/// mount shares dentries across spellings that canonicalize
+/// apart, so only the dev+ino leg can see it. Both legs run
+/// inside one private mount namespace (`podman unshare` +
+/// `mount --bind`: unprivileged-capable per QA seat probe,
+/// evaporates with the namespace — zero host mutation), plus
+/// an undisjointed control that must stay allowed. Skips
+/// quietly where the capability is absent.
+#[ignore = "live: requires bind-mount capability (podman unshare)"]
+#[test]
+fn bind_alias_graft_refuses_precreate() {
+    let unshare = Command::new("podman")
+        .arg("unshare")
+        .arg("true")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !unshare {
+        eprintln!("skip: podman unshare unavailable");
+        return;
+    }
+    // Fake HOME confinement tree: ancestor $HOME/src with a
+    // project subtree and a denied sibling.
+    let home = TempDir::new().expect("fake home");
+    let src = home.path().join("src");
+    let proj = src.join("proj");
+    let sib = src.join("sib");
+    std::fs::create_dir_all(&proj).expect("proj dir");
+    std::fs::create_dir_all(&sib).expect("sib dir");
+    std::fs::write(sib.join("seed"), "seed").expect("sib seed");
+    // Disjoint mountpoints (empty dirs on the host) plus a
+    // disjoint control graft source with disjoint dentries.
+    let alias = TempDir::new().expect("alias mountpoint");
+    let tree_bind = TempDir::new().expect("tree bind mountpoint");
+    let control_src = TempDir::new().expect("control graft source");
+    let probe = example_binary("bind_alias_probe");
+    let home_str = home.path().to_string_lossy().to_string();
+    let proj_str = proj.to_string_lossy().to_string();
+    let sib_str = sib.to_string_lossy().to_string();
+    let alias_str = alias.path().to_string_lossy().to_string();
+    let src_str = src.to_string_lossy().to_string();
+    let tree_bind_str = tree_bind.path().to_string_lossy().to_string();
+    let control_str = control_src.path().to_string_lossy().to_string();
+    let probe_str = probe.to_string_lossy().to_string();
+    // All three cases in one namespace: subdir bind (sib at
+    // a disjoint path — mountinfo containment leg), exact
+    // bind (ancestor at a disjoint path — dev+ino equality
+    // leg), and undisjointed control (must stay allowed).
+    // `;`-chained so a mount failure surfaces as a loud
+    // product assertion, never a silent pass. Identity lines
+    // prove the bind is real (alias shares the sibling
+    // dentry) and that the subdir case is NOT an exact-ID
+    // match (sibling ino differs from the ancestor ino) —
+    // only fs-relative containment can refuse it.
+    let script = format!(
+        "mount --bind '{sib_str}' '{alias_str}' || echo MOUNT_FAILED_SUBDIR; \
+         mount --bind '{src_str}' '{tree_bind_str}' || echo MOUNT_FAILED_EXACT; \
+         echo -n 'ids-ancestor:'; stat -c '%d %i' '{src_str}'; \
+         echo -n 'ids-sib:'; stat -c '%d %i' '{sib_str}'; \
+         echo -n 'ids-alias:'; stat -c '%d %i' '{alias_str}'; \
+         echo -n 'case-subdir:'; '{probe_str}' '{home_str}' '{proj_str}' '{alias_str}' /src/graft; \
+         echo -n 'case-exact:'; '{probe_str}' '{home_str}' '{proj_str}' '{tree_bind_str}' /src/graft; \
+         echo -n 'case-control:'; '{probe_str}' '{home_str}' '{proj_str}' '{control_str}' /src/graft"
+    );
+    let out = Command::new("podman")
+        .arg("unshare")
+        .arg("env")
+        .arg(format!("HOME={home_str}"))
+        .arg("sh")
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .expect("podman unshare must spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "unshare script must run: {stderr}");
+    assert!(
+        !stdout.contains("MOUNT_FAILED"),
+        "bind mounts must establish: {stdout} {stderr}"
+    );
+    let line = |label: &str| {
+        stdout
+            .lines()
+            .find(|line| line.starts_with(label))
+            .unwrap_or_else(|| panic!("missing {label} in:\n{stdout}"))
+            .to_string()
+    };
+    // The bind is real (alias shares the sibling dentry)
+    // and the subdir case is not an exact-ID match (only
+    // fs-relative containment can refuse it).
+    let ids = |label: &str| {
+        stdout
+            .lines()
+            .find(|line| line.starts_with(label))
+            .unwrap_or_else(|| panic!("missing {label} in:\n{stdout}"))
+            .trim_start_matches(label)
+            .to_string()
+    };
+    let ancestor_ids = ids("ids-ancestor:");
+    let sib_ids = ids("ids-sib:");
+    let alias_ids = ids("ids-alias:");
+    assert_eq!(
+        alias_ids, sib_ids,
+        "alias bind must share the sibling dentry, got alias={alias_ids} sib={sib_ids}"
+    );
+    assert_ne!(
+        sib_ids, ancestor_ids,
+        "subdir case must differ from the ancestor dentry (else exact-ID equality decides, not containment)"
+    );
+    // Alias-specific diagnostic: a table-noncoverage or
+    // device-disagreement refusal (fail-closed) must NOT
+    // satisfy these — only the containment/equality legs
+    // proving shared dentries with read-only content.
+    let alias_diagnostic = "shares dentries with read-only content through a bind mount";
+    // Subdir bind: same dentries as the denied sibling under
+    // a disjoint spelling — the graft FULL would admit
+    // through every alias.
+    let subdir = line("case-subdir:");
+    assert!(
+        subdir.starts_with("case-subdir:REFUSED:")
+            && subdir.contains("/src/graft")
+            && subdir.contains(alias_diagnostic),
+        "subdir bind alias must refuse with the alias diagnostic naming the graft, got: {subdir}"
+    );
+    // Exact bind: the ancestor itself under another path —
+    // dev+ino equality, no table needed.
+    let exact = line("case-exact:");
+    assert!(
+        exact.starts_with("case-exact:REFUSED:")
+            && exact.contains("/src/graft")
+            && exact.contains(alias_diagnostic),
+        "exact bind alias must refuse with the alias diagnostic naming the graft, got: {exact}"
+    );
+    // Control: disjoint dentries stay allowed.
+    assert_eq!(
+        line("case-control:"),
+        "case-control:ALLOWED",
+        "disjoint graft must stay allowed"
+    );
+    // Execution record: a pass means the binds established
+    // and all three cases ran (the skip path returns early;
+    // MOUNT_FAILED markers fail loudly above).
+    eprintln!("bind-alias cases EXECUTED: subdir+exact refused, control allowed");
+}
