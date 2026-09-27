@@ -280,3 +280,26 @@ fn rehost_failure_ok_clean_keeps_original() {
         "original stands, got: {reported}"
     );
 }
+
+#[test]
+fn preserve_fd_probe_requires_singular_flag() {
+    use cistella::transport::exec_help_supports_preserve_fd;
+    // Singular list form advertised: probe passes (repeatable
+    // and `=` spellings tokenize to the exact flag).
+    assert!(exec_help_supports_preserve_fd(
+        "  --preserve-fd FD1,...\n  --preserve-fds N\n"
+    ));
+    assert!(exec_help_supports_preserve_fd("--preserve-fd=9\n"));
+    // Plural-only (podman 4.9.x): probe fails — the count form
+    // would leak sibling-session fds, so it never satisfies.
+    assert!(!exec_help_supports_preserve_fd(
+        "  --preserve-fds N\n  --workdir PATH\n"
+    ));
+    // Near-miss spellings never satisfy (prefix token, suffixed
+    // token, prose mention without the flag).
+    assert!(!exec_help_supports_preserve_fd("--preserve-fd2\n"));
+    assert!(!exec_help_supports_preserve_fd(
+        "preserves fds via --preserve-fds\n"
+    ));
+    assert!(!exec_help_supports_preserve_fd(""));
+}

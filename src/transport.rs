@@ -1,5 +1,7 @@
 //! Transport: host PTY owns session, exec -i -t, closed env, resize.
 
+use crate::error::{CistellaError, Result};
+
 /// Closed env list forwarded via `-e`. `TERMINFO` is never forwarded with
 /// baked images.
 pub const CLOSED_ENV: &[&str] = &["TERM", "COLORTERM", "TERM_PROGRAM"];
@@ -59,6 +61,52 @@ pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> 
     ]);
     args.extend(command.iter().cloned());
     args
+}
+
+/// Whether `podman exec --help` text advertises the singular
+/// `--preserve-fd` list form (exact token match: the plural
+/// `--preserve-fds` count form does not satisfy it). Pure over
+/// the help text; the runner below supplies it.
+///
+/// The singular form is load-bearing for hooked launches: the
+/// range form would forward every guest-held fd in range —
+/// including sibling-session descriptors — into the container.
+/// Old podman (4.9.x) knows only the plural form, so hooked
+/// launches carry a podman floor enforced by the runner.
+#[must_use]
+pub fn exec_help_supports_preserve_fd(help: &str) -> bool {
+    help.split(|c: char| c.is_whitespace() || c == ',' || c == '=')
+        .any(|token| token == "--preserve-fd")
+}
+
+/// Refuses hooked launches the seat podman cannot forward:
+/// `podman exec` must advertise the singular `--preserve-fd`
+/// (exact-fd list, crun runtime). Old podman refuses typed
+/// pre-exec — never a flag-parse death misread as wrapper
+/// failure downstream.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` when podman cannot run and
+/// `CistellaError::Contract` when the flag is absent.
+pub fn check_podman_preserve_fd() -> Result<()> {
+    let output = std::process::Command::new("podman")
+        .args(["exec", "--help"])
+        .output()
+        .map_err(|e| CistellaError::Runtime(format!("podman exec --help: {e}")))?;
+    if !output.status.success() {
+        return Err(CistellaError::Runtime(
+            "podman exec --help failed".to_string(),
+        ));
+    }
+    let help = String::from_utf8_lossy(&output.stdout);
+    if !exec_help_supports_preserve_fd(&help) {
+        return Err(CistellaError::Contract(
+            "podman exec lacks --preserve-fd: hooked launch needs podman with singular --preserve-fd plus the crun runtime"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Builds hooked-launch exec args without a workdir override:
