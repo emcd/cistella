@@ -2,7 +2,8 @@ name: probe-runners
 
 # Read-only runner characterization: versions, OCI runtime, kernel +
 # Landlock ABI, systemd user manager, rootless smoke. No repo checkout,
-# no suite runs, no mutations — evidence for live-tier CI planning.
+# no suite runs. The smoke step pulls and runs one ephemeral --rm
+# container (the only mutation); everything else only reads.
 # Run manually per platform while triaging runner-specific failures.
 
 on:
