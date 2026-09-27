@@ -10,7 +10,7 @@
 //! the Podman backend so the backend file stays under its line
 //! budget; called once per hooked launch under the process-wide
 //! hook-spawn lock (concurrent launches serialize their
-//! census-to-spawn windows).
+//! check-to-spawn windows).
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::process::Command;
@@ -125,14 +125,14 @@ fn oci_runtime_name() -> Result<String> {
 /// Process-wide hook-spawn critical section (tier-1 pushback):
 /// the fd table is process-wide, so concurrent hooked spawns —
 /// in this backend or another instance in the same process —
-/// must serialize their census-to-spawn windows, or one
-/// launch could census while another clears its diagnostics
-/// fd (spurious refusal at best, cross-launch inheritance at
-/// worst). Plain spawns never clear CLOEXEC and stay outside.
+/// must serialize their check-to-spawn windows, or one
+/// launch could check while another clears its diagnostics
+/// fd (spurious refusal at best, a misplaced dup at worst).
+/// Plain spawns never clear CLOEXEC and stay outside.
 /// The held guard is returned with the bundle so the section
-/// spans through spawn; the per-launch assertion remains the
-/// tripwire for out-of-section inheritable fds (fail-closed,
-/// never silent).
+/// spans through spawn; the per-launch diagnostics check
+/// remains the tripwire for clearing regressions
+/// (fail-closed, never silent).
 pub fn lock_hook_spawn() -> Result<std::sync::MutexGuard<'static, ()>> {
     static HOOK_SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     HOOK_SPAWN_LOCK
@@ -191,8 +191,9 @@ pub fn resolve_hooked_preservation(
 /// Collapses the diagnostics write-end onto [`PLURAL_DIAG_FD`]
 /// child-side (parent fd 3 may be live) so `--preserve-fds=1`
 /// forwards exactly `{0,1,2,3}`. Runs in the spawn pre-exec
-/// hook; the pre-spawn assertion proved nothing else
-/// inheritable. Only async-signal-safe calls (dup2, close).
+/// hook; dup+N mechanics (not a table census) bound the
+/// forwarded set to `{0,1,2,3}`. Only async-signal-safe
+/// calls (dup2, close).
 pub fn dup_plural_diag(diag: RawFd) -> std::io::Result<()> {
     if diag != PLURAL_DIAG_FD {
         nix::unistd::dup2(diag, PLURAL_DIAG_FD).map_err(std::io::Error::from)?;
