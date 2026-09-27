@@ -156,24 +156,50 @@ jobs:
         run: sudo dmesg 2>/dev/null | tail -40 || echo "(dmesg unavailable)"
 
       - name: Spike strace one failing test
-        # QA-DIAG (temporary): process/dup/exec trace of a single
-        # cat_loopback run; shows the execve errno or the exit path.
+        # QA-DIAG (temporary): guest-identity prelude (ldd, file,
+        # smoke exit codes — names what /bin/sleep and /bin/cat
+        # actually are on this image) plus process/dup/exec trace
+        # with the FULL guest section (argv completeness, loader
+        # behavior, exit path — no truncation).
         # Runs when inputs.spike-exec is true, even if tests failed
         # (always() — the trace is most needed exactly then).
         if: always() && inputs.spike-exec
         run: |
           set -eu
           command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
+          echo "--- guest identity ---"
+          readlink -f /bin/sleep /bin/cat
+          file /bin/sleep /bin/cat || true
+          ldd /bin/sleep 2>&1 | head -8 || true
+          /bin/sleep 0.05; echo "sleep-smoke-exit=$?"
+          echo "/bin/true" | /bin/cat; echo "cat-smoke-exit=$?"
           cargo test --release --locked --test unit --no-run 2>&1 | tail -1
           BIN="$(ls -t target/release/deps/unit-* | grep -vE '\.(d|rlib|rmeta)$' | head -1)"
           echo "tracing: $BIN"
           strace -f -e trace=process,dup,dup2,fcntl,close,close_range,execve,open,openat,read,write,exit_group -o /tmp/strace-cat.log "$BIN" protocol::slow_guest_times_out_and_reaps --exact --nocapture || true
-          echo "--- guest execve plus following 40 lines ---"
-          grep -n 'execve("/proc' /tmp/strace-cat.log | head -3 || true
-          for ln in $(grep -n 'execve("/proc' /tmp/strace-cat.log | cut -d: -f1 | head -3); do
-            echo "=== context from line $ln ===";
-            sed -n "${ln},$((ln + 40))p" /tmp/strace-cat.log;
-          done
+          echo "--- full guest section ---"
+          python3 - <<'PYEOF'
+          import re
+          txt = open('/tmp/strace-cat.log', errors='replace').read()
+          lines = txt.split('\n')
+          start = None
+          gpid = None
+          for i, ln in enumerate(lines):
+              m = re.match(r'(\d+)\s+execve\("/proc/self/fd/\d+"', ln)
+              if m:
+                  start = i
+                  gpid = m.group(1)
+                  print(f"guest pid={gpid}: {ln.strip()[:160]}")
+                  break
+          if start is not None:
+              shown = 0
+              for ln in lines[start+1:]:
+                  if re.match(rf'{gpid}\s', ln):
+                      print(ln.strip()[:220])
+                      shown += 1
+                      if shown >= 120:
+                          break
+          PYEOF
 
       - name: Spike fork-pattern death count
         # QA-DIAG (temporary): 2000x plain fork+exec vs exact
