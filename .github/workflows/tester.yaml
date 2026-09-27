@@ -5,7 +5,16 @@ on:
     branches: ['*']
   push:
     branches: ['master', 'release-*']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      # QA-DIAG (temporary): substring filter appended to the nextest
+      # invocation for scoped diagnostic reruns (e.g. `protocol::`).
+      # Empty (default) runs the full suite unchanged.
+      test-filter:
+        description: 'Nextest test-name filter (empty = full suite)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
 
@@ -130,4 +139,10 @@ jobs:
         # signal in the arm live-tier failure it was tried against.
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast ${{ inputs.test-filter }}
+
+      - name: Kernel ring tail
+        # QA-DIAG (temporary): OOM-killer and segfault lines for the
+        # guest-early-death diagnosis. Best effort, always runs.
+        if: always()
+        run: sudo dmesg 2>/dev/null | tail -40 || echo "(dmesg unavailable)"

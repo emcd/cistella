@@ -410,11 +410,15 @@ fn blocked_write_cleanup_kills_and_reaps() {
                 // QA-DIAG (temporary quartet diagnosis): guest liveness
                 // at the break point.
                 eprintln!(
-                    "QA-DIAG blocked_write: wall={:?} pid={pid} kill0={:?} st={} cmd={} iterations={iterations} err={e}",
+                    "QA-DIAG blocked_write: wall={:?} pid={pid} kill0={:?} st={} cmd={} reap={:?} iterations={iterations} err={e}",
                     std::time::SystemTime::now(),
                     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None),
                     qa_diag_state(pid).0,
                     qa_diag_state(pid).1,
+                    nix::sys::wait::waitpid(
+                        nix::unistd::Pid::from_raw(pid as i32),
+                        Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+                    ),
                 );
                 break;
             }
@@ -642,12 +646,16 @@ fn concurrent_guests_coexist() {
         let result = host.exchange_mut().request("probe", json!({"n": 1}), FAST);
         if let Err(error) = &result {
             eprintln!(
-                "QA-DIAG concurrent_guests[{index}]: wall={:?} pid={} kill0={:?} st={} cmd={} err={error}",
+                "QA-DIAG concurrent_guests[{index}]: wall={:?} pid={} kill0={:?} st={} cmd={} reap={:?} err={error}",
                 std::time::SystemTime::now(),
                 guest_pids[index],
                 nix::sys::signal::kill(nix::unistd::Pid::from_raw(guest_pids[index] as i32), None),
                 qa_diag_state(guest_pids[index]).0,
                 qa_diag_state(guest_pids[index]).1,
+                nix::sys::wait::waitpid(
+                    nix::unistd::Pid::from_raw(guest_pids[index] as i32),
+                    Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+                ),
             );
         }
         let payload = result.unwrap();
@@ -770,11 +778,15 @@ fn cat_loopback_negotiates_and_round_trips() {
     let result = host.exchange_mut().request("probe", json!({"n": 1}), FAST);
     if let Err(error) = &result {
         eprintln!(
-            "QA-DIAG cat_loopback: wall={:?} pid={loopback_pid} kill0={:?} st={} cmd={} err={error}",
+            "QA-DIAG cat_loopback: wall={:?} pid={loopback_pid} kill0={:?} st={} cmd={} reap={:?} err={error}",
             std::time::SystemTime::now(),
             nix::sys::signal::kill(nix::unistd::Pid::from_raw(loopback_pid as i32), None),
             qa_diag_state(loopback_pid).0,
             qa_diag_state(loopback_pid).1,
+            nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(loopback_pid as i32),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            ),
         );
     }
     let payload = result.unwrap();
@@ -798,11 +810,15 @@ fn slow_guest_times_out_and_reaps() {
     // QA-DIAG (temporary quartet diagnosis): guest liveness alongside
     // the (now rendered) error text.
     eprintln!(
-        "QA-DIAG slow_guest: wall={:?} pid={pid} kill0={:?} st={} cmd={} err={error}",
+        "QA-DIAG slow_guest: wall={:?} pid={pid} kill0={:?} st={} cmd={} reap={:?} err={error}",
         std::time::SystemTime::now(),
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None),
         qa_diag_state(pid).0,
         qa_diag_state(pid).1,
+        nix::sys::wait::waitpid(
+            nix::unistd::Pid::from_raw(pid as i32),
+            Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+        ),
     );
     let text = error.to_string();
     assert!(
