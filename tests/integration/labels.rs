@@ -120,16 +120,34 @@ fn command_label_edge_round_trip_live() {
 
     // The harness ran verbatim: the probe file has the exact bytes,
     // including literal `%h`/`%%` (no systemd expansion in argv).
-    let out = run_cistella(&home, &["enter", &id, "--", "cat", "/tmp/edge_probe"]);
-    assert!(
-        out.status.success(),
-        "enter cat: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        "a=b c'd 100% %h %%"
-    );
+    // Gate on the marker CONTENT, not the process and not the
+    // pathname: the process is visible as soon as spawn
+    // succeeds, and `test -f` fires when the shell OPENS the
+    // redirection target — a loaded runner can pause the
+    // shell before the bytes land either way. Poll the read
+    // itself to a bounded deadline, requiring success plus
+    // the exact bytes; the successful probe doubles as the
+    // byte-exact assertion, so no extra racy read follows.
+    // (The process gate stays: harness visibility is the
+    // execution-binding signal.) With `-t` the pty merges
+    // errors into stdout, so render both streams on failure.
+    wait_harness(&container, "edge_probe");
+    let expected = "a=b c'd 100% %h %%";
+    let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let out = run_cistella(&home, &["enter", &id, "--", "cat", "/tmp/edge_probe"]);
+        if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == expected {
+            break;
+        }
+        if std::time::Instant::now() > ready_by {
+            panic!(
+                "probe content never matched: stdout={} stderr={}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 
     let out = run_cistella(&home, &["terminate", &id]);
     assert!(out.status.success());

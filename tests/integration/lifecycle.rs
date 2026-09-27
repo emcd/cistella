@@ -730,13 +730,22 @@ fn environment_acceptances_absent_refuses_residue_free() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 
+    // Isolate the child conduct's temp root BEFORE snapshotting
+    // (see `child_tmp_root`): per-child attribution for
+    // pre-lock rendezvous residue. With ours redirected,
+    // shared-root `cistella-rdv-*` entries are foreign by
+    // construction.
+    let child_tmp = child_tmp_root();
     // Serialize against concurrent live conducts: while the
     // creation-window lock is held here, no other conduct can create
     // units, scratch, or containers, so the before/after diff is exact.
     // The refusal path never reaches lock acquisition, so no self-deadlock.
     let _creation = cistella::lock::LockGuard::acquire().expect("creation lock");
     let units_before = cistella_unit_names(&home);
-    let scratch_before = cistella_scratch_names();
+    let scratch_before = cistella_scratch_names()
+        .into_iter()
+        .filter(|name| !is_foreign_scratch(name))
+        .collect::<Vec<_>>();
 
     let prev = std::env::var("CISTELLA_LIVE_REFUSE").ok();
     unsafe { std::env::remove_var("CISTELLA_LIVE_REFUSE") };
@@ -770,6 +779,7 @@ fn environment_acceptances_absent_refuses_residue_free() {
         ])
         .env("HOME", &home)
         .env("TERM", "xterm-ghostty")
+        .env("TMPDIR", child_tmp.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -821,12 +831,51 @@ fn environment_acceptances_absent_refuses_residue_free() {
         !String::from_utf8_lossy(&stdout).contains("conduct "),
         "refusal precedes session announce"
     );
-    assert_eq!(cistella_unit_names(&home), units_before, "no unit residue");
-    assert_eq!(
-        cistella_scratch_names(),
-        scratch_before,
-        "no scratch residue"
+    // Residue means OUR probe added state: assert no additions
+    // rather than exact equality. A concurrent live test's
+    // teardown may remove its own pre-existing unit inside
+    // this window (teardown is not creation-locked); that
+    // vanishing is its business, not our residue — but render
+    // both directions so a failure names names.
+    let units_now = cistella_unit_names(&home);
+    let units_added: Vec<_> = units_now
+        .iter()
+        .filter(|unit| !units_before.contains(unit))
+        .collect();
+    let units_vanished: Vec<_> = units_before
+        .iter()
+        .filter(|unit| !units_now.contains(unit))
+        .collect();
+    if !units_vanished.is_empty() {
+        eprintln!(
+            "note: concurrent teardown removed units during the refusal probe: {units_vanished:?}"
+        );
+    }
+    assert!(
+        units_added.is_empty(),
+        "refused conduct added units: {units_added:?}"
     );
+    // Foreign scratch (wire-test rendezvous, not conduct
+    // products) is scoped out of both snapshots: the lock
+    // excludes concurrent conducts, so any other addition
+    // is our residue.
+    let scratch_now = cistella_scratch_names()
+        .into_iter()
+        .filter(|name| !is_foreign_scratch(name))
+        .collect::<Vec<_>>();
+    let scratch_added: Vec<_> = scratch_now
+        .iter()
+        .filter(|scratch| !scratch_before.contains(scratch))
+        .collect();
+    assert!(
+        scratch_added.is_empty(),
+        "refused conduct added scratch: {scratch_added:?}"
+    );
+    // Per-child attribution for the pre-lock rendezvous:
+    // the refused conduct must leave its isolated temp root
+    // empty — any entry is stranded guest-hosting residue
+    // from a refusal sunk below hosting.
+    assert_child_tmp_empty(&child_tmp);
 }
 
 #[ignore = "live: requires systemd user manager and podman"]

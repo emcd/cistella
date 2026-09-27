@@ -350,9 +350,13 @@ fn fd_holder_survival_reports_residue() {
 
 #[test]
 fn blocked_write_cleanup_kills_and_reaps() {
+    // The guest must outlive the worst-case fill (256
+    // iterations of a 100ms-deadline send is 25.6s before
+    // scheduling delays): a guest that exits mid-fill turns
+    // later sends into EPIPE, masquerading as fill behavior.
     let mut host = GuestHost::spawn(
         Path::new("/bin/sleep"),
-        &["30".to_string()],
+        &["300".to_string()],
         Deadlines::default(),
     )
     .unwrap();
@@ -360,7 +364,10 @@ fn blocked_write_cleanup_kills_and_reaps() {
     // Fill the never-read stdin until the send itself times out.
     let payload = json!({"pad": "x".repeat(63 * 1024)});
     let mut write_timed_out = false;
+    let mut break_error: Option<String> = None;
+    let mut iterations = 0u64;
     for n in 0..256u64 {
+        iterations = n;
         let envelope = Envelope {
             protocol: PROTOCOL_MAJOR,
             id: format!("req-{n}"),
@@ -373,11 +380,17 @@ fn blocked_write_cleanup_kills_and_reaps() {
                 write_timed_out = true;
                 break;
             }
-            Err(_) => break,
+            Err(e) => {
+                break_error = Some(e.to_string());
+                break;
+            }
             Ok(_) => continue,
         }
     }
-    assert!(write_timed_out, "full pipe must time out the send");
+    assert!(
+        write_timed_out,
+        "full pipe must time out the send (iterations={iterations}, break_error={break_error:?})"
+    );
     host.shutdown().unwrap();
     let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
     assert!(gone.is_err());
@@ -729,7 +742,11 @@ fn slow_guest_times_out_and_reaps() {
         .exchange_mut()
         .request("probe", json!({}), Duration::from_millis(300))
         .unwrap_err();
-    assert!(error.to_string().contains("timed out"));
+    let text = error.to_string();
+    assert!(
+        text.contains("timed out"),
+        "slow guest must time out, got: {text}"
+    );
     host.shutdown().unwrap();
     // Reaped: signalling the pid fails with ESRCH.
     let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);

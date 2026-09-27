@@ -132,6 +132,46 @@ pub fn scratch_gone(id: &str) -> bool {
     scratch_paths(id).iter().all(|p| !p.exists())
 }
 
+/// Isolates one child conduct's temp root: production
+/// conduct builds `cistella-rdv-{id}` under
+/// `std::env::temp_dir()` ahead of the creation lock, so a
+/// test asserting pre-mutation refusal passes `TMPDIR`
+/// pointing here and asserts emptiness after — per-child
+/// attribution for pre-lock residue that a shared-root
+/// snapshot cannot give.
+pub fn child_tmp_root() -> tempfile::TempDir {
+    tempfile::TempDir::new().expect("child temp root")
+}
+
+/// Asserts the isolated child temp root holds no entries:
+/// any leftover is stranded guest-hosting residue from a
+/// refusal sunk below hosting. Names leftovers on failure.
+pub fn assert_child_tmp_empty(root: &tempfile::TempDir) {
+    let leftovers: Vec<_> = std::fs::read_dir(root.path())
+        .expect("child temp root readable")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "refused conduct stranded temp entries: {leftovers:?}"
+    );
+}
+
+/// Shared-root scratch names that are never the isolated
+/// child's products: with its temp root redirected above,
+/// any `cistella-rdv-*` left in the shared root is a
+/// concurrent seat actor's wire-test rendezvous. Callers
+/// scope these out of both snapshots; the creation lock
+/// excludes concurrent conducts, so any other addition is
+/// the probe's own residue.
+pub fn is_foreign_scratch(name: &str) -> bool {
+    name.starts_with("cistella-rdv-")
+}
+
 /// Guard removes the session even when an assertion fails.
 pub struct Guard {
     pub id: Option<String>,
