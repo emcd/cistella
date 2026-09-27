@@ -508,15 +508,22 @@ fn signalled_harness_relays_signal() {
     let mut lines = stdout.lines();
     let attested: serde_json::Value =
         serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    // Render the whole attestation on failure: its error
+    // field names the fail_apply site, which the next
+    // intermittent arm failure will need (applied:false
+    // after a SIGTERM death is contradictory through
+    // documented paths — only the site tells why).
     assert_eq!(
         attested.get("applied"),
-        Some(&serde_json::Value::Bool(true))
+        Some(&serde_json::Value::Bool(true)),
+        "apply attestation must report applied (attestation: {attested}, stdout: {stdout:?})"
     );
     let transitioned: serde_json::Value =
         serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
     assert_eq!(
         transitioned.get("transitioned"),
-        Some(&serde_json::Value::Bool(true))
+        Some(&serde_json::Value::Bool(true)),
+        "transition attestation must report transitioned (stdout: {stdout:?})"
     );
 }
 
