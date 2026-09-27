@@ -554,20 +554,26 @@ pub fn confinement_roots(
 ///   entry: dogfood demotes it only on evidence.
 /// - ancestor guest routes as read-execute; subtree guest routes
 ///   as full rights (the union exception).
-/// - other session mounts outside the ancestor domain, granted by
-///   profile mode (read-execute for read-only, full for
-///   read-write): the per-session scratch stays writable (2.2
-///   behavior), read-only data stays readable. Directory sources
-///   only — file mounts (sockets) cannot root a `path_beneath`
-///   rule and are skipped (unix-socket connect semantics under
-///   confinement are a dogfood risk, surfaced at use, never
-///   silently unconfined).
-/// - Sibling-domain triples (host source under the ancestor) grant
-///   nothing here: default-deny already covers their targets, and
-///   task 3.3 names unaccounted aliases with an explicit refusal.
+/// - RW carveouts: every read-write triple whose host source lies
+///   strictly under the ancestor (project subtree, declared
+///   submounts such as state dirs or per-project grafts under
+///   shared read-only trees) grants full rights on its guest
+///   target. The ancestor bind itself is never a carveout (it
+///   equals, not undercuts, the ancestor).
+/// - RO readability: every read-only triple whose target lies
+///   outside all routes grants read-execute (declared content
+///   must stay readable; default-deny would brick it). Targets
+///   under routes stay covered by the ancestor rule, which
+///   denies. Profile declarations are authoritative intent
+///   (operator/seat-owned); Landlock enforces them, it does not
+///   second-guess them. Proven files skip (sockets cannot root a
+///   `path_beneath` rule); not-yet-existing paths grant by mode
+///   (a wrong-kind materialization fails loudly at apply).
 /// - `/tmp`, `$HOME` (container-private tmpfs), and `/dev/null`
 ///   writes stay denied (outlets: `/tmp/scratch`): dogfood
 ///   promotes only on evidence.
+///   Entries deduplicate (first occurrence wins); harness argv
+///   appends verbatim after `--`.
 ///
 /// # Errors
 ///
@@ -603,21 +609,35 @@ pub fn compose_hook_argv(
     // System baseline first (fixed position, deterministic).
     argv.push("--allow-ro=/".to_string());
     argv.push("--allow-rw=/dev".to_string());
+    // Exact-duplicate flags collapse (first occurrence wins);
+    // nested overlaps stay (union semantics need both the
+    // ancestor read-execute and the carveout full rights).
+    let mut push_unique = |flag: String| {
+        if !argv.contains(&flag) {
+            argv.push(flag);
+        }
+    };
     for route in &ancestor_routes {
-        argv.push(format!("--allow-ro={route}"));
+        push_unique(format!("--allow-ro={route}"));
     }
     for route in &subtree_routes {
-        argv.push(format!("--allow-rw={route}"));
+        push_unique(format!("--allow-rw={route}"));
     }
-    // Session mounts outside the ancestor domain, granted by
-    // profile mode. Host-side directory check: file sources skip
-    // (documented above).
+    // Declared mounts, granted by declared mode (operator-owned
+    // intent; Landlock enforces, never second-guesses). Only
+    // proven files skip: a file cannot root a `path_beneath`
+    // rule, and sockets surface at use (documented above).
+    // Not-yet-existing paths grant by mode (fail-closed: a
+    // wrong-kind materialization fails loudly at apply, never
+    // silently unconfined).
     let ancestor_canon = crate::mount::canonicalize_host_source(&ancestor_host.to_string_lossy());
     for triple in triples {
         let source = crate::mount::canonicalize_host_source(&triple.host_source);
-        if source.starts_with(&ancestor_canon) {
+        if source.is_file() {
             continue;
         }
+        let under_ancestor = source.starts_with(&ancestor_canon) && source != ancestor_canon;
+        let outside_ancestor = !source.starts_with(&ancestor_canon);
         let covered = ancestor_routes
             .iter()
             .chain(subtree_routes.iter())
@@ -625,15 +645,22 @@ pub fn compose_hook_argv(
                 triple.container_target == *route
                     || triple.container_target.starts_with(&format!("{route}/"))
             });
-        if covered {
-            continue;
-        }
-        if !source.is_dir() {
-            continue;
-        }
         match triple.mode {
-            MountMode::Ro => argv.push(format!("--allow-ro={}", triple.container_target)),
-            MountMode::Rw => argv.push(format!("--allow-rw={}", triple.container_target)),
+            // Read-write carveouts: under-ancestor submounts
+            // (project tree, state dirs, per-project grafts) and
+            // uncovered outside mounts (scratch) alike.
+            MountMode::Rw if under_ancestor || (outside_ancestor && !covered) => {
+                push_unique(format!("--allow-rw={}", triple.container_target));
+            }
+            // Read-only readability: uncovered outside mounts,
+            // plus under-ancestor mounts whose targets lie
+            // outside every route (declared content must stay
+            // readable; default-deny would brick it). Targets
+            // under routes stay covered by the ancestor rule.
+            MountMode::Ro if !covered => {
+                push_unique(format!("--allow-ro={}", triple.container_target));
+            }
+            _ => {}
         }
     }
     argv.push("--".to_string());

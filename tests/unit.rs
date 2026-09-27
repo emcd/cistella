@@ -31,6 +31,8 @@ mod mount;
 mod policy_prepare;
 #[path = "unit/prepare.rs"]
 mod prepare;
+#[path = "unit/prepare_hooks.rs"]
+mod prepare_hooks;
 #[path = "unit/profile_resolution.rs"]
 mod profile_resolution;
 #[path = "unit/protocol.rs"]

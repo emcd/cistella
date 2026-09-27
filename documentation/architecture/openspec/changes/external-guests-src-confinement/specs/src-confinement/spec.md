@@ -17,8 +17,9 @@ Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct S
 - **THEN** the write fails with `EACCES` on that guest path
 
 #### Scenario: Unaccounted alias refuses pre-create
-- **WHEN** a profile carries a symlinked ancestor or second bind mount into a sibling that the topology validation does not account for
+- **WHEN** a profile carries paths the topology cannot translate into guest routes (unresolvable host sources, undescribable shapes)
 - **THEN** conduct refuses pre-create with a typed error; no session starts partially confined
+- Declared mounts that DO translate grant by declared mode (operator direction: declarations are authoritative intent, including read-write carveouts under read-only trees); only the undescribable refuses
 
 #### Scenario: Same-path pre/post restriction control
 - **WHEN** the suite writes a marker to the guest-visible sibling path with the same uid/mount mode before restrictions apply, cleans the marker, applies Landlock, and repeats the identical write
