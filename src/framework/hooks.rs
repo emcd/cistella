@@ -251,6 +251,30 @@ pub fn hook_full_routes(
     full_grant_routes(hooks, triples, &ancestor_host, &subtree_host)
 }
 
+/// Same-tree graft-alias refusal pre-create (tier-2
+/// dentry-alias guard): home confinement roots plus
+/// `graft_alias_preflight`. A read-write graft of
+/// ancestor-tree content outside the subtree would admit
+/// writes through every alias at the dentry layer — refuse
+/// with the triple named before any revision or unit. Runs
+/// pre-create; hooked sessions only.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on missing `HOME` and
+/// `CistellaError::Contract` on roots/alias refusal.
+pub fn hook_graft_alias_preflight(
+    triples: &[crate::mount::MountTriple],
+    directory: &str,
+) -> crate::error::Result<()> {
+    use crate::framework::prepare::confinement_roots;
+    use crate::mount::graft_alias_preflight;
+    let home = std::env::var("HOME")
+        .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
+    let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
+    graft_alias_preflight(triples, &ancestor_host, &subtree_host)
+}
+
 /// Creates the diagnostics pipe post-host (a pre-host pipe would
 /// leak into the guest's inherited fds and defeat EOF).
 ///

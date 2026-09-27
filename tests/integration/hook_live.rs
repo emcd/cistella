@@ -71,12 +71,17 @@ impl Drop for HookUnitGuard {
 }
 
 /// Hooked fixture: ancestor tree `T` mounted broad-RW at `/src`,
-/// project subtree `T/proj`, sibling `T/sib`, staged wrapper RO.
+/// project subtree `T/proj`, sibling `T/sib` (never grafted —
+/// the denial path must carry no RW alias), graft content from
+/// a DISJOINT tempdir `G` at `/src/graft` (same-source grafts
+/// would alias `T/sib` at the dentry layer and admit through
+/// it), staged wrapper RO.
 /// Declaration order is the unwind order (reversed): name guard
 /// older, client guard newer.
 struct HookFixture {
     _rendezvous: TempDir,
     _tree: TempDir,
+    _graft_src: TempDir,
     _staged: cistella::framework::registry::StagedHook,
     client: Option<WireClient>,
     key: ReconciliationKey,
@@ -84,6 +89,7 @@ struct HookFixture {
     container: String,
     triples: Vec<MountTriple>,
     proj: PathBuf,
+    graft_src: PathBuf,
     #[allow(dead_code)]
     guard: HookUnitGuard,
 }
@@ -94,6 +100,20 @@ fn hook_fixture(image: &str) -> HookFixture {
     let proj = tree.path().join("proj");
     std::fs::create_dir_all(&proj).expect("proj dir");
     std::fs::create_dir_all(tree.path().join("sib")).expect("sib dir");
+    // Graft content lives OUTSIDE the bound tree (disjoint
+    // dentries): grafting `T/sib` itself would alias it at the
+    // dentry layer — Landlock is mount-agnostic, so the graft
+    // FULL would admit writes through `/src/sib` and the
+    // denial run would (correctly, per declarations) succeed.
+    let graft_src = TempDir::new().expect("graft tempdir");
+    let graft_dir = graft_src.path().join("data");
+    std::fs::create_dir_all(&graft_dir).expect("graft data dir");
+    // Mountpoint placeholder for the inside-tree graft target:
+    // production nested_ro_preflight requires the chain to
+    // pre-exist in the RO ancestor source (Podman overmounts
+    // the real content onto it). Real operators mkdir the same
+    // placeholder; the fixture mirrors the contract.
+    std::fs::create_dir_all(tree.path().join("graft")).expect("graft placeholder");
     // Declared-RO directory under the FULL subtree (tier-2
     // RO-under-RW alias pin): must exist on host (preflight
     // shape) so the revision retention is what denies writes.
@@ -152,11 +172,15 @@ fn hook_fixture(image: &str) -> HookFixture {
             container_target: "/src/proj/ro-data".to_string(),
             mode: MountMode::Ro,
         },
-        // Declared-RW graft of the sibling (tier-2 graft
+        // Declared-RW graft of disjoint content (tier-2 graft
         // admission pin): composes into a FULL carveout by
-        // declared intent.
+        // declared intent. The source MUST sit outside the
+        // bound tree — grafting `T/sib` itself would dentry-alias
+        // it and admit writes through `/src/sib` (Landlock is
+        // mount-agnostic; the product refuses such topologies
+        // pre-create, see graft_alias_preflight).
         MountTriple {
-            host_source: tree.path().join("sib").to_string_lossy().to_string(),
+            host_source: graft_dir.to_string_lossy().to_string(),
             container_target: "/src/graft".to_string(),
             mode: MountMode::Rw,
         },
@@ -194,6 +218,7 @@ fn hook_fixture(image: &str) -> HookFixture {
     HookFixture {
         _rendezvous: rendezvous,
         _tree: tree,
+        _graft_src: graft_src,
         _staged: staged,
         client: Some(client),
         key,
@@ -201,6 +226,7 @@ fn hook_fixture(image: &str) -> HookFixture {
         container,
         triples,
         proj,
+        graft_src: graft_dir,
         guard,
     }
 }
@@ -265,7 +291,12 @@ fn hook_probe_reports_matrix_in_container() {
 }
 
 /// Hooked launch attests applied and confines: admitted write
-/// succeeds, sibling write fails, both under one attestation.
+/// succeeds, unaliased sibling write fails, disjoint graft
+/// admits, retained-RO alias denies — all under attestation.
+/// The sibling denial path carries no RW alias anywhere (no
+/// graft of its source): any FULL alias would admit through
+/// it at the dentry layer, so the fixture keeps them disjoint
+/// and the product refuses aliased topologies pre-create.
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn hook_hooked_launch_attests_and_confines() {
@@ -304,7 +335,9 @@ fn hook_hooked_launch_attests_and_confines() {
             .as_str(),
         "ok\n"
     );
-    // Denied harness: sibling write fails, attestation still applied.
+    // Denied harness: unaliased sibling write fails (no RW
+    // alias on its dentries anywhere — the graft source is
+    // disjoint), attestation still applied.
     let outcome = run_harness(
         &fixture,
         &[
@@ -327,7 +360,7 @@ fn hook_hooked_launch_attests_and_confines() {
         "denied file must not exist"
     );
     // Graft admission (tier-2 declared-RW graft proof): the
-    // sibling content grafted RW at `/src/graft` admits writes
+    // disjoint content grafted RW at `/src/graft` admits writes
     // by declared intent.
     let outcome = run_harness(
         &fixture,
@@ -342,10 +375,21 @@ fn hook_hooked_launch_attests_and_confines() {
         "graft harness must exit 0, got {outcome:?}"
     );
     assert_eq!(
-        std::fs::read_to_string(fixture.proj.parent().expect("tree").join("sib/marker"))
+        std::fs::read_to_string(fixture.graft_src.join("marker"))
             .expect("graft marker readable")
             .as_str(),
         "graft\n"
+    );
+    // The graft must not leak into the tree: disjoint dentries
+    // mean no alias admits elsewhere.
+    assert!(
+        !fixture
+            .proj
+            .parent()
+            .expect("tree")
+            .join("sib/marker")
+            .exists(),
+        "graft marker must not appear in the tree"
     );
     // RO-under-RW alias denial (tier-2 retention proof): the
     // declared-RO directory under the FULL subtree denies

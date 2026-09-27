@@ -461,6 +461,12 @@ fn conduct_session(
     let revised: Vec<MountTriple> = if evaluated.merged.guest_hooks.is_empty() {
         triples.clone()
     } else {
+        // Same-tree graft-alias refusal first: a read-write
+        // graft of ancestor-tree content outside the subtree
+        // would dentry-alias RO-covered content (Landlock is
+        // mount-agnostic) — contradictory declarations refuse
+        // before revision, validation, or unit.
+        cistella::framework::hooks::hook_graft_alias_preflight(&triples, &directory)?;
         let full_routes = cistella::framework::hooks::hook_full_routes(
             &evaluated.merged.guest_hooks,
             &triples,

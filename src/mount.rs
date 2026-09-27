@@ -680,6 +680,62 @@ pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
     Ok(())
 }
 
+/// Refuses same-tree read-write grafts outside the subtree
+/// pre-create (dentry-alias guard): a directory RW triple whose
+/// canonical host source lies strictly under the ancestor
+/// source but outside the subtree source aliases RO-covered
+/// content — Landlock rules are dentry-based and
+/// mount-agnostic, so the graft's FULL carveout admits writes
+/// through every alias of that content (proven live: grafting
+/// the denied sibling's own source admitted writes through
+/// the sibling path). Such topologies refuse with the triple
+/// named: move the grafted content outside the tree (disjoint
+/// dentries, e.g. `/opt/state`) or inside the subtree
+/// (already FULL). Path-based over the declared topology:
+/// adversarial bind-mount aliases sharing dentries under
+/// different paths evade this check — dev+ino hardening rides
+/// task 3.3. Hooked sessions only (plain Podman binds enforce
+/// per-mount with no dentry union); runs pre-create, so a
+/// refusal leaves no residue.
+///
+/// Only directories refuse: file triples carry no Landlock
+/// rules (compose skips them; uncovered files deny by
+/// default) and stay Podman-enforced, sockets ride the
+/// credential surface. Only RW refuses: RO grafts union safely
+/// under the ancestor rule. The ancestor binding itself
+/// (source equal) and subtree content (source at/under
+/// subtree) are exempt — both FULL by their own rules.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on the first aliasing graft.
+pub fn graft_alias_preflight(
+    triples: &[MountTriple],
+    ancestor_host: &std::path::Path,
+    subtree_host: &std::path::Path,
+) -> Result<()> {
+    let ancestor_canon = canonicalize_host_source(&ancestor_host.to_string_lossy());
+    let subtree_canon = canonicalize_host_source(&subtree_host.to_string_lossy());
+    for triple in triples {
+        if triple.mode != MountMode::Rw {
+            continue;
+        }
+        if !std::path::Path::new(&triple.host_source).is_dir() {
+            continue;
+        }
+        let source = canonicalize_host_source(&triple.host_source);
+        let under_ancestor = source.starts_with(&ancestor_canon) && source != ancestor_canon;
+        let outside_subtree = !source.starts_with(&subtree_canon);
+        if under_ancestor && outside_subtree {
+            return Err(CistellaError::Mount(format!(
+                "read-write graft {} aliases read-only ancestor content: move it outside the tree or inside the subtree",
+                triple.container_target
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Revises read-only directory mounts to read-write for the
 /// isolator when hook confinement stages (task 3.2, operator
 /// direction): the declared-RO `~/src` ancestor (and any other

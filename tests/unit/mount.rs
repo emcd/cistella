@@ -728,3 +728,72 @@ fn ro_confinement_preflight_collides_alias_spellings() {
         "got: {error}"
     );
 }
+
+#[test]
+fn graft_alias_preflight_refuses_same_tree_rw_graft() {
+    use cistella::mount::{MountMode, MountTriple, graft_alias_preflight};
+    use std::path::Path;
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(tree.path().join("proj/extra")).expect("extra");
+    std::fs::create_dir_all(tree.path().join("sib")).expect("sib");
+    let outside = tempfile::tempdir().expect("outside");
+    let host = tree.path().to_string_lossy().to_string();
+    let ancestor = Path::new(&host);
+    let subtree = &tree.path().join("proj");
+    let aliasing = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/sib"),
+            container_target: "/src/graft".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    // Same-tree RW graft outside the subtree: the graft FULL
+    // would dentry-alias RO-covered content — refuse naming
+    // the graft target.
+    let error = graft_alias_preflight(&aliasing, ancestor, subtree).unwrap_err();
+    assert!(error.to_string().contains("/src/graft"), "got: {error}");
+    // Disjoint graft (outside the tree): disjoint dentries, no
+    // alias — passes.
+    let disjoint = vec![
+        aliasing[0].clone(),
+        MountTriple {
+            host_source: outside.path().to_string_lossy().to_string(),
+            container_target: "/src/graft".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    graft_alias_preflight(&disjoint, ancestor, subtree).expect("disjoint graft passes");
+    // Subtree content RW (already FULL): no new writability —
+    // passes. Ancestor RW itself (own FULL route): passes. RO
+    // same-tree graft (union-safe): passes. Not-yet-existing
+    // source (no dentry to alias): skips.
+    let benign = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/proj/extra"),
+            container_target: "/src/proj/extra".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/sib"),
+            container_target: "/src/ro-graft".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/missing"),
+            container_target: "/src/missing".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    graft_alias_preflight(&benign, ancestor, subtree).expect("benign shapes pass");
+}
