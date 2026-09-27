@@ -15,6 +15,14 @@ on:
         required: false
         default: ''
         type: string
+      # QA-DIAG (temporary): run the 26.04 exec-death spike steps
+      # (strace one failing test + fork-pattern death count) after
+      # the suite. Default off; enable per-dispatch for diagnosis.
+      spike-exec:
+        description: 'Run 26.04 exec-death spike steps after tests'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
 
@@ -146,3 +154,95 @@ jobs:
         # guest-early-death diagnosis. Best effort, always runs.
         if: always()
         run: sudo dmesg 2>/dev/null | tail -40 || echo "(dmesg unavailable)"
+
+      - name: Spike strace one failing test
+        # QA-DIAG (temporary): process/dup/exec trace of a single
+        # cat_loopback run; shows the execve errno or the exit path.
+        # Runs only when inputs.spike-exec is true.
+        if: inputs.spike-exec
+        run: |
+          set -eu
+          command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
+          cargo test --release --locked --test unit --no-run 2>&1 | tail -1
+          BIN="$(ls -t target/release/deps/unit-* | grep -vE '\.(d|rlib|rmeta)$' | head -1)"
+          echo "tracing: $BIN"
+          strace -f -e trace=process,dup,dup2,fcntl,close,close_range,execve -o /tmp/strace-cat.log "$BIN" protocol::cat_loopback_negotiates_and_round_trips --exact --nocapture || true
+          echo "--- execve/exit lines ---"
+          grep -E "execve|exit_group|+++ exited|--- SIG" /tmp/strace-cat.log | head -30 || true
+
+      - name: Spike fork-pattern death count
+        # QA-DIAG (temporary): 2000x plain fork+exec vs exact
+        # GuestHost pattern (O_RDONLY open, CLOEXEC-clear, setpgid,
+        # exec /proc/self/fd/N) with pipe stdio. (ii)-only deaths
+        # implicate our setup; both implicate kernel/image below;
+        # neither implicates the harness above.
+        # Runs only when inputs.spike-exec is true.
+        if: inputs.spike-exec
+        run: |
+          python3 - <<'PYEOF'
+          import fcntl, os, time
+          from collections import Counter
+          N = 2000
+          WINDOW = 0.025
+          def await_death(pid):
+              end = time.time() + WINDOW
+              while time.time() < end:
+                  done, status = os.waitpid(pid, os.WNOHANG)
+                  if done:
+                      return ('dead', os.waitstatus_to_exitcode(status))
+                  time.sleep(0.002)
+              os.kill(pid, 9)
+              _, status = os.waitpid(pid, 0)
+              return ('alive', os.waitstatus_to_exitcode(status))
+          def pipes():
+              r_in, w_in = os.pipe()
+              r_out, w_out = os.pipe()
+              r_err, w_err = os.pipe()
+              return (r_in, w_in, r_out, w_out, r_err, w_err)
+          def close_many(fds):
+              for fd in fds:
+                  try:
+                      os.close(fd)
+                  except OSError:
+                      pass
+          def trial_plain():
+              r_in, w_in, r_out, w_out, r_err, w_err = pipes()
+              pid = os.fork()
+              if pid == 0:
+                  try:
+                      os.dup2(r_in, 0)
+                      os.dup2(w_out, 1)
+                      os.dup2(w_err, 2)
+                      os.execv('/bin/cat', ['cat'])
+                  except Exception:
+                      os._exit(127)
+              close_many((r_in, w_out, w_err))
+              fate = await_death(pid)
+              close_many((w_in, r_out, r_err))
+              return fate
+          def trial_pattern():
+              r_in, w_in, r_out, w_out, r_err, w_err = pipes()
+              f = os.open('/bin/cat', os.O_RDONLY)
+              pid = os.fork()
+              if pid == 0:
+                  try:
+                      flags = fcntl.fcntl(f, fcntl.F_GETFD)
+                      fcntl.fcntl(f, fcntl.F_SETFD, flags & ~fcntl.FD_CLOEXEC)
+                      os.setpgid(0, 0)
+                      os.dup2(r_in, 0)
+                      os.dup2(w_out, 1)
+                      os.dup2(w_err, 2)
+                      os.execv(f'/proc/self/fd/{f}', ['cat'])
+                  except Exception:
+                      os._exit(127)
+              os.close(f)
+              close_many((r_in, w_out, w_err))
+              fate = await_death(pid)
+              close_many((w_in, r_out, r_err))
+              return fate
+          for name, fn in (('plain', trial_plain), ('pattern', trial_pattern)):
+              counts = Counter()
+              for _ in range(N):
+                  counts[fn()] += 1
+              print(f'{name}: {dict(counts)}', flush=True)
+          PYEOF
