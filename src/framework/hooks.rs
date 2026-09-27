@@ -270,6 +270,31 @@ pub fn hook_full_sets(
     })
 }
 
+/// Requires the declared hook set be nonempty: a selected
+/// Landlock extension that answers zero hooks (malformed,
+/// buggy, or replaced guest) must refuse pre-create rather
+/// than start a plain, unconfined session silently — the
+/// explicit selection is a guarantee, not a hint. More than
+/// one hook passes here (composition refuses non-singleton
+/// sets at launch-plan time, still pre-create). Undeclared
+/// profiles (no selection) always pass: nothing was promised.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on selected-but-empty.
+pub fn require_declared_hooks(
+    landlock_selected: bool,
+    hooks: &[crate::framework::contract::GuestHookRequest],
+) -> crate::error::Result<()> {
+    if landlock_selected && hooks.is_empty() {
+        return Err(crate::error::CistellaError::Contract(
+            "landlock extension selected but answered no hook: refusing unconfined plain fallback"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Same-tree graft-alias refusal pre-create (tier-2
 /// dentry-alias guard): home confinement roots plus
 /// `graft_alias_preflight`. A read-write graft of

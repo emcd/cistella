@@ -338,8 +338,9 @@ fn conduct_session(
     // admits the backend, the extensions list admits prepare
     // guests. Unknown names and duplicate extensions refuse
     // here, before any session/runtime mutation. No declared
-    // extensions means pure Podman behavior (2.x path — the
-    // Landlock guest never spawns, no hooks stage).
+    // extensions means pure Podman behavior (2.x path — no
+    // extension guest spawns and no hooks stage; the Podman
+    // isolator guest itself is still hosted as in 2.x).
     prof.resolve_isolator()?;
     let extensions = prof.resolve_extensions()?;
     let generic: Vec<(String, String)> = labels
@@ -437,8 +438,10 @@ fn conduct_session(
     // credential-surface mounts alike). Merged env/mounts fan into
     // the session plan below; requested hooks stage here (task
     // 3.2) and execute at launch. Undeclared: the empty plan —
-    // pure Podman behavior, no guest spawned.
-    let evaluated = if extensions.contains(&cistella::profile::ExtensionId::Landlock) {
+    // pure Podman behavior (no extension guest spawned; the
+    // isolator guest itself is still hosted as in 2.x).
+    let landlock_selected = extensions.contains(&cistella::profile::ExtensionId::Landlock);
+    let evaluated = if landlock_selected {
         run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?
     } else {
         cistella::framework::prepare::EvaluatedPlan {
@@ -452,6 +455,15 @@ fn conduct_session(
             credentials: Vec::new(),
         }
     };
+    // Declared-but-empty refuses here, before staging or
+    // create: a selected extension answering zero hooks must
+    // never start a plain session silently (the selection is a
+    // guarantee). Undeclared profiles always pass — nothing
+    // was promised.
+    cistella::framework::hooks::require_declared_hooks(
+        landlock_selected,
+        &evaluated.merged.guest_hooks,
+    )?;
     // Hook staging (task 3.2, replaces the interim refuse gate):
     // each requested hook resolves to a private verified copy
     // mounted RO at the known guest path before create. The guards

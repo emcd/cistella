@@ -2,11 +2,11 @@
 
 ### Requirement: Profile-declared guest selection
 
-Conduct SHALL host exactly the isolator and extensions a profile declares (`[isolator]` table, `[[extensions]]` array of tables): the named isolator backend conducts the session, and each named extension answers prepare. Absent tables mean pure Podman behavior (2.x path — no guests spawned, no hooks staged, 0.1.x profiles run unchanged). Unknown isolator/extension names and duplicate extension entries SHALL refuse pre-create with a typed error naming the declaration (closed admission until guest registration lands — a typo can never silently plain a meant-hooked session).
+Conduct SHALL host exactly the isolator and extensions a profile declares (`[isolator]` table, `[[extensions]]` array of tables): the named isolator backend conducts the session, and each named extension answers prepare. Absent tables mean pure Podman behavior (2.x path — no extension guest spawned, no hooks staged; the Podman isolator guest itself is still hosted as in 2.x, and 0.1.x profiles run unchanged). Unknown isolator/extension names and duplicate extension entries SHALL refuse pre-create with a typed error naming the declaration (closed admission until guest registration lands — a typo can never silently plain a meant-hooked session).
 
 #### Scenario: Undeclared sessions run plain
 - **WHEN** a profile declares no extensions
-- **THEN** conduct never spawns a guest and runs the plain lifecycle; no prepare transaction occurs
+- **THEN** conduct spawns no extension guest and runs the plain lifecycle (the isolator guest is hosted as usual); no prepare transaction occurs
 
 #### Scenario: Declared Landlock engages hooks
 - **WHEN** a profile declares the `landlock` extension

@@ -142,12 +142,14 @@ pub struct Profile {
     pub isolator: IsolatorConfig,
     /// Declared extensions (`[[extensions]]`, default none): the
     /// external guests answering prepare for the session. Absent
-    /// or empty means pure Podman behavior (2.x path — no guests
-    /// spawned, no hooks staged). Declaring `landlock` engages
-    /// the Landlock extension and the hooked conduct path;
-    /// unknown names and duplicates refuse at conduct (closed
-    /// admission until guest registration lands — a typo can
-    /// never silently plain a meant-hooked session).
+    /// or empty means pure Podman behavior (2.x path — no
+    /// extension guest spawned, no hooks staged; the Podman
+    /// isolator guest itself is still hosted as in 2.x).
+    /// Declaring `landlock` engages the Landlock extension and
+    /// the hooked conduct path; unknown names and duplicates
+    /// refuse at conduct (closed admission until guest
+    /// registration lands — a typo can never silently plain a
+    /// meant-hooked session).
     #[serde(default)]
     pub extensions: Vec<ExtensionConfig>,
 }
