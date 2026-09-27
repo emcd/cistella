@@ -98,8 +98,30 @@ pub(crate) fn run(
                     "mounts": [],
                     "policy_claims": [],
                     "guest_hooks": [
-                        {"order": 0, "argv_prefix": ["a"], "probe_op": "noop"},
-                        {"order": 0, "argv_prefix": ["b"], "probe_op": "noop"}
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        },
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        }
                     ]
                 }),
             );
@@ -267,6 +289,65 @@ pub(crate) fn run(
                     "guest_hooks": []
                 }),
             );
+            ExitCode::SUCCESS
+        }
+        "extension-landlock-hook" => {
+            // Extension-role hello (landlock plus guest-hooks) then
+            // one valid full-shape hook answer. Lets fast tests drive
+            // `run_landlock_prepare` against a real subprocess:
+            // admission, central merge, and clean shutdown.
+            if read_frame_from_stdin(stdin_lock).is_err() {
+                return Some(ExitCode::SUCCESS);
+            }
+            let hello = json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["landlock", "guest-hooks"],
+                    "max_frame": 65536u32,
+                },
+            });
+            let body = serde_json::to_vec(&hello).expect("serialize");
+            let _ = write_frame(stdout_lock, &body, 64 * 1024);
+            // Answer prepare inline: the shared helper performs its
+            // own hello round-trip, already consumed above.
+            let req_body = match read_frame_from_stdin(stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return Some(ExitCode::SUCCESS),
+            };
+            let id = serde_json::from_slice::<Value>(&req_body)
+                .ok()
+                .and_then(|env| env.get("id").cloned())
+                .unwrap_or(json!("req-0"));
+            let response = json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": id,
+                "op": "prepare",
+                "payload": {
+                    "environment": [],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": [
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        }
+                    ],
+                    "credentials": []
+                },
+            });
+            let body = serde_json::to_vec(&response).expect("serialize");
+            let _ = write_frame(stdout_lock, &body, 64 * 1024);
             ExitCode::SUCCESS
         }
         _ => return None,

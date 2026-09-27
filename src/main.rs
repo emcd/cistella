@@ -3,6 +3,7 @@
 use cistella::cli::{Cli, Command};
 use cistella::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use cistella::framework::prepare::run_landlock_prepare;
 use cistella::framework::signals;
 use cistella::isolators::client::WireClient;
 use cistella::isolators::podman::PodmanIsolator;
@@ -411,6 +412,17 @@ fn conduct_session(
     // compiled-default denial still refuses).
     let policy = cistella::framework::policy::PolicySet::load(None)?;
     cistella::framework::conduct::evaluate_profile_contributions(&prof, &accepted_env, &policy)?;
+    let exe_dir =
+        std::env::current_exe().map_err(|e| CistellaError::Runtime(format!("driver path: {e}")))?;
+    let exe_dir = exe_dir.parent().ok_or_else(|| {
+        CistellaError::Runtime("driver binary has no parent directory".to_string())
+    })?;
+    // Landlock extension prepare (task 3.1): the real extension
+    // guest answers one transaction; merged env/mounts fan into the
+    // session plan below; hooks stage for 3.2 execution.
+    let evaluated = run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?;
+    triples.extend(evaluated.merged.mounts.clone());
+    let _landlock_hooks = evaluated.merged.guest_hooks;
     let volumes = podman_volume_args(&triples, prof.home(), None);
     let ssh_args = cistella::identity::ssh_agent_volume_args(&prof);
     // ssh_args is mixed ["--volume", "sock:sock:ro", "-e", "SSH_AUTH_SOCK=..."]; split for Quadlet
@@ -423,6 +435,11 @@ fn conduct_session(
     // Accepted pairs append in profile-list order (deterministic suffix).
     // Collision checks in snapshot_acceptances guarantee no key overlap.
     for (k, v) in &accepted_env {
+        env_extra.push(format!("{k}={v}"));
+    }
+    // Extension contributions append after accepted pairs
+    // (deterministic suffix; central merge already refused collisions).
+    for (k, v) in &evaluated.merged.environment {
         env_extra.push(format!("{k}={v}"));
     }
     let mut i = 0;
@@ -459,11 +476,6 @@ fn conduct_session(
     // explicit descriptor passing inside the client, uniform across
     // PTY and piped sessions. The in-process backend stays as the
     // conformance reference and post-mortem inspector only.
-    let exe_dir =
-        std::env::current_exe().map_err(|e| CistellaError::Runtime(format!("driver path: {e}")))?;
-    let exe_dir = exe_dir.parent().ok_or_else(|| {
-        CistellaError::Runtime("driver binary has no parent directory".to_string())
-    })?;
     let rendezvous_dir = std::env::temp_dir().join(format!("cistella-rdv-{id}"));
     let mut client = match WireClient::host(exe_dir, &rendezvous_dir, Deadlines::default()) {
         Ok(client) => client,

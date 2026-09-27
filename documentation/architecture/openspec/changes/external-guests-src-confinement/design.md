@@ -37,6 +37,9 @@ Land as additive bins plus a conduct call-site switch; fleet profiles and sessio
 
 ## Open Questions
 
-- Guest binary names (`cistella-isolator-podman`? `cistella-extension-landlock`?).
 - x86_64 loader parity for the shipped Landlock wrapper (spike cross-checked the test wrapper; the shipped artifact needs the same proof).
 - Full cross-crash execution survival (framework-side execution ownership outliving the guest) is deferred; recovery stays pre-exec plus typed teardown. Revisit only with a design that keeps handle redemption sound.
+
+## Decided Names
+
+- Extension guest: `cistella-extension-landlock` (task 3.1). Wrapper binary: `cistella-landlock-wrap` (task 3.2); staged RO in-guest at `/run/cistella/hooks/landlock-wrap`, resolved from the `shipped` registry (install sibling directory).

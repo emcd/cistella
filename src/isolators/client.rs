@@ -237,10 +237,12 @@ impl WireClient {
             path.to_string_lossy().to_string(),
         ];
         args.extend(extra_args.iter().cloned());
-        let guest = host_external(exe_dir, name, &args, &["isolator".to_string()], deadlines)
-            .inspect_err(|_| {
-                let _ = std::fs::remove_file(&path);
-            })?;
+        let (guest, _negotiated) =
+            host_external(exe_dir, name, &args, &["isolator".to_string()], deadlines).inspect_err(
+                |_| {
+                    let _ = std::fs::remove_file(&path);
+                },
+            )?;
         let pid = i32::try_from(guest.pid())
             .map_err(|_| CistellaError::Runtime("guest pid out of range".to_string()))?;
         let fd_sock = Self::accept_guest(&listener, pid, deadlines.hello).inspect_err(|_| {

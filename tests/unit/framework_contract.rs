@@ -7,8 +7,13 @@
 
 use cistella::framework::contract::{
     Assumption, BaselineBinding, Capability, CapabilitySet, ControlDeadline, Deadlines,
-    EnvContribution, GuestHookRequest, MergeContext, MountContribution, MountMode, MountTriple,
-    Phase, PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Scope, Severity, merge_prepare,
+    EnvContribution, GuestHookRequest, HOOK_ARTIFACT_KIND_BLOB, HOOK_ON_FAILURE_PRE_EXEC,
+    HOOK_STAGING_ISOLATOR, HookArtifact, HookProbe, HookSource, MergeContext, MountContribution,
+    MountMode, MountTriple, Phase, PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Scope,
+    Severity, merge_prepare,
+};
+use cistella::framework::registry::{
+    LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -46,9 +51,22 @@ fn mount_from(host: &str, target: &str) -> MountContribution {
 
 fn hook(order: u32) -> GuestHookRequest {
     GuestHookRequest {
+        artifact: HookArtifact {
+            kind: HOOK_ARTIFACT_KIND_BLOB.to_string(),
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            source: HookSource {
+                registry: SHIPPED_REGISTRY_ID.to_string(),
+                path: WRAPPER_FILE_NAME.to_string(),
+            },
+        },
+        staging: HOOK_STAGING_ISOLATOR.to_string(),
         order,
-        argv_prefix: vec!["/usr/libexec/landlock-wrap".to_string()],
-        probe_op: "probe_capabilities".to_string(),
+        argv_prefix: vec![STAGED_WRAPPER_GUEST_PATH.to_string()],
+        probe: HookProbe {
+            op: LANDLOCK_PROBE_OP.to_string(),
+            timeout_ms: 10_000,
+        },
+        on_failure: HOOK_ON_FAILURE_PRE_EXEC.to_string(),
     }
 }
 
@@ -185,7 +203,7 @@ fn empty_hook_content_refuses() {
     )
     .unwrap_err();
     let mut empty_probe = hook(1);
-    empty_probe.probe_op.clear();
+    empty_probe.probe.op.clear();
     let plan = PreparePlan {
         guest_hooks: vec![empty_probe],
         ..PreparePlan::default()
@@ -337,4 +355,103 @@ fn reconciliation_key_reuse_keeps_attempt_identity() {
     let retry = ReconciliationKey::reuse(first.as_str());
     assert_eq!(first, retry);
     assert_ne!(first, ReconciliationKey::generate());
+}
+
+/// Merges one hook mutation and returns the refusal message.
+fn hook_refusal(mut hook: GuestHookRequest, mutate: impl FnOnce(&mut GuestHookRequest)) -> String {
+    mutate(&mut hook);
+    let plan = PreparePlan {
+        guest_hooks: vec![hook],
+        ..PreparePlan::default()
+    };
+    merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err()
+    .to_string()
+}
+
+#[test]
+fn hook_bad_artifact_kind_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.artifact.kind = "tarball".to_string();
+    });
+    assert!(message.contains("artifact kind"), "got: {message}");
+}
+
+#[test]
+fn hook_bad_sha256_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.artifact.sha256 = "not-hex".to_string();
+    });
+    assert!(message.contains("sha256"), "got: {message}");
+    let message = hook_refusal(hook(1), |hook| {
+        hook.artifact.sha256 =
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855".to_string();
+    });
+    assert!(message.contains("sha256"), "got: {message}");
+}
+
+#[test]
+fn hook_empty_registry_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.artifact.source.registry.clear();
+    });
+    assert!(message.contains("registry"), "got: {message}");
+}
+
+#[test]
+fn hook_bad_staging_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.staging = "extension-mounted".to_string();
+    });
+    assert!(message.contains("staging"), "got: {message}");
+}
+
+#[test]
+fn hook_relative_argv_prefix_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.argv_prefix[0] = "relative/wrap".to_string();
+    });
+    assert!(
+        message.contains("absolute staged wrapper path"),
+        "got: {message}"
+    );
+}
+
+#[test]
+fn hook_zero_probe_timeout_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.probe.timeout_ms = 0;
+    });
+    assert!(message.contains("probe timeout"), "got: {message}");
+}
+
+#[test]
+fn hook_bad_on_failure_refuses() {
+    let message = hook_refusal(hook(1), |hook| {
+        hook.on_failure = "warn-and-continue".to_string();
+    });
+    assert!(message.contains("on_failure"), "got: {message}");
+}
+
+#[test]
+fn hook_valid_shape_merges() {
+    let plan = PreparePlan {
+        guest_hooks: vec![hook(0)],
+        ..PreparePlan::default()
+    };
+    let merged = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap();
+    assert_eq!(merged.guest_hooks.len(), 1);
+    assert_eq!(
+        merged.guest_hooks[0].argv_prefix,
+        vec![STAGED_WRAPPER_GUEST_PATH.to_string()]
+    );
 }
