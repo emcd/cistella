@@ -461,13 +461,19 @@ fn conduct_session(
     let revised: Vec<MountTriple> = if evaluated.merged.guest_hooks.is_empty() {
         triples.clone()
     } else {
-        let full_routes = cistella::framework::hooks::hook_full_routes(
+        // Same-tree graft-alias refusal first: a read-write
+        // graft of ancestor-tree content outside the subtree
+        // would dentry-alias RO-covered content (Landlock is
+        // mount-agnostic) — contradictory declarations refuse
+        // before revision, validation, or unit.
+        cistella::framework::hooks::hook_graft_alias_preflight(&triples, &directory)?;
+        let sets = cistella::framework::hooks::hook_full_sets(
             &evaluated.merged.guest_hooks,
             &triples,
             &directory,
         )?;
-        cistella::mount::ro_confinement_preflight(&triples, &full_routes)?;
-        cistella::mount::revise_ro_for_confinement(&triples, &full_routes)
+        cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
+        cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
     };
     // Final joint topology gate: extension mounts plus credential
     // volumes validate and preflight as one merged set — still

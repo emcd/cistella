@@ -228,27 +228,70 @@ pub fn plan_hook_argv(
     compose_hook_argv(hooks, triples, &ancestor_host, &subtree_host, harness_argv)
 }
 
-/// Full-grant guest targets for the RO-retention revision
-/// (tier-2 hardening): home confinement roots plus
-/// `full_grant_routes`, derived from the same roots the argv
-/// composition uses so revision and policy cannot disagree.
-/// Runs pre-create; an untranslatable topology or a session
-/// outside the confinement root refuses with no unit.
+/// FULL sets for the RO-retention revision (tier-2
+/// hardening): home confinement roots plus the FULL guest
+/// targets (`full_grant_routes`) and the FULL-backed host
+/// sources (`full_grant_sources`), derived from the same roots
+/// the argv composition uses so revision and policy cannot
+/// disagree. Runs pre-create; an untranslatable topology or a
+/// session outside the confinement root refuses with no unit.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Runtime` on missing `HOME` and
 /// `CistellaError::Contract` on roots/grant refusal.
-pub fn hook_full_routes(
+pub struct HookFullSets {
+    /// Guest targets receiving FULL Landlock rights.
+    pub routes: Vec<String>,
+    /// Host sources whose content is FULL at the dentry layer.
+    pub sources: Vec<std::path::PathBuf>,
+}
+
+/// Computes the FULL sets for one hooked topology (see
+/// [`HookFullSets`]).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on missing `HOME` and
+/// `CistellaError::Contract` on roots/grant refusal.
+pub fn hook_full_sets(
     hooks: &[crate::framework::contract::GuestHookRequest],
     triples: &[crate::mount::MountTriple],
     directory: &str,
-) -> crate::error::Result<Vec<String>> {
+) -> crate::error::Result<HookFullSets> {
     use crate::framework::prepare::{confinement_roots, full_grant_routes};
+    use crate::mount::full_grant_sources;
     let home = std::env::var("HOME")
         .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
     let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
-    full_grant_routes(hooks, triples, &ancestor_host, &subtree_host)
+    Ok(HookFullSets {
+        routes: full_grant_routes(hooks, triples, &ancestor_host, &subtree_host)?,
+        sources: full_grant_sources(triples, &subtree_host),
+    })
+}
+
+/// Same-tree graft-alias refusal pre-create (tier-2
+/// dentry-alias guard): home confinement roots plus
+/// `graft_alias_preflight`. A read-write graft of
+/// ancestor-tree content outside the subtree would admit
+/// writes through every alias at the dentry layer — refuse
+/// with the triple named before any revision or unit. Runs
+/// pre-create; hooked sessions only.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on missing `HOME` and
+/// `CistellaError::Mount` on an aliasing graft.
+pub fn hook_graft_alias_preflight(
+    triples: &[crate::mount::MountTriple],
+    directory: &str,
+) -> crate::error::Result<()> {
+    use crate::framework::prepare::confinement_roots;
+    use crate::mount::graft_alias_preflight;
+    let home = std::env::var("HOME")
+        .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
+    let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
+    graft_alias_preflight(triples, &ancestor_host, &subtree_host)
 }
 
 /// Creates the diagnostics pipe post-host (a pre-host pipe would

@@ -41,15 +41,19 @@ The Landlock extension SHALL confine the worktree ancestor so that the session's
 
 ### Requirement: Confinement guarantee scope (operator-revised 2026-09-26)
 
-Modifies the subtree-confinement guarantee above under explicit operator direction (trusted operator, harness-only threat model). Enforcement SHALL cover the wrapped harness lineage ONLY: companion exec (`cistella enter`, plain `podman exec`) runs outside Landlock by design — the operator holds host-equivalent access, so restricting their own shell defends no principal. Declared read-write directory mounts SHALL each receive a full-rights Landlock carveout on their guest target wherever they sit (project grafts, state dirs, scratch); declared read-only mounts outside all routes SHALL receive read-execute readability; a declared read-only directory at or under a full-granted route SHALL keep its Podman binding read-only (Landlock union cannot subtract the parent grant, and rights propagate across bind aliases — the VFS binding carries that enforcement), and a read-only directory holding a declared read-write descendant SHALL refuse pre-create as contradictory. Extension read-write mount contributions SHALL be refused (no Mounts policy admission exists); extension read-only contributions may merge (bus-socket vectors) but SHALL never compose into write grants.
+Modifies the subtree-confinement guarantee above under explicit operator direction (trusted operator, harness-only threat model). Enforcement SHALL cover the wrapped harness lineage ONLY: companion exec (`cistella enter`, plain `podman exec`) runs outside Landlock by design — the operator holds host-equivalent access, so restricting their own shell defends no principal. Declared read-write directory mounts SHALL each receive a full-rights Landlock carveout on their guest target wherever they sit (project grafts, state dirs, scratch); declared read-only mounts outside all routes SHALL receive read-execute readability; a declared read-only directory at or under a full-granted route SHALL keep its Podman binding read-only, and a read-only directory at or under FULL-backed content (the subtree, admitted read-write grafts) SHALL likewise retain read-only whatever its guest target (Landlock union cannot subtract the FULL grant through any alias — the VFS binding carries that enforcement), and a read-only directory holding a declared read-write descendant SHALL refuse pre-create as contradictory. A read-write graft of ancestor-tree content outside the subtree SHALL refuse pre-create (same-source different-rights binds alias at the dentry layer — Landlock is mount-agnostic — so the graft FULL would admit through every alias; move grafted content outside the tree or inside the subtree). Extension read-write mount contributions SHALL be refused (no Mounts policy admission exists); extension read-only contributions may merge (bus-socket vectors) but SHALL never compose into write grants.
 
 #### Scenario: Declared graft admits writes
-- **WHEN** the harness writes through a declared read-write graft (sibling content bound read-write at a second guest target)
-- **THEN** the write succeeds under the applied ruleset
+- **WHEN** the harness writes through a declared read-write graft of content from OUTSIDE the bound tree (disjoint dentries, e.g. `/opt/state` at a second guest target)
+- **THEN** the write succeeds under the applied ruleset (same-tree grafts refuse pre-create instead — see the same-tree scenario: one source cannot carry two rights)
 
 #### Scenario: Read-only alias under full grant denies
 - **WHEN** the harness writes through a declared read-only directory nested under a full-granted route
 - **THEN** the write fails (retained Podman read-only binding) and the source is unmodified
+
+#### Scenario: Same-tree graft refuses pre-create
+- **WHEN** a profile grafts ancestor-tree content read-write outside the subtree (same host source bound twice with different rights)
+- **THEN** conduct refuses pre-create with a typed error; no session starts with an aliased grant
 
 #### Scenario: Companion shell outside the guarantee
 - **WHEN** the operator enters a hooked session via companion exec

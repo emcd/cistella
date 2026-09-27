@@ -636,3 +636,74 @@ fn nested_rw_under_rw_conducts() {
         "nested write reaches host worktree"
     );
 }
+
+/// Same-tree RW graft refuses pre-create through real conduct:
+/// a read-write graft of ancestor-tree content outside the
+/// session subtree would dentry-alias RO-covered content
+/// (Landlock unions aliases toward FULL), so the hooked branch
+/// refuses with the graft named before any unit or scratch.
+/// The graft target sits outside all routes (no RO ancestor
+/// above it) so nested_ro stays silent and the refusal proves
+/// the alias gate specifically.
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn same_tree_rw_graft_refuses_pre_create() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    // Sibling of the session dir: strictly under ~/src,
+    // outside the session subtree (random name, auto-cleaned).
+    let sib = tempfile::TempDir::new_in(worktree.path().parent().expect("worktree sits in ~/src"))
+        .expect("sibling tempdir");
+    let sib_str = sib.path().to_string_lossy().to_string();
+    let src_root = format!("{home}/src");
+    let profile = worktree.path().join("tmpl-graft-alias.toml");
+    std::fs::write(
+        &profile,
+        format!(
+            "image = \"localhost/cistella/opencode:example\"\n\
+             credential-surface = \"none\"\n\
+             container-home = \"/home/cistella\"\n\
+             [[mounts]]\n\
+             host-source = \"{src_root}\"\n\
+             container-target = \"/src\"\n\
+             mode = \"ro\"\n\
+             [[mounts]]\n\
+             host-source = \"{sib_str}\"\n\
+             container-target = \"/graft\"\n\
+             mode = \"rw\"\n",
+        ),
+    )
+    .unwrap();
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            &profile.to_string_lossy(),
+            "--session-directory",
+            &worktree_str,
+            "--identity",
+            "alice",
+            "--",
+            "true",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success(), "aliasing graft must refuse");
+    assert!(
+        stderr.contains("/graft") && stderr.contains("aliases read-only ancestor content"),
+        "typed error names the graft: {stderr}"
+    );
+    // Refused conduct mints no session: survey stays clean.
+    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    assert!(
+        !String::from_utf8_lossy(&survey.stdout).contains("cistella-"),
+        "no residue session for refused conduct: {}",
+        String::from_utf8_lossy(&survey.stdout)
+    );
+}

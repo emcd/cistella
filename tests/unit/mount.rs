@@ -604,7 +604,7 @@ fn revise_ro_directories_for_confinement() {
             mode: MountMode::Rw,
         },
     ];
-    let revised = revise_ro_for_confinement(&triples, &["/work".to_string()]);
+    let revised = revise_ro_for_confinement(&triples, &["/work".to_string()], &[]);
     // Directory RO outside FULL flips (Podman materializes
     // submounts under RW); file RO stays (Landlock cannot carry
     // file policy, so Podman-level RO remains its enforcement);
@@ -641,7 +641,7 @@ fn revise_retains_ro_under_full_routes() {
     // subtract the parent grant, so the VFS binding carries
     // that enforcement); the ancestor outside FULL still flips
     // for submount materialization.
-    let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()]);
+    let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()], &[]);
     assert_eq!(revised[0].mode, MountMode::Rw);
     assert_eq!(revised[1].mode, MountMode::Ro);
 }
@@ -665,11 +665,11 @@ fn ro_confinement_preflight_refuses_rw_descendant() {
     let full = vec!["/src/proj".to_string()];
     // Contradictory topology (RW graft under retained-RO dir)
     // refuses with both targets named; clean topologies pass.
-    let error = ro_confinement_preflight(&[ro.clone(), rw], &full).unwrap_err();
+    let error = ro_confinement_preflight(&[ro.clone(), rw], &full, &[]).unwrap_err();
     let text = error.to_string();
     assert!(text.contains("/src/proj/ro-data"), "got: {text}");
     assert!(text.contains("/src/proj/ro-data/scratch"), "got: {text}");
-    ro_confinement_preflight(&[ro], &full).expect("retained RO without RW descendant passes");
+    ro_confinement_preflight(&[ro], &full, &[]).expect("retained RO without RW descendant passes");
 }
 
 #[test]
@@ -696,8 +696,11 @@ fn revise_retains_ro_for_alias_spellings_and_dev() {
             mode: MountMode::Ro,
         },
     ];
-    let revised =
-        revise_ro_for_confinement(&triples, &["/dev".to_string(), "/src/proj".to_string()]);
+    let revised = revise_ro_for_confinement(
+        &triples,
+        &["/dev".to_string(), "/src/proj".to_string()],
+        &[],
+    );
     assert_eq!(revised[0].mode, MountMode::Ro);
     assert_eq!(revised[1].mode, MountMode::Ro);
 }
@@ -721,10 +724,165 @@ fn ro_confinement_preflight_collides_alias_spellings() {
         mode: MountMode::Rw,
     };
     let full = vec!["/src/proj".to_string()];
-    ro_confinement_preflight(std::slice::from_ref(&ro), &full).expect("clean passes");
-    let error = ro_confinement_preflight(&[ro, rw], &full).unwrap_err();
+    ro_confinement_preflight(std::slice::from_ref(&ro), &full, &[]).expect("clean passes");
+    let error = ro_confinement_preflight(&[ro, rw], &full, &[]).unwrap_err();
     assert!(
         error.to_string().contains("read-write descendant"),
         "got: {error}"
     );
+}
+
+#[test]
+fn graft_alias_preflight_refuses_same_tree_rw_graft() {
+    use cistella::mount::{MountMode, MountTriple, graft_alias_preflight};
+    use std::path::Path;
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(tree.path().join("proj/extra")).expect("extra");
+    std::fs::create_dir_all(tree.path().join("sib")).expect("sib");
+    let outside = tempfile::tempdir().expect("outside");
+    let host = tree.path().to_string_lossy().to_string();
+    let ancestor = Path::new(&host);
+    let subtree = &tree.path().join("proj");
+    let aliasing = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/sib"),
+            container_target: "/src/graft".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    // Same-tree RW graft outside the subtree: the graft FULL
+    // would dentry-alias RO-covered content — refuse naming
+    // the graft target.
+    let error = graft_alias_preflight(&aliasing, ancestor, subtree).unwrap_err();
+    assert!(error.to_string().contains("/src/graft"), "got: {error}");
+    // Disjoint graft (outside the tree): disjoint dentries, no
+    // alias — passes.
+    let disjoint = vec![
+        aliasing[0].clone(),
+        MountTriple {
+            host_source: outside.path().to_string_lossy().to_string(),
+            container_target: "/src/graft".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    graft_alias_preflight(&disjoint, ancestor, subtree).expect("disjoint graft passes");
+    // Subtree content RW (already FULL): no new writability —
+    // passes. Ancestor RW itself (own FULL route): passes. RO
+    // same-tree graft (union-safe): passes. Not-yet-existing
+    // source (no dentry to alias): skips.
+    let benign = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/proj/extra"),
+            container_target: "/src/proj/extra".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/sib"),
+            container_target: "/src/ro-graft".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/missing"),
+            container_target: "/src/missing".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    graft_alias_preflight(&benign, ancestor, subtree).expect("benign shapes pass");
+}
+
+#[test]
+fn revise_retains_ro_under_full_backed_source() {
+    use cistella::mount::{MountMode, MountTriple, full_grant_sources, revise_ro_for_confinement};
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(tree.path().join("proj/private")).expect("private");
+    let host = tree.path().to_string_lossy().to_string();
+    let subtree = tree.path().join("proj");
+    // RO directory inside the FULL subtree bound outside all
+    // FULL routes: its dentries are FULL through the subtree
+    // rule regardless of target — retain Podman read-only (the
+    // reverse-direction alias of the graft case).
+    let triples = vec![MountTriple {
+        host_source: format!("{host}/proj/private"),
+        container_target: "/extra/private".to_string(),
+        mode: MountMode::Ro,
+    }];
+    let sources = full_grant_sources(&triples, &subtree);
+    assert_eq!(sources, vec![subtree.clone()]);
+    let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()], &sources);
+    assert_eq!(revised[0].mode, MountMode::Ro);
+}
+
+#[test]
+fn full_grant_sources_cover_subtree_and_rw_dirs() {
+    use cistella::mount::{MountMode, MountTriple, full_grant_sources};
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(tree.path().join("state")).expect("state");
+    std::fs::write(tree.path().join("sock"), b"x").expect("sock");
+    let host = tree.path().to_string_lossy().to_string();
+    let subtree = tree.path().join("proj");
+    let triples = vec![
+        MountTriple {
+            host_source: format!("{host}/state"),
+            container_target: "/src/state".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/other"),
+            container_target: "/other".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: tree.path().join("sock").to_string_lossy().to_string(),
+            container_target: "/run/agent.sock".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let sources = full_grant_sources(&triples, &subtree);
+    assert!(sources.contains(&subtree), "{sources:?}");
+    assert!(sources.contains(&tree.path().join("state")), "{sources:?}");
+    assert_eq!(
+        sources.len(),
+        2,
+        "RO triples and files add nothing: {sources:?}"
+    );
+}
+
+#[test]
+fn ro_confinement_preflight_catches_source_retained_contradiction() {
+    use cistella::mount::{MountMode, MountTriple, ro_confinement_preflight};
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(tree.path().join("proj/private")).expect("private");
+    let host = tree.path().to_string_lossy().to_string();
+    let subtree = tree.path().join("proj");
+    let ro = MountTriple {
+        host_source: format!("{host}/proj/private"),
+        container_target: "/extra/private".to_string(),
+        mode: MountMode::Ro,
+    };
+    let rw = MountTriple {
+        host_source: format!("{host}/proj/private/scratch"),
+        container_target: "/extra/private/scratch".to_string(),
+        mode: MountMode::Rw,
+    };
+    // Source-retained (under subtree) with an RW descendant
+    // beneath its target: same contradiction as target
+    // retention — refuse.
+    let sources = vec![subtree];
+    let error =
+        ro_confinement_preflight(&[ro, rw], &["/src/proj".to_string()], &sources).unwrap_err();
+    assert!(error.to_string().contains("/extra/private"), "got: {error}");
 }
