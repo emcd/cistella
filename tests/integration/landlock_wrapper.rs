@@ -255,3 +255,144 @@ fn bad_allow_path_fails_before_exec() {
     );
     assert!(!std::path::Path::new("/tmp/should-never-exist-xyz").exists());
 }
+
+#[test]
+fn injection_path_stays_framed_json() {
+    // Quote/newline/control bytes in an allow path must not corrupt
+    // the diagnostics frame: serde owns escaping, and the first
+    // stdout line still parses as a typed applied:false refusal
+    // with no exec (marker absent).
+    let (_dir, _allowed) = scratch_tree();
+    let evil = "/nonexistent-\"}\n,\"x\":\"y";
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={evil}"))
+        .arg("--")
+        .arg("/usr/bin/python3")
+        .arg("-c")
+        .arg("open('/tmp/landlock-injection-escaped-xyz', 'w')")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(output.status.code(), Some(1), "bad allow is apply-class");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let payload: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
+        .expect("failure line parses despite injection");
+    assert_eq!(
+        payload.get("applied"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert!(!std::path::Path::new("/tmp/landlock-injection-escaped-xyz").exists());
+}
+
+#[test]
+fn broken_diagnostics_exits_without_execing() {
+    // The diagnostics fd number is never open in the child: the
+    // attestation write fails, and the wrapper exits without
+    // execing (marker absent). Exit is the post-apply class.
+    let (_dir, allowed) = scratch_tree();
+    let marker = allowed.join("noexec-marker");
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=99")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/python3")
+        .arg("-c")
+        .arg(format!("open({:?}, 'w')", marker))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "broken attestation is post-apply"
+    );
+    assert!(
+        !marker.exists(),
+        "harness must never exec past a failed write"
+    );
+}
+
+#[test]
+fn exec_failure_reports_wrapper_error() {
+    // Applied, sealed, then a bad harness path: exit 2 with a
+    // typed applied:false second line (wrapper failure, never a
+    // harness outcome).
+    let (_dir, allowed) = scratch_tree();
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/nonexistent-harness-xyz")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "exec failure is wrapper-class"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = stdout.lines();
+    let attested: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    let failed: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap_or("")).expect("failure second");
+    assert_eq!(failed.get("applied"), Some(&serde_json::Value::Bool(false)));
+}
+
+#[test]
+fn fault_kill_after_attest_dies_by_signal_without_execing() {
+    // Deterministic pin of the crash-between-seal-and-exec window:
+    // the wrapper attests, then SIGKILLs itself instead of execing.
+    // The process dies by signal (never a clean exit, never an
+    // exec): the host side must report session-signal, never a
+    // fabricated harness outcome.
+    let (_dir, allowed) = scratch_tree();
+    let marker = allowed.join("fault-marker");
+    let output = Command::new(wrapper_path())
+        .arg("--diagnostics-fd=1")
+        .arg("--allow-ro=/usr")
+        .arg(format!("--allow-rw={}", allowed.display()))
+        .arg("--")
+        .arg("/usr/bin/python3")
+        .arg("-c")
+        .arg(format!("open({:?}, 'w')", marker))
+        .env("CISTELLA_QA_WRAPPER_FAULT", "kill-after-attest")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("wrapper must spawn");
+    assert_eq!(
+        output.status.code(),
+        None,
+        "fault must die by signal, not exit"
+    );
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(output.status.signal(), Some(9), "fault must be SIGKILL");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let attested: serde_json::Value =
+        serde_json::from_str(stdout.lines().next().unwrap_or("")).expect("attestation first");
+    assert_eq!(
+        attested.get("applied"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert!(
+        !marker.exists(),
+        "harness must never exec in the fault window"
+    );
+}

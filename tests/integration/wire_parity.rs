@@ -186,6 +186,7 @@ fn launch_wire_unit(image: &str, env: Vec<String>) -> WireFixture {
         volumes,
         env,
         labels: vec![],
+        landlock_hooked: false,
     };
     // Declaration order IS the unwind order (reversed): the name
     // guard is older, so on panic the client closes/quiesces first
@@ -353,6 +354,7 @@ fn wire_parity_reconciliation_survives_replacement() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     // Name guard older than the client guard: unwind closes the
     // guest before converging by name (see `launch_wire_unit`).
@@ -688,6 +690,7 @@ fn wire_parity_removed_handle_create_refuses_live() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let mut guard = LiveUnitGuard {
         container_name: Some(container.clone()),
@@ -823,6 +826,7 @@ fn wire_parity_transcript_matches_reference() {
         volumes,
         env: env.clone(),
         labels: vec![],
+        landlock_hooked: false,
     };
     let reference_output = match drive_cycle(&reference, spec, &key) {
         Ok(output) => output,
@@ -850,6 +854,7 @@ fn wire_parity_transcript_matches_reference() {
         volumes,
         env,
         labels: vec![],
+        landlock_hooked: false,
     };
     let wire_output = match drive_cycle(holder.get(), spec, &key) {
         Ok(output) => output,

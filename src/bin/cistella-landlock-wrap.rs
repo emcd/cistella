@@ -26,7 +26,6 @@
 //! (`allowed_access` u64 + `parent_fd` s32), so older kernels see
 //! only the fields they know.
 
-use std::io::Write;
 use std::os::fd::{BorrowedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::ExitCode;
@@ -186,26 +185,39 @@ fn add_path_rule(ruleset: RawFd, path: &str, allowed: u64) -> Result<(), String>
     Ok(())
 }
 
-/// Writes one JSON line to the diagnostics fd (best effort; the
-/// caller decides the exit). Borrowed only — ownership stays with
-/// the caller so the fd survives until the seal before exec.
-fn diagnose(fd: RawFd, line: &str) {
-    // SAFETY: borrowed raw fd, write-only attempt, no ownership
-    // transfer; the fd outlives this call.
+/// Writes one JSON line to the diagnostics fd with a full-write
+/// loop. Returns success only when every byte landed: callers
+/// treat a short/failed write as a failed attestation (never
+/// exec past it).
+fn diagnose(fd: RawFd, line: &str) -> std::io::Result<()> {
+    // SAFETY: borrowed raw fd, transient slice, no ownership
+    // transfer; the byte count is checked below.
     let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    if let Err(error) = nix::unistd::write(borrowed, line.as_bytes()) {
-        eprintln!("landlock-wrap: diagnostics write failed: {error}");
+    let mut written = 0;
+    let bytes = line.as_bytes();
+    while written < bytes.len() {
+        match nix::unistd::write(borrowed, &bytes[written..]) {
+            Ok(0) => {
+                return Err(std::io::Error::other("diagnostics write closed"));
+            }
+            Ok(count) => written += count,
+            Err(error) => return Err(std::io::Error::from(error)),
+        }
     }
-    let _ = std::io::stderr().flush();
+    Ok(())
 }
 
-/// Reports failure on diagnostics (best effort) plus stderr, with
-/// the classification exit code. The harness never runs past this.
+/// Reports failure with a typed JSON line on diagnostics (best
+/// effort — a broken fd also fails the write, which is itself the
+/// signal) plus a stderr line, with the classification exit code.
+/// The harness never runs past this: every caller returns without
+/// execing.
 fn fail(fd: RawFd, error: &str, code: u8) -> ExitCode {
-    diagnose(
-        fd,
-        &format!("{{\"applied\":false,\"error\":\"{error}\"}}\n"),
-    );
+    // serde_json owns escaping: path/error text (profile- and
+    // extension-influenced) can carry quotes, newlines, or
+    // control bytes without corrupting the frame.
+    let line = serde_json::json!({"applied": false, "error": error}).to_string() + "\n";
+    let _ = diagnose(fd, &line);
     eprintln!("landlock-wrap: {error}");
     ExitCode::from(code)
 }
@@ -354,9 +366,24 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
         );
     }
     // Attest BEFORE exec: the framework gates session start on
-    // this line. Then seal the diagnostics fd so the harness
+    // this line, and the write is a CHECKED pre-exec condition —
+    // an unwritten attestation (broken fd) exits here without
+    // execing, never past it. The attestation repeats the ABI and
+    // handled mask so the host re-verifies the matrix at this
+    // second trust moment (probe ran earlier, in another process
+    // context). Then seal the diagnostics fd so the harness
     // never inherits it (close-on-exec yields EOF).
-    diagnose(fd, &format!("{{\"applied\":true,\"abi\":{abi}}}\n"));
+    let attested = serde_json::json!({
+        "applied": true,
+        "abi": abi,
+        "handled_fs_mask": REQUIRED_HANDLED_FS,
+    })
+    .to_string()
+        + "\n";
+    if diagnose(fd, &attested).is_err() {
+        eprintln!("landlock-wrap: attestation write failed");
+        return ExitCode::from(2);
+    }
     if nix::fcntl::fcntl(
         fd,
         nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
@@ -366,14 +393,33 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
         return fail(fd, "diagnostics seal failed", 2);
     }
     // Exec: the harness inherits the restriction in this same
-    // lineage (no fork). `exec` returns only the failure.
+    // lineage (no fork). `exec` returns only the failure, which is
+    // a WRAPPER failure (the harness never started), reported
+    // typed on the still-open diagnostics fd before exit.
+    //
+    // Status-separation invariant (design): this function never
+    // returns SUCCESS — post-attestation paths exec or exit
+    // nonzero. A clean harness exit therefore proves the exec
+    // transition (only the harness could produce it). Signal
+    // deaths (wrapper SIGKILLed between seal and execve, or
+    // harness signalled later) report as session signals —
+    // truthful at session level, never fabricated clean outcomes.
+    // QA-only fault seam for that window (deterministic pin of
+    // the ambiguous case): with the env set, SIGKILL self after
+    // attesting instead of execing. Never set in production.
+    if std::env::var("CISTELLA_QA_WRAPPER_FAULT").as_deref() == Ok("kill-after-attest") {
+        // SAFETY: intentional self-kill for the fault pin only.
+        unsafe {
+            nix::libc::raise(nix::libc::SIGKILL);
+        }
+    }
     let error = std::process::Command::new(&invocation.command[0])
         .args(&invocation.command[1..])
         .exec();
-    diagnose(
-        fd,
-        &format!("{{\"applied\":false,\"error\":\"exec failed: {error}\"}}\n"),
-    );
+    let line = serde_json::json!({"applied": false, "error": format!("exec failed: {error}")})
+        .to_string()
+        + "\n";
+    let _ = diagnose(fd, &line);
     eprintln!("landlock-wrap: exec failed: {error}");
     ExitCode::from(2)
 }

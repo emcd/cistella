@@ -354,6 +354,7 @@ fn wire_client_maps_backend_error_envelope() {
         volumes: vec![],
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let error = client
         .create(&spec, &ReconciliationKey::generate())

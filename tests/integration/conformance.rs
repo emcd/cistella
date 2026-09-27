@@ -110,6 +110,7 @@ fn launch_unit(image: &str, env: Vec<String>) -> (Fixture, TempDir) {
         volumes,
         env,
         labels: vec![],
+        landlock_hooked: false,
     };
     let handle = backend.create(&spec, &key).expect("create unit");
     assert_eq!(backend.locate(&key).expect("locate"), Some(handle.clone()));
@@ -268,6 +269,7 @@ fn conformance_reconciliation_survives_restart() {
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     };
     let handle = backend.create(&spec, &key).expect("create unit");
     // Crash simulation: a fresh backend with empty tables must still

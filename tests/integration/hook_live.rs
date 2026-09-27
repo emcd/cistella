@@ -13,9 +13,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use cistella::framework::contract::{CancelFlag, LifecycleState, ReconciliationKey};
-use cistella::framework::contract::{HookArtifact, HookSource};
+use cistella::framework::contract::{GuestHookRequest, HookArtifact, HookProbe, HookSource};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::{parse_attestation_line, parse_probe_report};
+use cistella::framework::prepare::{compose_hook_argv, parse_attestation_line, parse_probe_report};
 use cistella::framework::registry::{
     STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME, digest_sibling, stage_hook_artifact,
 };
@@ -126,10 +126,13 @@ fn hook_fixture(image: &str) -> HookFixture {
         .to_string_lossy()
         .to_string();
     let triples = vec![
+        // The broad mount declares RO (the 0.2 goal): revision
+        // converts it to RW for Podman while the Landlock policy
+        // enforces read-only with the subtree carveout.
         MountTriple {
             host_source: tree.path().to_string_lossy().to_string(),
             container_target: "/src".to_string(),
-            mode: MountMode::Rw,
+            mode: MountMode::Ro,
         },
         MountTriple {
             host_source: scratch,
@@ -138,12 +141,14 @@ fn hook_fixture(image: &str) -> HookFixture {
         },
         staged_triple,
     ];
-    let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
+    let revised = cistella::mount::revise_ro_for_confinement(&triples);
+    let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
         session,
         volumes,
         env: vec![],
         labels: vec![],
+        landlock_hooked: true,
     };
     let guard = HookUnitGuard {
         container_name: Some(container.clone()),
@@ -247,16 +252,16 @@ fn hook_hooked_launch_attests_and_confines() {
     assert_eq!(ancestor, vec!["/src".to_string()]);
     let subtree = cistella::mount::guest_routes_for_host(&fixture.triples, &fixture.proj);
     assert_eq!(subtree, vec!["/src/proj".to_string()]);
-    // Admitted harness: marker inside the subtree.
-    let admitted = vec![
-        STAGED_WRAPPER_GUEST_PATH.to_string(),
-        "--allow-ro=/src".to_string(),
-        "--allow-rw=/src/proj".to_string(),
-        "--".to_string(),
-        "sh".to_string(),
-        "-c".to_string(),
-        "echo ok > /src/proj/marker".to_string(),
-    ];
+    // Admitted harness: marker inside the subtree, argv through
+    // the real derivation (baseline included).
+    let admitted = hooked_argv(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo ok > /src/proj/marker".to_string(),
+        ],
+    );
     let (diag_read, diag_write) =
         nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).expect("diagnostics pipe");
     let execution = {
@@ -275,7 +280,7 @@ fn hook_hooked_launch_attests_and_confines() {
     };
     drop(diag_write);
     let line = test_attestation(&diag_read);
-    let abi = parse_attestation_line(&line).expect("applied attestation");
+    let (abi, _mask) = parse_attestation_line(&line).expect("applied attestation");
     assert!(abi >= 3, "attested ABI carries TRUNCATE");
     drop(diag_read);
     let outcome = fixture
@@ -293,15 +298,14 @@ fn hook_hooked_launch_attests_and_confines() {
         "ok\n"
     );
     // Denied harness: sibling write fails, attestation still applied.
-    let denied = vec![
-        STAGED_WRAPPER_GUEST_PATH.to_string(),
-        "--allow-ro=/src".to_string(),
-        "--allow-rw=/src/proj".to_string(),
-        "--".to_string(),
-        "sh".to_string(),
-        "-c".to_string(),
-        "echo escape > /src/sib/escape".to_string(),
-    ];
+    let denied = hooked_argv(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo escape > /src/sib/escape".to_string(),
+        ],
+    );
     let (diag_read, diag_write) =
         nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).expect("diagnostics pipe");
     let execution = {
@@ -342,6 +346,39 @@ fn hook_hooked_launch_attests_and_confines() {
     fixture.teardown();
 }
 
+/// Composes the hooked launch argv through the real derivation
+/// (system baseline, ancestor, subtree, session mounts): the live
+/// test exercises the same argv the conductor builds.
+fn hooked_argv(fixture: &HookFixture, harness: &[String]) -> Vec<String> {
+    let hook = GuestHookRequest {
+        artifact: HookArtifact {
+            kind: "digest-pinned-blob".to_string(),
+            sha256: "unused-live".to_string(),
+            source: HookSource {
+                registry: "shipped".to_string(),
+                path: "cistella-landlock-wrap".to_string(),
+            },
+        },
+        staging: "isolator-staged".to_string(),
+        order: 0,
+        argv_prefix: vec![STAGED_WRAPPER_GUEST_PATH.to_string()],
+        probe: HookProbe {
+            op: "probe_capabilities".to_string(),
+            timeout_ms: 10_000,
+        },
+        on_failure: "fail-pre-exec".to_string(),
+    };
+    compose_hook_argv(
+        &[hook],
+        &fixture.triples,
+        fixture.proj.parent().expect("tree"),
+        &fixture.proj,
+        harness,
+    )
+    .expect("compose hooked argv")
+}
+
+/// Fixture image, skipped quietly when unresolvable (same shape as
 /// Fixture image, skipped quietly when unresolvable (same shape as
 /// the parity suite's image gate).
 fn fixture_image_opt() -> Option<String> {

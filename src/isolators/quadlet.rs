@@ -14,9 +14,9 @@ use crate::error::{CistellaError, Result};
 use crate::lock::{LockGuard, legacy_scratch_dir, scratch_dir};
 use crate::registry::unit_file_label;
 use crate::session::{
-    LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_PROFILE,
-    LABEL_PROFILE_DIGEST, LABEL_RECONCILIATION_KEY, Session, command_label, ensure_minted_id,
-    ensure_no_injection, ensure_session_field, validate_generic_label,
+    LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_LANDLOCK,
+    LABEL_PROFILE, LABEL_PROFILE_DIGEST, LABEL_RECONCILIATION_KEY, Session, command_label,
+    ensure_minted_id, ensure_no_injection, ensure_session_field, validate_generic_label,
 };
 
 /// Quotes a value for a Quadlet `Label=` or `Environment=` directive.
@@ -162,6 +162,7 @@ pub fn generate_quadlet_unit(
     env_extra: &[String],
     generic_labels: &[(String, String)],
     reconciliation_key: Option<&str>,
+    landlock_hooked: bool,
 ) -> Result<String> {
     ensure_minted_id(&session.id)?;
     ensure_session_field(&session.profile, "profile")?;
@@ -266,6 +267,9 @@ pub fn generate_quadlet_unit(
         LABEL_IMAGE,
         quote_systemd(&session.image)
     ));
+    if landlock_hooked {
+        out.push_str(&format!("Label={LABEL_LANDLOCK}=hooked\n"));
+    }
     if let Some(key) = reconciliation_key {
         ensure_no_injection(key, "reconciliation-key")?;
         out.push_str(&format!(

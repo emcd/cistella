@@ -66,6 +66,14 @@ pub struct CreateSpec {
     pub env: Vec<String>,
     /// Merged generic labels (CLI wins over profile).
     pub labels: Vec<(String, String)>,
+    /// Landlock hooks staged for this unit: the unit carries a
+    /// driver marker label so companion paths (notably `enter`,
+    /// which is not a Landlock descendant) refuse typed instead
+    /// of bypassing confinement. Defaults false so older
+    /// senders (same-crate upgrades are atomic; tests pin old
+    /// payloads) parse as unhooked.
+    #[serde(default)]
+    pub landlock_hooked: bool,
 }
 
 /// Standard-input/output binding for launched executions.

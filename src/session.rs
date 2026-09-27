@@ -25,6 +25,10 @@ pub const LABEL_IMAGE: &str = "cistella.image";
 /// key reaches `generate_quadlet_unit`: paths that never prepare
 /// (seat-only units) carry no key label.
 pub const LABEL_RECONCILIATION_KEY: &str = "cistella.reconciliation-key";
+/// Landlock-hooked session marker: emitted only when hook staging
+/// delivered (companion exec via `enter` is outside the
+/// confinement guarantee and refuses typed on marked sessions).
+pub const LABEL_LANDLOCK: &str = "cistella.landlock";
 
 /// Reserved prefix: only the driver emits `cistella.*` labels.
 pub const RESERVED_PREFIX: &str = "cistella.";

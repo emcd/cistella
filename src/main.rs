@@ -1,9 +1,10 @@
 //! Cistella CLI entry point.
 
 use cistella::cli::{Cli, Command};
-use cistella::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
+use cistella::framework::conduct::{abort_startup, release_client, report_release};
+use cistella::framework::contract::{Deadlines, ReconciliationKey};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::{compose_hook_argv, confinement_roots, run_landlock_prepare};
+use cistella::framework::prepare::run_landlock_prepare;
 use cistella::framework::signals;
 use cistella::isolators::client::WireClient;
 use cistella::isolators::podman::PodmanIsolator;
@@ -45,18 +46,24 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             project_name,
             supplements,
             command,
-        } => conduct_session(
-            &profile,
-            session_directory,
-            identity,
-            &labels,
-            image,
-            configuration_directory,
-            &mounts,
-            project_name,
-            &supplements,
-            &command,
-        ),
+        } => {
+            // Exit-code frame: conduct returned, so its scope —
+            // notably the staging guards — already dropped. The
+            // single `process::exit` for conduct lives here.
+            let code = conduct_session(
+                &profile,
+                session_directory,
+                identity,
+                &labels,
+                image,
+                configuration_directory,
+                &mounts,
+                project_name,
+                &supplements,
+                &command,
+            )?;
+            std::process::exit(code);
+        }
         Command::Enter {
             id,
             directory,
@@ -64,6 +71,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             command,
         } => {
             let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
+            cistella::registry::check_enter_allowed(&record)?;
             let container = record.container_name;
             for (field, val) in [("session", &container)] {
                 if val.contains('\n') || val.contains('\r') || val.contains('\0') {
@@ -229,33 +237,6 @@ fn exit_with_status(status: std::process::ExitStatus) -> ! {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// Releases the wire client on conduct exit paths: orderly guest
-/// shutdown plus rendezvous directory removal. Returns the close
-/// outcome: error paths report it to stderr while keeping their
-/// primary error (a release failure there is secondary, never
-/// silent), and the success path fails on it — a residue-class
-/// close failure dominates a clean harness. Rendezvous-dir litter
-/// reports to stderr without failing (litter, not residue).
-fn release_client(
-    client: WireClient,
-    rendezvous_dir: &std::path::Path,
-) -> Result<(), cistella::error::CistellaError> {
-    let outcome = client.close();
-    if let Err(error) = std::fs::remove_dir(rendezvous_dir) {
-        eprintln!("error: rendezvous cleanup: {error}");
-    }
-    outcome
-}
-
-/// Reports a release failure on an already-failing path: the
-/// primary error stays the report, but guest-shutdown residue is
-/// never concealed.
-fn report_release(outcome: Result<(), cistella::error::CistellaError>) {
-    if let Err(error) = outcome {
-        eprintln!("error: guest release: {error}");
-    }
-}
-
 /// Retires a proven-dead pre-exec client and hosts a
 /// replacement under the still-held creation-window guard. Close
 /// (unconditional join/unlink) frees the rendezvous path, then a
@@ -307,7 +288,11 @@ fn conduct_session(
     project_name_flag: Option<String>,
     supplement_args: &[String],
     command: &[String],
-) -> Result<(), cistella::error::CistellaError> {
+    // Exit-code frame: every terminal path returns its code (or a
+    // typed error) instead of calling `process::exit`, so locals —
+    // notably the staging guards — always drop. The single
+    // `process::exit` lives in `run`, after this scope ended.
+) -> Result<i32, cistella::error::CistellaError> {
     use cistella::error::CistellaError;
     use cistella::profile::ResolutionSource;
     let source = ResolutionSource::from_host_env(configuration_directory.as_deref())?;
@@ -453,12 +438,41 @@ fn conduct_session(
         _staged_guards.push(guard);
     }
     triples.extend(evaluated.merged.mounts.clone());
+    // Revision (task 3.2, operator direction): with hooks staged,
+    // directory RO triples reach Podman as RW so submounts
+    // materialize; the Landlock policy derives from the ORIGINAL
+    // modes (compose below reads `triples`). Without hooks the set
+    // passes through untouched — zero behavior change on plain
+    // sessions. Validation and rendering run on the revised set:
+    // they must reflect what Podman actually mounts.
+    let revised: Vec<MountTriple> = if evaluated.merged.guest_hooks.is_empty() {
+        triples.clone()
+    } else {
+        cistella::mount::revise_ro_for_confinement(&triples)
+    };
     // Final joint topology gate: extension mounts plus credential
     // volumes validate and preflight as one merged set — still
     // pre-create, so a refusal leaves no residue.
-    cistella::mount::validate_mounts(&triples, prof.home())?;
-    cistella::mount::nested_ro_preflight(&triples)?;
-    let volumes = podman_volume_args(&triples, prof.home(), None);
+    cistella::mount::validate_mounts(&revised, prof.home())?;
+    cistella::mount::nested_ro_preflight(&revised)?;
+    // Hook launch plan (task 3.2): confinement roots plus wrapper
+    // argv compose pre-create — an untranslatable topology, a
+    // session outside the confinement root, or a bad shape refuses
+    // here with no unit, no guest, and only guard-owned staging
+    // (which drops on return). The diagnostics pipe joins
+    // post-host (a pre-host pipe would leak into the guest's
+    // inherited fds and defeat EOF).
+    let hook_argv: Option<Vec<String>> = if evaluated.merged.guest_hooks.is_empty() {
+        None
+    } else {
+        Some(cistella::framework::hooks::plan_hook_argv(
+            &evaluated.merged.guest_hooks,
+            &triples,
+            &directory,
+            &argv,
+        )?)
+    };
+    let volumes = podman_volume_args(&revised, prof.home(), None);
     let all_volumes = volumes;
     let mut env_extra: Vec<String> = prof
         .environment_assignments
@@ -510,6 +524,20 @@ fn conduct_session(
             return Err(error);
         }
     };
+    // Diagnostics pipe joins post-host (a pre-host pipe would leak
+    // into the guest's inherited fds and defeat EOF) and pre-lock:
+    // failure releases the guest first (the client has no Drop),
+    // then reports — no unit exists yet, so no teardown runs.
+    let hook_plan: Option<cistella::framework::hooks::HookLaunchPlan> = match hook_argv {
+        None => None,
+        Some(argv) => match cistella::framework::hooks::plan_hook_launch(argv) {
+            Ok(plan) => Some(plan),
+            Err(e) => {
+                report_release(release_client(client, &rendezvous_dir));
+                return Err(e);
+            }
+        },
+    };
     let key = ReconciliationKey::generate();
     let grace = Deadlines::default().terminate_grace;
     // Creation window: lock BEFORE any unit-file or scratch creation,
@@ -526,7 +554,7 @@ fn conduct_session(
     if let Some(signum) = signals::pending_signal() {
         drop(guard);
         report_release(release_client(client, &rendezvous_dir));
-        std::process::exit(128 + signum);
+        return Ok(128 + signum);
     }
     // Isolator create installs the unit file and scratch together; on
     // failure the shared teardown converges any installed residue (a
@@ -536,6 +564,10 @@ fn conduct_session(
         volumes: all_volumes.clone(),
         env: env_extra,
         labels: merged_labels,
+        // Driver marker for companion-path refusal: hooked units
+        // carry the Landlock label so `enter` (not a Landlock
+        // descendant) refuses typed instead of bypassing.
+        landlock_hooked: !evaluated.merged.guest_hooks.is_empty(),
     };
     // Pre-exec episode with a single bounded replacement:
     // create + initiate converge by key, so proven guest death
@@ -552,14 +584,14 @@ fn conduct_session(
             Ok(handle) => {
                 if let Some(signum) = signals::pending_signal() {
                     drop(guard);
-                    abort_startup(
+                    return Ok(abort_startup(
                         client,
                         &rendezvous_dir,
                         Some(&handle),
                         &container_name,
                         &id,
                         signum,
-                    );
+                    ));
                 }
                 // Test-hook stall between install and start: a deterministic window for
                 // signal-during-startup regression, polling so signals abort promptly.
@@ -568,14 +600,14 @@ fn conduct_session(
                 while waited.elapsed() < std::time::Duration::from_millis(delay) {
                     if let Some(signum) = signals::pending_signal() {
                         drop(guard);
-                        abort_startup(
+                        return Ok(abort_startup(
                             client,
                             &rendezvous_dir,
                             Some(&handle),
                             &container_name,
                             &id,
                             signum,
-                        );
+                        ));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
@@ -733,14 +765,14 @@ fn conduct_session(
     }
     if let Some(signum) = signals::pending_signal() {
         drop(guard);
-        abort_startup(
+        return Ok(abort_startup(
             client,
             &rendezvous_dir,
             Some(&unit),
             &container_name,
             &id,
             signum,
-        );
+        ));
     }
     drop(guard);
     println!("conduct {id}");
@@ -755,65 +787,42 @@ fn conduct_session(
     // before reporting: a dead guest converges directly (wire ops
     // cannot run without it), and the death-checked error — residue
     // dominating when the exit left units — is the report.
-    // Hooked launch (task 3.2): framework-owned wrapper args around
-    // the verbatim harness argv, a diagnostics pipe in a second
-    // bundle, and session start gated on the wrapper's applied
-    // attestation. A failed apply never execs, so teardown past a
-    // gate failure converges an empty execution.
-    let attempt = if evaluated.merged.guest_hooks.is_empty() {
-        client.death_checked(client.execute_launch(
-            &unit,
-            &argv,
-            Some(&worktree_target),
-            StdioBinding::Inherit,
-            &key,
-        ))
-    } else {
-        let home = std::env::var("HOME")
-            .map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
-        let (ancestor_host, subtree_host) =
-            confinement_roots(std::path::Path::new(&home), &directory)?;
-        let launch_argv = compose_hook_argv(
-            &evaluated.merged.guest_hooks,
-            &triples,
-            &ancestor_host,
-            &subtree_host,
-            &argv,
-        )?;
-        let (diag_read, diag_write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
-            .map_err(|e| CistellaError::Runtime(format!("diagnostics pipe: {e}")))?;
-        let result = {
-            use std::os::fd::AsFd;
-            client.death_checked(client.execute_launch_hooked(
+    // Hooked launch (task 3.2): the plan (wrapper argv plus
+    // diagnostics pipe) composed pre-create, so this site is
+    // infallible short of the launch itself — every `?` that could
+    // bypass teardown already ran before the unit existed. Session
+    // start gates on the wrapper's applied attestation; a failed
+    // apply never execs, so teardown past a gate failure converges
+    // an empty execution. A wrapper exec failure (attested
+    // applied:false post-spawn) reports wrapper failure below,
+    // never a harness outcome.
+    let attempt = match hook_plan {
+        None => client
+            .death_checked(client.execute_launch(
                 &unit,
-                &launch_argv,
+                &argv,
                 Some(&worktree_target),
                 StdioBinding::Inherit,
                 &key,
-                diag_write.as_fd(),
             ))
-        };
-        // Our write-end copy closes here: the guest holds its own
-        // bundle copy, so EOF still tracks the wrapper's seal.
-        drop(diag_write);
-        match result {
-            Ok(execution) => cistella::framework::hooks::gate_hook_attestation(
-                &diag_read,
-                Deadlines::default().apply,
-            )
-            .map(|_| execution),
-            Err(error) => Err(error),
-        }
+            .map(|execution| (execution, None)),
+        Some(plan) => cistella::framework::hooks::run_hooked_launch(
+            &client,
+            &unit,
+            plan,
+            &worktree_target,
+            &key,
+        ),
     };
-    let execution = match attempt {
-        Ok(execution) => execution,
+    let (execution, exec_failure) = match attempt {
+        Ok(pair) => pair,
         Err(error) => {
             if let Err(teardown_err) =
                 client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
             {
                 report_release(release_client(client, &rendezvous_dir));
                 eprintln!("error: teardown after launch failure ({error}): {teardown_err}");
-                std::process::exit(1);
+                return Ok(1);
             }
             report_release(release_client(client, &rendezvous_dir));
             return Err(error);
@@ -833,9 +842,9 @@ fn conduct_session(
                 report_release(release_client(client, &rendezvous_dir));
                 if !cistella::runtime::residue_gone(&container_name, &id) {
                     eprintln!("error: signal teardown left residue for {container_name}");
-                    std::process::exit(1);
+                    return Ok(1);
                 }
-                std::process::exit(128 + signum);
+                return Ok(128 + signum);
             }
             Err(error) => {
                 if let Err(teardown_err) =
@@ -843,12 +852,29 @@ fn conduct_session(
                 {
                     report_release(release_client(client, &rendezvous_dir));
                     eprintln!("error: teardown after await failure ({error}): {teardown_err}");
-                    std::process::exit(1);
+                    return Ok(1);
                 }
                 report_release(release_client(client, &rendezvous_dir));
                 return Err(error);
             }
         };
+    // Wrapper exec failure: the harness never started (applied was
+    // attested, then the wrapper failed to exec and reported typed
+    // on the diagnostics channel). Report wrapper failure, never a
+    // harness outcome, converging like a launch failure.
+    if let Some(detail) = exec_failure {
+        if let Err(teardown_err) =
+            client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+        {
+            report_release(release_client(client, &rendezvous_dir));
+            eprintln!("error: teardown after wrapper failure: {teardown_err}");
+            return Ok(1);
+        }
+        report_release(release_client(client, &rendezvous_dir));
+        return Err(CistellaError::Runtime(format!(
+            "wrapper exec failed: {detail}"
+        )));
+    }
     // Shared teardown converges with `terminate` from another pane: the
     // unit may already be gone, which idempotent terminate/remove
     // tolerate via not-found. A real teardown failure (residue remains)
@@ -868,12 +894,12 @@ fn conduct_session(
             };
             eprintln!("error: teardown after {harness_note}: {teardown_err}");
             report_release(release_client(client, &rendezvous_dir));
-            std::process::exit(1);
+            return Ok(1);
         }
         Err(death_err) if client.guest_dead() => {
             report_release(release_client(client, &rendezvous_dir));
             eprintln!("error: {death_err}");
-            std::process::exit(1);
+            return Ok(1);
         }
         Err(uncertain_err) if client.shutdown_uncertain() => {
             // Unverified quiescence: the shutdown residue dominates
@@ -882,15 +908,15 @@ fn conduct_session(
             // harness disposition from this path.
             report_release(release_client(client, &rendezvous_dir));
             eprintln!("error: {uncertain_err}");
-            std::process::exit(1);
+            return Ok(1);
         }
         Err(_) => {}
     }
     if let Err(error) = release_client(client, &rendezvous_dir) {
         eprintln!("error: guest release: {error}");
-        std::process::exit(1);
+        return Ok(1);
     }
-    std::process::exit(status.exit_code());
+    Ok(status.exit_code())
 }
 
 /// Test hook: milliseconds to stall between install and start, polling for
@@ -900,50 +926,4 @@ fn start_delay_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
-}
-
-/// Aborts a startup after a signal: converges installed residue and exits
-/// 128+signal. The creation-window guard must already be dropped (the
-/// isolator methods used here assume the caller held it where the moved
-/// mechanics did). Cleanup is verified: residue left behind fails the
-/// invocation (exit 1) instead of reporting a clean signal exit. Takes
-/// the wire client by value so the guest shuts down orderly on every
-/// abort path instead of orphaning.
-fn abort_startup(
-    client: WireClient,
-    rendezvous_dir: &std::path::Path,
-    handle: Option<&UnitHandle>,
-    container_name: &str,
-    session_id: &str,
-    signum: i32,
-) -> ! {
-    if let Some(unit) = handle {
-        let key = ReconciliationKey::generate();
-        let grace = Deadlines::default().terminate_grace;
-        let _ = client.terminate(unit, grace, &key);
-        let _ = client.remove(unit, &key);
-    } else if let Err(e) = cistella::runtime::remove_scratch(session_id) {
-        eprintln!("error: startup abort cleanup: {e}");
-    }
-    // Read uncertainty BEFORE release consumes the client, then
-    // fold the release outcome in: the guest may enter a fatal
-    // path DURING release itself (after wire terminate/remove
-    // succeeded), so a pre-release snapshot alone is stale by
-    // construction and a failed close dominates the signal
-    // disposition. The release line already names any recorded
-    // failure; the code must not claim a clean signal exit.
-    let uncertain_before = client.shutdown_uncertain();
-    let release_outcome = release_client(client, rendezvous_dir);
-    let release_failed = release_outcome.is_err();
-    report_release(release_outcome);
-    let residue_left = !cistella::runtime::residue_gone(container_name, session_id);
-    if residue_left {
-        eprintln!("error: startup abort left residue for {container_name}");
-    }
-    std::process::exit(cistella::isolators::client::abort_exit_code(
-        residue_left,
-        uncertain_before,
-        release_failed,
-        signum,
-    ));
 }

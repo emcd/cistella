@@ -636,8 +636,8 @@ fn probe_report_gates_abi_and_mask() {
 fn attestation_line_parses_applied() {
     use cistella::framework::prepare::parse_attestation_line;
     assert_eq!(
-        parse_attestation_line(r#"{"applied":true,"abi":7}"#).unwrap(),
-        7
+        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767}"#).unwrap(),
+        (7, 32767)
     );
     let error =
         parse_attestation_line(r#"{"applied":false,"error":"bad allow path"}"#).unwrap_err();
@@ -685,6 +685,8 @@ fn compose_hook_argv_orders_wrapper_args_then_harness() {
         argv,
         vec![
             STAGED_WRAPPER_GUEST_PATH.to_string(),
+            "--allow-ro=/".to_string(),
+            "--allow-rw=/dev".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
             "--".to_string(),
@@ -740,4 +742,187 @@ fn compose_hook_argv_refuses_count_and_cover() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("untranslatable"), "got: {error}");
+}
+
+#[test]
+fn attestation_strict_schema_refuses_dups_and_extras() {
+    use cistella::framework::prepare::parse_attestation_line;
+    // Duplicate keys refuse (derived Deserialize rejects them).
+    let error =
+        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"abi":8}"#)
+            .unwrap_err();
+    assert!(error.to_string().contains("shape"), "got: {error}");
+    // Unknown fields refuse.
+    let error = parse_attestation_line(
+        r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"harness_pid":123}"#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("shape"), "got: {error}");
+    // Cross-shape mismatch refuses (applied:true must not carry error).
+    let error =
+        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"error":"x"}"#)
+            .unwrap_err();
+    assert!(error.to_string().contains("shape"), "got: {error}");
+    // Negative shape still reports.
+    let error =
+        parse_attestation_line(r#"{"applied":false,"error":"bad allow path"}"#).unwrap_err();
+    assert!(error.to_string().contains("apply failure"), "got: {error}");
+}
+
+#[test]
+fn probe_strict_schema_refuses_extras() {
+    use cistella::framework::prepare::parse_probe_report;
+    let error = parse_probe_report(br#"{"abi":7,"handled_fs_mask":32767,"extra":1}"#).unwrap_err();
+    assert!(error.to_string().contains("shape"), "got: {error}");
+}
+
+#[test]
+fn gate_drain_captures_exec_failure_and_ignores_noise() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::os::fd::AsFd;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    let script = concat!(
+        "{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n",
+        "{\"applied\":false,\"error\":\"exec failed: ENOENT\"}\n",
+    );
+    use std::io::Write;
+    write.write_all(script.as_bytes()).expect("write script");
+    drop(write);
+    let (abi, detail) =
+        gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate passes on attestation");
+    assert_eq!(abi, 7);
+    assert_eq!(detail.as_deref(), Some("exec failed: ENOENT"));
+    let _ = read.as_fd();
+}
+
+#[test]
+fn gate_drain_clean_session_has_no_detail() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    write
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
+        .expect("write script");
+    drop(write);
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate passes");
+    assert_eq!(abi, 7);
+    assert_eq!(detail, None);
+}
+
+#[test]
+fn compose_baseline_grants_scratch_skips_files_and_siblings() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::path::Path;
+    // Scratch outside the ancestor domain with RW mode grants
+    // full; a socket file is skipped (cannot root path_beneath);
+    // a sibling-domain bind grants nothing (default-deny covers,
+    // 3.3 names it).
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let socket = tempfile::NamedTempFile::new().expect("socket stand-in");
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![
+        MountTriple {
+            host_source: "/home/op/src".to_string(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: scratch.path().to_string_lossy().to_string(),
+            container_target: "/tmp/scratch".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: socket.path().to_string_lossy().to_string(),
+            container_target: "/run/agent.sock".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: "/home/op/src/other".to_string(),
+            container_target: "/other".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        Path::new("/home/op/src"),
+        Path::new("/home/op/src/proj"),
+        &["true".to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        argv,
+        vec![
+            STAGED_WRAPPER_GUEST_PATH.to_string(),
+            "--allow-ro=/".to_string(),
+            "--allow-rw=/dev".to_string(),
+            "--allow-ro=/src".to_string(),
+            "--allow-rw=/src/proj".to_string(),
+            "--allow-rw=/tmp/scratch".to_string(),
+            "--".to_string(),
+            "true".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn gate_drain_malformed_trailing_refuses() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    write
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\nnot-json-noise\n")
+        .expect("write script");
+    drop(write);
+    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    assert!(
+        error.to_string().contains("malformed diagnostics trailing"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn gate_drain_missing_eof_times_out_typed() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    // Attestation only, write end HELD OPEN (no EOF): the gate
+    // must not classify the launch successful without the
+    // exec-seal EOF. Short deadline keeps the pin fast.
+    write
+        .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
+        .expect("write script");
+    write.flush().expect("flush");
+    let error = gate_hook_attestation(&read, Duration::from_millis(300)).unwrap_err();
+    assert!(error.to_string().contains("timed out"), "got: {error}");
+    drop(write);
+}
+
+#[test]
+fn gate_drain_overlong_refuses() {
+    use cistella::framework::hooks::gate_hook_attestation;
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    // 70 KiB of newline-free bytes from a thread (pipe buffer
+    // would block a single-threaded writer past 64 KiB).
+    let filler = vec![b'x'; 70 * 1024];
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = write.write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n");
+        let _ = write.write_all(&filler);
+    });
+    let error = gate_hook_attestation(&read, Duration::from_secs(10)).unwrap_err();
+    assert!(error.to_string().contains("overlong"), "got: {error}");
+    let _ = writer.join();
 }

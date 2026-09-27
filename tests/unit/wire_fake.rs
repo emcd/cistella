@@ -180,6 +180,7 @@ pub fn replay_spec() -> CreateSpec {
         volumes: vec![],
         env: vec![],
         labels: vec![],
+        landlock_hooked: false,
     }
 }
 

@@ -679,3 +679,35 @@ pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
     }
     Ok(())
 }
+
+/// Revises read-only directory mounts to read-write for the
+/// isolator when hook confinement stages (task 3.2, operator
+/// direction): the declared-RO `~/src` ancestor (and any other
+/// directory RO mount) reaches Podman as RW so submounts
+/// materialize, and the Landlock policy — derived from the
+/// ORIGINAL modes — enforces the intended RO in-container with
+/// carveouts. File-source triples keep their declared mode
+/// (a file cannot root a `path_beneath` rule, so Landlock cannot
+/// carry their policy; Podman-level RO stays their enforcement).
+/// Targets and sources are untouched: only the mode flips, so
+/// routes translate identically either way. Callers validate and
+/// render the revised set while deriving policy from the
+/// original.
+///
+/// Pure over the triples (host directory check via metadata).
+#[must_use]
+pub fn revise_ro_for_confinement(triples: &[MountTriple]) -> Vec<MountTriple> {
+    triples
+        .iter()
+        .map(|triple| {
+            if triple.mode == MountMode::Ro && std::path::Path::new(&triple.host_source).is_dir() {
+                MountTriple {
+                    mode: MountMode::Rw,
+                    ..triple.clone()
+                }
+            } else {
+                triple.clone()
+            }
+        })
+        .collect()
+}
