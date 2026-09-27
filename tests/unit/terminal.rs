@@ -284,8 +284,8 @@ fn rehost_failure_ok_clean_keeps_original() {
 #[test]
 fn preserve_fd_probe_requires_singular_flag() {
     use cistella::transport::exec_help_supports_preserve_fd;
-    // Singular list form advertised: probe passes (repeatable
-    // and `=` spellings tokenize to the exact flag).
+    // Singular list form DEFINED (indented option line,
+    // repeatable and `=` spellings): probe passes.
     assert!(exec_help_supports_preserve_fd(
         "  --preserve-fd FD1,...\n  --preserve-fds N\n"
     ));
@@ -295,11 +295,16 @@ fn preserve_fd_probe_requires_singular_flag() {
     assert!(!exec_help_supports_preserve_fd(
         "  --preserve-fds N\n  --workdir PATH\n"
     ));
-    // Near-miss spellings never satisfy (prefix token, suffixed
-    // token, prose mention without the flag).
-    assert!(!exec_help_supports_preserve_fd("--preserve-fd2\n"));
+    // Prose merely MENTIONING the singular flag never satisfies
+    // (fail-open gate): only a definition line counts.
     assert!(!exec_help_supports_preserve_fd(
-        "preserves fds via --preserve-fds\n"
+        "This build does not support --preserve-fd\n"
     ));
+    assert!(!exec_help_supports_preserve_fd(
+        "See --preserve-fd for another release\n"
+    ));
+    // Near-miss spellings never satisfy (prefix token, suffixed
+    // token, empty input).
+    assert!(!exec_help_supports_preserve_fd("--preserve-fd2\n"));
     assert!(!exec_help_supports_preserve_fd(""));
 }

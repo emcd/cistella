@@ -64,9 +64,15 @@ pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> 
 }
 
 /// Whether `podman exec --help` text advertises the singular
-/// `--preserve-fd` list form (exact token match: the plural
-/// `--preserve-fds` count form does not satisfy it). Pure over
-/// the help text; the runner below supplies it.
+/// `--preserve-fd` list form: some line must DEFINES it —
+/// leading whitespace, then exactly `--preserve-fd`, then an
+/// option-field delimiter (end of line, space, tab, `=`, `,`).
+/// A bare token anywhere is not enough: prose merely mentioning
+/// the unsupported option ("this build does not support
+/// `--preserve-fd`") must not satisfy a pre-spawn capability
+/// gate, and the plural `--preserve-fds` count form never
+/// satisfies it (sibling-session fd leak). Pure over the help
+/// text; the runner below supplies it.
 ///
 /// The singular form is load-bearing for hooked launches: the
 /// range form would forward every guest-held fd in range —
@@ -75,8 +81,11 @@ pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> 
 /// launches carry a podman floor enforced by the runner.
 #[must_use]
 pub fn exec_help_supports_preserve_fd(help: &str) -> bool {
-    help.split(|c: char| c.is_whitespace() || c == ',' || c == '=')
-        .any(|token| token == "--preserve-fd")
+    help.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("--preserve-fd")
+            .is_some_and(|rest| matches!(rest.chars().next(), None | Some(' ' | '\t' | '=' | ',')))
+    })
 }
 
 /// Refuses hooked launches the seat podman cannot forward:
