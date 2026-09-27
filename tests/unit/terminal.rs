@@ -402,3 +402,23 @@ fn hook_spawn_lock_serializes_sections() {
     // Sequential re-acquire after release: no self-deadlock.
     drop(lock_hook_spawn().expect("re-acquire"));
 }
+
+#[test]
+fn runtime_matrix_admits_characterized_cells_only() {
+    use cistella::isolators::hook::runtime_admitted;
+    use cistella::transport::PreserveStrategy::{Plural, Singular};
+    // Singular exact-fd forwarding: crun only (docs +
+    // uncharacterized risk elsewhere).
+    assert!(runtime_admitted(Singular, "crun"));
+    assert!(!runtime_admitted(Singular, "runc"));
+    assert!(!runtime_admitted(Singular, "runsc"));
+    assert!(!runtime_admitted(Singular, ""));
+    // Plural path: crun plus runc (both hand-characterized on
+    // podman 4.9.3 — identical semantics); anything else
+    // refuses.
+    assert!(runtime_admitted(Plural, "crun"));
+    assert!(runtime_admitted(Plural, "runc"));
+    assert!(!runtime_admitted(Plural, "runsc"));
+    assert!(!runtime_admitted(Plural, "youki"));
+    assert!(!runtime_admitted(Plural, ""));
+}

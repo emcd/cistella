@@ -37,8 +37,8 @@ use crate::transport::{
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Contract` on wrapper mismatch or a
-/// non-crun runtime, and `CistellaError::Runtime` on
+/// Returns `CistellaError::Contract` on wrapper mismatch or an
+/// unadmitted runtime, and `CistellaError::Runtime` on
 /// detection/fcntl failure.
 pub fn prepare_diagnostics_hook(
     diag: &OwnedFd,
@@ -55,9 +55,9 @@ pub fn prepare_diagnostics_hook(
         }
     }
     let runtime = oci_runtime_name()?;
-    if runtime != "crun" {
+    if !runtime_admitted(strategy, &runtime) {
         return Err(CistellaError::Contract(format!(
-            "hook diagnostics require the crun OCI runtime, found {runtime}"
+            "hook diagnostics refuse {runtime} on {strategy:?}: singular needs crun, plural admits crun or runc"
         )));
     }
     let raw = diag.as_raw_fd();
@@ -74,15 +74,30 @@ pub fn prepare_diagnostics_hook(
     Ok(raw)
 }
 
+/// Whether an OCI runtime is admitted for a preservation
+/// strategy (pure matrix): singular exact-fd forwarding is
+/// crun-only per podman docs (other runtimes are an
+/// uncharacterized security risk — refused); the plural path
+/// admits crun plus runc, both hand-characterized on podman
+/// 4.9.3 (identical N-counting, numbering, contiguity gate,
+/// EOF, arriving tables). Anything else refuses on either
+/// path. Pinned directly; the probe below supplies the name.
+#[must_use]
+pub fn runtime_admitted(strategy: PreserveStrategy, runtime: &str) -> bool {
+    match strategy {
+        PreserveStrategy::Singular => runtime == "crun",
+        PreserveStrategy::Plural => runtime == "crun" || runtime == "runc",
+    }
+}
+
 /// Names the OCI runtime backing local podman (`podman info`
-/// JSON, `host.ociRuntime.name`). Hooked launches need exact-fd
-/// preservation (crun-only per podman docs); anything else
+/// JSON, `host.ociRuntime.name`). Admission is strategy-
+/// dependent ([`runtime_admitted`]); anything unadmitted
 /// refuses typed before spawn.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Runtime` on command/parse failure
-/// and `CistellaError::Contract` on a non-crun runtime.
+/// Returns `CistellaError::Runtime` on command/parse failure.
 fn oci_runtime_name() -> Result<String> {
     let out = Command::new("podman")
         .args(["info", "--format", "json"])
