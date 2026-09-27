@@ -84,6 +84,12 @@ fn bare_profile() -> Profile {
         credential_surface: CredentialSurface::None,
         container_home: "/home/cistella".to_string(),
         labels: HashMap::new(),
+        isolator: cistella::profile::IsolatorConfig {
+            name: "podman".to_string(),
+        },
+        extensions: vec![cistella::profile::ExtensionConfig {
+            name: "landlock".to_string(),
+        }],
     }
 }
 
@@ -710,4 +716,22 @@ fn compose_canonicalizes_target_spellings_for_coverage() {
         argv.contains(&"--allow-rw=/src/g/x".to_string()),
         "RW carveout emits canonical: {argv:?}"
     );
+}
+
+#[test]
+fn require_declared_hooks_refuses_selected_but_empty() {
+    use cistella::framework::hooks::require_declared_hooks;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    // Selected but answered nothing (malformed/buggy/replaced
+    // guest): refuse pre-create rather than start plain and
+    // unconfined silently.
+    let error = require_declared_hooks(true, &[]).unwrap_err();
+    assert!(error.to_string().contains("no hook"), "got: {error}");
+    // Selected with hooks: pass (multiplicity is composition's
+    // pre-create refusal, not this gate's).
+    require_declared_hooks(true, &[hook.clone(), hook.clone()]).expect("multi passes here");
+    require_declared_hooks(true, std::slice::from_ref(&hook)).expect("one passes");
+    // Undeclared: nothing promised, nothing enforced.
+    require_declared_hooks(false, &[]).expect("undeclared empty passes");
 }

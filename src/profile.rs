@@ -134,6 +134,67 @@ pub struct Profile {
     /// `cistella.` prefix refused, only the driver emits `cistella.*`).
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    /// Isolator selection (`[isolator]`, default podman). Only
+    /// `podman` exists; unknown names refuse at conduct (closed
+    /// admission until guest registration lands). Absent means
+    /// podman — 0.1.x profiles run unchanged.
+    #[serde(default = "default_isolator")]
+    pub isolator: IsolatorConfig,
+    /// Declared extensions (`[[extensions]]`, default none): the
+    /// external guests answering prepare for the session. Absent
+    /// or empty means pure Podman behavior (2.x path — no
+    /// extension guest spawned, no hooks staged; the Podman
+    /// isolator guest itself is still hosted as in 2.x).
+    /// Declaring `landlock` engages the Landlock extension and
+    /// the hooked conduct path; unknown names and duplicates
+    /// refuse at conduct (closed admission until guest
+    /// registration lands — a typo can never silently plain a
+    /// meant-hooked session).
+    #[serde(default)]
+    pub extensions: Vec<ExtensionConfig>,
+}
+
+/// Isolator selection table (`[isolator]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct IsolatorConfig {
+    /// Isolator guest name (`podman`).
+    pub name: String,
+}
+
+/// Extension participation entry (`[[extensions]]`): one
+/// external guest answering prepare. Shape-forward: source,
+/// hash, path, and args land here when third-party vending
+/// does (see the registration todo); `name` alone suffices
+/// while all guests ship in-crate.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ExtensionConfig {
+    /// Extension guest name (`landlock`).
+    pub name: String,
+}
+
+fn default_isolator() -> IsolatorConfig {
+    IsolatorConfig {
+        name: "podman".to_string(),
+    }
+}
+
+/// Isolator ids a profile may select (closed until guest
+/// registration replaces admission).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolatorId {
+    /// Podman lifecycle backend (the only one).
+    Podman,
+}
+
+/// Extension ids a profile may declare (closed until guest
+/// registration replaces admission).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionId {
+    /// Landlock confinement guest (answers prepare with the
+    /// wrapper hook).
+    Landlock,
 }
 
 fn default_container_home() -> String {
@@ -336,6 +397,55 @@ enum ProfileText {
 }
 
 impl Profile {
+    /// Closed isolator admission: only `podman` conducts today
+    /// (guest registration replaces this set later). Call on
+    /// the conduct path after resolution, before any session
+    /// mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` naming an unknown
+    /// isolator. Diagnostics name the declaration, never values.
+    pub fn resolve_isolator(&self) -> Result<IsolatorId> {
+        match self.isolator.name.as_str() {
+            "podman" => Ok(IsolatorId::Podman),
+            other => Err(CistellaError::Profile(format!("unknown isolator: {other}"))),
+        }
+    }
+
+    /// Closed extension admission with duplicate refusal: only
+    /// `landlock` answers prepare today (guest registration
+    /// replaces this set later). Empty means no guests — pure
+    /// Podman behavior. Call on the conduct path after
+    /// resolution, before any session mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` naming an unknown or
+    /// duplicated extension. Diagnostics name declarations,
+    /// never values.
+    pub fn resolve_extensions(&self) -> Result<Vec<ExtensionId>> {
+        let mut out = Vec::with_capacity(self.extensions.len());
+        for entry in &self.extensions {
+            let id = match entry.name.as_str() {
+                "landlock" => ExtensionId::Landlock,
+                other => {
+                    return Err(CistellaError::Profile(format!(
+                        "unknown extension: {other}"
+                    )));
+                }
+            };
+            if out.contains(&id) {
+                return Err(CistellaError::Profile(format!(
+                    "duplicate extension: {}",
+                    entry.name
+                )));
+            }
+            out.push(id);
+        }
+        Ok(out)
+    }
+
     /// Snapshots accepted invoker-environment values for this profile, in
     /// profile-list order with deterministic first-error behavior.
     ///
