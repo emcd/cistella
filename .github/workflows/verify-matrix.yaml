@@ -1,0 +1,39 @@
+name: verify-matrix
+
+# Full live-suite run per platform for release-gate records. Manual
+# dispatch from a temporary QA branch; not part of the gate.
+# Run manually per platform set when Owner requests matrix numbers.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ["ubuntu-24.04", "ubuntu-24.04-arm", "ubuntu-26.04", "ubuntu-26.04-arm"]
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Runner user manager and podman socket
+        run: |
+          set -eu
+          sudo loginctl enable-linger "$USER"
+          systemctl --user start podman.socket
+          podman system migrate
+          podman --version
+
+      - name: Full live suite
+        run: |
+          set -eu
+          cargo nextest run \
+            --config-file .auxiliary/configuration/nextest.toml \
+            -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log | tail -15
