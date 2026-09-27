@@ -69,6 +69,10 @@ jobs:
         platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
         exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
     runs-on: ${{ matrix.platform }}
+    # 26.04 legs run advisory-only while green-rate evidence accumulates
+    # (pilot discipline): signal without blocking merges. Promote to
+    # required by dropping this override once the pilot proves out.
+    continue-on-error: ${{ contains(matrix.platform, '26.04') }}
     steps:
 
       - name: Checkout
@@ -121,6 +125,9 @@ jobs:
         # out, the authoritative live gate stays the host pre-push hook
         # (self-hosted runner tracked in todos/27) — a green CI run
         # must never be mistaken for live coverage there.
+        # `--no-fail-fast`: one flake must not hide the other results —
+        # a fail-fast stop at the first failure destroyed most of the
+        # signal in the arm live-tier failure it was tried against.
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast
