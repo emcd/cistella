@@ -586,12 +586,15 @@ pub fn confinement_roots(
 ///   entry: dogfood demotes it only on evidence.
 /// - ancestor guest routes as read-execute; subtree guest routes
 ///   as full rights (the union exception).
-/// - RW carveouts: every read-write triple whose host source lies
-///   strictly under the ancestor (project subtree, declared
-///   submounts such as state dirs or per-project grafts under
-///   shared read-only trees) grants full rights on its guest
-///   target. The ancestor bind itself is never a carveout (it
-///   equals, not undercuts, the ancestor).
+/// - RW carveouts: EVERY declared read-write directory grants
+///   full rights on its guest target, wherever it sits — the
+///   project subtree, the read-write ancestor binding itself,
+///   per-project grafts under shared read-only trees, outside
+///   host sources bound inside ancestor routes (`/opt/state`
+///   at `/src/state`), uncovered scratch alike. Declarations
+///   are authoritative intent: a validated RW triple left
+///   read-only would fail writes the operator declared
+///   admissible.
 /// - RO readability: every read-only triple whose target lies
 ///   outside all routes grants read-execute (declared content
 ///   must stay readable; default-deny would brick it). Targets
@@ -671,9 +674,10 @@ fn compute_grants(
     // composer). Not-yet-existing paths grant by mode
     // (fail-closed: a wrong-kind materialization fails loudly at
     // apply, never silently unconfined).
-    let ancestor_canon = crate::mount::canonicalize_host_source(&ancestor_host.to_string_lossy());
     let mut carveouts = Vec::new();
     for triple in triples {
+        // Proven files skip: a file cannot root a `path_beneath`
+        // rule, and sockets surface at use.
         let source = crate::mount::canonicalize_host_source(&triple.host_source);
         if source.is_file() {
             continue;
@@ -684,17 +688,21 @@ fn compute_grants(
         // duplicate slashes, dot segments) cannot dodge coverage
         // or mint a second rule spelling for one mount.
         let target = crate::mount::canonicalize_container_target(&triple.container_target);
-        let under_ancestor = source.starts_with(&ancestor_canon) && source != ancestor_canon;
-        let outside_ancestor = !source.starts_with(&ancestor_canon);
         let covered = ancestor_routes
             .iter()
             .chain(subtree_routes.iter())
             .any(|route| target == *route || target.starts_with(&format!("{route}/")));
         match triple.mode {
-            // Read-write carveouts: under-ancestor submounts
-            // (project tree, state dirs, per-project grafts) and
-            // uncovered outside mounts (scratch) alike.
-            MountMode::Rw if under_ancestor || (outside_ancestor && !covered) => {
+            // Read-write carveouts: EVERY declared read-write
+            // directory grants full rights on its guest target,
+            // wherever it sits — under-ancestor grafts, the
+            // read-write ancestor binding itself, outside mounts
+            // bound inside ancestor routes (`/opt/state` at
+            // `/src/state`), uncovered scratch alike. Declarations
+            // are authoritative intent: a validated RW triple the
+            // ruleset left read-only would fail writes the
+            // operator declared admissible.
+            MountMode::Rw => {
                 carveouts.push((GrantKind::Full, target));
             }
             // Read-only readability: uncovered outside mounts,
