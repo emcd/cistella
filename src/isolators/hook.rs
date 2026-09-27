@@ -3,12 +3,14 @@
 //! The guest forwards the hook diagnostics write-end into the
 //! container at its natural fd number on the singular path
 //! (duped onto [`PLURAL_DIAG_FD`] pre-exec on the plural path): argv verification
-//! (re-checking the prepare-time binding at composition), crun
-//! detection for exact-fd preservation, receive-side CLOEXEC
-//! clearing, and `--diagnostics-fd` insertion. Lives apart from
+//! (re-checking the prepare-time binding at composition),
+//! strategy-dependent runtime admission (singular crun-only,
+//! plural crun-or-runc on characterization), receive-side
+//! CLOEXEC clearing, and `--diagnostics-fd` insertion. Lives apart from
 //! the Podman backend so the backend file stays under its line
-//! budget; called once per hooked launch (no shared mutable fd
-//! state, so parallel hooked launches need no lock).
+//! budget; called once per hooked launch under the process-wide
+//! hook-spawn lock (concurrent launches serialize their
+//! census-to-spawn windows).
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::process::Command;
@@ -22,10 +24,9 @@ use crate::transport::{
 
 /// Prepares diagnostics forwarding for a hooked launch:
 /// verifies argv[0] names the staged wrapper (re-checking the
-/// prepare-time binding at composition), requires the crun
-/// runtime (exact-fd preservation is crun-only per podman docs;
-/// the plural path keeps the same gate in Phase 1 — runc
-/// characterization is a pending spike, not an allowance),
+/// prepare-time binding at composition), admits the runtime by
+/// strategy ([`runtime_admitted`]: singular crun-only,
+/// plural crun-or-runc on characterization),
 /// clears receive-side CLOEXEC so the forked podman client
 /// carries the fd, and inserts `--diagnostics-fd={n}`
 /// immediately after the wrapper executable: the natural number
