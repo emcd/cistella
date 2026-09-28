@@ -484,6 +484,13 @@ fn signalled_harness_relays_signal() {
     // Harness SIGTERM in the race window relays as session signal
     // (death by SIGTERM, not an exit code): the QA fault seam pins
     // the deterministic wrapper-death case separately.
+    // The self-kill waits a beat first: an immediate kill can
+    // beat the supervisor's transition observation (dash dead
+    // between fork and transition-emit reports transition
+    // ambiguous, contract-correct but not this test), while a
+    // 0.2s delay keeps the signal firmly during supervision —
+    // the supervisor has observed the transition long before
+    // the harness dies by its own hand.
     let (_dir, allowed) = scratch_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
@@ -492,7 +499,7 @@ fn signalled_harness_relays_signal() {
         .arg("--")
         .arg("/usr/bin/dash")
         .arg("-c")
-        .arg("kill -TERM $$")
+        .arg("sleep 0.2; kill -TERM $$")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
