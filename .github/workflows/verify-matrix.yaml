@@ -5,7 +5,12 @@ name: verify-matrix
 # Run manually per platform set when Owner requests matrix numbers.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Nextest -E filter for a targeted run (empty = full suite)'
+        required: false
+        default: ''
 
 jobs:
 
@@ -45,8 +50,19 @@ jobs:
         # pipefail: without it the shell reports tee's status and
         # a failed suite exits 0 — a green matrix record must
         # mean green tests, never a masked failure.
+        # A non-empty filter input runs one targeted cohort with
+        # immediate per-test output (marker capture for
+        # capability-probe tests whose PASS alone proves nothing).
         run: |
           set -euo pipefail
-          cargo nextest run \
-            --config-file .auxiliary/configuration/nextest.toml \
-            -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log
+          if [ -n "${{ inputs.filter }}" ]; then
+            cargo nextest run \
+              --config-file .auxiliary/configuration/nextest.toml \
+              -P live --run-ignored=all \
+              -E "${{ inputs.filter }}" \
+              --success-output=immediate 2>&1 | tee suite.log
+          else
+            cargo nextest run \
+              --config-file .auxiliary/configuration/nextest.toml \
+              -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log
+          fi
