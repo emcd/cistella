@@ -30,8 +30,25 @@ binaries such as `linecheck`) go through them, not through this repo.
   cargo nextest run --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
   ```
   Flag order matters: without `--config-file`, cargo misreads `-P live`
-  as its own `--profile` flag. Live must go green on host per hash
-  before merge.
+  as its own `--profile` flag. On-demand runs and the nightly
+  schedule (planned, not yet implemented) use the full tier;
+  per-merge requirement is the smoke gate below, and a green
+  skip never counts as proof.
+- Live-smoke gate (tester/pre-push, ≤10 min budget): the
+  `smoke` rows of `tests/tiers.txt` (one `<lowest-tier>
+  <test-id>` row per live test; membership cumulative
+  downward), run as
+  ```sh
+  cargo nextest run --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$(.auxiliary/configuration/live-smoke-filter.sh)"
+  ```
+  The script emits exact-equality predicates (`test(=id)` —
+  bare `test(id)` is contains-match and would silently
+  widen). Everything else stays in-tree and runnable
+  (nightly/on-demand full tier is planned, not yet
+  scheduled); per-merge requirement is the smoke gate plus,
+  on security-sensitive releases, explicitly scheduled
+  targeted evidence (e.g. §3.4 denial/adversarial-bind
+  runs) — a green skip never counts as proof.
 - Specs: `openspec validate --all --strict`.
 - Lint/format/size: `cargo clippy --all-targets -- -D warnings`,
   `cargo fmt --check`, and the `linecheck` hook

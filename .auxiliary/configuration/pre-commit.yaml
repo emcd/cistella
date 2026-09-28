@@ -83,7 +83,12 @@ repos:
     - id: cargo-nextest-release
       name: 'Test (Rust: Release, cargo-nextest)'
       language: system
-      entry: 'cargo nextest run --release -P live --run-ignored=all --locked --config-file .auxiliary/configuration/nextest.toml'
+      # sh -c: `language: system` executes entry directly
+      # with NO shell, so the filter pipeline must run under
+      # an explicit shell (a literal $(...) would reach
+      # nextest unexpanded and fail every push). POSIX sh
+      # (no bashisms anywhere in the chain).
+      entry: 'sh -c ''exec cargo nextest run --release -P live --run-ignored=all --locked --config-file .auxiliary/configuration/nextest.toml -E "$(.auxiliary/configuration/live-smoke-filter.sh)"'''
       pass_filenames: false
       require_serial: true
       stages: [ 'pre-merge-commit', 'pre-push' ]
