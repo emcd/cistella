@@ -5,7 +5,12 @@ on:
     branches: ['*']
   push:
     branches: ['master', 'release-*']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Nextest -E filter for a targeted run (empty = full suite)'
+        required: false
+        default: ''
 
 jobs:
 
@@ -113,14 +118,19 @@ jobs:
 
       - name: Test (live profile)
         # Runs the FULL suite including the live tier (`-P live
-        # --run-ignored=all`), mirroring the pre-push hook. Whether
-        # hosted runners can actually satisfy it (systemd user manager
-        # plus rootless Podman) is unproven: systemd-guarded tests skip
-        # where no user manager answers, and podman absence may fail
-        # unguarded tests outright. Until the hosted experiment proves
-        # out, the authoritative live gate stays the host pre-push hook
-        # (self-hosted runner tracked in todos/27) — a green CI run
-        # must never be mistaken for live coverage there.
+        # --run-ignored=all`) across the pinned 4-leg matrix
+        # (24.04/26.04 × x64/arm): hosted runners satisfy it
+        # (systemd user manager plus rootless Podman proven
+        # green on all four legs). A manual dispatch may pass
+        # a `filter` input for one targeted cohort (marker
+        # capture for capability-probe tests); empty input is
+        # byte-identical to the full gate run.
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.filter }}" ]; then
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "${{ inputs.filter }}" --success-output=immediate 2>&1 | tee suite.log
+          else
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
+          fi
