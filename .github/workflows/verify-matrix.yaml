@@ -24,16 +24,26 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Runner user manager and podman socket
+        # Mirrors tester.yaml's session prerequisites: lingering starts
+        # the user manager, the wait fails the job early with a readable
+        # error instead of one 60s timeout per test, and the example
+        # images must exist locally (live tests refuse implicit pulls).
+        # A past revision without the image build hung the suite for
+        # 3h+ with zero streamed output; never drop these lines.
         run: |
           set -eu
           sudo loginctl enable-linger "$USER"
           systemctl --user start podman.socket
-          podman system migrate
+          systemctl --user is-system-running --wait
           podman --version
 
+      - name: Build example images
+        run: ./data/dockerfiles/validate.sh
+
       - name: Full live suite
+        # Streamed, not tailed: a blinding pipe hid a 3h hang once.
         run: |
           set -eu
           cargo nextest run \
             --config-file .auxiliary/configuration/nextest.toml \
-            -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log | tail -15
+            -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log
