@@ -31,8 +31,8 @@ binaries such as `linecheck`) go through them, not through this repo.
   ```
   Flag order matters: without `--config-file`, cargo misreads `-P live`
   as its own `--profile` flag. On-demand runs and the nightly
-  schedule (planned, not yet implemented) use the full tier;
-  per-merge requirement is the smoke gate below, and a green
+  schedule (planned, not yet implemented) use the full tier.
+  Per-merge requirement is the full-suite tester gate; a green
   skip never counts as proof.
 - Live-smoke gate (pre-push only, ≤10 min budget): the
   `smoke` rows of `tests/tiers.txt` (one `<lowest-tier>
@@ -56,7 +56,11 @@ binaries such as `linecheck`) go through them, not through this repo.
 ## Commit gates
 
 Pre-commit hooks run fmt, clippy, linecheck, and the fast suite;
-pre-push runs the release build plus the live tier. A hook rejection
+pre-push runs the release build plus the live-smoke tier
+(`tests/tiers.txt`, pre-push-only binding constraint); full
+live runs on demand. On security-sensitive releases, schedule
+targeted evidence explicitly (capability-skipped tests prove
+nothing — record EXECUTED runs, never green skips). A hook rejection
 means no commit was created: fix the finding, restage, rerun the same
 command — never amend around a failed commit. Commits use present
 tense, imperative mood, and end with a `Co-Authored-By` trailer.
