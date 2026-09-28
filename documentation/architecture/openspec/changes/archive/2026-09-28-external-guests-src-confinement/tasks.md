@@ -20,4 +20,4 @@
 ## 4. Validation and docs
 
 - [x] 4.1 Dogfood repeat: unchanged-seat proof plus fleet sweep against the external path (QA tandem seat). Unchanged-seat proven: full live suite green on the seat (516 passed, run at `669a72f`) plus pure-path conducts clean with zero hook lines (closed admission empirical); maintainer seat confined and stable in production use (socket derivation, drain gate, cache/tmp/npm outlets fixed through three dogfood blockers). Fleet sweep rides post-release per operator direction (opencode flip likewise).
-- [ ] 4.2 Validate: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, fast suite plus live tier on host; `openspec validate --all --strict`; sync and archive.
+- [x] 4.2 Validate: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, fast suite plus live tier on host; `openspec validate --all --strict`; sync and archive. All green (fast 448 + live 4-leg record 511/511 + seat 516; 13/13 strict); delta specs synced to main (SessionPty replaced by descriptor passing); change archived.
