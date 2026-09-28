@@ -152,11 +152,13 @@ fn admitted_access_succeeds() {
     let _ = std::fs::remove_file(marker);
 }
 
-/// Local smoke for the admitted path: runs WITHOUT `#[ignore]` in
-/// this seat (kernel 6.17 has Landlock, seccomp off, no_new_privs
-/// branch works). Equivalent to the Podman-seat test for the helper's
-/// correctness; the Podman test adds the namespace-inheritance
-/// assertion (separate `podman_ancestry` file when that test lands).
+/// Local smoke for the admitted path: runs on seats with a
+/// host-writable /tmp marker path (kernel Landlock, seccomp
+/// off, no_new_privs branch works). Equivalent to the
+/// Podman-seat test for the helper's correctness; the Podman
+/// test adds the namespace-inheritance assertion (separate
+/// `podman_ancestry` file when that test lands).
+#[ignore = "live: requires host-writable /tmp marker path"]
 #[test]
 fn local_smoke_admitted_works() {
     let marker = "/tmp/landlock_spike_local_marker";

@@ -6,7 +6,14 @@
 //! guard and runs the inner half with a join timeout: a
 //! reintroduced full-teardown call wedges instead of completing,
 //! failing loudly rather than hanging the suite silently.
+//!
+//! Live-tier: the guard pins the host-global lock path
+//! (`/tmp/cistella.lock` when `XDG_RUNTIME_DIR` is absent), so
+//! this test needs host-global writable state — confined
+//! seats deny it by design. It runs on CI and live seats,
+//! never in the hermetic fast suite.
 
+#[ignore = "live: requires host-global writable lock path"]
 #[test]
 fn lock_held_inner_teardown_completes() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();

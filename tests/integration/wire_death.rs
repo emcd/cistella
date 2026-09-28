@@ -474,6 +474,7 @@ fn wire_client_close_after_death_reports() {
     );
 }
 
+#[ignore = "live: requires host-global writable lock path"]
 #[test]
 fn teardown_unit_lock_held_branch_completes_under_guard() {
     // Production-branch pin for the prepare-arm converge: with a
@@ -546,6 +547,7 @@ fn teardown_unit_lock_held_branch_completes_under_guard() {
         .expect("lock-held teardown must complete, not wedge");
 }
 
+#[ignore = "live: requires host-global writable lock path"]
 #[test]
 fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
     // The scripted peer reads one op (left pending), then forks a

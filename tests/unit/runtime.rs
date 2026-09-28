@@ -221,6 +221,7 @@ fn generic_label_rules() {
     assert!(parse_cli_label("cistella.id=spoof").is_err());
 }
 
+#[ignore = "live: requires host-global writable /tmp legacy path"]
 #[test]
 fn remove_scratch_missing_ok_blocker_errs() {
     // Missing scratch paths are Ok; a path blocked by a non-directory
