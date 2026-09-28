@@ -122,21 +122,15 @@ jobs:
         # promotion) — explicit tiering, never silent.
         run: .auxiliary/configuration/live-tier-guard.sh
 
-      - name: Test (live-smoke gate)
-        # Gate runs ONLY the smoke tier: the -E expression
-        # comes from the shared filter script (exact-equality
-        # predicates — bare `test(name)` is contains-match and
-        # would silently widen). Membership is cumulative
-        # downward (smoke ⊆ prerelease ⊆ nightly ⊆ extended),
-        # so tier filters select `^(smoke|prerelease|...)`
-        # prefixes; extended is the unfiltered full tier. The
-        # extended suite (~500 tests) stays in-tree for
-        # on-demand runs (nightly schedule planned, not yet
-        # implemented) and explicitly scheduled targeted
-        # evidence on security-sensitive releases — never
-        # deleted, just out of the per-push gate. Budget:
-        # ≤10 min cold end-to-end wall including build,
-        # pulls, and cleanup.
+      - name: Test (full live suite)
+        # Full suite stays gated on PR/push CI: measured
+        # ~3 min cold end-to-end per leg (checkout, podman,
+        # image build, release build, 509-test suite,
+        # cleanup), 3x inside the ≤10 min budget — no wall-time
+        # reason to demote. The smoke selector lives
+        # pre-push-only (`.auxiliary/configuration/
+        # live-smoke-filter.sh`), where the binding constraint
+        # is loaded dev seats, several × slower than CI.
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$(.auxiliary/configuration/live-smoke-filter.sh)"
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
