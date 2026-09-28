@@ -735,3 +735,84 @@ fn require_declared_hooks_refuses_selected_but_empty() {
     // Undeclared: nothing promised, nothing enforced.
     require_declared_hooks(false, &[]).expect("undeclared empty passes");
 }
+
+#[test]
+fn compose_skips_proven_nondirectories_but_grants_missing() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    use std::os::unix::net::UnixListener;
+    use std::path::Path;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = dir.path().to_string_lossy().to_string();
+    let subtree = dir.path().join("proj");
+    std::fs::create_dir_all(&subtree).expect("proj dir");
+    std::fs::create_dir_all(dir.path().join("data")).expect("data dir");
+    // Proven non-directories: a file and a bound socket. A
+    // socket fed to the wrapper fails apply (O_DIRECTORY on
+    // a non-directory is ENOTDIR) and refuses the whole
+    // session — proven live by a credential-surface socket.
+    std::fs::write(dir.path().join("agent-file"), b"x").expect("agent file");
+    let _socket = UnixListener::bind(dir.path().join("agent.sock")).expect("agent socket");
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: subtree.to_string_lossy().to_string(),
+            container_target: "/src/proj".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/agent-file"),
+            container_target: "/opt/agent-file".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/agent.sock"),
+            container_target: "/run/sock".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/agent.sock"),
+            container_target: "/run/rosock".to_string(),
+            mode: MountMode::Ro,
+        },
+        // Not-yet-existing paths still grant by mode (a
+        // wrong-kind materialization fails loudly at apply).
+        MountTriple {
+            host_source: format!("{host}/missing"),
+            container_target: "/opt/missing".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/data"),
+            container_target: "/data".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        Path::new(&host),
+        &subtree,
+        &["sleep".to_string(), "infinity".to_string()],
+    )
+    .unwrap();
+    let text = argv.join("\n");
+    for banned in ["/opt/agent-file", "/run/sock", "/run/rosock"] {
+        assert!(
+            !text.contains(banned),
+            "proven non-directory {banned} must not reach allow flags: {text}"
+        );
+    }
+    for granted in ["/src/proj", "/opt/missing", "/data"] {
+        assert!(
+            text.contains(&format!("--allow-rw={granted}")),
+            "granted route {granted} missing: {text}"
+        );
+    }
+}

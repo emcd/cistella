@@ -669,17 +669,23 @@ fn compute_grants(
     }
     // Declared mounts, granted by declared mode (operator-owned
     // intent; Landlock enforces, never second-guesses). Only
-    // proven files skip: a file cannot root a `path_beneath`
-    // rule, and sockets surface at use (documented on the
-    // composer). Not-yet-existing paths grant by mode
-    // (fail-closed: a wrong-kind materialization fails loudly at
-    // apply, never silently unconfined).
+    // proven non-directories skip: files, sockets, fifos, and
+    // their kind cannot root a `path_beneath` rule, and the
+    // wrapper opens every allow path O_DIRECTORY — feeding
+    // one fails apply with ENOTDIR (proven live: a
+    // credential-surface socket refused the whole session).
+    // Unix-socket connect needs no grant on this fleet
+    // (spike-proven: connect succeeds under R+X baseline
+    // with the socket itself unruled), so skipping loses no
+    // working shape. Not-yet-existing paths still grant by
+    // mode (fail-closed: a wrong-kind materialization fails
+    // loudly at apply, never silently unconfined).
     let mut carveouts = Vec::new();
     for triple in triples {
-        // Proven files skip: a file cannot root a `path_beneath`
-        // rule, and sockets surface at use.
+        // Proven non-directories skip (see above); missing
+        // paths grant by mode (see above).
         let source = crate::mount::canonicalize_host_source(&triple.host_source);
-        if source.is_file() {
+        if source.exists() && !source.is_dir() {
             continue;
         }
         // Grant computation runs on canonical target spellings —
