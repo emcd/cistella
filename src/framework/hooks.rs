@@ -69,10 +69,14 @@ pub fn probe_landlock_wrapper(container: &str, timeout: std::time::Duration) -> 
 /// Gates session start on the wrapper's applied attestation (task
 /// 3.2): reads one line under the deadline, refuses negative or
 /// malformed attestations typed, then drains remaining diagnostics
-/// to EOF. Returns the attested ABI plus an exec-failure detail
-/// when the wrapper reported one after attesting (exec failed, so
-/// the harness never started — the caller reports wrapper failure,
-/// never a harness outcome).
+/// to the transition verdict. Returns the attested ABI plus an
+/// exec-failure detail when the wrapper reported one after
+/// attesting (exec failed, so the harness never started — the
+/// caller reports wrapper failure, never a harness outcome).
+/// A positive transition line ends the gate (EOF follows only
+/// at session end); bytes already buffered past it refuse
+/// typed, and later bytes cannot be classified without a
+/// separate reader — documented scope, not a silent pass.
 ///
 /// Trailing bytes are counted, never printed: diagnostics past the
 /// attestation are wrapper-internal (paths included) and stay out
@@ -99,16 +103,20 @@ pub fn gate_hook_attestation(
     Ok((abi, exec_failure))
 }
 
-/// Drains hook diagnostics to EOF under the deadline (64 KiB cap),
-/// watching for a wrapper exec-failure report. Every exit is
-/// explicit: clean EOF with no negative report is the ONLY success
-/// (the exec-sealed fd's remaining writers are the wrapper alone —
-/// guest and framework copies close post-spawn/post-launch — so
-/// EOF proves the exec transition, and the attestation already
-/// proved apply). Timeout, read failure, overlong output, or a
-/// malformed trailing line are typed failures, never clean: an
-/// ambiguous stream cannot classify a launch successful, and no
-/// harness outcome is fabricated from it.
+/// Drains hook diagnostics under the deadline (64 KiB cap),
+/// watching for a wrapper exec-failure report. The gate passes
+/// on the positive transition line: the wrapper sealed (closed
+/// its copy) before reporting, so no further diagnostics can
+/// arrive from it — while EOF itself only follows at session
+/// end, because the podman forwarding hold outlives the seal.
+/// Waiting for EOF here would turn the pre-execute deadline
+/// into a session-lifetime limit (proven live: a 50s harness
+/// dies at the 30s drain). Every other exit is explicit:
+/// exec-failure detail returns, and timeout, read failure,
+/// overlong output, EOF-before-transition, or a malformed
+/// trailing line are typed failures, never clean: an
+/// ambiguous stream cannot classify a launch successful, and
+/// no harness outcome is fabricated from it.
 ///
 /// # Errors
 ///
@@ -125,17 +133,38 @@ fn drain_hook_diagnostics(
     let deadline = std::time::Instant::now() + timeout;
     let mut pending = buffered;
     let mut total = pending.len();
-    // Transition tracking: EOF proves nothing unless the
-    // transitioned line arrived first (a crash between
-    // attestation and transition emits nothing further).
-    let mut transitioned = false;
     loop {
-        while let Some(position) = pending.iter().position(|&byte| byte == b'\n') {
+        // At most one line classifies per pass: every
+        // classified shape returns (detail, success, or
+        // error), so an unclassified remainder simply
+        // accumulates for the next read.
+        if let Some(position) = pending.iter().position(|&byte| byte == b'\n') {
             let line = String::from_utf8_lossy(&pending[..position]).into_owned();
             pending.drain(..=position);
             match check_transition_line(&line)? {
                 Some(detail) => return Ok(Some(detail)),
-                None => transitioned = true,
+                // Positive transition proof ends the gate — but
+                // bytes already buffered past it refuse typed: a
+                // same-write contradiction or malformed tail must
+                // not ride a success. (The 64 KiB ceiling is
+                // enforced on lineless streams by the per-pass
+                // check below; a transitioned line with a huge
+                // buffered tail is refused here as malformed
+                // trailing. Later bytes, arriving after this
+                // return, cannot be classified without a
+                // separate reader; EOF itself follows only at
+                // session end since the podman forwarding hold
+                // outlives the wrapper seal, so waiting for it
+                // would cap harness lifetime at the pre-execute
+                // deadline.)
+                None => {
+                    if !pending.is_empty() {
+                        return Err(CistellaError::Contract(
+                            "malformed diagnostics trailing".to_string(),
+                        ));
+                    }
+                    return Ok(None);
+                }
             }
         }
         if total > 64 * 1024 {
@@ -176,13 +205,9 @@ fn drain_hook_diagnostics(
             ));
         }
         if count == 0 {
-            // EOF ends the stream: success only with the
-            // transitioned line already seen (a crash between
+            // EOF without a transition line: a crash between
             // attestation and transition emits nothing further,
-            // and must not classify as success).
-            if transitioned {
-                return Ok(None);
-            }
+            // and must not classify as success.
             return Err(CistellaError::Contract(
                 "transition unproven: EOF before transition".to_string(),
             ));

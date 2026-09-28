@@ -82,6 +82,7 @@ struct HookFixture {
     _rendezvous: TempDir,
     _tree: TempDir,
     _graft_src: TempDir,
+    _cache_src: TempDir,
     _staged: cistella::framework::registry::StagedHook,
     client: Option<WireClient>,
     key: ReconciliationKey,
@@ -90,6 +91,7 @@ struct HookFixture {
     triples: Vec<MountTriple>,
     proj: PathBuf,
     graft_src: PathBuf,
+    cache_dir: PathBuf,
     /// Guest path of the staged denial-probe helper
     /// (`/opt/probe/deny_probe*`).
     probe: String,
@@ -133,6 +135,18 @@ fn hook_fixture(image: &str) -> HookFixture {
     std::fs::write(proj.join("ro-data/seed"), "seed").expect("ro-data seed");
     std::fs::write(proj.join("secret/seed"), "seed").expect("secret seed");
     std::fs::write(proj.join("seed"), "seed").expect("seed marker");
+    // Maintainer-shaped extras: a cache directory OUTSIDE the
+    // bound tree (disjoint dentries — a same-tree RW graft
+    // outside the subtree would refuse pre-create, see
+    // graft_alias_preflight; runtime outlets live outside
+    // the tree like graft content) and a bound socket
+    // (credential-surface shape — its allow derivation must
+    // skip non-directories, never fail apply with ENOTDIR).
+    let cache_src = TempDir::new().expect("cache tempdir");
+    let cache_dir = cache_src.path().join("data");
+    std::fs::create_dir_all(&cache_dir).expect("cache data dir");
+    let _agent_socket = std::os::unix::net::UnixListener::bind(tree.path().join("agent.sock"))
+        .expect("agent socket");
     let id = mint_session_id();
     // Stage the denial-probe helper for exact-syscall
     // pre/post controls: resolve the built example binary,
@@ -222,6 +236,21 @@ fn hook_fixture(image: &str) -> HookFixture {
             container_target: "/src/graft".to_string(),
             mode: MountMode::Rw,
         },
+        // Runtime cache outlet (disjoint content RW composes
+        // a FULL carveout by declared intent, like the graft).
+        MountTriple {
+            host_source: cache_dir.to_string_lossy().to_string(),
+            container_target: "/cache".to_string(),
+            mode: MountMode::Rw,
+        },
+        // Credential-surface socket shape (bound socket file):
+        // allow derivation must skip it (never an allow
+        // path), while the Podman bind still materializes.
+        MountTriple {
+            host_source: tree.path().join("agent.sock").to_string_lossy().to_string(),
+            container_target: "/run/agent.sock".to_string(),
+            mode: MountMode::Ro,
+        },
         // Second guest-visible bind into the sibling WITHOUT
         // a declared read-write carveout (denial-matrix
         // alternate route): declared RO, flipped RW for
@@ -279,6 +308,7 @@ fn hook_fixture(image: &str) -> HookFixture {
         _rendezvous: rendezvous,
         _tree: tree,
         _graft_src: graft_src,
+        _cache_src: cache_src,
         _staged: staged,
         client: Some(client),
         key,
@@ -287,6 +317,7 @@ fn hook_fixture(image: &str) -> HookFixture {
         triples,
         proj,
         graft_src: graft_dir,
+        cache_dir,
         probe,
         guard,
     }
@@ -545,6 +576,43 @@ fn hook_denial_matrix_confines() {
         std::fs::read_to_string(tree.join("sib/ctl")).expect("ctl readable"),
         "0123456789",
         "denied alternate-route write must leave content intact"
+    );
+    fixture.teardown();
+}
+
+/// Persistent harnesses outlive the diagnostics drain: the
+/// host gate passes on attestation plus the transition line
+/// (EOF follows only at session end), so a 35s sleeper must
+/// exit 0 — pre-fix the 30s drain deadline killed it. The
+/// cache marker proves the runtime outlet works confined;
+/// the session starting at all with the bound-socket triple
+/// proves allow derivation skips non-directories live.
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn hook_long_lived_harness_outlives_drain() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let Some(image) = fixture_image_opt() else {
+        return;
+    };
+    let mut fixture = hook_fixture(&image);
+    let outcome = run_harness(
+        &fixture,
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "touch /cache/marker && sleep 35".to_string(),
+        ],
+    );
+    assert!(
+        matches!(outcome, ExecutionOutcome::Exited(0)),
+        "35s harness must exit 0 past the old 30s drain, got {outcome:?}"
+    );
+    assert!(
+        fixture.cache_dir.join("marker").exists(),
+        "cache marker must land through the carveout"
     );
     fixture.teardown();
 }

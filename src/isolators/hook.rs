@@ -33,8 +33,11 @@ use crate::transport::{
 /// on the singular path, [`PLURAL_DIAG_FD`] on the plural path
 /// (the caller dups there pre-exec). Returns the natural
 /// number for the exec argv and the plural precondition. The
-/// guest copy drops in the caller after spawn, so the framework
-/// observes EOF once the wrapper seals at exec.
+/// guest copy drops in the caller after spawn. EOF follows at
+/// session end (the podman forwarding hold outlives the
+/// wrapper seal), so the host gate passes on attestation plus
+/// the typed transition line — waiting for EOF would cap
+/// harness lifetime at the pre-execute deadline.
 ///
 /// # Errors
 ///

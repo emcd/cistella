@@ -496,7 +496,7 @@ fn gate_drain_missing_eof_times_out_typed() {
     use std::io::Write;
     // Attestation only, write end HELD OPEN (no EOF): the gate
     // must not classify the launch successful without the
-    // exec-seal EOF. Short deadline keeps the pin fast.
+    // transition line. Short deadline keeps the pin fast.
     write
         .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
         .expect("write script");
@@ -815,4 +815,85 @@ fn compose_skips_proven_nondirectories_but_grants_missing() {
             "granted route {granted} missing: {text}"
         );
     }
+}
+
+#[test]
+fn gate_drain_transitioned_returns_before_eof() {
+    use std::time::{Duration, Instant};
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    // Attestation plus the positive transition line, write end
+    // HELD OPEN (no EOF): the gate must pass on the proof
+    // itself — a podman forwarding hold keeps EOF until
+    // session end, and waiting for it capped harness lifetime
+    // at the pre-execute deadline (proven live: 50s harness
+    // dying at the 30s drain).
+    write
+        .write_all(
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":true}\n",
+        )
+        .expect("write script");
+    write.flush().expect("flush");
+    let start = Instant::now();
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(30)).expect("gate passes");
+    assert_eq!(abi, 7);
+    assert_eq!(detail, None);
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "gate must not wait for EOF"
+    );
+    drop(write);
+}
+
+#[test]
+fn gate_drain_transitioned_with_trailing_bytes_refuses() {
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    let mut write: std::fs::File = write.into();
+    use std::io::Write;
+    // Positive line plus already-buffered contradiction and
+    // malformed tail in the SAME write: neither may ride a
+    // success — the gate refuses typed on bytes available
+    // before it returns (later bytes need a separate reader).
+    write
+        .write_all(
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":true}\n{\"transitioned\":false,\"error\":\"exec failed\"}\nnot-json-noise\n",
+        )
+        .expect("write script");
+    drop(write);
+    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    assert!(
+        error.to_string().contains("malformed diagnostics trailing"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn gate_drain_transitioned_with_overcap_tail_refuses() {
+    use std::time::Duration;
+    let (read, write) = nix::unistd::pipe().expect("pipe");
+    // Positive line with a 70 KiB buffered tail behind it: the
+    // tail refuses as malformed trailing (the per-pass ceiling
+    // guards lineless streams; a transitioned line with any
+    // buffered tail refuses here). The writer runs threaded
+    // and ignores write errors: 70 KiB exceeds the pipe
+    // buffer, and after the gate refuses, the dropped read
+    // end turns the remainder into EPIPE — both fine.
+    let writer = std::thread::spawn(move || {
+        let mut write: std::fs::File = write.into();
+        use std::io::Write;
+        let mut script =
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n{\"transitioned\":true}\n"
+                .to_vec();
+        script.extend(std::iter::repeat_n(b'x', 70 * 1024));
+        let _ = write.write_all(&script);
+    });
+    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    assert!(
+        error.to_string().contains("malformed diagnostics trailing"),
+        "got: {error}"
+    );
+    drop(read);
+    writer.join().expect("writer joins");
 }
