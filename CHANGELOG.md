@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-29
 
 ### Added
 
@@ -22,6 +22,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Conformance harness: Podman lifecycle fidelity, protocol/prepare
   fault peers, Agentmux + SSH design-vector fixtures, Landlock spike
   (admitted/`EACCES`/typed `Unsupported`) plus keep-id namespace probe.
+- External guest binaries: the Podman isolator and the Landlock
+  extension run as separate processes speaking the versioned stdio
+  protocol, discovered sibling-relative to the driver (never PATH).
+  Production `conduct` drives lifecycle over the wire; the in-process
+  implementation stays as the conformance reference, and any
+  behavioral divergence surfaces as a conformance failure. Session
+  stdio crosses by explicit descriptor passing (PTY and piped modes
+  preserved); a missing or crashed guest fails loudly, never falls
+  back silently.
+- Landlock confinement for declared profiles (`[isolator]` plus
+  `[[extensions]]`; profiles without them run unchanged): a staged
+  wrapper applies a Landlock ruleset (kernel ABI ≥ 3) derived from
+  declared mount modes before the harness execs, so broadly-mounted
+  trees like `~/src` stay read-only where declared. Mount-alias
+  grafts refuse by dentry identity, the syscall denial matrix carries
+  errno evidence, and every shortfall (probe, attestation, transition)
+  refuses typed pre-execute.
 
 ### Changed
 
@@ -33,6 +50,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `environment-acceptances` stay grandfathered against compiled
   defaults only; user rules take precedence. Absence-by-default is
   preserved: unacknowledged tokens still refuse.
+- The hook diagnostics gate passes on the wrapper's transition proof,
+  not on session EOF: long-lived harnesses are no longer capped at
+  the pre-execute deadline.
 
 ## [0.1.1] - 2026-09-22
 
