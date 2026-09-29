@@ -1,4 +1,4 @@
-//! Landlock spike — placement, ancestry, namespace findings (task 3.2).
+//! Landlock spike — placement, ancestry, namespace findings.
 //!
 //! The three-way assertions (per standup):
 //!   1. `admitted` — wrapped command accesses an allowed path; succeeds.

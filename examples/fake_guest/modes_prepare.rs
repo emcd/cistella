@@ -168,7 +168,7 @@ pub(crate) fn run(
             );
             ExitCode::SUCCESS
         }
-        // ---- Design-vector happy paths (task 3.3): realistic
+        // ---- Design-vector happy paths: realistic
         //      fleet-wiring shapes proving the typed contribution
         //      schemas express today's per-profile wiring. Paths are
         //      fixture-synthetic; the pinned shapes are the env-name

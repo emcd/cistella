@@ -3,8 +3,8 @@
 //! Spawned by `framework::protocol::GuestHost` exactly like a real
 //! extension/isolator helper: a pinned executable that produces
 //! scripted fault shapes at the stdio boundary. Implements zero
-//! lifecycle meaning — never satisfies a lifecycle-common test
-//! (task 3.1 applicability rule #1). The peer proves that the host
+//! lifecycle meaning — never satisfies a lifecycle-common test.
+//! The peer proves that the host
 //! refuses or recovers deterministically; the host is what the suite
 //! tests, not the peer.
 //!
@@ -34,10 +34,10 @@
 //!   `--mode=spurious-after-terminal`    hello + valid response, then send a stray frame
 //!   `--mode=cleanup-then-write`         hello, kill own stdin, try to write to stdout
 //!   `--mode=stderr-fill`                write to stderr past `STDERR_CAP` then exit
-//!   `--mode=prepare-vector-agentmux`      Agentmux-support design vector (task 3.3)
-//!   `--mode=prepare-vector-ssh`           SSH design vector (task 3.3)
-//!   `--mode=prepare-vector-token`         token-shaped env from an extension (task 3.3)
-//!   `--mode=prepare-vector-token-weakening` weakening claim over token pattern (task 3.3)
+//!   `--mode=prepare-vector-agentmux`      Agentmux-support design vector
+//!   `--mode=prepare-vector-ssh`           SSH design vector
+//!   `--mode=prepare-vector-token`         token-shaped env from an extension
+//!   `--mode=prepare-vector-token-weakening` weakening claim over token pattern
 //!   `--mode=normal-echo`                hello + echo requests one-for-one (default)
 //!
 //! Mode defaults to `normal-echo` for unknown values, which itself

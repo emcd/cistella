@@ -1,4 +1,4 @@
-//! Sibling-relative guest discovery (task 1.1).
+//! Sibling-relative guest discovery.
 //!
 //! External guest binaries ship beside the installed driver
 //! executable and are discovered through the current-exe directory

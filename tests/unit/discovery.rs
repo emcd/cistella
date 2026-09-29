@@ -1,4 +1,4 @@
-//! Sibling-relative guest discovery (task 1.1).
+//! Sibling-relative guest discovery.
 //!
 //! Bare names resolve inside the directory; escapes, absences, and
 //! non-executables refuse with the expected path named.

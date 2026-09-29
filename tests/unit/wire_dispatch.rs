@@ -1,4 +1,4 @@
-//! Podman guest wire dispatch error surface (task 2.1).
+//! Podman guest wire dispatch error surface.
 //!
 //! Unknown operations, malformed payloads, and unknown framework
 //! handles refuse with typed errors before any backend call, so

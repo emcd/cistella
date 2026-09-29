@@ -1,4 +1,4 @@
-//! Landlock wrapper binary (task 3.2): the in-container exec ancestor.
+//! Landlock wrapper binary: the in-container exec ancestor.
 //!
 //! Two modes, no daemon, no config files:
 //!

@@ -1,4 +1,4 @@
-//! External isolator wire client (task 2.2b).
+//! External isolator wire client.
 //!
 //! Framework-side counterpart to the `cistella-isolator-podman`
 //! guest binary: hosts the guest through [`host_external`],

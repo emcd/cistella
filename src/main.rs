@@ -431,13 +431,13 @@ fn conduct_session(
         }
         i += 2;
     }
-    // Landlock extension prepare (task 3.1): only for profiles
+    // Landlock extension prepare: only for profiles
     // declaring it. The real extension guest answers one
     // transaction; the central merge sees the full occupied
     // baseline (profile, CLI, worktree, scratch, and
     // credential-surface mounts alike). Merged env/mounts fan into
-    // the session plan below; requested hooks stage here (task
-    // 3.2) and execute at launch. Undeclared: the empty plan —
+    // the session plan below; requested hooks stage here
+    // and execute at launch. Undeclared: the empty plan —
     // pure Podman behavior (no extension guest spawned; the
     // isolator guest itself is still hosted as in 2.x).
     let landlock_selected = extensions.contains(&cistella::profile::ExtensionId::Landlock);
@@ -464,11 +464,10 @@ fn conduct_session(
         landlock_selected,
         &evaluated.merged.guest_hooks,
     )?;
-    // Hook staging (task 3.2, replaces the interim refuse gate):
-    // each requested hook resolves to a private verified copy
-    // mounted RO at the known guest path before create. The guards
-    // live for the session; Drop owns cleanup on every exit, and
-    // staging failure refuses pre-create.
+    // Hook staging: each requested hook resolves to a private
+    // verified copy mounted RO at the known guest path before
+    // create. The guards live for the session; Drop owns cleanup
+    // on every exit, and staging failure refuses pre-create.
     let mut _staged_guards = Vec::new();
     for hook in &evaluated.merged.guest_hooks {
         let (guard, triple) = cistella::framework::registry::stage_hook_artifact(
@@ -481,9 +480,8 @@ fn conduct_session(
         _staged_guards.push(guard);
     }
     triples.extend(evaluated.merged.mounts.clone());
-    // Revision (task 3.2, operator direction): with hooks staged,
-    // directory RO triples reach Podman as RW so submounts
-    // materialize — except RO dirs at or under FULL-granted guest
+    // Revision: with hooks staged, directory RO triples reach
+    // Podman as RW so submounts materialize — except RO dirs at or under FULL-granted guest
     // routes, which keep Podman read-only (tier-2 hardening:
     // Landlock union cannot subtract the parent FULL grant, so
     // the VFS binding carries that enforcement). The contradictory
@@ -515,7 +513,7 @@ fn conduct_session(
     // pre-create, so a refusal leaves no residue.
     cistella::mount::validate_mounts(&revised, prof.home())?;
     cistella::mount::nested_ro_preflight(&revised)?;
-    // Hook launch plan (task 3.2): confinement roots plus wrapper
+    // Hook launch plan: confinement roots plus wrapper
     // argv compose pre-create — an untranslatable topology, a
     // session outside the confinement root, or a bad shape refuses
     // here with no unit, no guest, and only guard-owned staging
@@ -762,7 +760,7 @@ fn conduct_session(
             }
         }
     };
-    // Guest-context capability probe (task 3.2): the staged
+    // Guest-context capability probe: the staged
     // wrapper reports its kernel ABI plus handled mask from inside
     // the running container. Shortfall fails pre-execute typed;
     // plain sessions skip entirely. Failure converges lock-held
@@ -847,7 +845,7 @@ fn conduct_session(
     // before reporting: a dead guest converges directly (wire ops
     // cannot run without it), and the death-checked error — residue
     // dominating when the exit left units — is the report.
-    // Hooked launch (task 3.2): the plan (wrapper argv plus
+    // Hooked launch: the plan (wrapper argv plus
     // diagnostics pipe) composed pre-create, so this site is
     // infallible short of the launch itself — every `?` that could
     // bypass teardown already ran before the unit existed. Session

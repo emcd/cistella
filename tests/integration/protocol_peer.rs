@@ -1,5 +1,5 @@
-//! Protocol conformance via the deterministic peer (task 3.1, fake-
-//! protocol/fault bucket).
+//! Protocol conformance via the deterministic peer (fake-protocol/fault
+//! bucket).
 //!
 //! The peer lives at `tests/fixtures/fake_guest.rs` as a Cargo
 //! test-auxiliary target (out of `package.include`); we resolve its

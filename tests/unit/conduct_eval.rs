@@ -1,4 +1,4 @@
-//! Conduct-side lattice evaluation of profile contributions (task 4.1).
+//! Conduct-side lattice evaluation of profile contributions.
 //!
 //! Deliberate migration pins: the legacy unconditional
 //! token-assignments veto is gone; token-shaped assignment names now

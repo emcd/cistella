@@ -1,4 +1,4 @@
-//! Prepare transaction over the protocol exchange (task 2.2).
+//! Prepare transaction over the protocol exchange.
 //!
 //! One `prepare` exchange per session per extension: the guest
 //! returns separately-typed environment and mount sets, policy
@@ -9,9 +9,8 @@
 //! evaluates every contributed name. Extension output is untrusted
 //! input at every step.
 //!
-//! Conduct wiring rides the dogfood gate (task 4.1): this module
-//! delivers the mechanism; fleet seats stay on their current path
-//! until the unchanged-seat proof passes.
+//! Production `conduct` drives this transaction for every session;
+//! the in-process path remains the conformance reference.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -198,12 +197,12 @@ const EXTENSION_HOOKS: &str = "guest-hooks";
 /// contributions (unit-baked HOME, ssh-agent pointer, exec-time TERM).
 const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
 
-/// Runs the Landlock extension prepare transaction (task 3.1):
+/// Runs the Landlock extension prepare transaction:
 /// hosts the real extension guest per-phase, admits on the
 /// guest-hooks contribution, merges centrally against the
 /// framework-owned baseline, and shuts the guest down. Hook staging
-/// and execution ride task 3.2; hooks return staged for the caller
-/// to hold.
+/// and execution are the caller's job; hooks return staged for the
+/// caller to hold.
 ///
 /// `extra_args` rides the guest spawn (production passes none;
 /// tests select deterministic peer modes).
@@ -269,15 +268,14 @@ pub fn run_landlock_prepare(
         (_, Err(residue)) => return Err(residue),
         (Err(error), Ok(())) => return Err(error),
     };
-    // Artifact-executable binding (3.2 handoff invariant, enforced
-    // from 3.1): the hook executable must be exactly the staged
+    // Artifact-executable binding invariant: the hook executable must be exactly the staged
     // wrapper path — a correctly digest-pinned artifact with
     // `argv_prefix[0]` naming `/bin/sh` (or any other absolute
     // executable) would bypass confinement at composition. The
     // prepare payload carries no session context, so session-blind
     // extension args are never legitimate either: the prefix is the
     // singleton staged path, and the framework composes all wrapper
-    // arguments at launch (task 3.2). Raw argv crosses verbatim by
+    // arguments at launch. Raw argv crosses verbatim by
     // exec (no shell), so no byte-class filtering applies — the gate
     // is structural identity, not content.
     for hook in &plan.merged.guest_hooks {

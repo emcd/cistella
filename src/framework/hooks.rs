@@ -1,4 +1,4 @@
-//! Hook conduct mechanics (task 3.2): guest-context probe and
+//! Hook conduct mechanics: guest-context probe and
 //! attestation gating for wrapper-confined sessions. Pure gates
 //! (probe/attestation parse, roots, argv composition) live in
 //! [`super::prepare`]; this module owns the podman/diagnostics I/O
@@ -9,8 +9,8 @@ use crate::framework::prepare::{
     parse_attestation_line, parse_probe_report, read_attestation_line,
 };
 
-/// Probes the staged wrapper inside the running container (task
-/// 3.2): `podman exec` runs `--probe`, and the ABI-plus-mask gate
+/// Probes the staged wrapper inside the running container:
+/// `podman exec` runs `--probe`, and the ABI-plus-mask gate
 /// admits only kernels that enforce the full matrix. Bounded wait
 /// with kill on timeout; shortfall fails pre-execute typed.
 ///
@@ -231,7 +231,7 @@ pub struct HookLaunchPlan {
     pub diag_write: std::os::fd::OwnedFd,
 }
 
-/// Composes the hooked wrapper argv pre-create (task 3.2): home
+/// Composes the hooked wrapper argv pre-create: home
 /// confinement roots plus `compose_hook_argv`. An untranslatable
 /// topology, a session outside the confinement root, or a bad
 /// shape refuses here with no unit and no guest.

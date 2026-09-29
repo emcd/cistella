@@ -192,7 +192,7 @@ pub(crate) fn run(
             }
             ExitCode::SUCCESS
         }
-        // ---- Prepare-transaction fault modes (task 3.1, peer-driven
+        // ---- Prepare-transaction fault modes (peer-driven
         //      boundary coverage per the frozen 2.2 wire shape).
         //
         // All prepare-fault modes share the same shape:

@@ -1,4 +1,4 @@
-//! Versioned stdio protocol host (task 2.1).
+//! Versioned stdio protocol host.
 //!
 //! Length-prefixed framing, hello/negotiation, request-ID correlation
 //! with the narrow `await_result` streaming exception, bounded

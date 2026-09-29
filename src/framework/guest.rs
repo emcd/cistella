@@ -1,4 +1,4 @@
-//! Guest process host: spawn, speak, kill, reap, drain (task 2.1/F4).
+//! Guest process host: spawn, speak, kill, reap, drain.
 //!
 //! Split from `protocol` at the supervision seam (file-size limit):
 //! the wire exchange lives in [`super::protocol`], process ownership
@@ -372,8 +372,8 @@ fn drain_stderr(mut stderr: ChildStderr) -> StderrDrain {
     }
 }
 
-/// Discovers, spawns, and negotiates hello with an external guest
-/// (task 1.2): the production hosting path.
+/// Discovers, spawns, and negotiates hello with an external guest:
+/// the production hosting path.
 ///
 /// `exe_dir` is the install sibling directory (never PATH); `name`
 /// is a bare guest binary name per [`discover_in`]. Negotiation is

@@ -1,4 +1,4 @@
-//! Hooked-launch live proofs (task 3.2 chain, QA seat).
+//! Hooked-launch live proofs.
 //!
 //! Staging, guest-context probe, diagnostics forwarding, apply,
 //! and attestation through the real guest: a hooked unit confines

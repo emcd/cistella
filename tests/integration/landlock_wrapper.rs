@@ -1,4 +1,4 @@
-//! Shipped Landlock wrapper fast tests (task 3.2).
+//! Shipped Landlock wrapper fast tests.
 //!
 //! These drive the REAL `cistella-landlock-wrap` binary directly on
 //! this seat (kernel Landlock, seccomp off — same basis as the

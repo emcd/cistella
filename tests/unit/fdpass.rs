@@ -1,4 +1,4 @@
-//! Ancillary-FD channel conformance (task 2.2, decision C).
+//! Ancillary-FD channel conformance.
 //!
 //! Bundle round-trips, count/shape refusals, and rendezvous
 //! authentication run over real Unix sockets with no podman: the

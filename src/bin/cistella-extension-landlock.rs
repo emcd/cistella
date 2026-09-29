@@ -1,11 +1,11 @@
-//! Landlock extension guest binary (task 3.1).
+//! Landlock extension guest binary.
 //!
 //! The external `prepare` guest: speaks the versioned stdio
 //! protocol on stdin/stdout, answers one prepare transaction per
 //! session with the Landlock guest-hook request, and announces the
 //! `landlock` role capability at hello. The hook names the shipped
 //! wrapper by digest-pinned registry reference; the framework
-//! resolves, verifies, and stages it (task 3.2). Stderr carries
+//! resolves, verifies, and stages it. Stderr carries
 //! human-readable notes only; protocol bytes never leave stdout
 //! except as length-prefixed frames.
 //!

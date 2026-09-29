@@ -1,5 +1,4 @@
-//! Conduct-side profile evaluation through the policy lattice
-//! (task 4.1).
+//! Conduct-side profile evaluation through the policy lattice.
 //!
 //! Deliberate policy migration, not additive layering: this replaces
 //! the legacy unconditional token-assignments veto
@@ -11,7 +10,7 @@
 //! `environment-acceptances` stay grandfathered against compiled
 //! defaults only; user rules take precedence over both.
 //!
-//! The seat-socket credential handle is fixture-only in this slice:
+//! The seat-socket credential handle remains fixture-only:
 //! no seat runtime dir is provisioned, so `credential_surface` keeps
 //! its established path and is not admitted here.
 

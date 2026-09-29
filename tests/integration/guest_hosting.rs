@@ -1,4 +1,4 @@
-//! External-guest hosting through the production path (task 1.2).
+//! External-guest hosting through the production path.
 //!
 //! Drives `framework::guest::host_external` against the deterministic
 //! peer sitting in the examples directory (the peer binary name is a
@@ -222,7 +222,7 @@ fn host_external_evil_capability_refuses_value_free_and_reaps() {
 
 #[test]
 fn host_external_peer_death_is_typed_bounded_and_rehostable() {
-    // Hosting-layer death semantics (task 1.3, guest-agnostic):
+    // Hosting-layer death semantics (guest-agnostic):
     // SIGKILL the peer mid-exchange, then pin that a subsequent
     // request fails with a bounded typed error (no hang), shutdown
     // after death is clean, and a fresh host negotiates (no wedged

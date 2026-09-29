@@ -1,4 +1,4 @@
-//! Design-vector conformance fixtures (task 3.3).
+//! Design-vector conformance fixtures.
 //!
 //! Agentmux-support and SSH serve as design vectors, not migrations:
 //! these tests prove the framework's typed contribution schemas can

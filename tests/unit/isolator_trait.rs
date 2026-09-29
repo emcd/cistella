@@ -20,8 +20,8 @@ use cistella::isolators::podman::classify_state;
 ///
 /// Proves trait-level logic only (converge ordering, idempotent
 /// teardown, detach/replay plumbing). It is NOT the deterministic
-/// protocol peer (task 3.1): no framing, no faults, no lifecycle
-/// meaning beyond the state machine the trait requires.
+/// protocol peer: no framing, no faults, no lifecycle meaning
+/// beyond the state machine the trait requires.
 struct MemIsolator {
     states: Mutex<HashMap<String, LifecycleState>>,
     terminated: Mutex<Vec<String>>,

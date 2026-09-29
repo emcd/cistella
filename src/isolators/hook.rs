@@ -1,4 +1,4 @@
-//! Hook-launch diagnostics delivery (task 3.2).
+//! Hook-launch diagnostics delivery.
 //!
 //! The guest forwards the hook diagnostics write-end into the
 //! container at its natural fd number on the singular path

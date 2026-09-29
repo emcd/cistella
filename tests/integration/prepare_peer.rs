@@ -1,5 +1,5 @@
-//! Prepare-transaction conformance via the deterministic peer (task 3.1,
-//! prepare-fault bucket).
+//! Prepare-transaction conformance via the deterministic peer
+//! (prepare-fault bucket).
 //!
 //! Each test drives one prepare fault against the host's
 //! `framework::prepare::run_prepare`:

@@ -1,7 +1,7 @@
 //! Runtime: re-export shim over the Podman isolator.
 //!
 //! The Quadlet lifecycle, shared teardown, and orphan-reaping
-//! mechanics moved to [`crate::isolators::podman`] (task 1.2). This
+//! mechanics moved to [`crate::isolators::podman`]. This
 //! module re-exports the unchanged paths so the CLI, tests, and
 //! existing callers keep working while the framework trait becomes
 //! the primary seam.

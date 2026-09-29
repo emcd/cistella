@@ -5,7 +5,7 @@
 //! → terminate → remove against the live backend, with env/mount
 //! fidelity, idempotent teardown, and residue freedom. Fast-half
 //! trait logic lives in `tests/unit/isolator_trait.rs`; the
-//! deterministic protocol peer (task 3.1) proves boundary faults.
+//! deterministic protocol peer proves boundary faults.
 
 use std::time::{Duration, Instant};
 

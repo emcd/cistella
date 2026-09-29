@@ -1,4 +1,4 @@
-//! Podman isolator wire dispatch (task 2.1).
+//! Podman isolator wire dispatch.
 //!
 //! Translates `isolator.*` wire operations into [`Isolator`] trait
 //! calls against the in-process [`PodmanIsolator`], mapping

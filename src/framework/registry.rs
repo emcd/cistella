@@ -1,4 +1,4 @@
-//! Framework-owned local digest registry for hook artifacts (task 3.1).
+//! Framework-owned local digest registry for hook artifacts.
 //!
 //! Minimal by Advisory ruling: one admitted registry (`shipped`)
 //! rooted at the install sibling directory, serving the one shipped
@@ -12,9 +12,8 @@
 //! `metadata`-then-`read` by path would race replacement and
 //! growth). The trust anchor stays the operator-owned install
 //! directory; the digest binds the staged bytes to the request.
-//! Staging (verified copy, RO guest mount) rides task 3.2; this
-//! module resolves only.
-
+//! Staging (verified copy, RO guest mount) lives with hook staging;
+//! this module resolves only.
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;

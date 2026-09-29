@@ -1,4 +1,4 @@
-//! Ancillary-FD channel for session stdio (task 2.2, decision C).
+//! Ancillary-FD channel for session stdio.
 //!
 //! Typed stdio bundles cross on a SEPARATE Unix stream socket via
 //! `SCM_RIGHTS`, bound to one `execute_launch` request: a JSON

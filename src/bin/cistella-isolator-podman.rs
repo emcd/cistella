@@ -1,4 +1,4 @@
-//! Podman isolator guest binary (task 2.1).
+//! Podman isolator guest binary.
 //!
 //! The external `isolator.*` guest: speaks the versioned stdio
 //! protocol on stdin/stdout, dispatches every op through the shared
@@ -12,7 +12,7 @@
 //! `{"ok": <payload>}` terminal success, `{"pending": true}`
 //! ticker frames during `await_result`, then exactly one terminal
 //! frame; `{"error": {"code", "message"}}` typed failure with a
-//! value-free message. The framework client (task 2.2) redeems
+//! value-free message. The framework client redeems
 //! these; EOF on stdin exits cleanly, and a broken stdout exits
 //! nonzero (the host reads EOF as its own typed error).
 

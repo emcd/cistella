@@ -192,7 +192,7 @@ pub enum Scope {
 ///
 /// Shape-checked at merge (typed severity/scope, non-empty pattern);
 /// lattice evaluation against site/user/defaults is the prepare
-/// transaction's work (task 2.2), not the merge's. Claims are scoped
+/// transaction's work, not the merge's. Claims are scoped
 /// to their own transaction and contributions: overreach refuses the
 /// whole transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

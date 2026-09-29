@@ -625,7 +625,7 @@ pub fn canonicalize_host_source(path: &str) -> PathBuf {
 }
 
 /// Derives every guest-visible route of one host path through the
-/// validated mount topology (task 3.2/3.3): canonicalize the host
+/// validated mount topology: canonicalize the host
 /// path, find every triple whose canonical source equals or
 /// ancestors it, and join the remainder onto the canonical
 /// container target. Keep-id identity still translates (no
@@ -738,8 +738,7 @@ pub fn graft_alias_preflight(
 }
 
 /// Revises read-only directory mounts to read-write for the
-/// isolator when hook confinement stages (task 3.2, operator
-/// direction): the declared-RO `~/src` ancestor (and any other
+/// isolator when hook confinement stages: the declared-RO `~/src` ancestor (and any other
 /// directory RO mount outside FULL grants) reaches Podman as RW
 /// so submounts materialize, and the Landlock policy — derived
 /// from the ORIGINAL modes — enforces the intended RO

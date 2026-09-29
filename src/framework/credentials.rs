@@ -1,4 +1,4 @@
-//! Credential seam: strict handle variants, never values (task 2.3).
+//! Credential seam: strict handle variants, never values.
 //!
 //! Credential contributions use handle variants only. Each admitted
 //! kind declares a bounded locator grammar with a namespace,
@@ -28,7 +28,8 @@
 //! Capability advertisement for the seam is proven by the
 //! deterministic fake (forbidden shapes refused, admitted handles
 //! accepted, oversized strings refused), never by real credential
-//! transport. Real transport wiring rides the dogfood gate (4.1).
+//! transport: no seat runtime dir is provisioned, so real transport
+//! stays unwired.
 //!
 //! Review record: each admitted kind's resolution path (where
 //! `opaque-reference` ids resolve to backing resources, where

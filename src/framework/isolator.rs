@@ -6,13 +6,13 @@
 //! operations with typed handles, reconciliation keys, and
 //! idempotent-teardown semantics (removing an absent unit succeeds).
 //! The Podman backend (`crate::isolators::podman`) is the first
-//! implementor; the deterministic protocol peer (task 3.1) proves
+//! implementor; the deterministic protocol peer proves
 //! boundary behavior against these same signatures.
 //!
-//! Render-level wart (task 2.2 refines it): `CreateSpec` carries
-//! pre-rendered volume/env/label vectors because 1.2 moves mechanics
-//! verbatim for zero behavior change. The prepare transaction will
-//! replace these with typed contributions; the trait shape already
+//! Standing render-level wart: `CreateSpec` carries
+//! pre-rendered volume/env/label vectors (mechanics moved verbatim
+//! for zero behavior change). The prepare transaction owns typed
+//! contributions at the framework layer; the trait shape already
 //! expects that (spec/image/labels stay structured).
 
 use std::time::Duration;
@@ -263,8 +263,8 @@ pub trait Isolator: Send + Sync {
     /// returns an awaitable execution handle.
     ///
     /// `workdir` is launch context (the session worktree target);
-    /// `None` runs the image default. The wire schema gains it in
-    /// task 2.1; the prepare transaction (2.2) owns launch context.
+    /// `None` runs the image default. The wire schema carries it;
+    /// the prepare transaction owns launch context.
     ///
     /// # Errors
     ///
