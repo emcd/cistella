@@ -45,7 +45,8 @@ Unknown isolator/extension names refuse at conduct (closed admission).
   `./data/dockerfiles/validate.sh`).
 - For profiles declaring the `landlock` extension: a kernel with
   Landlock ABI ≥ 3 (Linux 6.2+), and crun as the Podman OCI runtime
-  (runc is also admitted on the fallback preservation path).
+  (runc is admitted only on podmans lacking `exec --preserve-fd`,
+  via the fallback fd-set path — same guarantee).
 
 ## Install
 

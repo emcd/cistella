@@ -19,7 +19,7 @@
 //!
 //! Findings this spike proves:
 //!   - Helper placement: `target/<profile>/examples/landlock_helper`
-//!     via Cargo autodiscovery. Out of `package.include`.
+//!     via a declared `[[example]]`. Out of `package.include`.
 //!   - Exec ancestry: helper `execvp`s into the wrapped command —
 //!     the wrapped process inherits the helper's PID, so `getppid`
 //!     on the wrapped process returns the helper's PID (which is

@@ -13,7 +13,7 @@
 //! write failure exits 2 (loud and distinct from probe
 //! outcomes).
 //!
-//! Cargo autodiscovers (lands at `target/<profile>/examples/`);
+//! Declared `[[example]]` (lands at `target/<profile>/examples/`);
 //! out of `package.include`. Staged into guests by mount in
 //! the hook-live fixture, never shipped.
 

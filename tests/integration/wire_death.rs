@@ -31,7 +31,7 @@ fn examples_dir() -> std::path::PathBuf {
 }
 
 /// Directory holding built binaries (`target/<profile>/`): the
-/// peer lives in `examples/`, the guest binary beside it.
+/// peer binary lives in `examples/`, the guest binary beside it.
 fn bins_dir() -> std::path::PathBuf {
     peer_path()
         .parent()

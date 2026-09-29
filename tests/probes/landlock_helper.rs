@@ -24,7 +24,7 @@
 //! seccomp; the dogfood container seccomp-filter blocks it — see
 //! the spike report).
 //!
-//! Self-contained in `examples/`: Cargo autodiscovers, lands at
+//! Declared `[[example]]`, lands at
 //! `target/<profile>/examples/landlock_helper`, stays out of
 //! `package.include`.
 //!

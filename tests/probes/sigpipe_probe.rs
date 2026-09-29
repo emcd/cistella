@@ -8,7 +8,7 @@
 //! `write_frame` path, and exits 0 only on typed EPIPE plus survival
 //! (a delayed SIGPIPE delivery would kill it first).
 //!
-//! Cargo autodiscovers (lands at `target/<profile>/examples/`);
+//! Declared `[[example]]` (lands at `target/<profile>/examples/`);
 //! out of `package.include`.
 
 use std::os::unix::net::UnixStream;

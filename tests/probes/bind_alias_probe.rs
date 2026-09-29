@@ -15,7 +15,7 @@
 //! evaporates with the namespace, zero host mutation) and
 //! skip quietly where unavailable.
 //!
-//! Cargo autodiscovers (lands at `target/<profile>/examples/`);
+//! Declared `[[example]]` (lands at `target/<profile>/examples/`);
 //! out of `package.include`. Test-only, never shipped.
 
 use cistella::framework::hooks::hook_graft_alias_preflight;

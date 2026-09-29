@@ -1,7 +1,7 @@
 //! Protocol conformance via the deterministic peer (fake-protocol/fault
 //! bucket).
 //!
-//! The peer lives at `tests/fixtures/fake_guest.rs` as a Cargo
+//! The peer lives at `tests/fixtures/fake_guest/` as a Cargo
 //! test-auxiliary target (out of `package.include`); we resolve its
 //! pinned absolute path via `CARGO_BIN_EXE_fake_guest` at test
 //! runtime, then spawn it through `framework::protocol::GuestHost`
@@ -27,8 +27,8 @@ use std::time::Duration;
 use cistella::framework::contract::Deadlines;
 use cistella::framework::protocol::{GuestHost, PROTOCOL_MAJOR};
 
-/// Resolves the peer path. The peer is a Cargo autodiscovered
-/// example (`examples/fake_guest.rs`); it lands at
+/// Resolves the peer path. The peer is a declared `[[example]]`
+/// (`tests/fixtures/fake_guest/`); it lands at
 /// `target/<profile>/examples/fake_guest` (plus a hashed sibling
 /// copy). Cargo's `CARGO_BIN_EXE_<name>` is only set inside the
 /// binary that OWNS the example, so we glob the examples dir.

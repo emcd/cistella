@@ -27,16 +27,41 @@ path = "src/lib.rs"
 name = "cistella"
 path = "src/main.rs"
 
-# Conformance harness: deterministic protocol peer (task 3.1,
-# `framework-isolators-extensions`). Lives under `examples/` so
-# Cargo autodiscovers it as an example target — examples are
-# never probed as tests by `cargo nextest run` (which broke the
-# `[[test]] harness=false` shape via `--list` exit 2 on clap-derived
-# argv), are built to `target/<profile>/examples/`, and stay out
-# of `package.include` either way. Access from other test binaries
-# via glob in `target/<profile>/examples/` — `CARGO_BIN_EXE_fake_guest`
-# is NOT set in sibling test binaries.
-# (Cargo discovers the example automatically; no [[example]] block needed.)
+# Conformance harness and live-test tooling: the deterministic
+# protocol peer plus characterization probes. These are NOT
+# user-facing examples — they live under `tests/` with explicit
+# `[[example]]` tables so Cargo still builds each to
+# `target/<profile>/examples/<name>`, where the suite resolves them
+# by glob (`example_binary` / `resolve_example` /
+# `landlock_helper_path`). Examples are never probed as tests by
+# `cargo nextest run` (which broke the `[[test]] harness=false`
+# shape via `--list` exit 2 on clap-derived argv), and `tests/`
+# stays out of `package.include` either way.
+# (`CARGO_BIN_EXE_<name>` is only set inside the binary that OWNS
+# the example, never in sibling test binaries.)
+[[example]]
+name = "fake_guest"
+path = "tests/fixtures/fake_guest/main.rs"
+
+[[example]]
+name = "deny_probe"
+path = "tests/probes/deny_probe.rs"
+
+[[example]]
+name = "bind_alias_probe"
+path = "tests/probes/bind_alias_probe.rs"
+
+[[example]]
+name = "landlock_helper"
+path = "tests/probes/landlock_helper.rs"
+
+[[example]]
+name = "landlock_kill_wrapper"
+path = "tests/probes/landlock_kill_wrapper.rs"
+
+[[example]]
+name = "sigpipe_probe"
+path = "tests/probes/sigpipe_probe.rs"
 
 
 [dependencies]
@@ -52,7 +77,7 @@ thiserror = "2.0.20"
 toml = { version = "1.1.4", features = ["parse"] }
 
 [dev-dependencies]
-# Helper-only — used by examples/landlock_helper.rs to bind Landlock
+# Helper-only — used by tests/probes/landlock_helper.rs to bind Landlock
 # syscalls and by tests/unit/session_pty.rs for pty allocation;
 # nothing in src/ depends on it directly (src uses nix::libc).
 libc = "0.2.189"
