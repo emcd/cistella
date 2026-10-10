@@ -554,3 +554,51 @@ fn wrong_protocol_major_refuses_at_resolve() {
     let error = resolve(&entry, &fetch_ctx(&dir)).expect_err("future major must refuse");
     assert!(error.to_string().contains("protocol"), "got: {error}");
 }
+
+#[test]
+fn substitution_after_guard_open_stages_into_guarded_dir() {
+    use cistella::guest_source::prepare_cache_dir;
+    // The exact scenario the path-based checks missed: the cache
+    // path is substituted AFTER the guard opens (real dir renamed
+    // aside, attacker symlink planted at the path). Every stage
+    // and slot operation runs relative to the held directory FD,
+    // so the fetch lands in the guarded original — never through
+    // the swapped path.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join("cache");
+    let guard = prepare_cache_dir(&cache).expect("guard opens");
+    let real = dir.path().join("cache-real");
+    std::fs::rename(&cache, &real).expect("rename real aside");
+    let attacker = dir.path().join("attacker");
+    std::fs::create_dir(&attacker).expect("mkdir attacker");
+    std::os::unix::fs::symlink(&attacker, &cache).expect("plant symlink");
+    let bytes = b"guarded bytes".to_vec();
+    let digest = fixture_digest(&bytes);
+    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let outcome = guard
+        .fetch(
+            &origin.url,
+            &digest,
+            1024 * 1024,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("fetch stages into guarded dir");
+    assert_eq!(outcome.pinned.digest, digest);
+    // The slot names the guarded original (display path joins the
+    // guard's path, which still names the renamed-aside dir only
+    // by string — the bytes live in the real dir).
+    assert_eq!(outcome.slot, cache.join(hex::encode(digest)));
+    let staged = std::fs::read(real.join(hex::encode(digest))).expect("slot in real dir");
+    assert_eq!(staged, bytes);
+    // Nothing passed through the swapped path: the attacker dir
+    // holds no slot, no temp, nothing.
+    let entries: Vec<_> = std::fs::read_dir(&attacker)
+        .expect("read attacker")
+        .flatten()
+        .collect();
+    assert!(entries.is_empty(), "attacker dir untouched: {entries:?}");
+    // And the swapped path itself refuses a fresh guard (symlink
+    // at the cache path never becomes a guard).
+    let error = prepare_cache_dir(&cache).expect_err("swapped path must refuse");
+    assert!(error.to_string().contains("symlink"), "got: {error}");
+}

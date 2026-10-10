@@ -112,11 +112,12 @@ Both `http` and `https` URLs fetch (transport is untrusted by design — the reg
 hash anchors integrity, never TLS); redirects follow at most 5 hops, then refuse.
 Mismatch SHALL refuse pre-create and execute nothing. Upstream rotation SHALL require a
 registry edit (new hash), never silent pickup. The framework-owned cache directory SHALL
-be a seat- or root-owned non-symlink directory verified via its open FD (mode hardened
-to 0700 on the FD, never by path); stage and slot operations SHALL pin against
-directory substitution (dev+ino comparison at both boundaries). A present slot SHALL be
-re-verified on every use; a poisoned or symlinked slot SHALL refuse with a typed
-verification error instead of refetching.
+be a seat- or root-owned non-symlink directory opened and verified via its own FD
+(mode hardened to 0700 on the FD, never by path); stage and slot operations (temp
+create, chmod, rename, slot open) SHALL run directory-FD-relative to the held
+description, so no path operation can be substituted between check and use. A present
+slot SHALL be re-verified on every use; a poisoned or symlinked slot SHALL refuse with
+a typed verification error instead of refetching.
 
 #### Scenario: Digest mismatch refuses pre-create
 - **WHEN** fetched bytes do not match the registered sha256

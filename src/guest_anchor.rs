@@ -13,10 +13,10 @@
 //! registry author IS the seat operator).
 
 use std::io::Read;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 
-use nix::fcntl::{OFlag, open};
+use nix::fcntl::{OFlag, open, openat};
 use nix::sys::stat::{Mode, fstat};
 
 use crate::error::{CistellaError, Result};
@@ -68,16 +68,75 @@ pub fn begin_anchored(path: &Path, ceiling: u64) -> Result<Option<AnchoredOpen>>
     // SAFETY: freshly opened above, owned here, wrapped exactly
     // once (same discipline as the hook-registry read path).
     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+    anchor_from_fd(fd, path.to_path_buf(), ceiling).map(Some)
+}
+
+/// Opens `name` relative to an already-verified directory FD and
+/// anchors it identically: nofollow, regular-file, seat-or-root
+/// ownership, no group/other write bits, all on the open
+/// description. Single-component names only (a `/` refuses —
+/// callers pass hash slots and generated temp names, never paths).
+/// Directory-FD-relative creation/open/rename is what makes the
+/// cache guard structural: no path operation can be substituted
+/// between check and use because there is no path operation.
+///
+/// Returns `Ok(None)` when the name is absent under the directory.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on symlink, non-regular,
+/// ownership, or mode refusal, and `CistellaError::Io` on
+/// open/stat failure.
+pub fn openat_anchored(
+    dirfd: RawFd,
+    name: &str,
+    ceiling: u64,
+    display_dir: &Path,
+) -> Result<Option<AnchoredOpen>> {
+    if name.contains('/') {
+        return Err(CistellaError::Profile(
+            "anchored relative name must be single-component".to_string(),
+        ));
+    }
+    let raw = match openat(
+        Some(dirfd),
+        Path::new(name),
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(raw) => raw,
+        Err(errno) => {
+            if errno == nix::errno::Errno::ENOENT {
+                return Ok(None);
+            }
+            if errno == nix::errno::Errno::ELOOP {
+                return Err(CistellaError::Profile(format!(
+                    "registry {} must not be a symlink",
+                    display_dir.join(name).display()
+                )));
+            }
+            return Err(CistellaError::Io(std::io::Error::from(errno)));
+        }
+    };
+    // SAFETY: freshly opened above, owned here, wrapped exactly once.
+    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+    anchor_from_fd(fd, display_dir.join(name), ceiling).map(Some)
+}
+
+/// Fstats one freshly opened FD and wraps the ownership-checked
+/// guard: the shared tail of every anchored open (path or
+/// directory-relative).
+fn anchor_from_fd(fd: OwnedFd, path: PathBuf, ceiling: u64) -> Result<AnchoredOpen> {
     let before =
         fstat(fd.as_raw_fd()).map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
-    check_anchored_stat(&before, path)?;
-    Ok(Some(AnchoredOpen {
+    check_anchored_stat(&before, &path)?;
+    Ok(AnchoredOpen {
         file: fd.into(),
         uid: before.st_uid,
         mode: before.st_mode,
-        path: path.to_path_buf(),
+        path,
         ceiling,
-    }))
+    })
 }
 
 /// Open-file guard holding the pinned FD between open-fstat and the

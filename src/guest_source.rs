@@ -10,8 +10,7 @@
 //! upstream changes require a registry edit.
 
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::PermissionsExt;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,7 +18,7 @@ use nix::fcntl::OFlag;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::PROTOCOL_MAJOR;
-use crate::guest_anchor::{PinnedBinary, begin_anchored, sha256_bytes};
+use crate::guest_anchor::{PinnedBinary, begin_anchored, openat_anchored, sha256_bytes};
 use crate::guest_registry::{GuestSource, HostEnv, RegisteredGuest};
 
 /// Read ceiling for guest binaries at verify time: sized for
@@ -319,31 +318,27 @@ pub struct FetchOutcome {
 /// Returns `CistellaError::Profile` on cache, fetch, bound,
 /// status, or verification refusal.
 pub fn fetch_source(url: &str, expected: &[u8; 32], ctx: &ResolveCtx) -> Result<FetchOutcome> {
-    // The guard holds the verified directory FD across the whole
-    // fetch: stage and slot operations pin against substitution
-    // through it (see `check_pinned` at both boundaries).
-    let guard = prepare_cache_dir(&ctx.cache_dir)?;
-    let slot = ctx.cache_dir.join(hex::encode(expected));
-    // Open the slot directly — never probe with `exists()` first:
-    // `exists()` follows symlinks and suppresses errors, so a
-    // dangling symlink at the slot would read as absent and the
-    // fetch would overwrite it instead of emitting the promised
-    // poisoned-slot refusal. `begin_anchored` distinguishes ENOENT
-    // (miss → download) from ELOOP/permission/non-regular
-    // (typed refusal, zero HTTP requests).
-    match begin_anchored(&slot, MAX_GUEST_BYTES)? {
-        Some(open) => Ok(FetchOutcome {
-            slot,
-            pinned: open.finish_binary(expected)?,
-        }),
-        None => download(url, expected, ctx, &guard, &slot),
-    }
+    prepare_cache_dir(&ctx.cache_dir)?.fetch(url, expected, ctx.fetch_max_bytes, ctx.fetch_timeout)
 }
 
 /// Creates the framework-owned cache directory (0700, unconditionally
-/// — a pre-existing dir keeps no looser mode) so staged and slotted
-/// bytes stay seat-private.
-fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
+/// — a pre-existing dir keeps no looser mode) and returns the
+/// open-directory guard all cache operations run relative to.
+///
+/// The leaf opens nofollow: a symlink at the cache path refuses
+/// (ELOOP) instead of having its target chmodded, and a
+/// non-directory refuses (ENOTDIR) — `create_dir_all` follows
+/// symlinks, so the open is the enforcement point. Public so
+/// tests can hold the guard across a path swap (the substitution
+/// pin would be untestable if guard creation and use were one
+/// inseparable call).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on symlink, non-directory, or
+/// ownership refusal, and `CistellaError::Io` on create/open/stat
+/// failure.
+pub fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
     std::fs::create_dir_all(dir)
         .map_err(|e| CistellaError::Profile(format!("registry cache {}: {e}", dir.display())))?;
     // Open the leaf itself nofollow: a symlink at the cache path
@@ -406,145 +401,233 @@ fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
     .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
     Ok(CacheDirGuard {
         fd,
-        dev: stat.st_dev,
-        ino: stat.st_ino,
         path: dir.to_path_buf(),
     })
 }
 
-/// Open-file guard pinning the verified cache directory across
-/// stage and slot operations: the FD names the
-/// ownership-checked, mode-hardened directory even if paths move.
+/// Open-directory guard pinning the verified cache directory:
+/// every stage and slot operation runs directory-FD-relative to
+/// the held description (openat/renameat/unlinkat), so no path
+/// operation can be substituted between check and use — there is
+/// no check-then-use gap because there is no path re-resolution.
+/// The FD names the ownership-checked, mode-hardened directory
+/// even if the path is renamed away or symlinked elsewhere
+/// mid-fetch.
 #[derive(Debug)]
 pub struct CacheDirGuard {
-    /// Open verified cache directory (held through the fetch).
+    /// Open verified cache directory (all operations relative).
     fd: OwnedFd,
-    /// Device at open (substitution check).
-    dev: u64,
-    /// Inode at open (substitution check).
-    ino: u64,
-    /// Path (diagnostics only — never re-resolved for trust).
+    /// Path (diagnostics and display paths only — never
+    /// re-resolved for trust).
     path: PathBuf,
 }
 
 impl CacheDirGuard {
-    /// Refuses when `dir` no longer names the guarded directory
-    /// (same dev+ino): a substitution between guard and use
-    /// refuses rather than staging into, or slotting from, a
-    /// stranger. Call before staging (temp parent) and before the
-    /// post-rename re-open (slot parent).
+    /// Raw directory FD for dirfd-relative operations.
+    fn dirfd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+
+    /// Fetches one URL into its content-addressed slot, entirely
+    /// relative to the held directory FD. A present slot
+    /// re-verifies on every use (a hash-named mutable file is not
+    /// authentication); a poisoned or symlinked slot refuses with
+    /// a typed verification error instead of refetching. On miss
+    /// the URL downloads bounded, stages to an O_EXCL temp inside
+    /// the guarded directory, renames into the slot atomically,
+    /// and re-opens plus re-verifies through the same FD (the
+    /// spawn FD comes from the re-open).
     ///
     /// # Errors
     ///
-    /// Returns `CistellaError::Profile` on substitution, and
-    /// `CistellaError::Io` on stat failure.
-    pub fn check_pinned(&self, dir: &Path) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
-        // The held description still names the verified directory
-        // (its own dev+ino are immutable for the open description —
-        // this asserts the guard wasn't constructed over a swapped
-        // object and the FD stayed valid across the fetch).
-        let own = nix::sys::stat::fstat(self.fd.as_raw_fd())
-            .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
-        if own.st_dev as u64 != self.dev || own.st_ino as u64 != self.ino {
+    /// Returns `CistellaError::Profile` on cache, fetch, bound,
+    /// status, or verification refusal.
+    pub fn fetch(
+        &self,
+        url: &str,
+        expected: &[u8; 32],
+        max_bytes: u64,
+        timeout: Duration,
+    ) -> Result<FetchOutcome> {
+        let slot = hex::encode(expected);
+        // Direct open, never an `exists()` probe: `exists()`
+        // follows symlinks and suppresses errors, so a dangling
+        // symlink would read as a miss.
+        match openat_anchored(self.dirfd(), &slot, MAX_GUEST_BYTES, &self.path)? {
+            Some(open) => Ok(FetchOutcome {
+                slot: self.path.join(&slot),
+                pinned: open.finish_binary(expected)?,
+            }),
+            None => self.download(url, expected, &slot, max_bytes, timeout),
+        }
+    }
+
+    /// Downloads one URL into its hash slot: bounded read, digest
+    /// bind before first use, FD-relative temp staging, atomic
+    /// FD-relative rename, then re-open plus re-verify (the spawn
+    /// FD comes from the re-open, so the staged bytes and the
+    /// executed bytes are one open description).
+    fn download(
+        &self,
+        url: &str,
+        expected: &[u8; 32],
+        slot: &str,
+        max_bytes: u64,
+        timeout: Duration,
+    ) -> Result<FetchOutcome> {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .max_redirects(5)
+            .build()
+            .into();
+        let response = agent
+            .get(url)
+            .call()
+            .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        if response.status() != 200 {
             return Err(CistellaError::Profile(format!(
-                "registry cache {} changed under its guard",
-                self.path.display()
+                "registry fetch {url}: status {}",
+                response.status()
             )));
         }
-        let stat = std::fs::metadata(dir).map_err(|errno| {
-            CistellaError::Profile(format!("registry cache {}: {errno}", dir.display()))
-        })?;
-        if stat.dev() != self.dev || stat.ino() != self.ino {
+        let mut bytes = Vec::new();
+        response
+            .into_body()
+            .into_reader()
+            .take(max_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        if bytes.len() as u64 > max_bytes {
             return Err(CistellaError::Profile(format!(
-                "registry cache {} was substituted during fetch",
-                self.path.display()
+                "registry fetch {url}: exceeds size bound"
             )));
         }
+        if sha256_bytes(&bytes) != *expected {
+            return Err(CistellaError::Profile(format!(
+                "registry fetch {url}: digest mismatch"
+            )));
+        }
+        let mut staged = StagedTemp::create(self.dirfd(), url)?;
+        staged
+            .write_all(&bytes)
+            .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        staged.persist(slot, url)?;
+        let Some(open) = openat_anchored(self.dirfd(), slot, MAX_GUEST_BYTES, &self.path)? else {
+            return Err(CistellaError::Profile(format!(
+                "registry fetch {url}: slot vanished after stage"
+            )));
+        };
+        Ok(FetchOutcome {
+            slot: self.path.join(slot),
+            pinned: open.finish_binary(expected)?,
+        })
+    }
+}
+
+/// Counter for staging-temp name uniqueness (pid + nanos +
+/// sequence; O_EXCL makes residual collisions fail-closed into a
+/// retry).
+static STAGE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// FD-relative staging temp: created O_EXCL inside the guarded
+/// directory, renamed into the slot by renameat, unlinked on
+/// every non-persisted exit (best-effort) — no stage leakage, no
+/// stranger-file chmod (fchmod lands on the open temp FD).
+struct StagedTemp {
+    /// Guarded directory FD (rename/unlink relative).
+    dirfd: RawFd,
+    /// Single-component temp name.
+    name: String,
+    /// Open write description (closed before rename).
+    file: Option<std::fs::File>,
+}
+
+impl StagedTemp {
+    /// Creates an owner-only temp file inside the guarded
+    /// directory: O_EXCL single-component name, fchmod 0700 on
+    /// the open FD (deterministic under any umask).
+    fn create(dirfd: RawFd, url: &str) -> Result<Self> {
+        for _ in 0..10 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let sequence = STAGE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let name = format!("stage-{}-{nanos}-{sequence}", std::process::id());
+            match nix::fcntl::openat(
+                Some(dirfd),
+                Path::new(&name),
+                OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC,
+                nix::sys::stat::Mode::from_bits_truncate(0o600),
+            ) {
+                Ok(raw) => {
+                    // SAFETY: freshly opened above, owned here,
+                    // wrapped exactly once.
+                    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+                    nix::sys::stat::fchmod(
+                        fd.as_raw_fd(),
+                        nix::sys::stat::Mode::from_bits_truncate(0o700),
+                    )
+                    .map_err(|errno| {
+                        CistellaError::Profile(format!("registry fetch {url}: {errno}"))
+                    })?;
+                    return Ok(Self {
+                        dirfd,
+                        name,
+                        file: Some(std::fs::File::from(fd)),
+                    });
+                }
+                Err(nix::errno::Errno::EEXIST) => continue,
+                Err(errno) => {
+                    return Err(CistellaError::Profile(format!(
+                        "registry fetch {url}: {errno}"
+                    )));
+                }
+            }
+        }
+        Err(CistellaError::Profile(format!(
+            "registry fetch {url}: temp name contention"
+        )))
+    }
+
+    /// Writes the verified bytes to the open temp description.
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.file
+            .as_mut()
+            .expect("staged temp holds its file until persist")
+            .write_all(bytes)
+    }
+
+    /// Renames the temp into the slot, both relative to the
+    /// guarded directory FD: renameat never follows a final
+    /// symlink component, so a planted symlink at the slot is
+    /// replaced (not traversed). The write description closes;
+    /// the drop removes nothing (the name is gone — unlink
+    /// fails ignored).
+    fn persist(&mut self, slot: &str, url: &str) -> Result<()> {
+        nix::fcntl::renameat(
+            Some(self.dirfd),
+            Path::new(&self.name),
+            Some(self.dirfd),
+            Path::new(slot),
+        )
+        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        self.file.take();
         Ok(())
     }
 }
 
-/// Downloads one URL into its hash slot: bounded read, digest bind
-/// before first use, private temp staging, atomic rename, then
-/// re-open plus re-verify (the spawn FD comes from the re-open, so
-/// the staged bytes and the executed bytes are one open
-/// description).
-fn download(
-    url: &str,
-    expected: &[u8; 32],
-    ctx: &ResolveCtx,
-    guard: &CacheDirGuard,
-    slot: &Path,
-) -> Result<FetchOutcome> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(ctx.fetch_timeout))
-        .http_status_as_error(false)
-        .max_redirects(5)
-        .build()
-        .into();
-    let response = agent
-        .get(url)
-        .call()
-        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
-    if response.status() != 200 {
-        return Err(CistellaError::Profile(format!(
-            "registry fetch {url}: status {}",
-            response.status()
-        )));
+impl Drop for StagedTemp {
+    /// Best-effort unlink of a non-persisted temp (persisted
+    /// temps unlink a missing name — ignored). No stage leakage
+    /// on any error path.
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = nix::unistd::unlinkat(
+            Some(self.dirfd),
+            Path::new(&self.name),
+            nix::unistd::UnlinkatFlags::NoRemoveDir,
+        );
     }
-    let mut bytes = Vec::new();
-    response
-        .into_body()
-        .into_reader()
-        .take(ctx.fetch_max_bytes + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
-    if bytes.len() as u64 > ctx.fetch_max_bytes {
-        return Err(CistellaError::Profile(format!(
-            "registry fetch {url}: exceeds size bound"
-        )));
-    }
-    if sha256_bytes(&bytes) != *expected {
-        return Err(CistellaError::Profile(format!(
-            "registry fetch {url}: digest mismatch"
-        )));
-    }
-    let mut staged = tempfile::NamedTempFile::new_in(&ctx.cache_dir).map_err(|e| {
-        CistellaError::Profile(format!("registry cache {}: {e}", ctx.cache_dir.display()))
-    })?;
-    // The staging directory is the guarded one (not a substituted
-    // stranger): the temp file's parent must still name the pinned
-    // directory before its bytes matter.
-    let staged_parent = staged.path().parent().ok_or_else(|| {
-        CistellaError::Profile(format!("registry fetch {url}: staged file has no parent"))
-    })?;
-    guard.check_pinned(staged_parent)?;
-    staged
-        .write_all(&bytes)
-        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
-    // Owner-only executable before the rename: the mode travels
-    // into the slot, satisfying the exec-bit gate plus the
-    // seat-private posture (same 0700 as staged hook artifacts).
-    std::fs::set_permissions(staged.path(), std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
-    staged
-        .persist(slot)
-        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
-    // The slot's parent is still the guarded directory (not a
-    // substituted stranger) before the re-open that hands spawn
-    // its FD.
-    let slot_parent = slot.parent().ok_or_else(|| {
-        CistellaError::Profile(format!("registry fetch {url}: slot has no parent"))
-    })?;
-    guard.check_pinned(slot_parent)?;
-    let Some(open) = begin_anchored(slot, MAX_GUEST_BYTES)? else {
-        return Err(CistellaError::Profile(format!(
-            "registry fetch {url}: slot vanished after stage"
-        )));
-    };
-    Ok(FetchOutcome {
-        slot: slot.to_path_buf(),
-        pinned: open.finish_binary(expected)?,
-    })
 }
