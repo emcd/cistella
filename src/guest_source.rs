@@ -565,18 +565,26 @@ impl StagedTemp {
                     // SAFETY: freshly opened above, owned here,
                     // wrapped exactly once.
                     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+                    // The cleanup guard exists before the first
+                    // fallible step: an fchmod failure unlinks the
+                    // empty stage file instead of littering it.
+                    let staged = Self {
+                        dirfd,
+                        name,
+                        file: Some(std::fs::File::from(fd)),
+                    };
                     nix::sys::stat::fchmod(
-                        fd.as_raw_fd(),
+                        staged
+                            .file
+                            .as_ref()
+                            .expect("staged temp holds its file until persist")
+                            .as_raw_fd(),
                         nix::sys::stat::Mode::from_bits_truncate(0o700),
                     )
                     .map_err(|errno| {
                         CistellaError::Profile(format!("registry fetch {url}: {errno}"))
                     })?;
-                    return Ok(Self {
-                        dirfd,
-                        name,
-                        file: Some(std::fs::File::from(fd)),
-                    });
+                    return Ok(staged);
                 }
                 Err(nix::errno::Errno::EEXIST) => continue,
                 Err(errno) => {
