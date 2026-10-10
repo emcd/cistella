@@ -81,3 +81,6 @@ toml = { version = "1.1.4", features = ["parse"] }
 # syscalls and by tests/unit/session_pty.rs for pty allocation;
 # nothing in src/ depends on it directly (src uses nix::libc).
 libc = "0.2.189"
+# Test-only digest computation for registry pins (same version as the
+# main dependency — no new supply chain, just test visibility).
+sha2 = "0.10.9"

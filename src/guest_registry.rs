@@ -26,6 +26,7 @@
 use std::collections::HashSet;
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use nix::fcntl::{OFlag, open};
@@ -42,6 +43,13 @@ pub const REGISTRY_FORMAT_VERSION: u32 = 1;
 /// properties (nofollow, regular-file, fstat bind) do not depend on
 /// it.
 const MAX_REGISTRY_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Read ceiling for guest binaries at verify time: sized for
+/// debug binaries with symbols (tens of MB; release guests are
+/// ~635KB) — mirrors the hook-artifact registry ceiling. The
+/// security properties (nofollow, regular-file, fstat bind, digest
+/// compare) do not depend on it.
+pub const MAX_GUEST_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Reserved shipped name in `[[isolators]]`: entries shadowing it
 /// refuse at parse (a shadowing entry is a typo or a confusion
@@ -549,28 +557,195 @@ impl AnchoredOpen {
     /// Returns `CistellaError::Profile` on ceiling or mutation
     /// refusal, and `CistellaError::Io` on read/stat failure.
     pub fn finish(self) -> Result<AnchoredBytes> {
-        let mut capped = (&self.file).take(self.ceiling + 1);
+        let AnchoredOpen {
+            file,
+            uid,
+            mode,
+            path,
+            ceiling,
+        } = self;
+        let mut capped = (&file).take(ceiling + 1);
         let mut bytes = Vec::new();
         capped.read_to_end(&mut bytes).map_err(CistellaError::Io)?;
-        if bytes.len() as u64 > self.ceiling {
+        if bytes.len() as u64 > ceiling {
             return Err(CistellaError::Profile(format!(
                 "registry {} exceeds read ceiling",
-                self.path.display()
+                path.display()
             )));
         }
-        let after = fstat(self.file.as_fd().as_raw_fd())
+        let after = fstat(file.as_fd().as_raw_fd())
             .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
-        if after.st_uid != self.uid || after.st_mode != self.mode {
+        if after.st_uid != uid || after.st_mode != mode {
             return Err(CistellaError::Profile(format!(
                 "registry {} changed owner or mode during read",
-                self.path.display()
+                path.display()
             )));
         }
-        Ok(AnchoredBytes {
-            path: self.path,
-            bytes,
-        })
+        Ok(AnchoredBytes { path, bytes })
     }
+
+    /// Reads with the hard bound from the pinned FD, re-checks
+    /// owner/mode on the FD, requires an execute bit, and compares
+    /// the digest against `expected`: the same-FD anchor for guest
+    /// binaries. The returned [`PinnedBinary`] holds the verified
+    /// open description, so a pathname swap after resolution is
+    /// harmless by construction (the FD still names the verified
+    /// bytes) and proceeds — but any reopened or swapped object
+    /// re-verifies from scratch or refuses.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` on ceiling, mutation,
+    /// non-executable, or digest-mismatch refusal, and
+    /// `CistellaError::Io` on read/stat failure. Diagnostics name
+    /// the path, never digest bytes.
+    pub fn finish_binary(self, expected: &[u8; 32]) -> Result<PinnedBinary> {
+        let AnchoredOpen {
+            file,
+            uid,
+            mode,
+            path,
+            ceiling,
+        } = self;
+        let mut capped = (&file).take(ceiling + 1);
+        let mut bytes = Vec::new();
+        capped.read_to_end(&mut bytes).map_err(CistellaError::Io)?;
+        if bytes.len() as u64 > ceiling {
+            return Err(CistellaError::Profile(format!(
+                "registered guest {} exceeds read ceiling",
+                path.display()
+            )));
+        }
+        let after = fstat(file.as_fd().as_raw_fd())
+            .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+        if after.st_uid != uid || after.st_mode != mode {
+            return Err(CistellaError::Profile(format!(
+                "registered guest {} changed owner or mode during read",
+                path.display()
+            )));
+        }
+        if after.st_mode & 0o111 == 0 {
+            return Err(CistellaError::Profile(format!(
+                "registered guest binary is not executable: {}",
+                path.display()
+            )));
+        }
+        let digest: [u8; 32] = sha256_bytes(&bytes);
+        if &digest != expected {
+            return Err(CistellaError::Profile(format!(
+                "registered guest digest mismatch: {}",
+                path.display()
+            )));
+        }
+        Ok(PinnedBinary { file, digest })
+    }
+}
+
+/// Verified guest binary: the digest-checked open file description
+/// whose object is exec'd (spawn execs `/proc/self/fd/N`, so
+/// identity and execution share one open description).
+#[derive(Debug)]
+pub struct PinnedBinary {
+    /// Open verified executable object (held through spawn).
+    pub file: std::fs::File,
+    /// SHA-256 over the verified bytes (equals the registry hash).
+    pub digest: [u8; 32],
+}
+
+/// SHA-256 over one byte slice.
+fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).into()
+}
+
+/// Resolves a registered absolute path source: refuses relative
+/// paths (a relative guest would resolve against the conduct
+/// worktree), canonicalizes the parent chain fully with
+/// symlink-final refusal (the final component opens nofollow —
+/// intermediate directory symlinks resolve identically at exec
+/// because spawn binds the open FD, never the path), refuses
+/// world-writable ancestor directories, then verifies the opened
+/// FD's digest against `expected`.
+///
+/// Missing or non-executable paths refuse typed, mirroring
+/// [`crate::framework::discovery::discover_in`] errors.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Profile` on relative, ancestor,
+/// symlink, ownership, mode, or digest refusal, and
+/// `CistellaError::Io` on open/read/stat failure.
+pub fn resolve_path_source(path: &Path, expected: &[u8; 32]) -> Result<PinnedBinary> {
+    if !path.is_absolute() {
+        return Err(CistellaError::Profile(format!(
+            "registered guest path must be absolute: {}",
+            path.display()
+        )));
+    }
+    let parent = path.parent().ok_or_else(|| {
+        CistellaError::Profile(format!(
+            "registered guest path has no parent: {}",
+            path.display()
+        ))
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        CistellaError::Profile(format!(
+            "registered guest path names no file: {}",
+            path.display()
+        ))
+    })?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|_| {
+        CistellaError::Profile(format!(
+            "registered guest binary absent: {}",
+            path.display()
+        ))
+    })?;
+    check_ancestors(&canonical_parent, path)?;
+    let canonical = canonical_parent.join(file_name);
+    let Some(open) = begin_anchored(&canonical, MAX_GUEST_BYTES)? else {
+        return Err(CistellaError::Profile(format!(
+            "registered guest binary absent: {}",
+            path.display()
+        )));
+    };
+    open.finish_binary(expected)
+}
+
+/// Refuses world-writable ancestor directories under the
+/// canonicalized parent: a writable ancestor lets an untrusted
+/// actor swap the final component's directory entry (the FD pins
+/// the object post-open, but the pre-open lookup must not cross
+/// untrusted-writable ground — same rationale as the ownership
+/// gate: everyone else is refused by bits).
+///
+/// Sticky exception: a world-writable directory WITH the sticky bit
+/// set (e.g. `/tmp`, mode 1777) still refuses entry
+/// removal/renaming by non-owners, so untrusted actors cannot swap
+/// the entry — only the owner or root may. The exception is
+/// load-bearing (seat scratch roots are sticky shared dirs) and
+/// defeats exactly the entry-swap threat this check exists for.
+fn check_ancestors(canonical_parent: &Path, original: &Path) -> Result<()> {
+    let mut current = canonical_parent;
+    loop {
+        let stat = std::fs::symlink_metadata(current).map_err(|_| {
+            CistellaError::Profile(format!(
+                "registered guest binary absent: {}",
+                original.display()
+            ))
+        })?;
+        let mode = stat.permissions().mode();
+        if mode & 0o002 != 0 && mode & 0o1000 == 0 {
+            return Err(CistellaError::Profile(format!(
+                "registered guest ancestor is world-writable: {}",
+                current.display()
+            )));
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+    Ok(())
 }
 
 /// Checks one fstat result: regular file, seat-or-root owner, no
