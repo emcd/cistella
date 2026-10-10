@@ -142,7 +142,7 @@ url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash i
   registry fields.
 - Fetch vs path: fetch downloads bounded (size cap plus deadline,
   at most 5 redirect hops, http or https — the hash anchors
-  integrity, never TLS)   into a content-addressed hash slot in a
+  integrity, never TLS) into a content-addressed hash slot in a
   framework-owned cache (seat-owned non-symlink directory held
   open; temp create, chmod, rename, and slot open all run
   relative to that directory FD, so path substitution between
