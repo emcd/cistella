@@ -140,12 +140,18 @@ url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash i
   unverified is assumable). `{{...}}` spans refuse in every field:
   no session, environment, or supplement values ever expand into
   registry fields.
-- Fetch vs path: fetch downloads bounded (size cap plus deadline)
-  into a content-addressed hash slot, verified before first use
-  and re-verified every use; path opens the absolute location
-  nofollow with seat-or-root ownership, no group/other write bits,
-  no world-writable ancestors, and symlink-final refusal, verified
-  per conduct. Both refuse before any guest spawns on mismatch.
+- Fetch vs path: fetch downloads bounded (size cap plus deadline,
+  at most 5 redirect hops, http or https — the hash anchors
+  integrity, never TLS) into a content-addressed hash slot in a
+  framework-owned cache (seat-owned non-symlink directory,
+  substitution-pinned), verified before first use and re-verified
+  every use; path opens the absolute location nofollow with
+  seat-or-root ownership, no group/other write bits, no
+  world-writable ancestors (sticky exception: a sticky ancestor
+  passes only when owned by the seat or root, since the directory
+  owner can still swap entries), and symlink-final refusal,
+  verified per conduct. Both refuse before any guest spawns on
+  mismatch.
 - Hash rotation: the slot is content-addressed, so rotation is a
   registry edit (new `sha256` names a new slot) — upstream bytes
   never pick up silently. Replacing a path guest's bytes refuses

@@ -196,10 +196,22 @@ const EXTENSION_ROLE: &str = "landlock";
 /// Contribution capability the Landlock hook exercises.
 const EXTENSION_HOOKS: &str = "guest-hooks";
 
-/// Contribution capability any hooks-capable extension may
-/// exercise (offered to registered extensions alongside their
-/// recorded role; hooks stay optional for them).
-const HOOKS_CAPABILITY: &str = "guest-hooks";
+/// Contribution capabilities the host centrally supports: the full
+/// merge-admission set. Offered to registered extensions alongside
+/// their recorded role so a non-hook extension can contribute
+/// environment, mounts, policy claims, or credentials — gating
+/// stays central (contribution validators, the RW-mount refusal
+/// without policy admission, credential admission, lattice
+/// evaluation). The offer only decides what the guest may
+/// advertise without tripping the closed-negotiation subset check;
+/// hooks stay optional (only the recorded role is required).
+const REGISTERED_OFFERED: [&str; 5] = [
+    "environment",
+    "mounts",
+    "policy-claims",
+    "guest-hooks",
+    "credentials",
+];
 
 /// Which guest answers one prepare transaction: the shipped
 /// Landlock extension or one resolved registered entry (verified
@@ -254,11 +266,11 @@ pub fn run_extension_prepare(
             vec![EXTENSION_ROLE.to_string(), EXTENSION_HOOKS.to_string()],
             vec![EXTENSION_HOOKS.to_string()],
         ),
-        ExtensionSpawn::Registered(resolved) => (
-            resolved.name.clone(),
-            vec![resolved.role.clone(), HOOKS_CAPABILITY.to_string()],
-            vec![resolved.role.clone()],
-        ),
+        ExtensionSpawn::Registered(resolved) => {
+            let mut offered = vec![resolved.role.clone()];
+            offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
+            (resolved.name.clone(), offered, vec![resolved.role.clone()])
+        }
     };
     let (mut guest, negotiated) = match spawn {
         ExtensionSpawn::Landlock => host_external(

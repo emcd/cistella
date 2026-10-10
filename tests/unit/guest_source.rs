@@ -259,6 +259,145 @@ fn fetch_ctx(dir: &tempfile::TempDir) -> cistella::guest_source::ResolveCtx {
 }
 
 #[test]
+fn ancestor_verdict_truth_table() {
+    use cistella::guest_source::{AncestorVerdict, ancestor_verdict};
+    let seat = 1000u32;
+    // Not world-writable: safe for any owner.
+    assert_eq!(ancestor_verdict(0o755, 9999, seat), AncestorVerdict::Pass);
+    assert_eq!(ancestor_verdict(0o755, seat, seat), AncestorVerdict::Pass);
+    // Non-sticky world-writable: any uid swaps entries.
+    assert_eq!(
+        ancestor_verdict(0o777, seat, seat),
+        AncestorVerdict::WorldWritable
+    );
+    assert_eq!(
+        ancestor_verdict(0o777, 0, seat),
+        AncestorVerdict::WorldWritable
+    );
+    assert_eq!(
+        ancestor_verdict(0o777, 9999, seat),
+        AncestorVerdict::WorldWritable
+    );
+    // Sticky world-writable: only the directory owner swaps
+    // entries, so the owner must be trusted.
+    assert_eq!(ancestor_verdict(0o1777, seat, seat), AncestorVerdict::Pass);
+    assert_eq!(ancestor_verdict(0o1777, 0, seat), AncestorVerdict::Pass);
+    assert_eq!(
+        ancestor_verdict(0o1777, 9999, seat),
+        AncestorVerdict::StickyUntrusted
+    );
+}
+
+#[test]
+fn sticky_untrusted_owner_ancestor_refuses() {
+    // Needs privilege (chown a directory to another uid); without
+    // it the arm is review-covered plus truth-table-pinned above.
+    // SAFETY: getuid is inherently safe.
+    if unsafe { nix::libc::getuid() } != 0 {
+        eprintln!("skip: sticky-untrusted-owner needs root (chown)");
+        return;
+    }
+    use cistella::guest_source::resolve_path_source;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("sticky-alien");
+    std::fs::create_dir(&sub).expect("mkdir");
+    let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
+    std::fs::write(sub.join("guest"), &bytes).expect("write fixture");
+    std::fs::set_permissions(sub.join("guest"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    std::os::unix::fs::chown(&sub, Some(65534), None).expect("chown nobody");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o1777)).expect("chmod");
+    let error = resolve_path_source(&sub.join("guest"), &fixture_digest(&bytes))
+        .expect_err("alien sticky must refuse");
+    assert!(
+        error.to_string().contains("sticky but not seat-owned"),
+        "got: {error}"
+    );
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[test]
+fn dangling_symlink_slot_refuses_without_fetch() {
+    use cistella::guest_source::{ResolveCtx, fetch_source};
+    // A dangling symlink at the hash slot must refuse as a
+    // poisoned slot (typed, zero HTTP requests, symlink left in
+    // place) — never read as a miss that fetches over it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bytes = b"fixture bytes".to_vec();
+    let digest = fixture_digest(&bytes);
+    let origin = serve_queued(vec![(200, bytes, std::time::Duration::ZERO)]);
+    let ctx = ResolveCtx::new(dir.path().join("cache"));
+    std::fs::create_dir_all(&ctx.cache_dir).expect("mkdir cache");
+    let slot = ctx.cache_dir.join(hex::encode(digest));
+    std::os::unix::fs::symlink(dir.path().join("dangling-target"), &slot).expect("symlink slot");
+    let error = fetch_source(&origin.url, &digest, &ctx).expect_err("dangling slot must refuse");
+    assert!(error.to_string().contains("symlink"), "got: {error}");
+    assert_eq!(
+        origin.hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "refusal precedes any HTTP request"
+    );
+    assert!(
+        std::fs::symlink_metadata(&slot)
+            .expect("slot metadata")
+            .is_symlink(),
+        "symlink left in place, never overwritten"
+    );
+}
+
+#[test]
+fn cache_dir_symlink_refuses() {
+    use cistella::guest_source::{ResolveCtx, fetch_source};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let real = dir.path().join("real-cache");
+    std::fs::create_dir(&real).expect("mkdir");
+    let link = dir.path().join("link-cache");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink cache");
+    let bytes = b"fixture bytes".to_vec();
+    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let ctx = ResolveCtx::new(link);
+    let error = fetch_source(&origin.url, &fixture_digest(&bytes), &ctx)
+        .expect_err("symlinked cache must refuse");
+    assert!(error.to_string().contains("symlink"), "got: {error}");
+    assert_eq!(
+        origin.hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "refusal precedes any HTTP request"
+    );
+}
+
+#[test]
+fn cache_dir_foreign_owner_refuses() {
+    // Needs privilege (chown a directory to another uid); without
+    // it the arm is review-covered (same predicate as the file
+    // ownership gate).
+    // SAFETY: getuid is inherently safe.
+    if unsafe { nix::libc::getuid() } != 0 {
+        eprintln!("skip: foreign-owner cache needs root (chown)");
+        return;
+    }
+    use cistella::guest_source::{ResolveCtx, fetch_source};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join("cache");
+    std::fs::create_dir(&cache).expect("mkdir");
+    std::os::unix::fs::chown(&cache, Some(65534), None).expect("chown nobody");
+    let bytes = b"fixture bytes".to_vec();
+    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let ctx = ResolveCtx::new(cache);
+    let error = fetch_source(&origin.url, &fixture_digest(&bytes), &ctx)
+        .expect_err("foreign cache must refuse");
+    assert!(
+        error.to_string().contains("seat- or root-owned"),
+        "got: {error}"
+    );
+    assert_eq!(
+        origin.hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "refusal precedes any HTTP request"
+    );
+}
+
+#[test]
 fn fetch_miss_slots_and_hit_reverifies_without_refetch() {
     use cistella::guest_source::resolve;
     let dir = tempfile::tempdir().expect("tempdir");

@@ -10,9 +10,12 @@
 //! upstream changes require a registry edit.
 
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use nix::fcntl::OFlag;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::PROTOCOL_MAJOR;
@@ -79,20 +82,27 @@ pub fn resolve_path_source(path: &Path, expected: &[u8; 32]) -> Result<PinnedBin
     open.finish_binary(expected)
 }
 
-/// Refuses world-writable ancestor directories under the
-/// canonicalized parent: a writable ancestor lets an untrusted
-/// actor swap the final component's directory entry (the FD pins
-/// the object post-open, but the pre-open lookup must not cross
+/// Refuses unsafe ancestor directories under the canonicalized
+/// parent: a writable ancestor lets an untrusted actor swap the
+/// final component's directory entry (the FD pins the object
+/// post-open, but the pre-open lookup must not cross
 /// untrusted-writable ground — same rationale as the ownership
 /// gate: everyone else is refused by bits).
 ///
-/// Sticky exception: a world-writable directory WITH the sticky bit
-/// set (e.g. `/tmp`, mode 1777) still refuses entry
-/// removal/renaming by non-owners, so untrusted actors cannot swap
-/// the entry — only the owner or root may. The exception is
-/// load-bearing (seat scratch roots are sticky shared dirs) and
-/// defeats exactly the entry-swap threat this check exists for.
+/// Sticky exception with directory-owner reasoning: a
+/// world-writable directory WITH the sticky bit still lets its
+/// DIRECTORY OWNER remove or rename anyone's entries — sticky
+/// restrains non-owners only. So a sticky ancestor passes only
+/// when its owner is trusted (seat uid or root, the same actors
+/// the file-ownership gate trusts): `/tmp` (root-owned, mode
+/// 1777) passes, a sticky dir owned by another uid refuses. A
+/// non-sticky world-writable ancestor refuses regardless of
+/// owner. The exception is load-bearing (seat scratch roots are
+/// sticky shared dirs) and admits exactly the configurations
+/// where no untrusted actor can swap the entry.
 fn check_ancestors(canonical_parent: &Path, original: &Path) -> Result<()> {
+    // SAFETY: getuid is inherently safe.
+    let seat = unsafe { nix::libc::getuid() };
     let mut current = canonical_parent;
     loop {
         let stat = std::fs::symlink_metadata(current).map_err(|_| {
@@ -101,12 +111,21 @@ fn check_ancestors(canonical_parent: &Path, original: &Path) -> Result<()> {
                 original.display()
             ))
         })?;
-        let mode = stat.permissions().mode();
-        if mode & 0o002 != 0 && mode & 0o1000 == 0 {
-            return Err(CistellaError::Profile(format!(
-                "registered guest ancestor is world-writable: {}",
-                current.display()
-            )));
+        use std::os::unix::fs::MetadataExt;
+        match ancestor_verdict(stat.mode(), stat.uid(), seat) {
+            AncestorVerdict::Pass => {}
+            AncestorVerdict::WorldWritable => {
+                return Err(CistellaError::Profile(format!(
+                    "registered guest ancestor is world-writable: {}",
+                    current.display()
+                )));
+            }
+            AncestorVerdict::StickyUntrusted => {
+                return Err(CistellaError::Profile(format!(
+                    "registered guest ancestor is sticky but not seat-owned: {}",
+                    current.display()
+                )));
+            }
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent,
@@ -114,6 +133,40 @@ fn check_ancestors(canonical_parent: &Path, original: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Traversal-safety verdict for one ancestor directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AncestorVerdict {
+    /// Safe to traverse (not world-writable, or sticky with a
+    /// trusted owner).
+    Pass,
+    /// Non-sticky world-writable: any uid swaps entries.
+    WorldWritable,
+    /// Sticky world-writable with an untrusted owner: the
+    /// directory owner swaps entries.
+    StickyUntrusted,
+}
+
+/// Pure traversal-safety predicate for one ancestor directory
+/// (unit-pinned directly): non-world-writable passes;
+/// non-sticky world-writable refuses (any uid swaps entries);
+/// sticky world-writable passes only for trusted owners (seat or
+/// root — only the directory owner can still swap entries, so
+/// the owner must be trusted). Public so the truth table pins
+/// directly (see `ancestor_verdict_truth_table`).
+pub fn ancestor_verdict(mode: u32, uid: u32, seat: u32) -> AncestorVerdict {
+    if mode & 0o002 == 0 {
+        return AncestorVerdict::Pass;
+    }
+    if mode & 0o1000 == 0 {
+        return AncestorVerdict::WorldWritable;
+    }
+    if uid == seat || uid == 0 {
+        AncestorVerdict::Pass
+    } else {
+        AncestorVerdict::StickyUntrusted
+    }
 }
 
 /// Resolves the fetch-slot cache directory:
@@ -266,28 +319,150 @@ pub struct FetchOutcome {
 /// Returns `CistellaError::Profile` on cache, fetch, bound,
 /// status, or verification refusal.
 pub fn fetch_source(url: &str, expected: &[u8; 32], ctx: &ResolveCtx) -> Result<FetchOutcome> {
-    prepare_cache_dir(&ctx.cache_dir)?;
+    // The guard holds the verified directory FD across the whole
+    // fetch: stage and slot operations pin against substitution
+    // through it (see `check_pinned` at both boundaries).
+    let guard = prepare_cache_dir(&ctx.cache_dir)?;
     let slot = ctx.cache_dir.join(hex::encode(expected));
-    if slot.exists()
-        && let Some(open) = begin_anchored(&slot, MAX_GUEST_BYTES)?
-    {
-        return Ok(FetchOutcome {
+    // Open the slot directly — never probe with `exists()` first:
+    // `exists()` follows symlinks and suppresses errors, so a
+    // dangling symlink at the slot would read as absent and the
+    // fetch would overwrite it instead of emitting the promised
+    // poisoned-slot refusal. `begin_anchored` distinguishes ENOENT
+    // (miss → download) from ELOOP/permission/non-regular
+    // (typed refusal, zero HTTP requests).
+    match begin_anchored(&slot, MAX_GUEST_BYTES)? {
+        Some(open) => Ok(FetchOutcome {
             slot,
             pinned: open.finish_binary(expected)?,
-        });
+        }),
+        None => download(url, expected, ctx, &guard, &slot),
     }
-    download(url, expected, ctx, &slot)
 }
 
 /// Creates the framework-owned cache directory (0700, unconditionally
 /// — a pre-existing dir keeps no looser mode) so staged and slotted
 /// bytes stay seat-private.
-fn prepare_cache_dir(dir: &Path) -> Result<()> {
+fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
     std::fs::create_dir_all(dir)
         .map_err(|e| CistellaError::Profile(format!("registry cache {}: {e}", dir.display())))?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| CistellaError::Profile(format!("registry cache {}: {e}", dir.display())))?;
-    Ok(())
+    // Open the leaf itself nofollow: a symlink at the cache path
+    // refuses here (ELOOP) instead of having its target chmodded,
+    // and a non-directory refuses (ENOTDIR) — `create_dir_all`
+    // follows symlinks, so the open is the enforcement point.
+    let raw = nix::fcntl::open(
+        dir,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )
+    .map_err(|errno| {
+        if errno == nix::errno::Errno::ELOOP {
+            CistellaError::Profile(format!(
+                "registry cache {} must not be a symlink",
+                dir.display()
+            ))
+        } else if errno == nix::errno::Errno::ENOTDIR {
+            // O_NOFOLLOW|O_DIRECTORY reports a symlink-to-dir as
+            // ENOTDIR rather than ELOOP: disambiguate for the
+            // diagnostic only (the nofollow open already refused —
+            // no trust decision rides this second look).
+            let symlink = std::fs::symlink_metadata(dir)
+                .map(|stat| stat.file_type().is_symlink())
+                .unwrap_or(false);
+            if symlink {
+                CistellaError::Profile(format!(
+                    "registry cache {} must not be a symlink",
+                    dir.display()
+                ))
+            } else {
+                CistellaError::Profile(format!(
+                    "registry cache {} must be a directory",
+                    dir.display()
+                ))
+            }
+        } else {
+            CistellaError::Io(std::io::Error::from(errno))
+        }
+    })?;
+    // SAFETY: freshly opened above, owned here, wrapped exactly once.
+    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let stat = nix::sys::stat::fstat(fd.as_raw_fd())
+        .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+    // SAFETY: getuid is inherently safe.
+    let seat = unsafe { nix::libc::getuid() };
+    if stat.st_uid != seat && stat.st_uid != 0 {
+        return Err(CistellaError::Profile(format!(
+            "registry cache {} must be seat- or root-owned",
+            dir.display()
+        )));
+    }
+    // fchmod on the open FD, never path chmod: the mode lands on
+    // the verified directory even if the path is substituted
+    // concurrently.
+    nix::sys::stat::fchmod(
+        fd.as_raw_fd(),
+        nix::sys::stat::Mode::from_bits_truncate(0o700),
+    )
+    .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+    Ok(CacheDirGuard {
+        fd,
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+        path: dir.to_path_buf(),
+    })
+}
+
+/// Open-file guard pinning the verified cache directory across
+/// stage and slot operations: the FD names the
+/// ownership-checked, mode-hardened directory even if paths move.
+#[derive(Debug)]
+pub struct CacheDirGuard {
+    /// Open verified cache directory (held through the fetch).
+    fd: OwnedFd,
+    /// Device at open (substitution check).
+    dev: u64,
+    /// Inode at open (substitution check).
+    ino: u64,
+    /// Path (diagnostics only — never re-resolved for trust).
+    path: PathBuf,
+}
+
+impl CacheDirGuard {
+    /// Refuses when `dir` no longer names the guarded directory
+    /// (same dev+ino): a substitution between guard and use
+    /// refuses rather than staging into, or slotting from, a
+    /// stranger. Call before staging (temp parent) and before the
+    /// post-rename re-open (slot parent).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Profile` on substitution, and
+    /// `CistellaError::Io` on stat failure.
+    pub fn check_pinned(&self, dir: &Path) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        // The held description still names the verified directory
+        // (its own dev+ino are immutable for the open description —
+        // this asserts the guard wasn't constructed over a swapped
+        // object and the FD stayed valid across the fetch).
+        let own = nix::sys::stat::fstat(self.fd.as_raw_fd())
+            .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+        if own.st_dev as u64 != self.dev || own.st_ino as u64 != self.ino {
+            return Err(CistellaError::Profile(format!(
+                "registry cache {} changed under its guard",
+                self.path.display()
+            )));
+        }
+        let stat = std::fs::metadata(dir).map_err(|errno| {
+            CistellaError::Profile(format!("registry cache {}: {errno}", dir.display()))
+        })?;
+        if stat.dev() != self.dev || stat.ino() != self.ino {
+            return Err(CistellaError::Profile(format!(
+                "registry cache {} was substituted during fetch",
+                self.path.display()
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Downloads one URL into its hash slot: bounded read, digest bind
@@ -295,10 +470,17 @@ fn prepare_cache_dir(dir: &Path) -> Result<()> {
 /// re-open plus re-verify (the spawn FD comes from the re-open, so
 /// the staged bytes and the executed bytes are one open
 /// description).
-fn download(url: &str, expected: &[u8; 32], ctx: &ResolveCtx, slot: &Path) -> Result<FetchOutcome> {
+fn download(
+    url: &str,
+    expected: &[u8; 32],
+    ctx: &ResolveCtx,
+    guard: &CacheDirGuard,
+    slot: &Path,
+) -> Result<FetchOutcome> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(ctx.fetch_timeout))
         .http_status_as_error(false)
+        .max_redirects(5)
         .build()
         .into();
     let response = agent
@@ -331,6 +513,13 @@ fn download(url: &str, expected: &[u8; 32], ctx: &ResolveCtx, slot: &Path) -> Re
     let mut staged = tempfile::NamedTempFile::new_in(&ctx.cache_dir).map_err(|e| {
         CistellaError::Profile(format!("registry cache {}: {e}", ctx.cache_dir.display()))
     })?;
+    // The staging directory is the guarded one (not a substituted
+    // stranger): the temp file's parent must still name the pinned
+    // directory before its bytes matter.
+    let staged_parent = staged.path().parent().ok_or_else(|| {
+        CistellaError::Profile(format!("registry fetch {url}: staged file has no parent"))
+    })?;
+    guard.check_pinned(staged_parent)?;
     staged
         .write_all(&bytes)
         .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
@@ -342,6 +531,13 @@ fn download(url: &str, expected: &[u8; 32], ctx: &ResolveCtx, slot: &Path) -> Re
     staged
         .persist(slot)
         .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+    // The slot's parent is still the guarded directory (not a
+    // substituted stranger) before the re-open that hands spawn
+    // its FD.
+    let slot_parent = slot.parent().ok_or_else(|| {
+        CistellaError::Profile(format!("registry fetch {url}: slot has no parent"))
+    })?;
+    guard.check_pinned(slot_parent)?;
     let Some(open) = begin_anchored(slot, MAX_GUEST_BYTES)? else {
         return Err(CistellaError::Profile(format!(
             "registry fetch {url}: slot vanished after stage"

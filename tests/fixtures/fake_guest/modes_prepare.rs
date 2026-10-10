@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::{PROTOCOL_MAJOR, hello_response_ok, read_frame_from_stdin, write_frame};
+use crate::{PROTOCOL_MAJOR, read_frame_from_stdin, write_frame};
 
 /// Runs one Prepare-transaction mode; `None` falls through to the next group.
 pub(crate) fn run(
@@ -208,6 +208,42 @@ pub(crate) fn run(
             );
             ExitCode::SUCCESS
         }
+        "prepare-vector-registered" => {
+            // Same payload as the agentmux vector, but the hello
+            // advertises the contribution types alongside the role:
+            // the merge gate (`gate_capabilities`) admits nonempty
+            // contribution types only when advertised, so a
+            // registered extension that contributes must say so.
+            // Lets fast tests drive a genuine nonempty prepare
+            // through the registered hosting path.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [
+                        {"name": "AGENTMUX_BUNDLE", "value": "seat-7f3a"},
+                        {"name": "AGENTMUX_SESSION", "value": "session-9c1e"}
+                    ],
+                    "mounts": [
+                        {
+                            "host_source": "/run/vector/agentmux-bus",
+                            "container_target": "/run/vector/agentmux-bus",
+                            "mode": "ro"
+                        }
+                    ],
+                    "policy_claims": [
+                        {
+                            "pattern": "AGENTMUX_.*",
+                            "severity": "suppressible",
+                            "scope": "on-extensions"
+                        }
+                    ],
+                    "guest_hooks": []
+                }),
+                &["test-cap", "environment", "mounts", "policy-claims"],
+            );
+            ExitCode::SUCCESS
+        }
         "prepare-vector-ssh" => {
             // SSH identity wiring as a prepare transaction: the
             // `SSH_AUTH_SOCK` pointer env plus the per-seat socket
@@ -364,10 +400,33 @@ fn send_prepare_with_payload(
     stdout: &mut std::io::StdoutLock<'_>,
     payload: Value,
 ) {
+    send_prepare_with_payload_and_caps(stdin, stdout, payload, &["test-cap"]);
+}
+
+/// Same as [`send_prepare_with_payload`] with an explicit hello
+/// capability set: contribution types the payload carries must be
+/// advertised (the merge gate refuses unadvertised nonempty
+/// contribution types).
+fn send_prepare_with_payload_and_caps(
+    stdin: &mut std::io::StdinLock<'_>,
+    stdout: &mut std::io::StdoutLock<'_>,
+    payload: Value,
+    capabilities: &[&str],
+) {
     if read_frame_from_stdin(stdin).is_err() {
         return;
     }
-    let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+    let hello = json!({
+        "protocol": PROTOCOL_MAJOR,
+        "id": "hello",
+        "op": "hello",
+        "payload": {
+            "version": PROTOCOL_MAJOR,
+            "capabilities": capabilities,
+            "max_frame": 1024u32
+        }
+    });
+    let body1 = serde_json::to_vec(&hello).expect("serialize");
     let _ = write_frame(stdout, &body1, 64 * 1024);
     let req_body = match read_frame_from_stdin(stdin) {
         Ok(body) => body,

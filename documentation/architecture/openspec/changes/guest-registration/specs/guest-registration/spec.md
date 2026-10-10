@@ -108,8 +108,15 @@ re-verifies the slot per use; path verifies the resolved FD per conduct.
 
 Fetch sources SHALL declare a URL plus sha256, bounded by max bytes and a deadline, staged
 to a private temp file and renamed into the hash slot atomically (no partial entries).
+Both `http` and `https` URLs fetch (transport is untrusted by design — the registered
+hash anchors integrity, never TLS); redirects follow at most 5 hops, then refuse.
 Mismatch SHALL refuse pre-create and execute nothing. Upstream rotation SHALL require a
-registry edit (new hash), never silent pickup.
+registry edit (new hash), never silent pickup. The framework-owned cache directory SHALL
+be a seat- or root-owned non-symlink directory verified via its open FD (mode hardened
+to 0700 on the FD, never by path); stage and slot operations SHALL pin against
+directory substitution (dev+ino comparison at both boundaries). A present slot SHALL be
+re-verified on every use; a poisoned or symlinked slot SHALL refuse with a typed
+verification error instead of refetching.
 
 #### Scenario: Digest mismatch refuses pre-create
 - **WHEN** fetched bytes do not match the registered sha256
@@ -126,7 +133,13 @@ parse. The framework SHALL canonicalize fully with symlink-final refusal; missin
 non-executable paths SHALL refuse pre-create typed. Admitted files SHALL be regular
 executables owned by the seat uid or root (operator direction — root outranks the seat
 and packaged root-owned binaries are legitimate); otherwise-writable files, world-writable
-ancestor dirs, and other owners SHALL refuse per this threat model.
+ancestor dirs, and other owners SHALL refuse per this threat model — with one reasoned
+exception: a world-writable ancestor WITH the sticky bit passes only when its owner is
+trusted (seat uid or root). Rationale: sticky restrains non-owners, but the directory
+owner may still remove or rename anyone's entries — so a sticky dir owned by another uid
+refuses exactly like a non-sticky world-writable dir. `/tmp` (root-owned, mode 1777)
+passes; the exception admits exactly the configurations where no untrusted actor can
+swap the entry, and stays load-bearing for seat scratch roots.
 
 #### Scenario: Replaced path guest refuses at conduct
 - **WHEN** a registered path's bytes no longer match the registered hash at conduct time

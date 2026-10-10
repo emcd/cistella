@@ -333,3 +333,55 @@ fn swap_after_resolve_executes_pinned_bytes() {
         "got: {error}"
     );
 }
+
+#[test]
+fn registered_nonempty_contribution_merges() {
+    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    // A non-hook registered extension contributes for real: the
+    // agentmux vector's env pair plus its read-only bus mount merge
+    // through the central gates (the full contribution offer set
+    // lets the peer advertise without tripping closed
+    // negotiation; the RW-mount refusal, credential admission, and
+    // lattice evaluation still own enforcement). The profile
+    // carries no acceptances (accepted names are reserved against
+    // contributions); the acknowledged policy excuses the
+    // contributed names instead.
+    let (entry, ctx, _dir) = peer_entry(
+        "fake_guest",
+        "test-cap",
+        vec!["--mode=prepare-vector-registered".to_string()],
+    );
+    let resolved = resolve(&entry, &ctx).expect("peer resolves");
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let mut text = String::from("format_version = 1\n");
+    for name in ["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"] {
+        text.push_str("[[acknowledgements]]\nname = \"");
+        text.push_str(name);
+        text.push_str("\"\n");
+    }
+    std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
+    let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+        .expect("policy loads");
+    let plan = run_extension_prepare(
+        ExtensionSpawn::Registered(resolved),
+        std::path::Path::new("/nonexistent-exe-dir"),
+        &[],
+        &minimal_profile(),
+        &[],
+        &policy,
+    )
+    .expect("nonempty prepare merges");
+    assert_eq!(
+        plan.merged.environment,
+        vec![
+            ("AGENTMUX_BUNDLE".to_string(), "seat-7f3a".to_string()),
+            ("AGENTMUX_SESSION".to_string(), "session-9c1e".to_string()),
+        ]
+    );
+    assert_eq!(plan.merged.mounts.len(), 1);
+    assert_eq!(
+        plan.merged.mounts[0].host_source,
+        "/run/vector/agentmux-bus"
+    );
+    assert!(plan.merged.guest_hooks.is_empty());
+}
