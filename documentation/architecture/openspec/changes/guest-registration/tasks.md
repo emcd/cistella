@@ -10,7 +10,7 @@
 
 - [ ] 2.1 Resolution order: shipped (`podman`/`landlock`, current sibling-relative path untouched) → registry → typed unknown-name refusal; empty/absent registry behaves exactly as 0.2.0 (prove with the existing closed-admission pins plus new registry tests).
 - [ ] 2.2 Wire a registered extension through prepare and a registered isolator through lifecycle on a fixture guest (extend the deterministic peer or the new example guest below); divergence from shipped-path behavior is a conformance failure.
-- [ ] 2.3 Static argv only: registered args reach the guest spawn verbatim; session-context interpolation attempts refuse at parse (pin with a refusal test).
+- [x] 2.3 Static argv only: registered args reach the guest spawn verbatim; session-context interpolation attempts refuse at parse (pin with a refusal test).
 
 ## 3. Builder example and docs
 

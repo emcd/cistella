@@ -19,6 +19,7 @@ use nix::unistd::Pid;
 use crate::error::{CistellaError, Result};
 use crate::framework::discovery::discover_in;
 use crate::framework::protocol::{Exchange, STDERR_CAP, protocol_error};
+use crate::guest_source::ResolvedGuest;
 
 /// Budget for post-SIGKILL group-extinction settle.
 const KILL_SETTLE: Duration = Duration::from_secs(5);
@@ -120,6 +121,30 @@ impl GuestHost<ChildStdout, ChildStdin> {
             )));
         }
         let (file, digest) = pin_executable(executable)?;
+        Self::spawn_pinned(file, executable, digest, args, deadlines)
+    }
+
+    /// Spawns an already-opened verified executable: the same-FD
+    /// anchor for registered guests. Ownership transfers — the
+    /// caller resolved and verified the open description (see
+    /// [`crate::guest_source::resolve`]) and hands it over; spawn
+    /// execs `/proc/self/fd/N`, so identity and execution share
+    /// that one open description. `argv0` carries the display path
+    /// (registered path or hash slot, never a path resolution —
+    /// multicall dispatchers select by argv[0] basename); `digest`
+    /// is the verified sha256 hex over the opened bytes and joins
+    /// the plan baseline binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Protocol` on spawn failure.
+    pub fn spawn_pinned(
+        file: std::fs::File,
+        argv0: &Path,
+        digest: String,
+        args: &[String],
+        deadlines: crate::framework::contract::Deadlines,
+    ) -> Result<Self> {
         // The fd number is stable (we hold the description open).
         // CLOEXEC stays set in the parent: the CHILD clears it on
         // its own inherited copy in pre_exec, so concurrent spawns
@@ -137,7 +162,7 @@ impl GuestHost<ChildStdout, ChildStdin> {
                 // behavior-preserving everywhere else. Execution
                 // still binds the pinned fd — only the name rides
                 // along, never a path resolution.
-                .arg0(executable.as_os_str())
+                .arg0(argv0.as_os_str())
                 .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -418,6 +443,72 @@ pub fn host_external(
                 protocol_error(format!("unsupported guest capability at index {index}")),
             );
         }
+    }
+    let capabilities = negotiated.capabilities.clone();
+    Ok((host, capabilities))
+}
+
+/// Discovers, spawns, and negotiates hello with a REGISTERED guest:
+/// the verified-FD hosting path.
+///
+/// Consumes the [`ResolvedGuest`] (FD ownership transfers to the
+/// spawn): the registered static argv rides first, then
+/// `call_args` (rendezvous coordinates, peer mode selectors —
+/// verbatim, never expanded). Hello negotiates against `offered`
+/// (the host-supported set, closed exactly as in
+/// [`host_external`]); the recorded role string must then appear in
+/// the advertisement — compared pre-planning, so a wrong-role
+/// binary refuses before any planning input is read. Refusal
+/// diagnostics name the registry declaration, never
+/// guest-controlled bytes (offending advertisements are identified
+/// by index only). On any refusal the spawned guest is shut down
+/// before the error returns (residue-dominated, as in
+/// [`host_external`]).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Protocol` on spawn, hello, capability,
+/// role, or shutdown failure.
+pub fn host_registered(
+    resolved: ResolvedGuest,
+    call_args: &[String],
+    offered: &[String],
+    deadlines: crate::framework::contract::Deadlines,
+) -> Result<(GuestHost<ChildStdout, ChildStdin>, Vec<String>)> {
+    let ResolvedGuest {
+        name,
+        role,
+        protocol: _,
+        args: registered_args,
+        display,
+        pinned,
+    } = resolved;
+    let mut args = registered_args;
+    args.extend(call_args.iter().cloned());
+    let mut host = GuestHost::spawn_pinned(
+        pinned.file,
+        &display,
+        hex::encode(pinned.digest),
+        &args,
+        deadlines,
+    )?;
+    let negotiated = match host.exchange_mut().hello(offered, deadlines.hello) {
+        Ok(negotiated) => negotiated,
+        Err(error) => return shutdown_return(host, error),
+    };
+    for (index, advertised) in negotiated.capabilities.iter().enumerate() {
+        if !offered.contains(advertised) {
+            return shutdown_return(
+                host,
+                protocol_error(format!("unsupported guest capability at index {index}")),
+            );
+        }
+    }
+    if !negotiated.capabilities.contains(&role) {
+        return shutdown_return(
+            host,
+            protocol_error(format!("registered guest role mismatch: {name}")),
+        );
     }
     let capabilities = negotiated.capabilities.clone();
     Ok((host, capabilities))
