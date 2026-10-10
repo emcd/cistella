@@ -19,6 +19,8 @@ mod environment_acceptances;
 mod fdpass;
 #[path = "unit/framework_contract.rs"]
 mod framework_contract;
+#[path = "unit/guest_registry.rs"]
+mod guest_registry;
 #[path = "unit/identity.rs"]
 mod identity;
 #[path = "unit/isolator_trait.rs"]

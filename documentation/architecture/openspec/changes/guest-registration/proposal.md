@@ -26,7 +26,7 @@ deferred deliberately (operator decision 2026-09-27, `cistella:todos/36`).
   protection intact. Registration is opt-in per guest, never a widening of the default.
 - Shipped guests (`podman`, `landlock`) keep working unchanged through sibling-relative
   discovery; they become the first registered entries and the builders' reference
-  implementation alongside a new minimal example guest under `examples/`.
+  implementation alongside a new minimal example guest under `tests/fixtures/`.
 - Explicit non-goals (per the todo): the pure-Landlock isolator sibling and shared
   Landlock code across Landlock isolator / Podman-Landlock / Docker-Landlock get designed
   then, not now. The generic Landlock extension over the current wire protocol stays
