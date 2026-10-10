@@ -8,7 +8,8 @@
 
 use std::os::unix::fs::PermissionsExt;
 
-use cistella::guest_registry::{GuestTable, HostEnv, Registry, begin_anchored, registry_path};
+use cistella::guest_anchor::begin_anchored;
+use cistella::guest_registry::{GuestTable, HostEnv, Registry, registry_path};
 
 /// Well-formed 64-lowercase-hex digest shape (content irrelevant at
 /// parse level — verification compares at resolve).
@@ -322,26 +323,26 @@ fn source_shapes_refuse_at_parse() {
 #[test]
 fn registry_path_location_rules() {
     // XDG set: direct.
-    let env = HostEnv::new(Some("/seat/config"), Some("/home/seat"));
+    let env = HostEnv::new(Some("/seat/config"), None, Some("/home/seat"));
     assert_eq!(
         registry_path(&env).expect("xdg path"),
         std::path::PathBuf::from("/seat/config/cistella/registry.toml")
     );
     // XDG unset or empty: HOME fallback.
     for xdg in [None, Some("")] {
-        let env = HostEnv::new(xdg, Some("/home/seat"));
+        let env = HostEnv::new(xdg, None, Some("/home/seat"));
         assert_eq!(
             registry_path(&env).expect("fallback path"),
             std::path::PathBuf::from("/home/seat/.config/cistella/registry.toml")
         );
     }
     // Relative XDG refuses (never cwd-relative).
-    let env = HostEnv::new(Some("config"), Some("/home/seat"));
+    let env = HostEnv::new(Some("config"), None, Some("/home/seat"));
     let error = registry_path(&env).expect_err("relative XDG must refuse");
     assert!(error.to_string().contains("absolute"), "got: {error}");
     // Unset or empty HOME refuses.
     for home in [None, Some("")] {
-        let env = HostEnv::new(None, home);
+        let env = HostEnv::new(None, None, home);
         let error = registry_path(&env).expect_err("missing HOME must refuse");
         assert!(error.to_string().contains("HOME"), "got: {error}");
     }
@@ -436,144 +437,4 @@ fn in_place_mode_change_during_read_refuses() {
         error.to_string().contains("changed owner or mode"),
         "got: {error}"
     );
-}
-
-/// Computes the registry-shape digest of fixture bytes (test
-/// visibility into the same sha2 version src verifies with).
-fn fixture_digest(bytes: &[u8]) -> [u8; 32] {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes).into()
-}
-
-fn write_guest(dir: &tempfile::TempDir, name: &str, mode: u32) -> (std::path::PathBuf, Vec<u8>) {
-    let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
-    let path = dir.path().join(name);
-    std::fs::write(&path, &bytes).expect("write fixture");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
-    (path, bytes)
-}
-
-#[test]
-fn path_source_verifies_and_pins() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (path, bytes) = write_guest(&dir, "guest", 0o755);
-    let pinned = resolve_path_source(&path, &fixture_digest(&bytes)).expect("valid resolves");
-    assert_eq!(pinned.digest, fixture_digest(&bytes));
-}
-
-#[test]
-fn replaced_path_guest_refuses_at_conduct() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (path, bytes) = write_guest(&dir, "guest", 0o755);
-    let expected = fixture_digest(&bytes);
-    resolve_path_source(&path, &expected).expect("original resolves");
-    std::fs::write(&path, b"#!/bin/sh\nexit 1\n").expect("replace bytes");
-    let error = resolve_path_source(&path, &expected).expect_err("replacement must refuse");
-    assert!(
-        error.to_string().contains("digest mismatch"),
-        "got: {error}"
-    );
-}
-
-#[test]
-fn relative_registered_path_refuses() {
-    use cistella::guest_registry::resolve_path_source;
-    let error = resolve_path_source(
-        std::path::Path::new("relative/guest"),
-        &fixture_digest(b"x"),
-    )
-    .expect_err("relative must refuse");
-    assert!(error.to_string().contains("absolute"), "got: {error}");
-}
-
-#[test]
-fn symlink_final_registered_path_refuses() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (real, bytes) = write_guest(&dir, "real", 0o755);
-    let link = dir.path().join("link");
-    std::os::unix::fs::symlink(&real, &link).expect("symlink");
-    let error =
-        resolve_path_source(&link, &fixture_digest(&bytes)).expect_err("symlink must refuse");
-    assert!(error.to_string().contains("symlink"), "got: {error}");
-}
-
-#[test]
-fn non_executable_registered_path_refuses() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (path, bytes) = write_guest(&dir, "guest", 0o644);
-    let error =
-        resolve_path_source(&path, &fixture_digest(&bytes)).expect_err("non-exec must refuse");
-    assert!(error.to_string().contains("not executable"), "got: {error}");
-}
-
-#[test]
-fn group_writable_registered_path_refuses() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (path, bytes) = write_guest(&dir, "guest", 0o775);
-    let error = resolve_path_source(&path, &fixture_digest(&bytes))
-        .expect_err("group-writable must refuse");
-    assert!(
-        error.to_string().contains("group/world-writable"),
-        "got: {error}"
-    );
-}
-
-#[test]
-fn symlinked_parent_canonicalizes() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let real = dir.path().join("real");
-    std::fs::create_dir(&real).expect("mkdir");
-    let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
-    std::fs::write(real.join("guest"), &bytes).expect("write fixture");
-    std::fs::set_permissions(real.join("guest"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
-    std::os::unix::fs::symlink(&real, dir.path().join("link")).expect("symlink");
-    let pinned = resolve_path_source(&dir.path().join("link/guest"), &fixture_digest(&bytes))
-        .expect("symlinked parent resolves");
-    assert_eq!(pinned.digest, fixture_digest(&bytes));
-}
-
-#[test]
-fn world_writable_ancestor_refuses_sticky_passes() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    for (name, mode, ok) in [("open", 0o777, false), ("sticky", 0o1777, true)] {
-        let sub = dir.path().join(name);
-        std::fs::create_dir(&sub).expect("mkdir");
-        let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
-        std::fs::write(sub.join("guest"), &bytes).expect("write fixture");
-        std::fs::set_permissions(sub.join("guest"), std::fs::Permissions::from_mode(0o755))
-            .expect("chmod");
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(mode)).expect("chmod");
-        let outcome = resolve_path_source(&sub.join("guest"), &fixture_digest(&bytes));
-        if ok {
-            outcome.expect("sticky ancestor passes");
-        } else {
-            let error = outcome.expect_err("world-writable ancestor must refuse");
-            assert!(error.to_string().contains("world-writable"), "got: {error}");
-        }
-        // Restore owner-write access for tempdir cleanup on strict umasks.
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    }
-}
-
-#[test]
-fn missing_registered_path_refuses_typed() {
-    use cistella::guest_registry::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let error = resolve_path_source(&dir.path().join("absent"), &fixture_digest(b"x"))
-        .expect_err("absence must refuse");
-    assert!(error.to_string().contains("absent"), "got: {error}");
-    let error = resolve_path_source(
-        std::path::Path::new("/nonexistent-dir-cistella/guest"),
-        &fixture_digest(b"x"),
-    )
-    .expect_err("missing parent must refuse");
-    assert!(error.to_string().contains("absent"), "got: {error}");
 }

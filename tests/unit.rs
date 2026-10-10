@@ -21,6 +21,8 @@ mod fdpass;
 mod framework_contract;
 #[path = "unit/guest_registry.rs"]
 mod guest_registry;
+#[path = "unit/guest_source.rs"]
+mod guest_source;
 #[path = "unit/identity.rs"]
 mod identity;
 #[path = "unit/isolator_trait.rs"]

@@ -8,7 +8,9 @@
 pub mod cli;
 pub mod error;
 pub mod framework;
+pub mod guest_anchor;
 pub mod guest_registry;
+pub mod guest_source;
 pub mod identity;
 pub mod isolators;
 pub mod lock;
