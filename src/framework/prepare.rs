@@ -25,12 +25,15 @@ use crate::framework::contract::{
     MountContribution, MountMode, MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
-use crate::framework::guest::host_external;
+use crate::framework::guest::{host_external, host_registered};
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::protocol::Exchange;
 use crate::framework::registry::{
     MIN_LANDLOCK_ABI, REQUIRED_HANDLED_FS, STAGED_WRAPPER_GUEST_PATH,
 };
+use crate::guest_registry::HostEnv;
+use crate::guest_source::{ResolveCtx, ResolvedGuest, cache_dir, resolve};
+use crate::profile::ExtensionResolution;
 
 /// Wire form of one environment contribution (provenance is injected
 /// by the host as the responding guest, never trusted from the wire).
@@ -193,24 +196,41 @@ const EXTENSION_ROLE: &str = "landlock";
 /// Contribution capability the Landlock hook exercises.
 const EXTENSION_HOOKS: &str = "guest-hooks";
 
-/// Driver-injected env names reserved against extension
-/// contributions (unit-baked HOME, ssh-agent pointer, exec-time TERM).
-const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
+/// Contribution capability any hooks-capable extension may
+/// exercise (offered to registered extensions alongside their
+/// recorded role; hooks stay optional for them).
+const HOOKS_CAPABILITY: &str = "guest-hooks";
 
-/// Runs the Landlock extension prepare transaction:
-/// hosts the real extension guest per-phase, admits on the
-/// guest-hooks contribution, merges centrally against the
-/// framework-owned baseline, and shuts the guest down. Hook staging
-/// and execution are the caller's job; hooks return staged for the
-/// caller to hold.
+/// Which guest answers one prepare transaction: the shipped
+/// Landlock extension or one resolved registered entry (verified
+/// bytes plus recorded role, resolved before prepare so
+/// verification failures refuse pre-create).
+#[derive(Debug)]
+pub enum ExtensionSpawn {
+    /// Shipped Landlock extension (sibling-relative discovery).
+    Landlock,
+    /// Third-party extension (verified open FD, static argv).
+    Registered(ResolvedGuest),
+}
+
+/// Runs one extension prepare transaction: hosts the guest
+/// per-phase, admits on the required capabilities, merges centrally
+/// against the framework-owned baseline, and shuts the guest down.
+/// Hook staging and execution are the caller's job; hooks return
+/// staged for the caller to hold.
 ///
 /// `extra_args` rides the guest spawn (production passes none;
-/// tests select deterministic peer modes).
+/// tests select deterministic peer modes). The shipped Landlock
+/// spawn requires the `guest-hooks` advertisement (its selection
+/// guarantees engagement); a registered spawn requires only its
+/// recorded role string (hooks stay optional — a zero-hook answer
+/// converges plain downstream).
 ///
 /// Admission checks the contribution type, not the role string:
 /// the pinned binary name plus the install-directory trust anchor
-/// already carry role identity, and only the hook contribution
-/// gates confinement behavior.
+/// already carry role identity for shipped guests (and the verified
+/// registry entry for registered ones), and only the hook
+/// contribution gates confinement behavior.
 ///
 /// Residue dominance: a failed shutdown replaces the prepare
 /// outcome; only a clean shutdown preserves it.
@@ -220,29 +240,45 @@ const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
 /// Returns `CistellaError::Contract` on discovery, admission, or
 /// merge refusal, and `CistellaError::Protocol` on transport or
 /// shutdown failure.
-pub fn run_landlock_prepare(
+pub fn run_extension_prepare(
+    spawn: ExtensionSpawn,
     exe_dir: &std::path::Path,
     extra_args: &[String],
     profile: &crate::profile::Profile,
     triples: &[MountTriple],
     policy: &PolicySet,
 ) -> Result<EvaluatedPlan> {
-    let offered: Vec<String> = [EXTENSION_ROLE, EXTENSION_HOOKS]
-        .iter()
-        .map(|name| name.to_string())
-        .collect();
-    let (mut guest, negotiated) = host_external(
-        exe_dir,
-        EXTENSION_BIN,
-        extra_args,
-        &offered,
-        Deadlines::default(),
-    )?;
-    if !negotiated.contains(&EXTENSION_HOOKS.to_string()) {
-        guest.shutdown()?;
-        return Err(CistellaError::Contract(
-            "extension guest must advertise guest-hooks".to_string(),
-        ));
+    let (guest_id, offered, required) = match &spawn {
+        ExtensionSpawn::Landlock => (
+            EXTENSION_BIN.to_string(),
+            vec![EXTENSION_ROLE.to_string(), EXTENSION_HOOKS.to_string()],
+            vec![EXTENSION_HOOKS.to_string()],
+        ),
+        ExtensionSpawn::Registered(resolved) => (
+            resolved.name.clone(),
+            vec![resolved.role.clone(), HOOKS_CAPABILITY.to_string()],
+            vec![resolved.role.clone()],
+        ),
+    };
+    let (mut guest, negotiated) = match spawn {
+        ExtensionSpawn::Landlock => host_external(
+            exe_dir,
+            EXTENSION_BIN,
+            extra_args,
+            &offered,
+            Deadlines::default(),
+        )?,
+        ExtensionSpawn::Registered(resolved) => {
+            host_registered(resolved, extra_args, &offered, Deadlines::default())?
+        }
+    };
+    for required_capability in &required {
+        if !negotiated.contains(required_capability) {
+            guest.shutdown()?;
+            return Err(CistellaError::Contract(format!(
+                "extension guest {guest_id} must advertise {required_capability}"
+            )));
+        }
     }
     let mut reserved: HashSet<String> = profile.environment_assignments.keys().cloned().collect();
     for name in &profile.environment_acceptances {
@@ -255,7 +291,7 @@ pub fn run_landlock_prepare(
     let acceptances = acceptance_set(&profile.environment_acceptances);
     let outcome = run_prepare(
         guest.exchange_mut(),
-        EXTENSION_BIN,
+        &guest_id,
         &negotiated,
         &context,
         policy,
@@ -282,6 +318,91 @@ pub fn run_landlock_prepare(
         check_hook_executable(hook)?;
     }
     Ok(plan)
+}
+
+/// Driver-injected env names reserved against extension
+/// contributions (unit-baked HOME, ssh-agent pointer, exec-time TERM).
+const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
+
+/// Runs the Landlock extension prepare transaction: the shipped
+/// guest through [`run_extension_prepare`]. Behavior is unchanged
+/// (same offer, same required `guest-hooks` advertisement, same
+/// merge) — this boundary keeps the production call site and the
+/// existing conformance pins stable.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on discovery, admission, or
+/// merge refusal, and `CistellaError::Protocol` on transport or
+/// shutdown failure.
+pub fn run_landlock_prepare(
+    exe_dir: &std::path::Path,
+    extra_args: &[String],
+    profile: &crate::profile::Profile,
+    triples: &[MountTriple],
+    policy: &PolicySet,
+) -> Result<EvaluatedPlan> {
+    run_extension_prepare(
+        ExtensionSpawn::Landlock,
+        exe_dir,
+        extra_args,
+        profile,
+        triples,
+        policy,
+    )
+}
+
+/// Prepares the single selected extension (or none): undeclared
+/// means the empty plan (pure Podman behavior — no extension guest
+/// spawned); shipped Landlock runs unchanged; a registered entry
+/// resolves to verified bytes first (failures refuse pre-create),
+/// then answers through the generalized runner with its recorded
+/// role required and hooks optional.
+///
+/// Resolution inputs build lazily from the live seat environment
+/// only for registered entries, so undeclared and shipped-only
+/// conducts never touch cache environment shapes.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on admission or merge
+/// refusal, `CistellaError::Protocol` on transport or shutdown
+/// failure, and `CistellaError::Profile` on registry or
+/// verification refusal.
+pub fn prepare_selected_extension(
+    extension: Option<ExtensionResolution>,
+    exe_dir: &std::path::Path,
+    profile: &crate::profile::Profile,
+    triples: &[MountTriple],
+    policy: &PolicySet,
+) -> Result<EvaluatedPlan> {
+    match extension {
+        None => Ok(EvaluatedPlan {
+            merged: crate::framework::contract::MergedPlan {
+                environment: Vec::new(),
+                mounts: Vec::new(),
+                policy_claims: Vec::new(),
+                guest_hooks: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+            credentials: Vec::new(),
+        }),
+        Some(ExtensionResolution::Landlock) => {
+            run_landlock_prepare(exe_dir, &[], profile, triples, policy)
+        }
+        Some(ExtensionResolution::Registered(entry)) => {
+            let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
+            let resolved = resolve(&entry, &ctx)?;
+            run_extension_prepare(
+                ExtensionSpawn::Registered(resolved),
+                exe_dir,
+                &[],
+                profile,
+                triples,
+                policy,
+            )
+        }
+    }
 }
 
 /// Checks one merged hook names exactly the staged wrapper

@@ -194,3 +194,88 @@ fn registered_argv_rides_spawn_verbatim() {
     assert_eq!(negotiated, real_caps);
     host.shutdown().expect("clean shutdown");
 }
+
+fn minimal_profile() -> cistella::profile::Profile {
+    toml::from_str(
+        "image = \"localhost/cistella/opencode:example\"\n\
+         credential-surface = \"none\"\n\
+         mounts = []\n",
+    )
+    .expect("minimal profile parses")
+}
+
+#[test]
+fn registered_extension_prepare_converges_plain() {
+    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    // The example guest answers prepare with zero hooks through
+    // the registered path: conduct proceeds on the plain path
+    // with empty contributions merged (no refusal; hooks were
+    // never promised). Divergence from the shipped-path merge
+    // behavior is a conformance failure.
+    let (entry, ctx, _dir) = peer_entry("example_guest", "example", Vec::new());
+    let resolved = resolve(&entry, &ctx).expect("example resolves");
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+    let plan = run_extension_prepare(
+        ExtensionSpawn::Registered(resolved),
+        std::path::Path::new("/nonexistent-exe-dir"),
+        &[],
+        &minimal_profile(),
+        &[],
+        &policy,
+    )
+    .expect("registered prepare converges");
+    assert!(plan.merged.environment.is_empty());
+    assert!(plan.merged.mounts.is_empty());
+    assert!(plan.merged.guest_hooks.is_empty());
+}
+
+#[test]
+fn registered_isolator_serves_lifecycle() {
+    use cistella::framework::contract::{
+        CancelFlag, ExecutionHandle, ReconciliationKey, UnitHandle,
+    };
+    use cistella::framework::isolator::{ExecutionOutcome, Isolator};
+    use cistella::isolators::client::WireClient;
+    // The scripted peer speaks the isolator wire through the
+    // registered path: rendezvous accept, concurrent dispatcher,
+    // and op service are identical past hello (same serve tail).
+    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let (entry, ctx, _dir) = peer_entry(
+        "fake_guest",
+        "isolator",
+        vec![
+            "--mode=isolator-concurrent".to_string(),
+            format!("--fd-watch={}", rendezvous.path().to_string_lossy()),
+        ],
+    );
+    let resolved = resolve(&entry, &ctx).expect("peer resolves");
+    let mut deadlines = short_deadlines();
+    deadlines.apply = std::time::Duration::from_secs(15);
+    let client = std::sync::Arc::new(
+        WireClient::host_registered(resolved, rendezvous.path(), deadlines)
+            .expect("registered isolator hosts"),
+    );
+    let execution = ExecutionHandle::mint();
+    let waiter = {
+        let client = std::sync::Arc::clone(&client);
+        let execution = execution.clone();
+        std::thread::spawn(move || {
+            let cancel = CancelFlag::new();
+            client.await_result(&execution, &cancel)
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let key = ReconciliationKey::generate();
+    let unit = UnitHandle::mint();
+    let stopped = client
+        .terminate(&unit, std::time::Duration::from_secs(5), &key)
+        .expect("terminate must serve during a pending await");
+    assert_eq!(stopped.unit_identity, "concurrent01");
+    let outcome = waiter
+        .join()
+        .expect("waiter joins")
+        .expect("await completes");
+    assert_eq!(outcome, ExecutionOutcome::Exited(0));
+}

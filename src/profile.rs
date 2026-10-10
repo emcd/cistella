@@ -26,6 +26,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::{CistellaError, Result};
+use crate::guest_registry::{GuestTable, RegisteredGuest, Registry};
 use crate::template::expand_templates;
 
 use crate::mount::{MountTriple, canonicalize_container_target, validate_mounts};
@@ -134,10 +135,11 @@ pub struct Profile {
     /// `cistella.` prefix refused, only the driver emits `cistella.*`).
     #[serde(default)]
     pub labels: HashMap<String, String>,
-    /// Isolator selection (`[isolator]`, default podman). Only
-    /// `podman` exists; unknown names refuse at conduct (closed
-    /// admission until guest registration lands). Absent means
-    /// podman — 0.1.x profiles run unchanged.
+    /// Isolator selection (`[isolator]`, default podman):
+    /// `podman` conducts as shipped; any other name resolves
+    /// through the seat registry's `[[isolators]]` table, else
+    /// refuses at conduct. Absent means podman — 0.1.x profiles
+    /// run unchanged.
     #[serde(default = "default_isolator")]
     pub isolator: IsolatorConfig,
     /// Declared extensions (`[[extensions]]`, default none): the
@@ -146,9 +148,9 @@ pub struct Profile {
     /// extension guest spawned, no hooks staged; the Podman
     /// isolator guest itself is still hosted as in 2.x).
     /// Declaring `landlock` engages the Landlock extension and
-    /// the hooked conduct path; unknown names and duplicates
-    /// refuse at conduct (closed admission until guest
-    /// registration lands — a typo can never silently plain a
+    /// the hooked conduct path; any other name resolves through
+    /// the seat registry's `[[extensions]]` table, else refuses
+    /// at conduct (a typo can never silently plain a
     /// meant-hooked session).
     #[serde(default)]
     pub extensions: Vec<ExtensionConfig>,
@@ -163,10 +165,9 @@ pub struct IsolatorConfig {
 }
 
 /// Extension participation entry (`[[extensions]]`): one
-/// external guest answering prepare. Shape-forward: source,
-/// hash, path, and args land here when third-party vending
-/// does (see the registration todo); `name` alone suffices
-/// while all guests ship in-crate.
+/// external guest answering prepare, named by exact registry or
+/// shipped name. Sources, hashes, and argv live in the seat
+/// registry, never here — the profile declares participation only.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ExtensionConfig {
@@ -180,21 +181,29 @@ fn default_isolator() -> IsolatorConfig {
     }
 }
 
-/// Isolator ids a profile may select (closed until guest
-/// registration replaces admission).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IsolatorId {
-    /// Podman lifecycle backend (the only one).
+/// Isolator selection outcome: the shipped backend or one
+/// registered entry. The conduct path resolves the declared name
+/// first as shipped (`podman`, sibling-relative discovery as
+/// today), then through the seat registry; anything else refuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IsolatorResolution {
+    /// Podman lifecycle backend (shipped).
     Podman,
+    /// Third-party isolator (verified at host).
+    Registered(RegisteredGuest),
 }
 
-/// Extension ids a profile may declare (closed until guest
-/// registration replaces admission).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtensionId {
-    /// Landlock confinement guest (answers prepare with the
-    /// wrapper hook).
+/// Extension selection outcome per declared entry: the shipped
+/// guest or one registered entry. Table determines kind:
+/// `[[extensions]]` entries resolve only from `[[extensions]]` —
+/// a name registered in `[[isolators]]` refuses as a slot error,
+/// never as unknown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionResolution {
+    /// Landlock confinement guest (shipped).
     Landlock,
+    /// Third-party extension (verified at prepare).
+    Registered(RegisteredGuest),
 }
 
 fn default_container_home() -> String {
@@ -397,50 +406,75 @@ enum ProfileText {
 }
 
 impl Profile {
-    /// Closed isolator admission: only `podman` conducts today
-    /// (guest registration replaces this set later). Call on
-    /// the conduct path after resolution, before any session
-    /// mutation.
+    /// Isolator admission: `podman` conducts as shipped; any other
+    /// name resolves through the seat registry's `[[isolators]]`
+    /// table. A name registered in `[[extensions]]` refuses as a
+    /// wrong-slot entry (the table determines the kind); anything
+    /// else refuses naming the declaration. Call on the conduct
+    /// path after resolution, before any session mutation.
     ///
     /// # Errors
     ///
-    /// Returns `CistellaError::Profile` naming an unknown
-    /// isolator. Diagnostics name the declaration, never values.
-    pub fn resolve_isolator(&self) -> Result<IsolatorId> {
+    /// Returns `CistellaError::Profile` naming an unknown isolator
+    /// or a wrong-slot entry. Diagnostics name the declaration,
+    /// never values.
+    pub fn resolve_isolator(&self, registry: &Registry) -> Result<IsolatorResolution> {
         match self.isolator.name.as_str() {
-            "podman" => Ok(IsolatorId::Podman),
-            other => Err(CistellaError::Profile(format!("unknown isolator: {other}"))),
+            "podman" => Ok(IsolatorResolution::Podman),
+            other => match registry.find(GuestTable::Isolators, other) {
+                Some(entry) => Ok(IsolatorResolution::Registered(entry.clone())),
+                None => {
+                    if registry.find(GuestTable::Extensions, other).is_some() {
+                        return Err(CistellaError::Profile(format!(
+                            "isolator {other} is registered as an extension, not an isolator"
+                        )));
+                    }
+                    Err(CistellaError::Profile(format!("unknown isolator: {other}")))
+                }
+            },
         }
     }
 
-    /// Closed extension admission with duplicate refusal: only
-    /// `landlock` answers prepare today (guest registration
-    /// replaces this set later). Empty means no guests — pure
-    /// Podman behavior. Call on the conduct path after
+    /// Extension admission with duplicate refusal: `landlock`
+    /// answers prepare as shipped; any other name resolves through
+    /// the seat registry's `[[extensions]]` table. Empty means no
+    /// guests — pure Podman behavior. A name registered in
+    /// `[[isolators]]` refuses as a wrong-slot entry; duplicates
+    /// (by declared name) refuse. Call on the conduct path after
     /// resolution, before any session mutation.
     ///
     /// # Errors
     ///
-    /// Returns `CistellaError::Profile` naming an unknown or
-    /// duplicated extension. Diagnostics name declarations,
-    /// never values.
-    pub fn resolve_extensions(&self) -> Result<Vec<ExtensionId>> {
+    /// Returns `CistellaError::Profile` naming an unknown,
+    /// duplicated, or wrong-slot extension. Diagnostics name
+    /// declarations, never values.
+    pub fn resolve_extensions(&self, registry: &Registry) -> Result<Vec<ExtensionResolution>> {
         let mut out = Vec::with_capacity(self.extensions.len());
+        let mut seen = Vec::with_capacity(self.extensions.len());
         for entry in &self.extensions {
-            let id = match entry.name.as_str() {
-                "landlock" => ExtensionId::Landlock,
-                other => {
-                    return Err(CistellaError::Profile(format!(
-                        "unknown extension: {other}"
-                    )));
-                }
-            };
-            if out.contains(&id) {
+            if seen.contains(&entry.name) {
                 return Err(CistellaError::Profile(format!(
                     "duplicate extension: {}",
                     entry.name
                 )));
             }
+            seen.push(entry.name.clone());
+            let id = match entry.name.as_str() {
+                "landlock" => ExtensionResolution::Landlock,
+                other => match registry.find(GuestTable::Extensions, other) {
+                    Some(registered) => ExtensionResolution::Registered(registered.clone()),
+                    None => {
+                        if registry.find(GuestTable::Isolators, other).is_some() {
+                            return Err(CistellaError::Profile(format!(
+                                "extension {other} is registered as an isolator, not an extension"
+                            )));
+                        }
+                        return Err(CistellaError::Profile(format!(
+                            "unknown extension: {other}"
+                        )));
+                    }
+                },
+            };
             out.push(id);
         }
         Ok(out)

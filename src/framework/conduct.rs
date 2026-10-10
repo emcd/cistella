@@ -19,8 +19,10 @@ use crate::framework::contract::Provenance;
 use crate::framework::contract::{Deadlines, ReconciliationKey, UnitHandle};
 use crate::framework::isolator::Isolator;
 use crate::framework::policy::{PolicySet, acceptance_set, evaluate_all};
+use crate::guest_registry::HostEnv;
+use crate::guest_source::{ResolveCtx, cache_dir, resolve};
 use crate::isolators::client::WireClient;
-use crate::profile::Profile;
+use crate::profile::{IsolatorResolution, Profile};
 
 /// Evaluates conduct's fully resolved environment contributions
 /// (assignment keys plus snapshotted acceptance names) against the
@@ -52,6 +54,40 @@ pub fn evaluate_profile_contributions(
     }
     let acceptances = acceptance_set(&profile.environment_acceptances);
     evaluate_all(policy, &names, &acceptances, &[])
+}
+
+/// Hosts the conduct isolator per the resolved selection: the
+/// shipped Podman backend, or a verified registered entry (resolved
+/// fresh on every host — including re-hosts — so each spawn
+/// re-verifies).
+///
+/// # Errors
+///
+/// Returns on registry cache, resolution, verification, spawn,
+/// hello, role, or rendezvous failure, before any unit exists.
+pub fn host_isolator(
+    exe_dir: &std::path::Path,
+    rendezvous_dir: &std::path::Path,
+    isolator: &IsolatorResolution,
+) -> Result<WireClient> {
+    match isolator {
+        IsolatorResolution::Podman => {
+            WireClient::host(exe_dir, rendezvous_dir, Deadlines::default())
+        }
+        IsolatorResolution::Registered(entry) => {
+            let resolved = resolve(entry, &resolve_ctx()?)?;
+            WireClient::host_registered(resolved, rendezvous_dir, Deadlines::default())
+        }
+    }
+}
+
+/// Builds source-resolution inputs from the live seat environment
+/// (fetch-slot cache directory). Called only when a registered
+/// guest actually resolves, so seats without a registry never pay
+/// for (or fail on) cache environment shapes — absent-registry
+/// behavior stays exactly 0.2.0.
+fn resolve_ctx() -> Result<ResolveCtx> {
+    Ok(ResolveCtx::new(cache_dir(&HostEnv::live())?))
 }
 
 /// Releases the wire client on conduct exit paths: orderly guest

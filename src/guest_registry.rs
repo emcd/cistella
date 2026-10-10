@@ -191,7 +191,7 @@ pub enum GuestSource {
 
 /// Validated registry entry: parse- and schema-checked, ready to
 /// resolve (fetch/download or path open plus digest verify).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredGuest {
     /// Exact registry name.
     pub name: String,

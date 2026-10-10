@@ -1,11 +1,12 @@
 //! Cistella CLI entry point.
 
 use cistella::cli::{Cli, Command};
-use cistella::framework::conduct::{abort_startup, release_client, report_release};
+use cistella::framework::conduct::{abort_startup, host_isolator, release_client, report_release};
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::run_landlock_prepare;
+use cistella::framework::prepare::prepare_selected_extension;
 use cistella::framework::signals;
+use cistella::guest_registry::Registry;
 use cistella::isolators::client::WireClient;
 use cistella::isolators::podman::PodmanIsolator;
 use cistella::mount::{MountMode, MountTriple, podman_volume_args};
@@ -263,10 +264,11 @@ fn retire_and_rehost(
     container_name: &str,
     session_id: &str,
     first_error: &cistella::error::CistellaError,
+    isolator: &cistella::profile::IsolatorResolution,
 ) -> Result<WireClient, cistella::error::CistellaError> {
     eprintln!("error: pre-exec guest death ({first_error}): retiring client and re-hosting");
     report_release(release_client(client, rendezvous_dir));
-    match WireClient::host(exe_dir, rendezvous_dir, Deadlines::default()) {
+    match host_isolator(exe_dir, rendezvous_dir, isolator) {
         Ok(fresh) => Ok(fresh),
         Err(rehost_error) => {
             let teardown_result = cistella::runtime::teardown_inner(container_name, session_id);
@@ -336,13 +338,22 @@ fn conduct_session(
     let accepted_env = prof.snapshot_acceptances()?;
     // Guest selection (profile-declared): the isolator table
     // admits the backend, the extensions list admits prepare
-    // guests. Unknown names and duplicate extensions refuse
-    // here, before any session/runtime mutation. No declared
-    // extensions means pure Podman behavior (2.x path — no
-    // extension guest spawns and no hooks stage; the Podman
-    // isolator guest itself is still hosted as in 2.x).
-    prof.resolve_isolator()?;
-    let extensions = prof.resolve_extensions()?;
+    // guests. The seat registry loads eagerly here: absent means
+    // empty (exact 0.2.0 behavior), malformed refuses every
+    // conduct pre-create — including shipped-only ones — before
+    // any session/runtime mutation. Shipped names resolve first;
+    // registered names second; anything else refuses naming the
+    // declaration. v1 hosts at most one extension total (extension
+    // composition is a later design — two declared extensions
+    // refuse rather than merge unspecified).
+    let registry = Registry::load()?;
+    let isolator = prof.resolve_isolator(&registry)?;
+    let extensions = prof.resolve_extensions(&registry)?;
+    if extensions.len() > 1 {
+        return Err(CistellaError::Profile(
+            "at most one extension per profile in v1".to_string(),
+        ));
+    }
     let generic: Vec<(String, String)> = labels
         .iter()
         .map(|a| parse_cli_label(a))
@@ -431,30 +442,17 @@ fn conduct_session(
         }
         i += 2;
     }
-    // Landlock extension prepare: only for profiles
-    // declaring it. The real extension guest answers one
-    // transaction; the central merge sees the full occupied
-    // baseline (profile, CLI, worktree, scratch, and
-    // credential-surface mounts alike). Merged env/mounts fan into
-    // the session plan below; requested hooks stage here
-    // and execute at launch. Undeclared: the empty plan —
-    // pure Podman behavior (no extension guest spawned; the
-    // isolator guest itself is still hosted as in 2.x).
-    let landlock_selected = extensions.contains(&cistella::profile::ExtensionId::Landlock);
-    let evaluated = if landlock_selected {
-        run_landlock_prepare(exe_dir, &[], &prof, &triples, &policy)?
-    } else {
-        cistella::framework::prepare::EvaluatedPlan {
-            merged: cistella::framework::contract::MergedPlan {
-                environment: Vec::new(),
-                mounts: Vec::new(),
-                policy_claims: Vec::new(),
-                guest_hooks: Vec::new(),
-            },
-            diagnostics: Vec::new(),
-            credentials: Vec::new(),
-        }
-    };
+    // Extension prepare: only for profiles declaring one (see
+    // `prepare_selected_extension` — undeclared means the empty
+    // plan, pure Podman behavior; registered means the recorded
+    // role required with hooks optional; shipped Landlock keeps
+    // the declared-but-empty refusal below).
+    let extension = extensions.into_iter().next();
+    let landlock_selected = matches!(
+        extension,
+        Some(cistella::profile::ExtensionResolution::Landlock)
+    );
+    let evaluated = prepare_selected_extension(extension, exe_dir, &prof, &triples, &policy)?;
     // Declared-but-empty refuses here, before staging or
     // create: a selected extension answering zero hooks must
     // never start a plain session silently (the selection is a
@@ -575,7 +573,7 @@ fn conduct_session(
     // PTY and piped sessions. The in-process backend stays as the
     // conformance reference and post-mortem inspector only.
     let rendezvous_dir = std::env::temp_dir().join(format!("cistella-rdv-{id}"));
-    let mut client = match WireClient::host(exe_dir, &rendezvous_dir, Deadlines::default()) {
+    let mut client = match host_isolator(exe_dir, &rendezvous_dir, &isolator) {
         Ok(client) => client,
         Err(error) => {
             let _ = std::fs::remove_dir(&rendezvous_dir);
@@ -685,6 +683,7 @@ fn conduct_session(
                                 &container_name,
                                 &id,
                                 &error,
+                                &isolator,
                             ) {
                                 Ok(fresh) => {
                                     client = fresh;
@@ -727,6 +726,7 @@ fn conduct_session(
                         &container_name,
                         &id,
                         &error,
+                        &isolator,
                     ) {
                         Ok(fresh) => {
                             client = fresh;

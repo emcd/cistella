@@ -47,11 +47,12 @@ use crate::framework::contract::{
 use crate::framework::fdpass::{
     BundleHeader, accept_authenticated, bind_rendezvous, send_bundle, send_diagnostics_bundle,
 };
-use crate::framework::guest::host_external;
+use crate::framework::guest::{host_external, host_registered};
 use crate::framework::isolator::{
     CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
     StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
 };
+use crate::guest_source::ResolvedGuest;
 use crate::isolators::close::{complete_close, parse_await_outcome, wire_error};
 use crate::isolators::dispatch::{Command, DISPATCH_SLICE, serve};
 use crate::isolators::podman::PodmanIsolator;
@@ -342,6 +343,50 @@ impl WireClient {
                     let _ = std::fs::remove_file(&path);
                 },
             )?;
+        Self::serve_accepted(guest, listener, path, deadlines)
+    }
+
+    /// Hosts a resolved registered isolator: the verified-FD spawn
+    /// carries the registered static argv before the rendezvous
+    /// coordinates, then hello negotiates the recorded role. The
+    /// lifecycle past hello is identical to the shipped path (same
+    /// rendezvous accept, same dispatcher) — divergence is a
+    /// conformance failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns on spawn, hello, role, capability, accept, or
+    /// rendezvous failure, before any unit exists.
+    pub fn host_registered(
+        resolved: ResolvedGuest,
+        rendezvous_dir: &std::path::Path,
+        deadlines: Deadlines,
+    ) -> Result<Self> {
+        let role = vec![resolved.role.clone()];
+        let (listener, path) = bind_rendezvous(rendezvous_dir)?;
+        let args = vec![
+            FD_SOCKET_ARG.to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let (guest, _negotiated) =
+            host_registered(resolved, &args, &role, deadlines).inspect_err(|_| {
+                let _ = std::fs::remove_file(&path);
+            })?;
+        Self::serve_accepted(guest, listener, path, deadlines)
+    }
+
+    /// Accepts the guest's rendezvous connection and serves the
+    /// lifecycle dispatcher: the shared tail past hello for every
+    /// isolator spawn shape.
+    fn serve_accepted(
+        guest: crate::framework::guest::GuestHost<
+            std::process::ChildStdout,
+            std::process::ChildStdin,
+        >,
+        listener: OwnedFd,
+        path: PathBuf,
+        deadlines: Deadlines,
+    ) -> Result<Self> {
         let pid = i32::try_from(guest.pid())
             .map_err(|_| CistellaError::Runtime("guest pid out of range".to_string()))?;
         let fd_sock = Self::accept_guest(&listener, pid, deadlines.hello).inspect_err(|_| {

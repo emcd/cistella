@@ -23,6 +23,8 @@ mod framework_contract;
 mod guest_hosting;
 #[path = "unit/guest_registry.rs"]
 mod guest_registry;
+#[path = "unit/guest_resolution.rs"]
+mod guest_resolution;
 #[path = "unit/guest_source.rs"]
 mod guest_source;
 #[path = "unit/identity.rs"]
