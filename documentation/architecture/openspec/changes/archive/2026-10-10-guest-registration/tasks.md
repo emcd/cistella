@@ -20,4 +20,4 @@
 
 ## 4. Validate and close
 
-- [ ] 4.1 Validate: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, fast suite plus live tier on host; `openspec validate --all --strict`; sync and archive.
+- [x] 4.1 Validate: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, fast suite plus live tier on host; `openspec validate --all --strict`; sync and archive.
