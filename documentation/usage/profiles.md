@@ -34,11 +34,11 @@ CARGO_HOME = '{{core:container-home}}/.cargo'
 [labels]                                       # generic labels; `cistella.` prefix refused
 'my.tag' = '{{core:project-name}}'
 
-[isolator]                                     # backend selection (default podman; only podman today)
-name = 'podman'
+[isolator]                                     # backend selection (default podman)
+name = 'podman'                                  # shipped podman, or a registry [[isolators]] name
 
 [[extensions]]                                 # declared guests (default none = pure Podman behavior)
-name = 'landlock'                              # only landlock today; unknown names refuse
+name = 'landlock'                              # shipped landlock, or a registry [[extensions]] name
 ```
 
 - `container-home` is canonicalized; sensitive roots (`/`, `/etc` and
@@ -101,3 +101,64 @@ no-rescan discipline. `container-home` additionally supports an early
 expansion phase (allowlisted `environment:` + supplied `supplement:`;
 `core:` spans there are self-reference errors), so
 `container-home = '{{environment:HOME}}'` stays portable across seats.
+
+## Guest registry reference
+
+Third-party isolators and extensions resolve through one explicit
+seat-local file: `${XDG_CONFIG_HOME}/cistella/registry.toml`
+(`$HOME/.config` fallback when XDG is unset or empty), with
+`format-version = 1` required. No layering, no URL bootstrap, no
+profile-inline registrations: trust decisions get one audit point
+per seat. Absent file means empty (0.2.0 behavior); malformed file
+refuses every conduct pre-create, including shipped-only ones
+(eager fail-closed — a silently-ignored registry could plain a
+meant-hooked session). The file must be seat- or root-owned and
+not group/world-writable.
+
+```toml
+format-version = 1
+
+[[isolators]]                                  # genera table: resolves only from [isolator]
+name = 'my-isolator'                           # exact name (nonempty, unique per table)
+role = 'isolator'                              # exact hello role string the guest must advertise
+protocol = 1                                   # wire major the guest speaks
+sha256 = '<64 lowercase hex>'                  # digest over the executed bytes
+path = '/opt/guests/my-isolator'               # absolute path source (canonicalized at resolve)
+args = ['--flag']                              # static argv, passed verbatim (default [])
+
+[[extensions]]                                 # genera table: resolves only from [[extensions]]
+name = 'my-extension'
+role = 'myext'
+protocol = 1
+sha256 = '<64 lowercase hex>'
+url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash is the trust anchor)
+```
+
+- Entry shape: exact `name`, exact `role`, `protocol` major,
+  `sha256`, exactly one source (`url` xor `path`), optional
+  static `args`. Unknown keys refuse (no inert fields — nothing
+  unverified is assumable). `{{...}}` spans refuse in every field:
+  no session, environment, or supplement values ever expand into
+  registry fields.
+- Fetch vs path: fetch downloads bounded (size cap plus deadline)
+  into a content-addressed hash slot, verified before first use
+  and re-verified every use; path opens the absolute location
+  nofollow with seat-or-root ownership, no group/other write bits,
+  no world-writable ancestors, and symlink-final refusal, verified
+  per conduct. Both refuse before any guest spawns on mismatch.
+- Hash rotation: the slot is content-addressed, so rotation is a
+  registry edit (new `sha256` names a new slot) — upstream bytes
+  never pick up silently. Replacing a path guest's bytes refuses
+  at the next conduct until the registry hash follows.
+- Typo protection: unregistered names still refuse (registration
+  is opt-in per guest, never a widening of the default). Names
+  shadowing a shipped guest (`podman` in `[[isolators]]`,
+  `landlock` in `[[extensions]]`) refuse at parse; same-table
+  duplicates refuse; a name registered in the other table refuses
+  as a wrong-slot entry (the table determines the kind, then the
+  hello role string compares pre-planning). At most one extension
+  per profile in v1.
+- Shipped guests are implicit entries: `podman` and `landlock`
+  resolve sibling-relative as today with no registry involvement.
+  Builders' reference: `tests/fixtures/example_guest/` (minimal
+  correct hello plus prepare ack) beside the shipped binaries.
