@@ -67,9 +67,18 @@ fn peer_entry(
     args: Vec<String>,
 ) -> (RegisteredGuest, ResolveCtx, tempfile::TempDir) {
     use sha2::Digest;
-    let path = example_binary(binary);
-    let bytes = std::fs::read(&path).expect("read peer binary");
+    use std::os::unix::fs::PermissionsExt;
+    let source = example_binary(binary);
+    let bytes = std::fs::read(&source).expect("read peer binary");
     let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Private owned 0755 copy: build-output permissions follow
+    // the seat umask (0002 leaves group-writable binaries the
+    // ownership gate correctly refuses), so resolution pins its
+    // own fixture perms instead of inheriting the build's.
+    let path = dir.path().join(binary);
+    std::fs::write(&path, &bytes).expect("stage peer copy");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let entry = RegisteredGuest {
         name: "test-peer".to_string(),
         role: role.to_string(),
@@ -80,7 +89,6 @@ fn peer_entry(
         },
         args,
     };
-    let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ResolveCtx::new(dir.path().join("cache"));
     (entry, ctx, dir)
 }
