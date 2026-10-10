@@ -279,3 +279,57 @@ fn registered_isolator_serves_lifecycle() {
         .expect("await completes");
     assert_eq!(outcome, ExecutionOutcome::Exited(0));
 }
+
+#[test]
+fn swap_after_resolve_executes_pinned_bytes() {
+    use std::os::unix::fs::PermissionsExt;
+    // Same-FD anchor end to end: resolve pins the verified open
+    // description, the path is replaced before spawn, and hosting
+    // still executes the pinned original (the swapped bytes never
+    // execute without a fresh verify — the re-resolve below
+    // refuses).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let peer = example_binary("example_guest");
+    let bytes = std::fs::read(&peer).expect("read peer binary");
+    let seat_copy = dir.path().join("seat-copy");
+    std::fs::write(&seat_copy, &bytes).expect("stage seat copy");
+    std::fs::set_permissions(&seat_copy, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let digest = {
+        use sha2::Digest;
+        sha2::Sha256::digest(&bytes).into()
+    };
+    let entry = RegisteredGuest {
+        name: "seat-copy".to_string(),
+        role: "example".to_string(),
+        protocol: 1,
+        source: GuestSource::Path {
+            path: seat_copy.clone(),
+            sha256: digest,
+        },
+        args: Vec::new(),
+    };
+    let ctx = ResolveCtx::new(dir.path().join("cache"));
+    let resolved = resolve(&entry, &ctx).expect("seat copy resolves");
+    // Swap the PATH (rename a fresh file over it — a new inode)
+    // after resolution: the pinned FD still names the verified
+    // original, which is what executes. (An in-place same-inode
+    // rewrite would be a trusted-owner write, closed by the
+    // ownership gate rather than the FD — the anchor defeats
+    // pathname swaps.)
+    let swap = dir.path().join("swap");
+    std::fs::write(&swap, b"#!/bin/sh\nexit 99\n").expect("stage swap");
+    std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::rename(&swap, &seat_copy).expect("swap over path");
+    let offered = ["example".to_string()];
+    let (mut host, negotiated) =
+        host_registered(resolved, &[], &offered, short_deadlines()).expect("pinned bytes execute");
+    assert_eq!(negotiated, vec!["example".to_string()]);
+    host.shutdown().expect("clean shutdown");
+    // A fresh resolve admits the swap only by re-verifying — and
+    // the swapped bytes fail the registered digest.
+    let error = resolve(&entry, &ctx).expect_err("swapped bytes must refuse");
+    assert!(
+        error.to_string().contains("digest mismatch"),
+        "got: {error}"
+    );
+}
