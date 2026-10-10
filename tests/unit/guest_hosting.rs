@@ -61,9 +61,13 @@ fn short_deadlines() -> Deadlines {
     }
 }
 
-fn peer_entry(role: &str, args: Vec<String>) -> (RegisteredGuest, ResolveCtx, tempfile::TempDir) {
+fn peer_entry(
+    binary: &str,
+    role: &str,
+    args: Vec<String>,
+) -> (RegisteredGuest, ResolveCtx, tempfile::TempDir) {
     use sha2::Digest;
-    let path = example_binary("fake_guest");
+    let path = example_binary(binary);
     let bytes = std::fs::read(&path).expect("read peer binary");
     let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
     let entry = RegisteredGuest {
@@ -83,7 +87,7 @@ fn peer_entry(role: &str, args: Vec<String>) -> (RegisteredGuest, ResolveCtx, te
 
 #[test]
 fn registered_hello_role_matches() {
-    let (entry, ctx, _dir) = peer_entry("test-cap", Vec::new());
+    let (entry, ctx, _dir) = peer_entry("fake_guest", "test-cap", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let offered = ["test-cap".to_string()];
     let (mut host, negotiated) =
@@ -94,7 +98,7 @@ fn registered_hello_role_matches() {
 
 #[test]
 fn role_mismatch_refuses_pre_planning() {
-    let (entry, ctx, _dir) = peer_entry("other-role", Vec::new());
+    let (entry, ctx, _dir) = peer_entry("fake_guest", "other-role", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let offered = ["test-cap".to_string(), "other-role".to_string()];
     let error = match host_registered(resolved, &[], &offered, short_deadlines()) {
@@ -111,6 +115,7 @@ fn role_mismatch_refuses_pre_planning() {
 #[test]
 fn unadvertised_capability_refuses_by_index() {
     let (entry, ctx, _dir) = peer_entry(
+        "fake_guest",
         "test-cap",
         vec!["--mode=hello-real-capabilities".to_string()],
     );
@@ -129,6 +134,29 @@ fn unadvertised_capability_refuses_by_index() {
 }
 
 #[test]
+fn example_guest_advertises_configured_role() {
+    // Second conformance datapoint beside the peer: the minimal
+    // correct-behavior guest, default role plus argv-configured.
+    let (entry, ctx, _dir) = peer_entry("example_guest", "example", Vec::new());
+    let resolved = resolve(&entry, &ctx).expect("example resolves");
+    let offered = ["example".to_string()];
+    let (mut host, negotiated) =
+        host_registered(resolved, &[], &offered, short_deadlines()).expect("example hosts");
+    assert_eq!(negotiated, vec!["example".to_string()]);
+    host.shutdown().expect("clean shutdown");
+    let (entry, ctx, _dir) = peer_entry(
+        "example_guest",
+        "custom-role",
+        vec!["--role=custom-role".to_string()],
+    );
+    let resolved = resolve(&entry, &ctx).expect("example resolves");
+    let offered = ["custom-role".to_string()];
+    let (mut host, negotiated) =
+        host_registered(resolved, &[], &offered, short_deadlines()).expect("custom role hosts");
+    assert_eq!(negotiated, vec!["custom-role".to_string()]);
+    host.shutdown().expect("clean shutdown");
+}
+#[test]
 fn registered_argv_rides_spawn_verbatim() {
     // The mode selector reaches the peer only through the
     // registered argv: the negotiated set proves verbatim delivery.
@@ -143,6 +171,7 @@ fn registered_argv_rides_spawn_verbatim() {
     .map(|name| name.to_string())
     .collect::<Vec<_>>();
     let (entry, ctx, _dir) = peer_entry(
+        "fake_guest",
         "environment",
         vec!["--mode=hello-real-capabilities".to_string()],
     );
@@ -153,7 +182,7 @@ fn registered_argv_rides_spawn_verbatim() {
     host.shutdown().expect("clean shutdown");
     // Call-site args append after registered argv (peer mode
     // selectors stay scriptable per call).
-    let (entry, ctx, _dir) = peer_entry("environment", Vec::new());
+    let (entry, ctx, _dir) = peer_entry("fake_guest", "environment", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let (mut host, negotiated) = host_registered(
         resolved,

@@ -44,6 +44,10 @@ name = "fake_guest"
 path = "tests/fixtures/fake_guest/main.rs"
 
 [[example]]
+name = "example_guest"
+path = "tests/fixtures/example_guest/main.rs"
+
+[[example]]
 name = "deny_probe"
 path = "tests/probes/deny_probe.rs"
 

@@ -14,7 +14,7 @@
 
 ## 3. Builder example and docs
 
-- [ ] 3.1 Minimal example guest under `tests/fixtures/` (e.g. `tests/fixtures/example_guest/`; correct-behavior hello + prepare ack, not a fault injector): buildable via the declared `[[example]]` tables, exercised by the fast suite as a second conformance datapoint beside `fake_guest`.
+- [x] 3.1 Minimal example guest under `tests/fixtures/` (e.g. `tests/fixtures/example_guest/`; correct-behavior hello + prepare ack, not a fault injector): buildable via the declared `[[example]]` tables, exercised by the fast suite as a second conformance datapoint beside `fake_guest`.
 - [ ] 3.2 `documentation/usage/profiles.md` registry reference: entry shape, fetch vs path, hash rotation procedure, typo-protection semantics; shipped guests documented as implicit entries and builders' reference.
 - [ ] 3.3 Dogfood gate: repeat the unchanged-seat proof with one registered (path-source, in-seat copy of a shipped guest binary under a new name) profile before fleet exposure; live tier on host per 4.x precedent.
 
