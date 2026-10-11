@@ -49,7 +49,7 @@ Slice names SHALL embed the session id as the durable record. The driver SHALL h
 
 ### Requirement: Reference extension vending
 
-The reference tempdir extension SHALL build beside the framework tests (example-grade binary, never an installed sibling) and resolve only through the seat registry by absolute path — placement confers no discovery. Its hello role SHALL be its own registered name; it SHALL advertise `mounts` (the merge gate admits nonempty mounts only when advertised). Dogfood profiles SHALL name it by registry entry; fleet installs third-party tempdirs like any third-party guest. Promotion to a packaged artifact SHALL wait for the second third-party guest or fleet install need.
+The reference tempdir extension SHALL build beside the framework tests (example-grade binary, never an installed sibling) and resolve only through the seat registry by absolute path — placement confers no discovery. Its hello role SHALL be its own registered name; it SHALL advertise `mounts` and `cleanup` (the merge gate admits nonempty contribution types only when advertised). Dogfood profiles SHALL name it by registry entry; fleet installs third-party tempdirs like any third-party guest. Promotion to a packaged artifact SHALL wait for the second third-party guest or fleet install need.
 
 #### Scenario: Registry-resolved tempdir guest hosts
 - **WHEN** the registry maps the tempdir name to a verified binary and a profile declares it
