@@ -124,7 +124,7 @@ role = 'isolator'                              # exact hello role string the gue
 protocol = 1                                   # wire major the guest speaks
 sha256 = '<64 lowercase hex>'                  # digest over the executed bytes
 path = '/opt/guests/my-isolator'               # absolute path source (canonicalized at resolve)
-args = ['--flag']                              # static argv, passed verbatim (default [])
+arguments = ['--flag']                       # static arguments, passed verbatim (default [])
 
 [[extensions]]                                 # genera table: resolves only from [[extensions]]
 name = 'my-extension'
@@ -136,7 +136,7 @@ url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash i
 
 - Entry shape: exact `name`, exact `role`, `protocol` major,
   `sha256`, exactly one source (`url` xor `path`), optional
-  static `args`. Unknown keys refuse (no inert fields — nothing
+  static `arguments`. Unknown keys refuse (no inert fields — nothing
   unverified is assumable). `{{...}}` spans refuse in every field:
   no session, environment, or supplement values ever expand into
   registry fields.

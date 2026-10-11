@@ -452,7 +452,7 @@ pub fn host_external(
 /// the verified-FD hosting path.
 ///
 /// Consumes the [`ResolvedGuest`] (FD ownership transfers to the
-/// spawn): the registered static argv rides first, then
+/// spawn): the registered static arguments ride first, then
 /// `call_args` (rendezvous coordinates, peer mode selectors —
 /// verbatim, never expanded). Hello negotiates against `offered`
 /// (the host-supported set, closed exactly as in
@@ -479,11 +479,11 @@ pub fn host_registered(
         name,
         role,
         protocol: _,
-        args: registered_args,
+        arguments: registered_arguments,
         display,
         pinned,
     } = resolved;
-    let mut args = registered_args;
+    let mut args = registered_arguments;
     args.extend(call_args.iter().cloned());
     let mut host = GuestHost::spawn_pinned(
         pinned.file,

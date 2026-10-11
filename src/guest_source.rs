@@ -238,8 +238,8 @@ pub struct ResolvedGuest {
     pub role: String,
     /// Wire protocol major (already checked against the host).
     pub protocol: u32,
-    /// Static guest argv, passed verbatim to the spawn.
-    pub args: Vec<String>,
+    /// Static guest arguments, passed verbatim to the spawn.
+    pub arguments: Vec<String>,
     /// Display path for argv[0] plus diagnostics (registered path,
     /// or the hash slot for fetch sources).
     pub display: PathBuf,
@@ -279,7 +279,7 @@ pub fn resolve(entry: &RegisteredGuest, ctx: &ResolveCtx) -> Result<ResolvedGues
         name: entry.name.clone(),
         role: entry.role.clone(),
         protocol: entry.protocol,
-        args: entry.args.clone(),
+        arguments: entry.arguments.clone(),
         display,
         pinned,
     })

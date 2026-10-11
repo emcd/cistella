@@ -250,7 +250,7 @@ fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::Registe
             url: url.to_string(),
             sha256: digest,
         },
-        args: Vec::new(),
+        arguments: Vec::new(),
     }
 }
 
@@ -549,7 +549,7 @@ fn wrong_protocol_major_refuses_at_resolve() {
             path: dir.path().join("guest"),
             sha256: fixture_digest(b"x"),
         },
-        args: Vec::new(),
+        arguments: Vec::new(),
     };
     let error = resolve(&entry, &fetch_ctx(&dir)).expect_err("future major must refuse");
     assert!(error.to_string().contains("protocol"), "got: {error}");

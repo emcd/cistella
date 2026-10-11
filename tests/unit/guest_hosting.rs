@@ -64,7 +64,7 @@ fn short_deadlines() -> Deadlines {
 fn peer_entry(
     binary: &str,
     role: &str,
-    args: Vec<String>,
+    arguments: Vec<String>,
 ) -> (RegisteredGuest, ResolveCtx, tempfile::TempDir) {
     use sha2::Digest;
     use std::os::unix::fs::PermissionsExt;
@@ -87,7 +87,7 @@ fn peer_entry(
             path,
             sha256: digest,
         },
-        args,
+        arguments,
     };
     let ctx = ResolveCtx::new(dir.path().join("cache"));
     (entry, ctx, dir)
@@ -314,7 +314,7 @@ fn swap_after_resolve_executes_pinned_bytes() {
             path: seat_copy.clone(),
             sha256: digest,
         },
-        args: Vec::new(),
+        arguments: Vec::new(),
     };
     let ctx = ResolveCtx::new(dir.path().join("cache"));
     let resolved = resolve(&entry, &ctx).expect("seat copy resolves");

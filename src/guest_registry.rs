@@ -165,9 +165,9 @@ struct GuestEntry {
     url: Option<String>,
     /// Absolute filesystem source path (exactly one of `url`/`path`).
     path: Option<String>,
-    /// Static guest argv, passed verbatim (default none).
+    /// Static guest arguments, passed verbatim (default none).
     #[serde(default)]
-    args: Vec<String>,
+    arguments: Vec<String>,
 }
 
 /// Validated entry source: fetch URL or absolute path.
@@ -201,8 +201,8 @@ pub struct RegisteredGuest {
     pub protocol: u32,
     /// Verified source (fetch URL or absolute path plus hash).
     pub source: GuestSource,
-    /// Static guest argv, passed verbatim to the spawn.
-    pub args: Vec<String>,
+    /// Static guest arguments, passed verbatim to the spawn.
+    pub arguments: Vec<String>,
 }
 
 /// Which genera table an entry lives in (the table determines the
@@ -377,8 +377,8 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
     let sha256 = parse_sha256_hex(&entry.sha256).map_err(|_| {
         CistellaError::Profile(format!("registry entry {} sha256 malformed", entry.name))
     })?;
-    for arg in &entry.args {
-        reject_spans(arg, "registry entry arg")?;
+    for arg in &entry.arguments {
+        reject_spans(arg, "registry entry argument")?;
     }
     let source = match (entry.url, entry.path) {
         (Some(url), None) => {
@@ -420,7 +420,7 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
         role: entry.role,
         protocol: entry.protocol,
         source,
-        args: entry.args,
+        arguments: entry.arguments,
     })
 }
 

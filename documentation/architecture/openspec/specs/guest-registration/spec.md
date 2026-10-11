@@ -195,13 +195,13 @@ exactly as the wire specifies.
 - **WHEN** a registered (non-`landlock`) extension answers prepare with zero hooks
 - **THEN** conduct proceeds on the plain path with its env/mount contributions merged (no refusal; hooks were never promised)
 
-### Requirement: Static argv parsed raw
+### Requirement: Static arguments parsed raw
 
-Registry argv SHALL be read from the raw registry config and passed to the guest spawn
+Registry arguments SHALL be read from the raw registry config and passed to the guest spawn
 verbatim. Interpolation spans (`{{...}}`) SHALL refuse at parse; no session, environment,
-or supplement values SHALL expand into guest argv. A span-shaped static arg SHALL refuse
+or supplement values SHALL expand into guest arguments. A span-shaped static argument SHALL refuse
 rather than expand.
 
 #### Scenario: Interpolation span refuses at parse
-- **WHEN** a registry entry carries `{{supplement:x}}` (or any span shape) in argv
+- **WHEN** a registry entry carries `{{supplement:x}}` (or any span shape) in arguments
 - **THEN** resolution refuses with a typed error before spawn; nothing expands

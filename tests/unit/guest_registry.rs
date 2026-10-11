@@ -24,7 +24,7 @@ fn valid_registry() -> String {
          protocol = 1\n\
          sha256 = \"{DIGEST}\"\n\
          path = \"/opt/guests/isolator\"\n\
-         args = [\"--flag\"]\n\
+         arguments = [\"--flag\"]\n\
          [[extensions]]\n\
          name = \"net-extension\"\n\
          role = \"netext\"\n\
@@ -42,7 +42,7 @@ fn positive_all_required_keys_parses() {
         .expect("isolator present");
     assert_eq!(isolator.role, "isolator");
     assert_eq!(isolator.protocol, 1);
-    assert_eq!(isolator.args, vec!["--flag".to_string()]);
+    assert_eq!(isolator.arguments, vec!["--flag".to_string()]);
     assert!(matches!(
         isolator.source,
         cistella::guest_registry::GuestSource::Path { .. }
@@ -228,7 +228,7 @@ fn empty_name_and_role_refuse() {
     );
 }
 
-fn spanned_entry(name: &str, role: &str, source: &str, args: &str) -> String {
+fn spanned_entry(name: &str, role: &str, source: &str, args_line: &str) -> String {
     format!(
         "format-version = 1\n\
          [[extensions]]\n\
@@ -237,7 +237,7 @@ fn spanned_entry(name: &str, role: &str, source: &str, args: &str) -> String {
          protocol = 1\n\
          sha256 = \"{DIGEST}\"\n\
          {source}\n\
-         {args}\n"
+         {args_line}\n"
     )
 }
 
@@ -267,7 +267,7 @@ fn template_spans_refuse_in_every_field() {
             "spanned",
             "spanned",
             "url = \"https://example.invalid/guest\"",
-            "args = [\"--x={{v}}\"]",
+            "arguments = [\"--x={{v}}\"]",
         ),
     ];
     for text in cases {
