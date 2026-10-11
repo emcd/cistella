@@ -912,3 +912,48 @@ fn ro_confinement_preflight_catches_source_retained_contradiction() {
         ro_confinement_preflight(&[ro, rw], &["/src/proj".to_string()], &sources).unwrap_err();
     assert!(error.to_string().contains("/extra/private"), "got: {error}");
 }
+
+#[test]
+fn precreate_nested_mountpoints_seeds_parent_source() {
+    use cistella::mount::precreate_nested_mountpoints;
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    // Slice parent exists (prepare minted it); the scratch
+    // mountpoint does not yet — podman would create it as
+    // container-root without the pre-create.
+    std::fs::create_dir(tree.path().join("slice")).expect("slice");
+    let triples = [
+        MountTriple {
+            host_source: format!("{host}/slice"),
+            container_target: "/tmp".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/scratch"),
+            container_target: "/tmp/scratch".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    precreate_nested_mountpoints(&triples).expect("pre-create");
+    assert!(
+        tree.path().join("slice/scratch").is_dir(),
+        "mountpoint pre-exists seat-owned"
+    );
+    // Missing parents skip (validated elsewhere); top-level
+    // mounts need nothing.
+    let orphan = MountTriple {
+        host_source: "/nonexistent-parent-xyz/source".to_string(),
+        container_target: "/data".to_string(),
+        mode: MountMode::Rw,
+    };
+    let nested_orphan = MountTriple {
+        host_source: format!("{host}/other"),
+        container_target: "/data/sub".to_string(),
+        mode: MountMode::Rw,
+    };
+    precreate_nested_mountpoints(&[orphan, nested_orphan]).expect("orphan skips");
+    assert!(
+        !tree.path().join("other").exists(),
+        "no tree created under a missing parent"
+    );
+}

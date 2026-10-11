@@ -518,11 +518,9 @@ fn conduct_session(
         cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
         cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
     };
-    // Final joint topology gate: extension mounts plus credential
-    // volumes validate and preflight as one merged set — still
-    // pre-create, so a refusal leaves no residue.
-    cistella::mount::validate_mounts(&revised, prof.home())?;
-    cistella::mount::nested_ro_preflight(&revised)?;
+    // Final joint topology gate over the merged set (validate,
+    // preflight, nested-mountpoint pre-create) — still pre-create.
+    cistella::mount::gate_final_topology(&revised, prof.home())?;
     // Hook launch plan: confinement roots plus wrapper
     // argv compose pre-create — an untranslatable topology, a
     // session outside the confinement root, or a bad shape refuses
