@@ -27,6 +27,10 @@ A registered tempdir extension SHALL mint one host directory per session prepare
 - **WHEN** a declared cleanup path names a symlink or non-directory at reap time
 - **THEN** reap refuses that entry without following it; the refusal reports litter without failing the teardown verdict
 
+#### Scenario: Cleanup capability advertised
+- **WHEN** the tempdir extension advertises `mounts` and `cleanup` and contributes a cleanup list naming its minted directory
+- **THEN** the merge gate admits it; a `cleanup` contribution with the type unadvertised refuses the whole transaction typed
+
 ### Requirement: Orphaned slice reconciliation
 
 Slice names SHALL embed the session id as the durable record. If prepare mints then fails before responding (or the response is lost/invalid, leaving no merged plan to reap from), and for any slice whose session has no live unit, `gc` SHALL own retryable cleanup (never deleting under an active session). Crash and lost-response handling SHALL be specified paths, not assumptions.
