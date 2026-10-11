@@ -524,3 +524,64 @@ fn guestless_dead_lease_proceeds() {
     assert_eq!(removed.len(), 1, "got: {removed:?}");
     assert!(!slice.exists(), "orphan reaped");
 }
+
+#[test]
+fn recorded_replacement_survives_gc_while_unrecorded_reaps() {
+    use cistella::cleanup::reap_tempdir_orphans_in;
+    use std::collections::HashSet;
+    // The rendezvous pin: a recorded root is replaced, teardown
+    // refuses it, then gc must preserve the replacement (never
+    // fall back to name-only authority) while a genuinely
+    // unrecorded orphan in the same sweep still reaps.
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let session = "gc-record-1";
+    let path = root.path().join(format!("cistella-tmp-{session}-111-222"));
+    std::fs::create_dir(&path).expect("mkdir slice");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    record_cleanup(base.path(), session, &[path.to_string_lossy().to_string()])
+        .expect("record admits");
+    let aside = root.path().join("aside");
+    std::fs::rename(&path, &aside).expect("rename aside");
+    std::fs::create_dir(&path).expect("replacement dir");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let litter = reap_cleanup(base.path(), session);
+    assert_eq!(litter.len(), 1, "teardown refuses, got: {litter:?}");
+    let control = root.path().join("cistella-tmp-gc-control-1-333-444");
+    std::fs::create_dir(&control).expect("mkdir control");
+    std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    assert_eq!(
+        removed,
+        vec!["cistella-tmp-gc-control-1-333-444".to_string()],
+        "only the unrecorded orphan reaps, got: {removed:?}"
+    );
+    assert!(path.exists(), "recorded replacement preserved");
+    assert!(!control.exists(), "unrecorded orphan reaped");
+}
+
+#[test]
+fn group_writable_parent_refuses() {
+    // Non-sticky group-writable directories admit untrusted
+    // renamers, so traversal refuses them even when seat-owned
+    // (stricter than the shared mount-ancestor rule on purpose —
+    // deletion needs the stronger guarantee).
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, mode) in [("gw-dir", 0o770), ("gw-file", 0o775)] {
+        let parent = seat_dir(&dir, name);
+        let root = parent.join("slice");
+        std::fs::create_dir(&root).expect("mkdir root");
+        record_cleanup(
+            dir.path(),
+            &format!("test-session-{name}"),
+            &[root.to_string_lossy().to_string()],
+        )
+        .expect("record admits");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        let litter = reap_cleanup(dir.path(), &format!("test-session-{name}"));
+        assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
+        assert!(litter[0].contains("group-writable"), "got: {}", litter[0]);
+        assert!(root.exists(), "refused root survives");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+}

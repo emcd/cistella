@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CistellaError, Result};
-use crate::guest_source::{AncestorVerdict, ancestor_verdict};
 
 /// Recursion ceiling for FD-relative traversal (fail-closed past
 /// it — session slices are shallow; depth beyond this is either an
@@ -348,6 +347,23 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
 /// this on its OPEN FD, so the check-then-use window admits only
 /// trusted interleavers — stated explicitly as the trusted-writer
 /// scope for all mutating path operations in this module.
+/// Traversal trust for one open directory description: the
+/// owner must be the seat or root, and entry mutation
+/// (rename/remove/bind) must be restricted to trusted actors —
+/// no group/other write bits at all, or sticky with a trusted
+/// owner (group members cannot rename foreign entries under
+/// sticky). Rationale: deletion paths unlink by name, so any
+/// actor able to rename entries in a traversed directory could
+/// swap the final unlink target. This is STRICTER than the shared
+/// mount-ancestor rule on purpose (deletion needs the stronger
+/// guarantee — ancestor_verdict tolerates group-write, which
+/// admits untrusted renamers here). Every directory the
+/// traversal descends through or unlinks from meets this on its
+/// OPEN FD, so the check-then-use window admits only trusted
+/// interleavers — stated explicitly as the trusted-writer scope
+/// for all mutating path operations in this module. Name
+/// re-verification before each unlink narrows even trusted-actor
+/// races further, but claims no atomicity even for them.
 fn traversal_trusted(
     stat: &nix::sys::stat::FileStat,
     seat: nix::libc::uid_t,
@@ -356,15 +372,17 @@ fn traversal_trusted(
     if stat.st_uid != seat && stat.st_uid != 0 {
         return Err(format!("cleanup traversal owner untrusted: {what}"));
     }
-    match ancestor_verdict(stat.st_mode, stat.st_uid, seat) {
-        AncestorVerdict::Pass => Ok(()),
-        AncestorVerdict::WorldWritable => {
-            Err(format!("cleanup traversal parent world-writable: {what}"))
-        }
-        AncestorVerdict::StickyUntrusted => Err(format!(
-            "cleanup traversal parent sticky with untrusted owner: {what}"
-        )),
+    let mode = stat.st_mode;
+    if mode & 0o022 == 0 {
+        return Ok(());
     }
+    if mode & 0o1000 != 0 {
+        return Ok(());
+    }
+    if mode & 0o002 != 0 {
+        return Err(format!("cleanup traversal parent world-writable: {what}"));
+    }
+    Err(format!("cleanup traversal parent group-writable: {what}"))
 }
 
 /// Removes a directory's CONTENTS via its open FD (the directory
@@ -676,6 +694,26 @@ pub fn reap_tempdir_orphans_in(
                 continue;
             }
         }
+        // Record rendezvous: a session WITH cleanup records never
+        // falls back to name-only authority. If any record names
+        // this candidate path, the object must still match the
+        // recorded identity — otherwise a teardown-refused
+        // replacement stands and gc preserves it. Only genuinely
+        // unrecorded paths take the name-attribution path below.
+        match recorded_verdict(base, &session, &root.join(&name)) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!(
+                    "warning: cleanup litter: recorded refusal stands for {}",
+                    root.join(&name).display()
+                );
+                continue;
+            }
+            Err(litter) => {
+                eprintln!("warning: cleanup litter: {litter}");
+                continue;
+            }
+        }
         // Stale leases go with their orphans (best-effort removal
         // inside the held state directory — a failed removal
         // simply retries next gc; the slice is already gone).
@@ -699,7 +737,54 @@ fn remove_lease_file(base: &Path, session: &str) {
     }
 }
 
-/// Decides one candidate: true when no live unit, no live lease,
+/// Record rendezvous for one orphan candidate: loads the
+/// session's cleanup records (absent file means unrecorded) and
+/// decides by identity, never by name alone. Returns `Ok(true)`
+/// when the candidate may proceed (recorded identity matches, or
+/// genuinely unrecorded), `Ok(false)` when a record names this
+/// path but the object no longer matches it (a teardown-refused
+/// replacement stands — gc preserves it), and `Err` litter on
+/// unreadable state (uncertainty skips).
+fn recorded_verdict(
+    base: &Path,
+    session: &str,
+    candidate: &Path,
+) -> std::result::Result<bool, String> {
+    let dir = match open_session_state(base) {
+        Ok(dir) => dir,
+        Err(error) => return Err(format!("cleanup state: {error}")),
+    };
+    let name = match cleanup_state_name(session) {
+        Ok(name) => name,
+        Err(error) => return Err(format!("cleanup state: {error}")),
+    };
+    let bytes = match dir.read_file(&name, crate::guest_anchor::MAX_STATE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => return Err(format!("cleanup state {name}: {error}")),
+    };
+    let Some(bytes) = bytes else {
+        return Ok(true);
+    };
+    let records: Vec<CleanupRecord> = match serde_json::from_slice(&bytes) {
+        Ok(records) => records,
+        Err(error) => return Err(format!("cleanup state {name}: {error}")),
+    };
+    let stat = std::fs::symlink_metadata(candidate)
+        .map_err(|e| format!("cleanup {e} {}", candidate.display()))?;
+    for record in &records {
+        if record.path == candidate {
+            // Named by a record: identity decides, never the name.
+            if stat.file_type().is_symlink() {
+                return Ok(false);
+            }
+            if !stat.is_dir() || stat.dev() != record.dev || stat.ino() != record.ino {
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+    }
+    Ok(true)
+}
 /// no pending spawn, and no live recorded guest group stand in
 /// the way. `Err` is litter (malformed lease, unreadable state)
 /// and skips.
