@@ -184,7 +184,12 @@ fn liveness_predicates_observe_only() {
     let me = std::process::id();
     assert!(pid_alive(me), "own pid is alive");
     assert!(pid_alive(0), "pid zero reads alive (never reapable)");
-    assert!(!group_dead(me), "own process group is alive");
+    // Own process GROUP (not pid — under plain `cargo test` the
+    // test thread shares its parent's group, while nextest runs
+    // each test as its own group leader).
+    let pgid =
+        u32::try_from(nix::unistd::getpgid(None).expect("getpgid").as_raw()).expect("pgid fits");
+    assert!(!group_dead(pgid), "own process group is alive");
     // A reaped child in its own group: proven absent (ESRCH-only
     // establishment — any other outcome would read alive).
     let mut child = std::process::Command::new("/bin/true");
