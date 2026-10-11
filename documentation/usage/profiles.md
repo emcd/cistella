@@ -122,7 +122,7 @@ format-version = 1
 name = 'my-isolator'                           # exact name (nonempty, unique per table)
 role = 'isolator'                              # exact hello role string the guest must advertise
 protocol = 1                                   # wire major the guest speaks
-sha256 = '<64 lowercase hex>'                  # digest over the executed bytes
+source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
 path = '/opt/guests/my-isolator'               # absolute path source (canonicalized at resolve)
 arguments = ['--flag']                       # static arguments, passed verbatim (default [])
 
@@ -130,12 +130,12 @@ arguments = ['--flag']                       # static arguments, passed verbatim
 name = 'my-extension'
 role = 'myext'
 protocol = 1
-sha256 = '<64 lowercase hex>'
+source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
 url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash is the trust anchor)
 ```
 
 - Entry shape: exact `name`, exact `role`, `protocol` major,
-  `sha256`, exactly one source (`url` xor `path`), optional
+  `source-digest` (`algorithm` + hex `value`; sha256 only in v1), exactly one source
   static `arguments`. Unknown keys refuse (no inert fields — nothing
   unverified is assumable). `{{...}}` spans refuse in every field:
   no session, environment, or supplement values ever expand into
@@ -155,7 +155,7 @@ url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash i
   verified per conduct. Both refuse before any guest spawns on
   mismatch.
 - Hash rotation: the slot is content-addressed, so rotation is a
-  registry edit (new `sha256` names a new slot) — upstream bytes
+  registry edit (new digest names a new slot) — upstream bytes
   never pick up silently. Replacing a path guest's bytes refuses
   at the next conduct until the registry hash follows.
 - Typo protection: unregistered names still refuse (registration

@@ -83,10 +83,7 @@ fn peer_entry(
         name: "test-peer".to_string(),
         role: role.to_string(),
         protocol: 1,
-        source: GuestSource::Path {
-            path,
-            sha256: digest,
-        },
+        source: GuestSource::Path { path, digest },
         arguments,
     };
     let ctx = ResolveCtx::new(dir.path().join("cache"));
@@ -312,7 +309,7 @@ fn swap_after_resolve_executes_pinned_bytes() {
         protocol: 1,
         source: GuestSource::Path {
             path: seat_copy.clone(),
-            sha256: digest,
+            digest,
         },
         arguments: Vec::new(),
     };

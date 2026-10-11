@@ -269,9 +269,9 @@ pub fn resolve(entry: &RegisteredGuest, ctx: &ResolveCtx) -> Result<ResolvedGues
         )));
     }
     let (display, pinned) = match &entry.source {
-        GuestSource::Path { path, sha256 } => (path.clone(), resolve_path_source(path, sha256)?),
-        GuestSource::Fetch { url, sha256 } => {
-            let outcome = fetch_source(url, sha256, ctx)?;
+        GuestSource::Path { path, digest } => (path.clone(), resolve_path_source(path, digest)?),
+        GuestSource::Fetch { url, digest } => {
+            let outcome = fetch_source(url, digest, ctx)?;
             (outcome.slot, outcome.pinned)
         }
     };

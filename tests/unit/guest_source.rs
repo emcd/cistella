@@ -248,7 +248,7 @@ fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::Registe
         protocol: 1,
         source: cistella::guest_registry::GuestSource::Fetch {
             url: url.to_string(),
-            sha256: digest,
+            digest,
         },
         arguments: Vec::new(),
     }
@@ -547,7 +547,7 @@ fn wrong_protocol_major_refuses_at_resolve() {
         protocol: 999,
         source: GuestSource::Path {
             path: dir.path().join("guest"),
-            sha256: fixture_digest(b"x"),
+            digest: fixture_digest(b"x"),
         },
         arguments: Vec::new(),
     };

@@ -22,14 +22,14 @@ fn valid_registry() -> String {
          name = \"file-isolator\"\n\
          role = \"isolator\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/isolator\"\n\
          arguments = [\"--flag\"]\n\
          [[extensions]]\n\
          name = \"net-extension\"\n\
          role = \"netext\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          url = \"https://example.invalid/guest\"\n"
     )
 }
@@ -73,7 +73,7 @@ fn negative_unknown_keys_refuse() {
          name = \"x\"\n\
          role = \"x\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/x\"\n\
          signature = \"deadbeef\"\n"
     );
@@ -88,7 +88,7 @@ fn format_version_absent_or_otherwise_refuses() {
          name = \"x\"\n\
          role = \"x\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/x\"\n"
     );
     let error = Registry::parse(&text).expect_err("absent version must refuse");
@@ -113,7 +113,7 @@ fn shadowing_reserved_names_refuses_at_parse() {
              name = \"{name}\"\n\
              role = \"{name}\"\n\
              protocol = 1\n\
-             sha256 = \"{DIGEST}\"\n\
+             source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
              path = \"/opt/guests/{name}\"\n"
         );
         let error = Registry::parse(&text).expect_err("shadowing entry must refuse");
@@ -132,7 +132,7 @@ fn landlock_role_in_isolators_stays_legal_for_future_sibling() {
          name = \"future-landlock\"\n\
          role = \"landlock\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/future\"\n"
     );
     let registry = Registry::parse(&text).expect("landlock role in isolators parses");
@@ -151,7 +151,7 @@ fn podman_role_in_extensions_refuses_at_parse() {
          name = \"fake-podman\"\n\
          role = \"podman\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/fake\"\n"
     );
     let error = Registry::parse(&text).expect_err("podman role in extensions must refuse");
@@ -169,13 +169,13 @@ fn duplicate_name_within_table_refuses() {
          name = \"dup\"\n\
          role = \"a\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/a\"\n\
          [[extensions]]\n\
          name = \"dup\"\n\
          role = \"b\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/b\"\n"
     );
     let error = Registry::parse(&text).expect_err("duplicate must refuse");
@@ -190,13 +190,13 @@ fn companion_pair_across_tables_is_legal() {
          name = \"companion\"\n\
          role = \"landlock\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/iso\"\n\
          [[extensions]]\n\
          name = \"companion\"\n\
          role = \"landlock\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/ext\"\n"
     );
     let registry = Registry::parse(&text).expect("companion pair parses");
@@ -212,7 +212,7 @@ fn empty_name_and_role_refuse() {
          name = \"\"\n\
          role = \"x\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          path = \"/opt/guests/x\"\n"
     );
     let error = Registry::parse(&text).expect_err("empty name must refuse");
@@ -235,7 +235,7 @@ fn spanned_entry(name: &str, role: &str, source: &str, args_line: &str) -> Strin
          name = \"{name}\"\n\
          role = \"{role}\"\n\
          protocol = 1\n\
-         sha256 = \"{DIGEST}\"\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
          {source}\n\
          {args_line}\n"
     )
@@ -314,10 +314,27 @@ fn source_shapes_refuse_at_parse() {
         let text = valid_registry().replace(DIGEST, bad);
         let error = Registry::parse(&text).expect_err("bad digest must refuse");
         assert!(
-            error.to_string().contains("sha256"),
+            error.to_string().contains("source-digest"),
             "digest {bad} got: {error}"
         );
     }
+}
+
+#[test]
+fn unknown_digest_algorithm_refuses_at_parse() {
+    // The algorithm enum is serde-enforced: an unimplemented
+    // algorithm refuses instead of reading as one the verifier
+    // ignores (fail-closed future-proofing, not an inert field).
+    let text = valid_registry().replace("algorithm = 'sha256'", "algorithm = 'sha512'");
+    let error = Registry::parse(&text).expect_err("unknown algorithm must refuse");
+    assert!(error.to_string().contains("registry parse"), "got: {error}");
+    // Unknown keys inside source-digest refuse too.
+    let text = valid_registry().replace(
+        "source-digest = { algorithm = 'sha256',",
+        "source-digest = { algorithm = 'sha256', strength = 256,",
+    );
+    let error = Registry::parse(&text).expect_err("unknown digest key must refuse");
+    assert!(error.to_string().contains("registry parse"), "got: {error}");
 }
 
 #[test]

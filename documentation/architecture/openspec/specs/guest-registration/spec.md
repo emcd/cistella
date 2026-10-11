@@ -106,7 +106,7 @@ re-verifies the slot per use; path verifies the resolved FD per conduct.
 
 ### Requirement: Fetch source verification
 
-Fetch sources SHALL declare a URL plus sha256, bounded by max bytes and a deadline, staged
+Fetch sources SHALL declare a URL plus source-digest (`algorithm` + hex `value`; sha256 only in v1 — an unknown algorithm refuses at parse), bounded by max bytes and a deadline, staged
 to a private temp file and renamed into the hash slot atomically (no partial entries).
 Both `http` and `https` URLs fetch (transport is untrusted by design — the registered
 hash anchors integrity, never TLS); redirects follow at most 5 hops, then refuse.
@@ -120,7 +120,7 @@ slot SHALL be re-verified on every use; a poisoned or symlinked slot SHALL refus
 a typed verification error instead of refetching.
 
 #### Scenario: Digest mismatch refuses pre-create
-- **WHEN** fetched bytes do not match the registered sha256
+- **WHEN** fetched bytes do not match the registered digest
 - **THEN** conduct refuses pre-create with a typed verification error; no guest executes
 
 #### Scenario: Rotation requires registry edit

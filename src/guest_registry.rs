@@ -3,7 +3,7 @@
 //!
 //! One explicit file per seat (`registry.toml` under the XDG config
 //! base, `format-version = 1` required) maps exact guest names to
-//! verified sources — fetch URL plus sha256, or absolute filesystem
+//! verified sources — fetch URL plus digest, or absolute filesystem
 //! path — plus the exact hello role string and static argv. Two
 //! tables, `[[isolators]]` and `[[extensions]]`: two genera, never
 //! unified (companion pairs across tables are legal by design).
@@ -159,8 +159,8 @@ struct GuestEntry {
     role: String,
     /// Wire protocol major the guest speaks.
     protocol: u32,
-    /// Expected sha256 over the executed bytes (64 lowercase hex).
-    sha256: String,
+    /// Digest over the executed bytes (algorithm-selected).
+    source_digest: DigestSpec,
     /// Fetch source URL (exactly one of `url`/`path`).
     url: Option<String>,
     /// Absolute filesystem source path (exactly one of `url`/`path`).
@@ -170,22 +170,45 @@ struct GuestEntry {
     arguments: Vec<String>,
 }
 
+/// Digest spec: algorithm-selected hash over the executed bytes.
+/// v1 implements sha256 only — the enum is serde-enforced, so an
+/// unknown algorithm refuses at parse (fail-closed) instead of
+/// reading as an algorithm the verifier ignores. A second
+/// algorithm arrives as a new variant plus its verifier, not as
+/// a silent reinterpretation.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct DigestSpec {
+    /// Hash algorithm (only `sha256` in v1).
+    algorithm: DigestAlgorithm,
+    /// Hex digest value (shape checked per algorithm).
+    value: String,
+}
+
+/// Supported digest algorithms (v1: sha256 only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DigestAlgorithm {
+    /// SHA-256 (64 lowercase hex).
+    Sha256,
+}
+
 /// Validated entry source: fetch URL or absolute path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuestSource {
-    /// Fetch URL (http/https) plus expected sha256.
+    /// Fetch URL (http/https) plus expected digest.
     Fetch {
         /// Source URL (transport untrusted; hash is the anchor).
         url: String,
-        /// Expected sha256 over the fetched bytes.
-        sha256: [u8; 32],
+        /// Expected digest over the fetched bytes.
+        digest: [u8; 32],
     },
-    /// Absolute filesystem path plus expected sha256.
+    /// Absolute filesystem path plus expected digest.
     Path {
         /// Absolute source path (canonicalized at resolve).
         path: PathBuf,
-        /// Expected sha256 over the resolved bytes.
-        sha256: [u8; 32],
+        /// Expected digest over the resolved bytes.
+        digest: [u8; 32],
     },
 }
 
@@ -358,8 +381,8 @@ fn validate_table(entries: Vec<GuestEntry>, table: GuestTable) -> Result<Vec<Reg
 /// Validates one entry: role shape plus the deliberate role-string
 /// asymmetry (`podman` in `[[extensions]]` refuses at parse — no
 /// podman extension exists or is planned; `landlock` in
-/// `[[isolators]]` stays legal for the future sibling), sha256
-/// shape, exactly-one-source, static-argv span refusal.
+/// `[[isolators]]` stays legal for the future sibling), digest
+/// shape, exactly-one-source, static-argument span refusal.
 fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGuest> {
     if entry.role.is_empty() {
         return Err(CistellaError::Profile(format!(
@@ -374,9 +397,14 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
             entry.name
         )));
     }
-    let sha256 = parse_sha256_hex(&entry.sha256).map_err(|_| {
-        CistellaError::Profile(format!("registry entry {} sha256 malformed", entry.name))
-    })?;
+    let digest = match entry.source_digest.algorithm {
+        DigestAlgorithm::Sha256 => parse_sha256_hex(&entry.source_digest.value).map_err(|_| {
+            CistellaError::Profile(format!(
+                "registry entry {} source-digest malformed",
+                entry.name
+            ))
+        })?,
+    };
     for arg in &entry.arguments {
         reject_spans(arg, "registry entry argument")?;
     }
@@ -389,7 +417,7 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
                     entry.name
                 )));
             }
-            GuestSource::Fetch { url, sha256 }
+            GuestSource::Fetch { url, digest }
         }
         (None, Some(path)) => {
             reject_spans(&path, "registry entry path")?;
@@ -400,7 +428,7 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
                     entry.name
                 )));
             }
-            GuestSource::Path { path, sha256 }
+            GuestSource::Path { path, digest }
         }
         (Some(_), Some(_)) => {
             return Err(CistellaError::Profile(format!(
