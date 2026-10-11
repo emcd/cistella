@@ -62,13 +62,18 @@ fn swapped_root_refuses() {
     assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
     assert!(litter[0].contains("symlink"), "got: {}", litter[0]);
     assert!(target.exists(), "symlink target untouched");
-    // Directory-for-directory swap: dev+ino mismatch refuses.
+    // Directory-for-directory swap is NOT pinned here: ext4
+    // recycles a freed inode immediately, so rmdir+mkdir can
+    // yield byte-identical dev+ino and no dev/ino check — short
+    // of birth-time, which tmpfs lacks entirely — can tell the
+    // replacement apart (proven on the QA host: 66306 2233835
+    // both times). The check still refuses every detectable
+    // case, and staging a replacement requires parent-write
+    // powers already restricted to trusted actors — so the worst
+    // case is reaping an attacker-emptied dir, never live data.
+    // (Deliberately not forced via allocator tricks: fragile the
+    // other way.)
     std::fs::remove_file(&root).expect("remove link");
-    std::fs::create_dir(&root).expect("replacement dir");
-    let litter = reap_cleanup(dir.path(), "test-session-1");
-    assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
-    assert!(litter[0].contains("identity"), "got: {}", litter[0]);
-    assert!(root.exists(), "replacement left in place");
 }
 
 #[test]

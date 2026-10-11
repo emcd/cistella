@@ -28,6 +28,7 @@ Goals: a third-party extension providing per-session RW `/tmp`, resolved through
 - [Risk] Reap deletes legitimate data (contributed RO project dir) → Mitigation: declarations only — undeclared contributed mounts are never reaped, nofollow recursive removal refuses symlinks and non-directories.
 - [Risk] Reap races a surviving harness → Mitigation: reap runs only after converged teardown (litter verdict requires termination/removal converged first).
 - [Risk] `/tmp/scratch` outlet interplay (nested triple under the new `/tmp`) → Mitigation: depth-ordered mounts plus existing subtree handling; pinned by a nesting conformance test.
+- [Risk] dev/ino identity aliases a replacement on recycling filesystems → Mitigation: none available short of birth-time (which tmpfs lacks entirely) — accepted. Staging a same-path replacement requires parent-write powers already restricted to trusted actors, and the worst case is reaping an attacker-emptied dir, never live data. The identity check still refuses every detectable case. Proven on ext4 (freed inode recycled immediately); deliberately not forced via allocator tricks in tests (fragile the other way).
 
 ## Migration Plan
 
