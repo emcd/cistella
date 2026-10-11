@@ -348,6 +348,17 @@ fn tempdir_hooked_session_writes_tmp() {
         "hooked /tmp write admits: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // Nested outlet preserved: /tmp/scratch still writable beneath
+    // the admitted slice (depth-ordered mounts, subtree handling).
+    let out = Command::new("podman")
+        .args(["exec", &container, "touch", "/tmp/scratch/nested-probe"])
+        .output()
+        .expect("podman exec");
+    assert!(
+        out.status.success(),
+        "nested scratch writes admit: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let out = run_cistella(&home, &["terminate", &id]);
     assert!(
         out.status.success(),

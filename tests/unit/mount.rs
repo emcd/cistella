@@ -119,6 +119,32 @@ fn volume_args_mount_parent_before_child() {
 }
 
 #[test]
+fn volume_args_tmp_slice_before_nested_scratch() {
+    // Tempdir nesting: the admitted /tmp slice emits before the
+    // nested /tmp/scratch outlet regardless of declaration order,
+    // so podman never mounts the child onto a path the parent
+    // mount would shadow (same stacking contract as
+    // volume_args_mount_parent_before_child, pinned for the real
+    // targets).
+    let slice = triple("/tmp/cistella-tmp-s1-1-2", "/tmp", MountMode::Rw);
+    let scratch = triple("/tmp/scratch-s1", "/tmp/scratch", MountMode::Rw);
+    let args = podman_volume_args(&[scratch, slice], "/home/cistella", None);
+    let volumes: Vec<&str> = args
+        .windows(2)
+        .filter(|w| w[0] == "--volume")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(
+        volumes,
+        vec![
+            "/tmp/cistella-tmp-s1-1-2:/tmp:rw",
+            "/tmp/scratch-s1:/tmp/scratch:rw"
+        ],
+        "slice mounts before nested scratch: {volumes:?}"
+    );
+}
+
+#[test]
 fn volume_args_order_home_first() {
     let t = MountTriple {
         host_source: "/tmp/a".to_string(),
