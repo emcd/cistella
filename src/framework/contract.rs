@@ -106,6 +106,8 @@ pub enum Capability {
     PolicyClaims,
     /// Guest-hook requests.
     GuestHooks,
+    /// Cleanup declarations (minted host paths the framework reaps).
+    Cleanup,
     /// Credential contributions (strict handle variants only).
     Credentials,
 }
@@ -300,6 +302,10 @@ pub struct PreparePlan {
     pub policy_claims: Vec<PolicyClaim>,
     /// Guest-hook requests.
     pub guest_hooks: Vec<GuestHookRequest>,
+    /// Cleanup declarations: absolute host paths the extension
+    /// minted and owns (reaped post-convergence, never enumerated
+    /// by gc beyond the attributable pattern).
+    pub cleanup: Vec<String>,
 }
 
 /// Centrally merged plan: validated, spine-ordered, ready to gate.
@@ -316,6 +322,8 @@ pub struct MergedPlan {
     pub policy_claims: Vec<PolicyClaim>,
     /// Guest hooks in composition order.
     pub guest_hooks: Vec<GuestHookRequest>,
+    /// Cleanup declarations in plan order (absolute paths only).
+    pub cleanup: Vec<String>,
 }
 
 /// Framework-owned baseline inputs for central merge.
@@ -402,6 +410,7 @@ pub fn merge_prepare(
         mounts: contributed,
         policy_claims,
         guest_hooks,
+        cleanup: plan.cleanup,
     })
 }
 
@@ -427,6 +436,7 @@ fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) -> Result<(
             Capability::GuestHooks,
             "guest-hooks",
         ),
+        (!plan.cleanup.is_empty(), Capability::Cleanup, "cleanup"),
     ] {
         if nonempty && !advertised.allows(capability) {
             return Err(CistellaError::Contract(format!(

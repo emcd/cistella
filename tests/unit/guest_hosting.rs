@@ -572,3 +572,57 @@ fn two_non_landlock_extensions_refuse() {
         "got: {error}"
     );
 }
+
+#[test]
+fn tempdir_guest_mints_contributes_declares() {
+    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    // The reference tempdir extension through the registered
+    // path: mints an owner-only slice, contributes the RW triple
+    // targeting /tmp, and declares it for cleanup — all three
+    // verified, not just trusted.
+    let (entry, ctx, _dir) = peer_entry("tempdir_guest", "tempdir", Vec::new());
+    let resolved = resolve(&entry, &ctx).expect("tempdir resolves");
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let (plan, _lease) = run_extension_prepare(
+        ExtensionSpawn::Registered(resolved),
+        std::path::Path::new("/nonexistent-exe-dir"),
+        &[],
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-tmp-1",
+        lease_base.path(),
+    )
+    .expect("tempdir prepare merges");
+    assert_eq!(plan.merged.mounts.len(), 1);
+    let triple = &plan.merged.mounts[0];
+    assert_eq!(triple.container_target, "/tmp");
+    assert_eq!(triple.mode, cistella::framework::contract::MountMode::Rw);
+    assert_eq!(plan.merged.cleanup.len(), 1);
+    assert_eq!(plan.merged.cleanup[0], triple.host_source);
+    let root = std::env::var("TMPDIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+        .unwrap_or_else(|| "/tmp".to_string());
+    let prefix = format!("{root}/cistella-tmp-test-session-tmp-1-");
+    assert!(
+        triple.host_source.starts_with(&prefix),
+        "slice attributed to the session under the seat temp root, got: {}",
+        triple.host_source
+    );
+    let metadata = std::fs::symlink_metadata(&triple.host_source).expect("slice exists");
+    assert!(metadata.is_dir(), "slice is a directory");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        metadata.permissions().mode() & 0o777,
+        0o700,
+        "slice is owner-only"
+    );
+    assert!(plan.merged.guest_hooks.is_empty());
+    // The test owns fixture litter (reap is 3.2's job, proven
+    // separately — never leave /tmp dirty on success paths).
+    std::fs::remove_dir(&triple.host_source).expect("remove fixture slice");
+}

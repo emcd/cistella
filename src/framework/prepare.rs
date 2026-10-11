@@ -72,6 +72,10 @@ struct PrepareResponse {
     /// Guest-hook requests (default empty).
     #[serde(default)]
     guest_hooks: Vec<GuestHookRequest>,
+    /// Cleanup declarations: absolute host paths the extension
+    /// minted and owns (default empty).
+    #[serde(default)]
+    cleanup: Vec<String>,
     /// Credential handles, variants only, never values (default empty).
     #[serde(default)]
     credentials: Vec<CredentialHandle>,
@@ -105,6 +109,7 @@ pub fn parse_capability(name: &str) -> Option<Capability> {
         "mounts" => Some(Capability::Mounts),
         "policy-claims" => Some(Capability::PolicyClaims),
         "guest-hooks" => Some(Capability::GuestHooks),
+        "cleanup" => Some(Capability::Cleanup),
         "credentials" => Some(Capability::Credentials),
         _ => None,
     }
@@ -259,11 +264,12 @@ const EXTENSION_HOOKS: &str = "guest-hooks";
 /// lattice evaluation). The offer only decides what the guest may
 /// advertise without tripping the closed-negotiation subset check;
 /// hooks stay optional (only the recorded role is required).
-const REGISTERED_OFFERED: [&str; 5] = [
+const REGISTERED_OFFERED: [&str; 6] = [
     "environment",
     "mounts",
     "policy-claims",
     "guest-hooks",
+    "cleanup",
     "credentials",
 ];
 
@@ -465,6 +471,13 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
             provenance: provenance.clone(),
         });
     }
+    for path in &response.cleanup {
+        if !path.starts_with('/') {
+            return Err(CistellaError::Contract(format!(
+                "cleanup declaration must be absolute: {path}"
+            )));
+        }
+    }
     Ok(PreparePlan {
         environment: response
             .environment
@@ -478,6 +491,7 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
         mounts,
         policy_claims: response.policy_claims,
         guest_hooks: response.guest_hooks,
+        cleanup: response.cleanup,
     })
 }
 

@@ -149,6 +149,7 @@ pub fn prepare_selected_extension(
                     mounts: Vec::new(),
                     policy_claims: Vec::new(),
                     guest_hooks: Vec::new(),
+                    cleanup: Vec::new(),
                 },
                 diagnostics: Vec::new(),
                 credentials: Vec::new(),
@@ -278,6 +279,7 @@ fn prepare_pair(
         mounts: Vec::new(),
         policy_claims: Vec::new(),
         guest_hooks: Vec::new(),
+        cleanup: Vec::new(),
     };
     let mut credentials = Vec::new();
     let mut capabilities: Vec<String> = Vec::new();
@@ -298,6 +300,7 @@ fn prepare_pair(
                 plan.mounts.extend(transacted.mounts);
                 plan.policy_claims.extend(transacted.policy_claims);
                 plan.guest_hooks.extend(transacted.guest_hooks);
+                plan.cleanup.extend(transacted.cleanup);
                 credentials.extend(creds);
                 capabilities.extend(one.negotiated.iter().cloned());
             }

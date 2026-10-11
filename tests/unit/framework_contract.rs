@@ -106,6 +106,29 @@ fn undeclared_contribution_type_refuses_whole() {
 }
 
 #[test]
+fn undeclared_cleanup_contribution_refuses_whole() {
+    use cistella::framework::contract::Capability;
+    let plan = PreparePlan {
+        cleanup: vec!["/tmp/cistella-tmp-probe".to_string()],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(
+        plan.clone(),
+        &CapabilitySet::new(&[Capability::Mounts]),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("unadvertised"), "got: {error}");
+    let merged = merge_prepare(
+        plan,
+        &CapabilitySet::new(&[Capability::Cleanup]),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .expect("advertised cleanup merges");
+    assert_eq!(merged.cleanup, vec!["/tmp/cistella-tmp-probe".to_string()]);
+}
+
+#[test]
 fn duplicate_env_name_refuses_atomically() {
     let plan = PreparePlan {
         environment: vec![env("DUP_VAR", "1"), env("DUP_VAR", "2")],
@@ -274,6 +297,7 @@ fn merged_plan_keeps_spine_order() {
         mounts: vec![mount("/data")],
         policy_claims: vec![claim("FIRST_VAR")],
         guest_hooks: vec![hook(2)],
+        cleanup: Vec::new(),
     };
     let merged = merge_prepare(
         plan,
