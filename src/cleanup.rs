@@ -909,6 +909,20 @@ fn reap_recorded(candidate: &Path, record: &CleanupRecord) -> std::result::Resul
         )
     })?;
     let parent_fd = open_trusted_parent(parent, &candidate.display().to_string())?;
+    // Association on the ACTUAL opened parent FD (not just the
+    // path-metadata check at match time): the parent could have
+    // been swapped between the match lookup and this open, so
+    // the full record stays effective through deletion.
+    let parent_open = nix::sys::stat::fstat(parent_fd.as_raw_fd())
+        .map_err(|e| format!("cleanup fstat parent {}: {e}", parent.display()))?;
+    if parent_open.st_dev as u64 != record.parent_dev
+        || parent_open.st_ino as u64 != record.parent_ino
+    {
+        return Err(format!(
+            "cleanup parent moved during open (refusing): {}",
+            candidate.display()
+        ));
+    }
     let Some(name) = candidate.file_name() else {
         return Err(format!(
             "cleanup admitted root names no file: {}",

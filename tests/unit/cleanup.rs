@@ -617,3 +617,36 @@ fn moved_admitted_object_converges_through_gc() {
     );
     assert!(!moved.exists(), "moved object removed");
 }
+
+#[test]
+fn moved_to_new_parent_preserves_through_gc() {
+    use cistella::cleanup::reap_tempdir_orphans_in;
+    use std::collections::HashSet;
+    // Case 3: same object (dev/ino match) under a new parent
+    // (association broken). The declared path still names the
+    // old location, so this is a teardown-refused state — gc
+    // preserves it rather than deleting through enumeration.
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let session = "gc-moveparent-1";
+    let original = elsewhere
+        .path()
+        .join(format!("cistella-tmp-{session}-111-222"));
+    std::fs::create_dir(&original).expect("mkdir original");
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    record_cleanup(
+        base.path(),
+        session,
+        &[original.to_string_lossy().to_string()],
+    )
+    .expect("record admits");
+    let moved = root.path().join(format!("cistella-tmp-{session}-333-444"));
+    std::fs::rename(&original, &moved).expect("move under new parent");
+    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    assert!(
+        removed.is_empty(),
+        "moved object preserved, got: {removed:?}"
+    );
+    assert!(moved.exists(), "moved object survives gc");
+}
