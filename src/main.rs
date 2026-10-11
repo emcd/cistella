@@ -156,6 +156,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             let grace = Deadlines::default().terminate_grace;
             isolator.terminate(&handle, grace, &key)?;
             isolator.remove(&handle, &key)?;
+            cistella::cleanup::reap_and_report(&cistella::lock::runtime_base(), &record.id);
             println!("terminate {}", record.container_name);
             Ok(())
         }

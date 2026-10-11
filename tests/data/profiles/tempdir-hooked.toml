@@ -4,7 +4,12 @@ image = 'localhost/cistella/opencode:example'
 credential-surface = 'none'
 container-home = '/home/cistella'
 command = ['sleep', 'infinity']
-mounts = []
+# The hook requires the ~/src confinement ancestor translatable
+# through the mount topology; every real hooked profile mounts it.
+[[mounts]]
+host-source = '~/src'
+container-target = '{{core:container-home}}/src'
+mode = 'ro'
 
 [[extensions]]
 name = 'landlock'

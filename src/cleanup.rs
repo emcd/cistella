@@ -181,6 +181,19 @@ pub fn reap_cleanup(base: &Path, session_id: &str) -> Vec<String> {
     litter
 }
 
+/// Reaps declared cleanup roots, reporting refusals as warnings.
+/// Shared by teardown paths that own no unit lifecycle of their
+/// own: the podman-native `terminate` command (the quadlet path
+/// covers this in `teardown_inner`; orderly terminate left
+/// declared slices behind without it). Litter never fails the
+/// caller (the unit is gone either way — removal failure is
+/// litter, never residue).
+pub fn reap_and_report(base: &Path, session_id: &str) {
+    for litter in reap_cleanup(base, session_id) {
+        eprintln!("warning: cleanup litter: {litter}");
+    }
+}
+
 /// Cleanup state file name for one session id (single-component,
 /// safe for dirfd-relative operations).
 fn cleanup_state_name(session_id: &str) -> std::result::Result<String, String> {

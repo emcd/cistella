@@ -151,6 +151,9 @@ fn write_lease(session: &str, content: &str) {
     let path = lease_path(session);
     std::fs::create_dir_all(path.parent().expect("lease has a parent")).expect("mkdir lease dir");
     std::fs::write(&path, content).expect("write lease");
+    // Normalize: a permissive build-host umask (e.g. 0002 fixture
+    // fallout) must not leave group-writable lease files behind.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod lease");
 }
 
 fn slice_path(session: &str, rand: &str) -> std::path::PathBuf {
