@@ -23,14 +23,14 @@ fn valid_registry() -> String {
          role = \"isolator\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/isolator\"\n\
+         source-path = \"/opt/guests/isolator\"\n\
          arguments = [\"--flag\"]\n\
          [[extensions]]\n\
          name = \"net-extension\"\n\
          role = \"netext\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         url = \"https://example.invalid/guest\"\n"
+         source-url = \"https://example.invalid/guest\"\n"
     )
 }
 
@@ -74,7 +74,7 @@ fn negative_unknown_keys_refuse() {
          role = \"x\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/x\"\n\
+         source-path = \"/opt/guests/x\"\n\
          signature = \"deadbeef\"\n"
     );
     let error = Registry::parse(&text).expect_err("unknown entry key must refuse");
@@ -89,7 +89,7 @@ fn format_version_absent_or_otherwise_refuses() {
          role = \"x\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/x\"\n"
+         source-path = \"/opt/guests/x\"\n"
     );
     let error = Registry::parse(&text).expect_err("absent version must refuse");
     assert!(error.to_string().contains("format-version"), "got: {error}");
@@ -114,7 +114,7 @@ fn shadowing_reserved_names_refuses_at_parse() {
              role = \"{name}\"\n\
              protocol = 1\n\
              source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-             path = \"/opt/guests/{name}\"\n"
+             source-path = \"/opt/guests/{name}\"\n"
         );
         let error = Registry::parse(&text).expect_err("shadowing entry must refuse");
         assert!(
@@ -133,7 +133,7 @@ fn landlock_role_in_isolators_stays_legal_for_future_sibling() {
          role = \"landlock\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/future\"\n"
+         source-path = \"/opt/guests/future\"\n"
     );
     let registry = Registry::parse(&text).expect("landlock role in isolators parses");
     assert!(
@@ -152,7 +152,7 @@ fn podman_role_in_extensions_refuses_at_parse() {
          role = \"podman\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/fake\"\n"
+         source-path = \"/opt/guests/fake\"\n"
     );
     let error = Registry::parse(&text).expect_err("podman role in extensions must refuse");
     assert!(
@@ -170,13 +170,13 @@ fn duplicate_name_within_table_refuses() {
          role = \"a\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/a\"\n\
+         source-path = \"/opt/guests/a\"\n\
          [[extensions]]\n\
          name = \"dup\"\n\
          role = \"b\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/b\"\n"
+         source-path = \"/opt/guests/b\"\n"
     );
     let error = Registry::parse(&text).expect_err("duplicate must refuse");
     assert!(error.to_string().contains("duplicate"), "got: {error}");
@@ -191,13 +191,13 @@ fn companion_pair_across_tables_is_legal() {
          role = \"landlock\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/iso\"\n\
+         source-path = \"/opt/guests/iso\"\n\
          [[extensions]]\n\
          name = \"companion\"\n\
          role = \"landlock\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/ext\"\n"
+         source-path = \"/opt/guests/ext\"\n"
     );
     let registry = Registry::parse(&text).expect("companion pair parses");
     let (table, _) = registry.find_any("companion").expect("found");
@@ -213,7 +213,7 @@ fn empty_name_and_role_refuse() {
          role = \"x\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
-         path = \"/opt/guests/x\"\n"
+         source-path = \"/opt/guests/x\"\n"
     );
     let error = Registry::parse(&text).expect_err("empty name must refuse");
     assert!(
@@ -247,26 +247,26 @@ fn template_spans_refuse_in_every_field() {
         spanned_entry(
             "{{supplement:x}}",
             "spanned",
-            "url = \"https://example.invalid/guest\"",
+            "source-url = \"https://example.invalid/guest\"",
             "",
         ),
         spanned_entry(
             "spanned",
             "{{env:y}}",
-            "url = \"https://example.invalid/guest\"",
+            "source-url = \"https://example.invalid/guest\"",
             "",
         ),
         spanned_entry(
             "spanned",
             "spanned",
-            "url = \"https://example.invalid/{{z}}\"",
+            "source-url = \"https://example.invalid/{{z}}\"",
             "",
         ),
-        spanned_entry("spanned", "spanned", "path = \"/opt/{{w}}\"", ""),
+        spanned_entry("spanned", "spanned", "source-path = \"/opt/{{w}}\"", ""),
         spanned_entry(
             "spanned",
             "spanned",
-            "url = \"https://example.invalid/guest\"",
+            "source-url = \"https://example.invalid/guest\"",
             "arguments = [\"--x={{v}}\"]",
         ),
     ];
@@ -294,8 +294,8 @@ fn source_shapes_refuse_at_parse() {
     assert!(error.to_string().contains("absolute"), "got: {error}");
     // Both sources.
     let text = valid_registry().replace(
-        "path = \"/opt/guests/isolator\"",
-        "path = \"/opt/guests/isolator\"\nurl = \"https://example.invalid/dup\"",
+        "source-path = \"/opt/guests/isolator\"",
+        "source-path = \"/opt/guests/isolator\"\nsource-url = \"https://example.invalid/dup\"",
     );
     let error = Registry::parse(&text).expect_err("dual source must refuse");
     assert!(
@@ -303,7 +303,7 @@ fn source_shapes_refuse_at_parse() {
         "got: {error}"
     );
     // Neither source.
-    let text = valid_registry().replace("path = \"/opt/guests/isolator\"\n", "");
+    let text = valid_registry().replace("source-path = \"/opt/guests/isolator\"\n", "");
     let error = Registry::parse(&text).expect_err("missing source must refuse");
     assert!(
         error.to_string().contains("declare a source"),

@@ -123,7 +123,7 @@ name = 'my-isolator'                           # exact name (nonempty, unique pe
 role = 'isolator'                              # exact hello role string the guest must advertise
 protocol = 1                                   # wire major the guest speaks
 source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
-path = '/opt/guests/my-isolator'               # absolute path source (canonicalized at resolve)
+source-path = '/opt/guests/my-isolator'      # absolute path source (canonicalized at resolve)
 arguments = ['--flag']                       # static arguments, passed verbatim (default [])
 
 [[extensions]]                                 # genera table: resolves only from [[extensions]]
@@ -131,7 +131,7 @@ name = 'my-extension'
 role = 'myext'
 protocol = 1
 source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
-url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash is the trust anchor)
+source-url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash is the trust anchor)
 ```
 
 - Entry shape: exact `name`, exact `role`, `protocol` major,

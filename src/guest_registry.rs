@@ -161,10 +161,10 @@ struct GuestEntry {
     protocol: u32,
     /// Digest over the executed bytes (algorithm-selected).
     source_digest: DigestSpec,
-    /// Fetch source URL (exactly one of `url`/`path`).
-    url: Option<String>,
-    /// Absolute filesystem source path (exactly one of `url`/`path`).
-    path: Option<String>,
+    /// Fetch source URL (exactly one of `source-url`/`source-path`).
+    source_url: Option<String>,
+    /// Absolute filesystem source path (exactly one of `source-url`/`source-path`).
+    source_path: Option<String>,
     /// Static guest arguments, passed verbatim (default none).
     #[serde(default)]
     arguments: Vec<String>,
@@ -199,14 +199,14 @@ pub enum GuestSource {
     /// Fetch URL (http/https) plus expected digest.
     Fetch {
         /// Source URL (transport untrusted; hash is the anchor).
-        url: String,
+        source_url: String,
         /// Expected digest over the fetched bytes.
         digest: [u8; 32],
     },
     /// Absolute filesystem path plus expected digest.
     Path {
         /// Absolute source path (canonicalized at resolve).
-        path: PathBuf,
+        source_path: PathBuf,
         /// Expected digest over the resolved bytes.
         digest: [u8; 32],
     },
@@ -408,27 +408,30 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
     for arg in &entry.arguments {
         reject_spans(arg, "registry entry argument")?;
     }
-    let source = match (entry.url, entry.path) {
-        (Some(url), None) => {
-            reject_spans(&url, "registry entry url")?;
-            if !url.starts_with("https://") && !url.starts_with("http://") {
+    let source = match (entry.source_url, entry.source_path) {
+        (Some(source_url), None) => {
+            reject_spans(&source_url, "registry entry source-url")?;
+            if !source_url.starts_with("https://") && !source_url.starts_with("http://") {
                 return Err(CistellaError::Profile(format!(
-                    "registry entry {} url must be http(s)",
+                    "registry entry {} source-url must be http(s)",
                     entry.name
                 )));
             }
-            GuestSource::Fetch { url, digest }
+            GuestSource::Fetch { source_url, digest }
         }
-        (None, Some(path)) => {
-            reject_spans(&path, "registry entry path")?;
-            let path = PathBuf::from(&path);
-            if !path.is_absolute() {
+        (None, Some(source_path)) => {
+            reject_spans(&source_path, "registry entry source-path")?;
+            let source_path = PathBuf::from(&source_path);
+            if !source_path.is_absolute() {
                 return Err(CistellaError::Profile(format!(
-                    "registry entry {} path must be absolute",
+                    "registry entry {} source-path must be absolute",
                     entry.name
                 )));
             }
-            GuestSource::Path { path, digest }
+            GuestSource::Path {
+                source_path,
+                digest,
+            }
         }
         (Some(_), Some(_)) => {
             return Err(CistellaError::Profile(format!(

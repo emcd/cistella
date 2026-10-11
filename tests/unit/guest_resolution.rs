@@ -117,13 +117,13 @@ fn test_registry() -> Registry {
          role = \"isolator\"\n\
          protocol = 1\n\
          source-digest = { algorithm = 'sha256', value = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" }\n\
-         path = \"/opt/guests/isolator\"\n\
+         source-path = \"/opt/guests/isolator\"\n\
          [[extensions]]\n\
          name = \"file-extension\"\n\
          role = \"fileext\"\n\
          protocol = 1\n\
          source-digest = { algorithm = 'sha256', value = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" }\n\
-         path = \"/opt/guests/extension\"\n",
+         source-path = \"/opt/guests/extension\"\n",
     )
     .expect("test registry parses")
 }
