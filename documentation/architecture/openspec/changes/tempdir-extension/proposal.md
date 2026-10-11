@@ -4,12 +4,13 @@ Sessions need a writable `/tmp` backed by host storage: Agentmux seats burn roun
 
 ## What Changes
 
-- New separately-vended extension guest providing per-session `/tmp`: it mints a host slice per session, contributes it as an RW triple targeting `/tmp`, and the framework reaps the slice at teardown. Registered through the seat registry like any third-party guest (first real dogfood of guest-registration).
-- Prepare carries the opaque session id (the same id minted for containers), so extensions can mint per-session state. Additive wire field, protocol major unchanged.
-- Extension mount contributions are honored as declared — including RW. The blanket `refuse_extension_rw_mounts` refusal is removed (operator direction: declarations are authoritative intent; Landlock enforces them, it does not second-guess them). No exceptions.
+- New separately-vended extension guest providing per-session `/tmp`: it mints a host slice per session, contributes it as an RW triple targeting `/tmp` plus an explicit cleanup declaration naming the minted directory, and the framework reaps declared directories at teardown. Registered through the seat registry like any third-party guest (first real dogfood of guest-registration).
+- Prepare carries the opaque session id (the same id minted for containers), so extensions can mint per-session state. Additive wire field, protocol major unchanged; old request decoders must tolerate unknown fields (pinned against an actual old guest, not assumed).
+- Extension mount contributions are honored as declared — including RW. The blanket `refuse_extension_rw_mounts` refusal is removed (operator direction: declarations are authoritative intent; Landlock enforces them, it does not second-guess them). No exceptions. Registry/profile opt-in is documented as operator trust delegation, not validator replacement.
 - Landlock composition grants declared RW targets as FULL carveouts wherever they sit, including the admitted `/tmp` slice (carveout to the `/tmp`-denied rule, which stays the default for undeclared paths).
-- Teardown reaps extension-contributed host directories (new lifecycle duty); lifecycle hook points land where the teardown needs them (first step toward the handler-registry reassessment, `cistella:todos/44` — not the full reassessment).
-- Explicit non-goals: removing the driver-owned `/tmp/scratch` outlet (direction is isolator-plus-extensions owning session filesystem services, but scratch removal is a later migration with fleet impact — not this change); the full handler-registry redesign (`cistella:todos/44`); multi-extension composition (still v1 single).
+- Teardown reaps ONLY explicitly declared cleanup directories (never every contributed mount — a contributed RO project dir must survive), nofollow, after converged teardown; `gc` owns retryable cleanup of attributable orphaned slices (durable record: session id embedded in slice names). Lifecycle hook points land where the teardown needs them (first step toward the handler-registry reassessment, `cistella:todos/44` — not the full reassessment).
+- Composition: v1 conducts landlock plus at most one other extension (the pair concatenates prepare plans and merges once centrally — declaration order, existing validators, atomic). General N-extension composition stays deferred; the tempdir proof (RW/FULL plus retained sibling denial) runs through production conduct on the pair.
+- Explicit non-goals: removing the driver-owned `/tmp/scratch` outlet (direction is isolator-plus-extensions owning session filesystem services, but scratch removal is a later migration with fleet impact — not this change); the full handler-registry redesign (`cistella:todos/44`).
 
 ## Capabilities
 

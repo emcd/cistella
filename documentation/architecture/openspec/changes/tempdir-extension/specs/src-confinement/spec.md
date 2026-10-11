@@ -29,9 +29,13 @@ Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct S
 - **THEN** the pre-restriction write succeeds and the post-restriction write fails with `EACCES`, attributing the denial to the ruleset and not a pre-existing kernel wall; repeat for every alternate-bind route
 
 #### Scenario: Admitted /tmp slice writes
-- **WHEN** a tempdir extension contributes its host slice targeting `/tmp` and the profile declares the extension
-- **THEN** the harness writes inside `/tmp` succeed (FULL carveout on the admitted target); writes to undeclared `/tmp` paths outside any admitted target still fail with `EACCES`
+- **WHEN** a hooked session declares the tempdir extension, whose slice targets `/tmp`
+- **THEN** the harness writes inside `/tmp` succeed (FULL carveout on the admitted target)
 
-#### Scenario: Undeclared /tmp stays denied
-- **WHEN** no triple admits `/tmp` (plain or hooked session without the tempdir extension)
-- **THEN** harness writes to `/tmp` fail with `EACCES` exactly as before (the outlet remains `/tmp/scratch`)
+#### Scenario: Undeclared /tmp stays denied under hook
+- **WHEN** a hooked session carries no triple admitting `/tmp`
+- **THEN** harness writes to `/tmp` fail with `EACCES` exactly as before (the outlet remains `/tmp/scratch`; plain sessions without Landlock are outside this guarantee)
+
+#### Scenario: Sibling denial beside an admitted /tmp
+- **WHEN** a hooked session admits `/tmp` and the harness writes outside it to a sibling subtree path
+- **THEN** the sibling write fails with `EACCES` (the FULL directory rule on `/tmp` covers its descendants; denial evidence comes from outside the admitted target), and nested `/tmp/scratch` keeps its existing handling

@@ -1,18 +1,20 @@
 ## 1. Prepare carries session identity
 
-- [ ] 1.1 Session id in the prepare request: extend the wire request shape with the opaque session id (additive field, major unchanged); old guests ignore it; pin request-shape and ignore-unknown-fields pins.
-- [ ] 1.2 Runner threads the id: run_extension_prepare/run_prepare pass the conduct session id into the request; pin the id reaching the guest (peer echoes it in a diagnostic-safe way).
+- [ ] 1.1 Session id in the prepare request: extend the wire request shape with the opaque session id (additive field, major unchanged); pin an actual old guest binary completing prepare against the new request (decoder tolerance, not assumed).
+- [ ] 1.2 Runner threads the id: run_extension_prepare/run_prepare pass the conduct session id into the request; slice paths use the fixed prefix plus validated session charset plus randomness with exclusive-create (no unsanitized concatenation).
 
 ## 2. Declared RW honored
 
 - [ ] 2.1 Remove refuse_extension_rw_mounts: contributions merge through central validators with no blanket refusal; existing RO pins stay green; add RW-contribution merge pins (valid topology merges, collisions still refuse).
-- [ ] 2.2 Landlock FULL grant on the admitted /tmp slice: compose the carveout for the contributed target; undeclared /tmp stays denied with /tmp/scratch outlet; pin admit/deny/outlet triple live.
+- [ ] 2.2 Landlock FULL grant on the admitted /tmp slice: compose the carveout for the contributed target; undeclared /tmp stays denied under hook with /tmp/scratch outlet; pin admit (hooked /tmp writes) / sibling-deny (outside-/tmp EACCES) / nested-scratch triple live.
+- [ ] 2.3 Pair composition: landlock plus one other extension answer prepare in declaration order, concatenate raw plans, merge once centrally and atomically; two non-landlock extensions refuse; pin the composed conduct (tempdir RW/FULL plus retained sibling denial) through production conduct, never a hand-composed fixture.
 
 ## 3. Tempdir reference extension
 
-- [ ] 3.1 Reference guest binary: own artifact (own [[bin]]/example target to start), hello with its registered role plus mounts advertisement, mints owner-only uniquely-named slice per prepare, answers the slice triple; registry entry shape documented for builders.
-- [ ] 3.2 Teardown reap: contributed host directories removed after converged teardown (litter, never residue); reap hook slot where the lifecycle needs it; pin leak-free conduct plus failed-teardown litter reporting.
-- [ ] 3.3 Nesting conformance: /tmp slice with /tmp/scratch beneath (depth-ordered mounts, subtree handling preserved); pin the nested topology fast + live.
+- [ ] 3.1 Reference guest binary: example-grade fixture (never an installed sibling), hello with its registered role plus mounts advertisement, mints owner-only uniquely-named slice per prepare, answers the slice triple plus cleanup declaration; registry entry shape documented for builders.
+- [ ] 3.2 Teardown reap: ONLY declared cleanup paths removed after converged teardown (nofollow recursive, directories only, symlinks refuse); undeclared contributions survive; removal failure is litter; reap waits for convergence; pin leak-free conduct, failed-teardown litter reporting, and symlink-refusal.
+- [ ] 3.3 gc owns orphans: session-attributable slice names as the durable record; gc reaps slices with no live unit (including prepare-failure orphans with no merged plan), never under an active session; pin orphan reconciliation.
+- [ ] 3.4 Nesting conformance: /tmp slice with /tmp/scratch beneath (depth-ordered mounts, subtree handling preserved); pin the nested topology fast + live.
 
 ## 4. Dogfood and docs
 
