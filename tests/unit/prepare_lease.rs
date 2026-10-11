@@ -7,14 +7,20 @@ use cistella::lock::PrepareLease;
 #[test]
 fn lease_create_record_remove_lifecycle() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
+    let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
     let path = dir.path().join("cistella-prepare-test-session-1");
     assert!(path.exists(), "lease file present after create");
     let first = std::fs::read_to_string(&path).expect("read lease");
     assert!(first.starts_with("driver "), "got: {first}");
     lease.record_guest(1234, 1234).expect("guest records");
+    lease
+        .record_guest(5678, 5678)
+        .expect("second guest appends");
     let second = std::fs::read_to_string(&path).expect("read lease");
-    assert!(second.contains("\nguest 1234 1234\n"), "got: {second}");
+    assert!(
+        second.contains("\nguest 1234 1234\nguest 5678 5678\n"),
+        "got: {second}"
+    );
     drop(lease);
     assert!(!path.exists(), "drop removes the lease");
 }
@@ -47,7 +53,7 @@ fn lease_bad_session_id_refuses() {
 #[test]
 fn lease_retain_survives_drop() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
+    let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
     let path = dir.path().join("cistella-prepare-test-session-1");
     lease.retain();
     assert!(path.exists(), "retained lease survives drop");

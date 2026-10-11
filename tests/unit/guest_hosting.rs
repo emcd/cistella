@@ -473,3 +473,102 @@ fn extension_rw_mount_contribution_merges() {
     assert_eq!(triple.container_target, "/vectmp");
     assert_eq!(triple.mode, cistella::framework::contract::MountMode::Rw);
 }
+
+/// Stages the deterministic peer as the shipped landlock binary
+/// (owned 0755 copy under its sibling-relative name — same
+/// umask-independent discipline as registered staging).
+fn stage_landlock_peer(dir: &tempfile::TempDir) {
+    use std::os::unix::fs::PermissionsExt;
+    let bytes = std::fs::read(example_binary("fake_guest")).expect("read peer binary");
+    let path = dir.path().join("cistella-extension-landlock");
+    std::fs::write(&path, &bytes).expect("stage landlock peer");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[test]
+fn landlock_plus_registered_compose_through_production_select() {
+    use cistella::framework::prepare_select::prepare_selected_extension;
+    use cistella::profile::ExtensionResolution;
+    // The v1 pair through the production selection entry point
+    // (not a hand-composed fixture): landlock contributes its
+    // hook, the registered peer its env pair plus RO mount, one
+    // atomic central merge carries both.
+    let exe = tempfile::tempdir().expect("tempdir");
+    stage_landlock_peer(&exe);
+    let (entry, _ctx, _dir) = peer_entry(
+        "fake_guest",
+        "test-cap",
+        vec!["--mode=prepare-vector-registered".to_string()],
+    );
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let mut text = String::from("format_version = 1\n");
+    for name in ["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"] {
+        text.push_str("[[acknowledgements]]\nname = \"");
+        text.push_str(name);
+        text.push_str("\"\n");
+    }
+    std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
+    let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+        .expect("policy loads");
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let (plan, _lease) = prepare_selected_extension(
+        vec![
+            ExtensionResolution::Landlock,
+            ExtensionResolution::Registered(entry),
+        ],
+        exe.path(),
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-pair-1",
+        lease_base.path(),
+        &[
+            vec!["--mode=extension-landlock-hook".to_string()],
+            Vec::new(),
+        ],
+    )
+    .expect("pair composes");
+    assert_eq!(
+        plan.merged.environment,
+        vec![
+            ("AGENTMUX_BUNDLE".to_string(), "seat-7f3a".to_string()),
+            ("AGENTMUX_SESSION".to_string(), "session-9c1e".to_string()),
+        ]
+    );
+    assert_eq!(plan.merged.mounts.len(), 1);
+    assert_eq!(
+        plan.merged.mounts[0].host_source,
+        "/run/vector/agentmux-bus"
+    );
+    assert_eq!(plan.merged.guest_hooks.len(), 1);
+}
+
+#[test]
+fn two_non_landlock_extensions_refuse() {
+    use cistella::framework::prepare_select::prepare_selected_extension;
+    use cistella::profile::ExtensionResolution;
+    let (first, _ctx1, _dir1) = peer_entry("fake_guest", "test-cap", Vec::new());
+    let (second, _ctx2, _dir2) = peer_entry("fake_guest", "other-cap", Vec::new());
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let error = prepare_selected_extension(
+        vec![
+            ExtensionResolution::Registered(first),
+            ExtensionResolution::Registered(second),
+        ],
+        std::path::Path::new("/nonexistent-exe-dir"),
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-pair-refuse",
+        lease_base.path(),
+        &[],
+    )
+    .expect_err("two non-landlock extensions must refuse");
+    assert!(
+        error.to_string().contains("at most one non-landlock"),
+        "got: {error}"
+    );
+}

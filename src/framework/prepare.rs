@@ -141,6 +141,38 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     timeout: Duration,
     session_id: &str,
 ) -> Result<EvaluatedPlan> {
+    let (plan, credentials) = transact_prepare(exchange, guest_id, timeout, session_id)?;
+    merge_transacted(
+        plan,
+        credentials,
+        guest_id,
+        capabilities,
+        context,
+        policy,
+        acceptances,
+    )
+}
+
+/// Requests one prepare transaction and builds the typed plan:
+/// sends the request (carrying the opaque session id — extensions
+/// MAY mint per-session host state keyed by it, MUST treat it as
+/// opaque; old decoders tolerate the additive field), parses the
+/// single response with unknown-field refusal, and admits
+/// credential handles by shape. Merging, claims, and evaluation
+/// belong to [`merge_transacted`] so pair composition can
+/// concatenate raw plans and merge once centrally.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Protocol` on transport, correlation, or
+/// shape failure, and `CistellaError::Contract` on credential
+/// admission refusal.
+pub(crate) fn transact_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
+    exchange: &mut Exchange<R, W>,
+    guest_id: &str,
+    timeout: Duration,
+    session_id: &str,
+) -> Result<(PreparePlan, Vec<AdmittedCredential>)> {
     // The opaque session id rides the request (additive field):
     // extensions MAY mint per-session host state keyed by it and
     // MUST treat it as opaque. Old decoders tolerate the field
@@ -154,19 +186,45 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
         CistellaError::Contract("bad prepare response: shape violation".to_string())
     })?;
     let provenance = Provenance::Extension(guest_id.to_string());
+    let credentials = admit_all(&response.credentials)?;
+    let plan = build_plan(response, &provenance)?;
+    Ok((plan, credentials))
+}
+
+/// Merges one (or several concatenated) raw plans centrally:
+/// gates contribution types against the negotiated capabilities,
+/// merges atomically against the framework-owned baseline context
+/// (destination collisions refuse), partitions claims, and
+/// evaluates every contributed name against the lattice. Pair
+/// composition concatenates declaration-ordered raw plans and
+/// merges once here, so cross-plan collisions refuse
+/// deterministically under the same validators.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on admission, merge, claim,
+/// or policy refusal.
+pub(crate) fn merge_transacted(
+    plan: PreparePlan,
+    credentials: Vec<AdmittedCredential>,
+    guest_id: &str,
+    capabilities: &[String],
+    context: &MergeContext,
+    policy: &PolicySet,
+    acceptances: &HashSet<String>,
+) -> Result<EvaluatedPlan> {
     let advertised = CapabilitySet::new(
         &capabilities
             .iter()
             .filter_map(|name| parse_capability(name))
             .collect::<Vec<_>>(),
     );
-    if !response.credentials.is_empty() && !advertised.allows(Capability::Credentials) {
+    if !credentials.is_empty() && !advertised.allows(Capability::Credentials) {
         return Err(CistellaError::Contract(
             "guest returned unadvertised contribution type: credentials".to_string(),
         ));
     }
-    let credentials = admit_all(&response.credentials)?;
-    let plan = build_plan(response, &provenance)?;
+    let provenance = Provenance::Extension(guest_id.to_string());
     let merged = merge_prepare(plan, &advertised, context)?;
     let contributed: Vec<String> = merged
         .environment
@@ -221,6 +279,26 @@ pub enum ExtensionSpawn {
     Registered(ResolvedGuest),
 }
 
+/// Invitation for one extension spawn: the provenance identity,
+/// the host-supported hello offer (closed negotiation ceiling),
+/// and the advertisements the runner requires before planning.
+/// Shared by the single-transaction runner and pair composition
+/// so both negotiate identically.
+pub(crate) fn spawn_invitation(spawn: &ExtensionSpawn) -> (String, Vec<String>, Vec<String>) {
+    match spawn {
+        ExtensionSpawn::Landlock => (
+            EXTENSION_BIN.to_string(),
+            vec![EXTENSION_ROLE.to_string(), EXTENSION_HOOKS.to_string()],
+            vec![EXTENSION_HOOKS.to_string()],
+        ),
+        ExtensionSpawn::Registered(resolved) => {
+            let mut offered = vec![resolved.role.clone()];
+            offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
+            (resolved.name.clone(), offered, vec![resolved.role.clone()])
+        }
+    }
+}
+
 /// Runs one extension prepare transaction: hosts the guest
 /// per-phase, admits on the required capabilities, merges centrally
 /// against the framework-owned baseline, and shuts the guest down.
@@ -261,24 +339,13 @@ pub fn run_extension_prepare(
     session_id: &str,
     lease_base: &std::path::Path,
 ) -> Result<(EvaluatedPlan, Option<crate::lock::PrepareLease>)> {
-    let (guest_id, offered, required) = match &spawn {
-        ExtensionSpawn::Landlock => (
-            EXTENSION_BIN.to_string(),
-            vec![EXTENSION_ROLE.to_string(), EXTENSION_HOOKS.to_string()],
-            vec![EXTENSION_HOOKS.to_string()],
-        ),
-        ExtensionSpawn::Registered(resolved) => {
-            let mut offered = vec![resolved.role.clone()];
-            offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
-            (resolved.name.clone(), offered, vec![resolved.role.clone()])
-        }
-    };
+    let (guest_id, offered, required) = spawn_invitation(&spawn);
     // Durable prepare lease before the first spawn: quiescence is
     // unproven from here on, so every error path below either
     // proves it (clean shutdowns, which drop the handle) or
     // retains the uncertainty record (residue and post-spawn
     // hosting failures, which leak it for stale-gc).
-    let lease = crate::lock::PrepareLease::create(lease_base, session_id)?;
+    let mut lease = crate::lock::PrepareLease::create(lease_base, session_id)?;
     let (mut guest, negotiated) = match match spawn {
         ExtensionSpawn::Landlock => host_external(
             exe_dir,
@@ -361,7 +428,7 @@ pub fn run_extension_prepare(
 
 /// Driver-injected env names reserved against extension
 /// contributions (unit-baked HOME, ssh-agent pointer, exec-time TERM).
-const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
+pub(crate) const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
 
 /// Checks one merged hook names exactly the staged wrapper
 /// executable (singleton prefix).

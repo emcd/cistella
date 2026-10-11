@@ -7,7 +7,7 @@
 
 - [x] 2.1 Remove refuse_extension_rw_mounts: contributions merge through central validators with no blanket refusal; existing RO pins stay green; add RW-contribution merge pins (valid topology merges, collisions still refuse).
 - [x] 2.2 Landlock FULL grant on the admitted /tmp slice: compose the carveout for the contributed target; undeclared /tmp stays denied under hook with /tmp/scratch outlet; pin admit (hooked /tmp writes) / sibling-deny (outside-/tmp EACCES) / nested-scratch triple live.
-- [ ] 2.3 Pair composition: landlock plus one other extension answer prepare in declaration order, concatenate raw plans, merge once centrally and atomically; two non-landlock extensions refuse; pin the composed conduct (tempdir RW/FULL plus retained sibling denial) through production conduct, never a hand-composed fixture.
+- [x] 2.3 Pair composition: landlock plus one other extension answer prepare in declaration order, concatenate raw plans, merge once centrally and atomically; two non-landlock extensions refuse; pin the composed conduct (tempdir RW/FULL plus retained sibling denial) through production conduct, never a hand-composed fixture.
 
 ## 3. Tempdir reference extension
 
