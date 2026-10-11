@@ -275,6 +275,7 @@ fn prepare_merges_valid_response() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap();
     assert_eq!(
@@ -298,6 +299,7 @@ fn prepare_refuses_undeclared_contribution_type() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     peer.join().unwrap();
@@ -317,6 +319,7 @@ fn prepare_refuses_unknown_wire_fields_whole() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     peer.join().unwrap();
@@ -336,6 +339,7 @@ fn prepare_refuses_token_contribution_without_ack() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     assert!(error.to_string().contains("GITHUB_TOKEN"));
@@ -362,6 +366,7 @@ fn prepare_discards_weaker_claim_and_proceeds() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap();
     assert_eq!(plan.diagnostics.len(), 1);
@@ -385,6 +390,7 @@ fn prepare_refuses_overreaching_claim_whole() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     assert!(error.to_string().contains("beyond its transaction"));
@@ -409,6 +415,7 @@ fn prepare_upheld_claim_enforces_with_ack_escape() {
         &policy,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     peer.join().unwrap();
@@ -426,6 +433,7 @@ fn prepare_upheld_claim_enforces_with_ack_escape() {
         &acked,
         &empty_acceptances(),
         FAST,
+        "test-session",
     )
     .unwrap();
     peer.join().unwrap();

@@ -109,6 +109,7 @@ fn run_vector(
         policy,
         acceptances,
         Duration::from_secs(2),
+        "test-session",
     );
     let cleanup = host.shutdown();
     assert!(

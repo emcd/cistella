@@ -114,7 +114,9 @@ pub fn parse_capability(name: &str) -> Option<Capability> {
 
 /// Runs one prepare transaction against a guest exchange.
 ///
-/// Sends `prepare`, parses the single response with unknown-field
+/// Sends `prepare` (carrying the opaque session id — extensions
+/// MAY mint per-session host state keyed by it, MUST treat it as
+/// opaque), parses the single response with unknown-field
 /// refusal, gates contribution types against the negotiated
 /// capabilities, merges atomically against the framework-owned
 /// baseline context (destination collisions refuse), partitions
@@ -127,6 +129,10 @@ pub fn parse_capability(name: &str) -> Option<Capability> {
 /// Returns `CistellaError::Protocol` on transport, correlation, or
 /// shape failures, and `CistellaError::Contract` on merge, claim, or
 /// policy refusals. Any refusal rejects the whole transaction.
+/// Eight parameters mirror the transaction inputs one-to-one
+/// (exchange, identity, capabilities, context, policy,
+/// acceptances, budget, session); bundling would only move them.
+#[allow(clippy::too_many_arguments)]
 pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     exchange: &mut Exchange<R, W>,
     guest_id: &str,
@@ -135,10 +141,15 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     policy: &PolicySet,
     acceptances: &HashSet<String>,
     timeout: Duration,
+    session_id: &str,
 ) -> Result<EvaluatedPlan> {
+    // The opaque session id rides the request (additive field):
+    // extensions MAY mint per-session host state keyed by it and
+    // MUST treat it as opaque. Old decoders tolerate the field
+    // (pinned against an actual old guest, not assumed).
     let payload = exchange.request(
         "prepare",
-        serde_json::Value::Object(serde_json::Map::new()),
+        serde_json::json!({"session_id": session_id}),
         timeout,
     )?;
     let response: PrepareResponse = serde_json::from_value(payload).map_err(|_| {
@@ -259,6 +270,7 @@ pub fn run_extension_prepare(
     profile: &crate::profile::Profile,
     triples: &[MountTriple],
     policy: &PolicySet,
+    session_id: &str,
 ) -> Result<EvaluatedPlan> {
     let (guest_id, offered, required) = match &spawn {
         ExtensionSpawn::Landlock => (
@@ -309,6 +321,7 @@ pub fn run_extension_prepare(
         policy,
         &acceptances,
         Deadlines::default().plan,
+        session_id,
     );
     let shutdown = guest.shutdown();
     let plan = match (outcome, shutdown) {
@@ -353,6 +366,7 @@ pub fn run_landlock_prepare(
     profile: &crate::profile::Profile,
     triples: &[MountTriple],
     policy: &PolicySet,
+    session_id: &str,
 ) -> Result<EvaluatedPlan> {
     run_extension_prepare(
         ExtensionSpawn::Landlock,
@@ -361,6 +375,7 @@ pub fn run_landlock_prepare(
         profile,
         triples,
         policy,
+        session_id,
     )
 }
 
@@ -387,6 +402,7 @@ pub fn prepare_selected_extension(
     profile: &crate::profile::Profile,
     triples: &[MountTriple],
     policy: &PolicySet,
+    session_id: &str,
 ) -> Result<EvaluatedPlan> {
     match extension {
         None => Ok(EvaluatedPlan {
@@ -400,7 +416,7 @@ pub fn prepare_selected_extension(
             credentials: Vec::new(),
         }),
         Some(ExtensionResolution::Landlock) => {
-            run_landlock_prepare(exe_dir, &[], profile, triples, policy)
+            run_landlock_prepare(exe_dir, &[], profile, triples, policy, session_id)
         }
         Some(ExtensionResolution::Registered(entry)) => {
             let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
@@ -412,6 +428,7 @@ pub fn prepare_selected_extension(
                 profile,
                 triples,
                 policy,
+                session_id,
             )
         }
     }

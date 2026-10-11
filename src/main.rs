@@ -452,7 +452,7 @@ fn conduct_session(
         extension,
         Some(cistella::profile::ExtensionResolution::Landlock)
     );
-    let evaluated = prepare_selected_extension(extension, exe_dir, &prof, &triples, &policy)?;
+    let evaluated = prepare_selected_extension(extension, exe_dir, &prof, &triples, &policy, &id)?;
     // Declared-but-empty refuses here, before staging or
     // create: a selected extension answering zero hooks must
     // never start a plain session silently (the selection is a

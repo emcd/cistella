@@ -66,6 +66,7 @@ fn run_full_prepare(
         &policy,
         &acceptances,
         Duration::from_secs(2),
+        "test-session",
     )
 }
 
@@ -125,6 +126,7 @@ fn prepare_unadvertised_capability_refuses() {
         &policy,
         &acceptances,
         Duration::from_secs(2),
+        "test-session",
     );
     let cleanup = host.shutdown();
     let error = result.expect_err("unadvertised capability must refuse");

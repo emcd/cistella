@@ -99,8 +99,15 @@ fn extension_prepare_merges_hook_and_shuts_down_clean() {
     let mode = "--mode=extension-landlock-hook".to_string();
     // `Ok` already proves clean shutdown: residue dominates inside
     // `run_landlock_prepare`, so a stranded peer would fail here.
-    let evaluated =
-        run_landlock_prepare(dir.path(), &[mode], &bare_profile(), &[], &defaults()).unwrap();
+    let evaluated = run_landlock_prepare(
+        dir.path(),
+        &[mode],
+        &bare_profile(),
+        &[],
+        &defaults(),
+        "test-session",
+    )
+    .unwrap();
     assert_eq!(evaluated.merged.guest_hooks.len(), 1);
     let hook = &evaluated.merged.guest_hooks[0];
     assert_eq!(hook.order, 0);
@@ -119,8 +126,15 @@ fn extension_prepare_without_hooks_capability_refuses() {
     // contribution: admission refuses before any prepare is sent,
     // and the guest is reaped (Ok shutdown inside is residue-gated).
     let mode = "--mode=extension-no-hooks".to_string();
-    let error =
-        run_landlock_prepare(dir.path(), &[mode], &bare_profile(), &[], &defaults()).unwrap_err();
+    let error = run_landlock_prepare(
+        dir.path(),
+        &[mode],
+        &bare_profile(),
+        &[],
+        &defaults(),
+        "test-session",
+    )
+    .unwrap_err();
     assert!(
         error.to_string().contains("must advertise guest-hooks"),
         "got: {error}"

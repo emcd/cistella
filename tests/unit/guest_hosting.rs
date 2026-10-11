@@ -232,6 +232,7 @@ fn registered_extension_prepare_converges_plain() {
         &minimal_profile(),
         &[],
         &policy,
+        "test-session-7f3a",
     )
     .expect("registered prepare converges");
     assert!(plan.merged.environment.is_empty());
@@ -377,6 +378,7 @@ fn registered_nonempty_contribution_merges() {
         &minimal_profile(),
         &[],
         &policy,
+        "test-session-7f3a",
     )
     .expect("nonempty prepare merges");
     assert_eq!(
@@ -392,4 +394,42 @@ fn registered_nonempty_contribution_merges() {
         "/run/vector/agentmux-bus"
     );
     assert!(plan.merged.guest_hooks.is_empty());
+}
+
+#[test]
+fn session_id_threads_into_prepare() {
+    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    // The runner's session id reaches the guest verbatim: the peer
+    // echoes the request's session_id back as an env contribution.
+    // Old-shape peers (generic request parsing, predating the
+    // field) complete against session-id-carrying requests —
+    // decoder tolerance pinned against actual peer behavior.
+    let (entry, ctx, _dir) = peer_entry(
+        "fake_guest",
+        "test-cap",
+        vec!["--mode=prepare-echo-session-id".to_string()],
+    );
+    let resolved = resolve(&entry, &ctx).expect("peer resolves");
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let text = "format_version = 1\n[[acknowledgements]]\nname = \"SESSION_ID_ECHO\"\n";
+    std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
+    let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+        .expect("policy loads");
+    let plan = run_extension_prepare(
+        ExtensionSpawn::Registered(resolved),
+        std::path::Path::new("/nonexistent-exe-dir"),
+        &[],
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-echo-1",
+    )
+    .expect("session id threads through");
+    assert_eq!(
+        plan.merged.environment,
+        vec![(
+            "SESSION_ID_ECHO".to_string(),
+            "test-session-echo-1".to_string()
+        )]
+    );
 }

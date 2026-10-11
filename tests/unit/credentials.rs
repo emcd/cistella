@@ -174,6 +174,7 @@ fn prepare_admits_handles_with_capability() {
         &policy,
         &HashSet::new(),
         FAST,
+        "test-session",
     )
     .unwrap();
     assert_eq!(plan.credentials.len(), 1);
@@ -194,6 +195,7 @@ fn prepare_refuses_handles_without_capability() {
         &policy,
         &HashSet::new(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     peer.join().unwrap();
@@ -214,6 +216,7 @@ fn prepare_bad_handle_fails_whole_transaction() {
         &policy,
         &HashSet::new(),
         FAST,
+        "test-session",
     )
     .unwrap_err();
     peer.join().unwrap();

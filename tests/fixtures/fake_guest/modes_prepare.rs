@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::{PROTOCOL_MAJOR, read_frame_from_stdin, write_frame};
+use crate::{PROTOCOL_MAJOR, protocol_error_exit, read_frame_from_stdin, write_frame};
 
 /// Runs one Prepare-transaction mode; `None` falls through to the next group.
 pub(crate) fn run(
@@ -206,6 +206,54 @@ pub(crate) fn run(
                     "guest_hooks": []
                 }),
             );
+            ExitCode::SUCCESS
+        }
+        "prepare-echo-session-id" => {
+            // Reads the prepare request's session_id and returns it
+            // as an env contribution: proves the session id threads
+            // from the runner into the guest. Hello advertises the
+            // contribution type (the merge gate admits nonempty env
+            // only when advertised).
+            if read_frame_from_stdin(stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["test-cap", "environment"],
+                    "max_frame": 1024u32
+                }
+            });
+            let body1 = serde_json::to_vec(&hello).expect("serialize");
+            if write_frame(stdout_lock, &body1, 64 * 1024).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let req_body = match read_frame_from_stdin(stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return Some(protocol_error_exit()),
+            };
+            let request: Value = serde_json::from_slice(&req_body).unwrap_or(json!({}));
+            let id = request.get("id").cloned().unwrap_or(json!("req-0"));
+            let session = request
+                .get("payload")
+                .and_then(|payload| payload.get("session_id").cloned())
+                .unwrap_or(json!("missing"));
+            let response = json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": id,
+                "op": "prepare",
+                "payload": {
+                    "environment": [{"name": "SESSION_ID_ECHO", "value": session}],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }
+            });
+            let body = serde_json::to_vec(&response).expect("serialize");
+            let _ = write_frame(stdout_lock, &body, 64 * 1024);
             ExitCode::SUCCESS
         }
         "prepare-vector-registered" => {
