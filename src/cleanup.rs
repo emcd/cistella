@@ -724,12 +724,6 @@ pub fn reap_tempdir_orphans_in(
                 continue;
             }
         }
-        // Record rendezvous: a session WITH cleanup records never
-        // falls back to name-only authority. If any record names
-        // this candidate path, the object must still match the
-        // recorded identity — otherwise a teardown-refused
-        // replacement stands and gc preserves it. Only genuinely
-        // unrecorded paths take the name-attribution path below.
         // Record rendezvous: a session WITH cleanup records
         // never falls back to name-only authority. An admitted
         // identity removes through the shared record-carried
@@ -858,18 +852,35 @@ fn match_cleanup_record(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(RecordMatch::Gone),
         Err(error) => return Err(format!("cleanup {error} {}", candidate.display())),
     };
-    use std::os::unix::fs::MetadataExt;
+    // Full match first: identity plus the admitted parent
+    // association. A dev/ino hit without association (moved
+    // object) does NOT admit — it falls through to the path
+    // check, which refuses when a record names this path.
+    // Checking every record before deciding keeps multiple
+    // records per session coherent.
+    let mut identity_seen = false;
     for record in &records {
         if stat.dev() == record.dev && stat.ino() == record.ino {
-            return Ok(RecordMatch::Admitted(record.clone()));
+            identity_seen = true;
+            let associated = candidate
+                .parent()
+                .and_then(|parent| std::fs::metadata(parent).ok())
+                .is_some_and(|parent_stat| {
+                    parent_stat.dev() == record.parent_dev && parent_stat.ino() == record.parent_ino
+                });
+            if associated {
+                return Ok(RecordMatch::Admitted(record.clone()));
+            }
         }
     }
-    if records.iter().any(|record| record.path == *candidate) {
+    if identity_seen || records.iter().any(|record| record.path == *candidate) {
+        // Either the admitted object moved away from here, or a
+        // record names this path for a different object: both are
+        // teardown-refused states — preserve.
         return Ok(RecordMatch::Refused);
     }
     Ok(RecordMatch::Unrecorded)
 }
-
 /// Record-match outcome for one gc candidate (see
 /// [`match_cleanup_record`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -885,12 +896,11 @@ enum RecordMatch {
     Gone,
 }
 
-/// Removes one admitted object found by enumeration (rather than
-/// by its declared path): the parent is the candidate's actual
-/// parent (trusted on its open FD — no association to check
-/// against, since the object moved), and the record travels into
-/// the shared verified-removal tail. Used only after an identity
-/// match, never on a bare name.
+/// Removes one admitted object found by enumeration: the match
+/// already verified identity plus the admitted parent
+/// association, so the parent here is trusted on its open FD and
+/// the record travels into the shared verified-removal tail.
+/// Used only after a full match, never on a bare name.
 fn reap_recorded(candidate: &Path, record: &CleanupRecord) -> std::result::Result<(), String> {
     let parent = candidate.parent().ok_or_else(|| {
         format!(

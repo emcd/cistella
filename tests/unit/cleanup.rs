@@ -585,3 +585,35 @@ fn group_writable_parent_refuses() {
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
 }
+
+#[test]
+fn moved_admitted_object_converges_through_gc() {
+    use cistella::cleanup::reap_tempdir_orphans_in;
+    use std::collections::HashSet;
+    // The admitted object renamed within the temproot (same
+    // inode, new prefix-valid name, same parent association):
+    // identity plus association both hold, so gc removes it
+    // through the record-carried tail. Contrast with the
+    // replacement case (same path, different object → preserved).
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let session = "gc-move-1";
+    let original = root.path().join(format!("cistella-tmp-{session}-111-222"));
+    std::fs::create_dir(&original).expect("mkdir slice");
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    record_cleanup(
+        base.path(),
+        session,
+        &[original.to_string_lossy().to_string()],
+    )
+    .expect("record admits");
+    let moved = root.path().join(format!("cistella-tmp-{session}-333-444"));
+    std::fs::rename(&original, &moved).expect("rename within temproot");
+    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    assert_eq!(
+        removed,
+        vec![format!("cistella-tmp-{session}-333-444")],
+        "moved admitted object reaps, got: {removed:?}"
+    );
+    assert!(!moved.exists(), "moved object removed");
+}
