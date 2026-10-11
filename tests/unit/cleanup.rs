@@ -69,10 +69,11 @@ fn swapped_root_refuses() {
     // replacement apart (proven on the QA host: 66306 2233835
     // both times). The check still refuses every detectable
     // case, and staging a replacement requires parent-write
-    // powers already restricted to trusted actors — so the worst
-    // case is reaping an attacker-emptied dir, never live data.
-    // (Deliberately not forced via allocator tricks: fragile the
-    // other way.)
+    // powers already restricted to trusted actors — so the
+    // worst case is recursive deletion of a populated
+    // replacement (remove_tree empties before rmdir), contained
+    // by that same trust, never live data outside it. (Deliberately
+    // not forced via allocator tricks: fragile the other way.)
     std::fs::remove_file(&root).expect("remove link");
 }
 
