@@ -11,9 +11,9 @@
 
 ## 3. Tempdir reference extension
 
-- [ ] 3.1 Reference guest binary: example-grade fixture (never an installed sibling), hello with its registered role plus mounts advertisement, mints owner-only uniquely-named slice per prepare, answers the slice triple plus cleanup declaration; registry entry shape documented for builders.
-- [ ] 3.2 Teardown reap: ONLY declared cleanup paths removed after converged teardown (nofollow recursive, directories only, symlinks refuse); undeclared contributions survive; removal failure is litter; reap waits for convergence; pin leak-free conduct, failed-teardown litter reporting, and symlink-refusal.
-- [ ] 3.3 gc owns orphans: session-attributable slice names as the durable record; gc reaps slices with no live unit (including prepare-failure orphans with no merged plan), never under an active session; pin orphan reconciliation.
+- [ ] 3.1 Reference guest binary: example-grade fixture (never an installed sibling), hello with its registered role plus mounts and cleanup advertisement, mints owner-only uniquely-named slice per prepare, answers the slice triple plus cleanup declaration; registry entry shape documented for builders.
+- [ ] 3.2 Teardown reap: ONLY declared cleanup paths removed after converged teardown; root admission (non-symlink directory, seat-or-root owned — swapped root refuses whole entry) separate from FD-relative traversal (ordinary files unlink unfollowed, nested symlinks unlink as entries, never traversed); undeclared contributions survive; removal failure is litter; reap waits for convergence; pin populated-slice removal, symlink-to-outside target survival, root-swap refusal, leak-free conduct, and failed-teardown litter reporting.
+- [ ] 3.3 Prepare lease plus gc owns orphans: driver lease marker per hosted prepare (removed on proven shutdown + convergence/quiescence); gc skips live leases, treats dead-pid leases as stale, reaps session-attributable orphans with no live unit and no live lease (including prepare-failure orphans with no merged plan), enumerates only the attributable prefix pattern; pin gc racing a paused pre-create prepare, post-quiescence cleanup, stale-lease progress, and independent sessions.
 - [ ] 3.4 Nesting conformance: /tmp slice with /tmp/scratch beneath (depth-ordered mounts, subtree handling preserved); pin the nested topology fast + live.
 
 ## 4. Dogfood and docs

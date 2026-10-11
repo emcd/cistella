@@ -5,7 +5,7 @@ Per-session writable `/tmp` provided by a third-party extension: host-slice mint
 ## ADDED Requirements
 ### Requirement: Per-session host slice lifecycle
 
-A registered tempdir extension SHALL mint one host directory per session prepare (fixed prefix plus validated session id plus randomness, O_EXCL create-fail retry, owner-only mode), contribute it as a read-write triple targeting the container `/tmp`, and declare it in a `cleanup` list naming the minted directory. The framework SHALL remove ONLY declared cleanup paths after converged teardown (best-effort removal is litter, never residue — the unit is gone either way; undeclared contributed mounts are never reaped). Reap SHALL be nofollow recursive over directories only (symlinks and non-directories refuse, never followed or removed). Slice-name collision SHALL fail the prepare loudly, never share a slice between sessions.
+A registered tempdir extension SHALL mint one host directory per session prepare (fixed prefix plus validated session id plus randomness, O_EXCL create-fail retry, owner-only mode), contribute it as a read-write triple targeting the container `/tmp`, and declare it in a `cleanup` list naming the minted directory. The framework SHALL remove ONLY declared cleanup paths after converged teardown (best-effort removal is litter, never residue — the unit is gone either way; undeclared contributed mounts are never reaped). Each declared root SHALL be admitted at reap time (directory, never a symlink, seat- or root-owned — a swapped root refuses the whole entry); traversal SHALL run via anchored directory FDs, ordinary files SHALL unlink without following, and nested symlinks SHALL unlink as entries without traversal. Slice-name collision SHALL fail the prepare loudly, never share a slice between sessions.
 
 #### Scenario: Session conducts with a writable host-backed /tmp
 - **WHEN** a profile declares the tempdir extension and conducts
@@ -23,7 +23,11 @@ A registered tempdir extension SHALL mint one host directory per session prepare
 - **WHEN** a session conducted with an extension that contributed mounts but declared no cleanup paths ends
 - **THEN** the contributed host sources still exist after teardown (only declarations are deletion authority)
 
-#### Scenario: Reap refuses symlinks
+#### Scenario: Populated slice removes completely
+- **WHEN** a declared cleanup root holds harness-created files, subdirectories, and nested symlinks (including a symlink pointing outside the slice)
+- **THEN** reap removes the whole tree; the outside target survives untouched (links unlink as entries, never traversed)
+
+#### Scenario: Swapped root refuses
 - **WHEN** a declared cleanup path names a symlink or non-directory at reap time
 - **THEN** reap refuses that entry without following it; the refusal reports litter without failing the teardown verdict
 
@@ -33,11 +37,15 @@ A registered tempdir extension SHALL mint one host directory per session prepare
 
 ### Requirement: Orphaned slice reconciliation
 
-Slice names SHALL embed the session id as the durable record. If prepare mints then fails before responding (or the response is lost/invalid, leaving no merged plan to reap from), and for any slice whose session has no live unit, `gc` SHALL own retryable cleanup (never deleting under an active session). Crash and lost-response handling SHALL be specified paths, not assumptions.
+Slice names SHALL embed the session id as the durable record. The driver SHALL hold a prepare lease across each hosted prepare (removed once guest shutdown is proven and the unit lifecycle converges, or the failure converges with quiescence proven); `gc` SHALL skip sessions with a live lease and treat dead-pid leases as stale. If prepare mints then fails before responding (or the response is lost/invalid, leaving no merged plan to reap from), and for any slice whose session has no live unit and no live lease, `gc` SHALL own retryable cleanup (never deleting under an active session or an active prepare). Crash and lost-response handling SHALL be specified paths, not assumptions. Unattended `gc` SHALL enumerate only the session-attributable prefix pattern — arbitrary declared names are reaped solely through explicit per-session plans, never by enumeration.
 
 #### Scenario: Lost prepare response still reconciles
-- **WHEN** a slice exists for a session with no live unit and no merged plan referencing it
-- **THEN** `gc` removes it; slices under active sessions are never touched
+- **WHEN** a slice exists for a session with no live unit, no live lease, and no merged plan referencing it
+- **THEN** `gc` removes it; slices under active sessions or live leases are never touched
+
+#### Scenario: gc skips in-flight prepare
+- **WHEN** `gc` runs while a prepare for the session is hosted (lease live, no unit yet)
+- **THEN** the session slices survive; a dead-pid (stale) lease is removed first and normal orphan rules apply after
 
 ### Requirement: Reference extension vending
 
