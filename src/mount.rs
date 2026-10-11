@@ -411,7 +411,7 @@ pub(crate) fn canonicalize_container_target(path: &str) -> String {
     if s.is_empty() { "/".to_string() } else { s }
 }
 
-fn is_ancestor_or_equal(ancestor: &str, descendant: &str) -> bool {
+pub(crate) fn is_ancestor_or_equal(ancestor: &str, descendant: &str) -> bool {
     if ancestor == descendant {
         return true;
     }
@@ -678,75 +678,6 @@ pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Pre-creates nested bind mountpoints inside their parent's host
-/// source before container start. Podman auto-creates a missing
-/// mountpoint as container-root (host uid 100000 rootless); a
-/// stranger-owned dir inside a seat-owned tree later refuses
-/// traversal-trusted teardown (tempdir slice plus the
-/// unconditional `/tmp/scratch` triple tripped every tempdir
-/// session). Seat-owned pre-created dirs are reused as-is.
-/// Strict nesting only (a covering-but-equal target is the bind
-/// itself); top-level mounts resolve into the image fs and need
-/// nothing. Skips non-absolute sources and missing parents
-/// (validated elsewhere); `create_dir_all` on an existing chain
-/// is a no-op. Runs pre-create, so a creation failure refuses
-/// with no residue.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Mount` when a nested mountpoint cannot
-/// be created.
-pub fn precreate_nested_mountpoints(triples: &[MountTriple]) -> Result<()> {
-    for triple in triples {
-        let target = canonicalize_container_target(&triple.container_target);
-        let mut parent: Option<&MountTriple> = None;
-        let mut parent_len = 0;
-        for candidate in triples {
-            let canon = canonicalize_container_target(&candidate.container_target);
-            if canon.len() >= target.len() || !is_ancestor_or_equal(&canon, &target) {
-                continue;
-            }
-            if parent.is_none() || canon.len() > parent_len {
-                parent_len = canon.len();
-                parent = Some(candidate);
-            }
-        }
-        let Some(host) = parent else { continue };
-        if !host.host_source.starts_with('/') {
-            continue;
-        }
-        let source = canonicalize_host_source(&host.host_source);
-        if !source.is_dir() {
-            continue;
-        }
-        let remainder = target
-            .strip_prefix(
-                canonicalize_container_target(&host.container_target).trim_end_matches('/'),
-            )
-            .unwrap_or("")
-            .trim_start_matches('/');
-        let path = source.join(remainder);
-        std::fs::create_dir_all(&path).map_err(|e| {
-            CistellaError::Mount(format!("nested mountpoint {}: {e}", path.display()))
-        })?;
-    }
-    Ok(())
-}
-
-/// Final joint topology gate over the merged set (extension mounts
-/// plus credential volumes): validate, nested-RO preflight, then
-/// nested-mountpoint pre-create. Callers run it pre-create, so a
-/// refusal leaves no residue.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Mount` on the first gate failure.
-pub fn gate_final_topology(triples: &[MountTriple], container_home: &str) -> Result<()> {
-    validate_mounts(triples, container_home)?;
-    nested_ro_preflight(triples)?;
-    precreate_nested_mountpoints(triples)
 }
 
 /// Refuses same-tree read-write grafts outside the subtree

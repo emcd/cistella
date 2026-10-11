@@ -518,9 +518,9 @@ fn conduct_session(
         cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
         cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
     };
-    // Final joint topology gate over the merged set (validate,
-    // preflight, nested-mountpoint pre-create) — still pre-create.
-    cistella::mount::gate_final_topology(&revised, prof.home())?;
+    // Final joint topology gate (validate, preflight, scoped
+    // pre-create) — still pre-create, no residue.
+    cistella::mount_init::gate_final_topology(&revised, prof.home(), &evaluated.merged.cleanup)?;
     // Hook launch plan: confinement roots plus wrapper
     // argv compose pre-create — an untranslatable topology, a
     // session outside the confinement root, or a bad shape refuses

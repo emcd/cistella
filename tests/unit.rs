@@ -39,6 +39,8 @@ mod lock_teardown;
 mod mount;
 #[path = "unit/mount_alias.rs"]
 mod mount_alias;
+#[path = "unit/mount_init.rs"]
+mod mount_init;
 #[path = "unit/policy_prepare.rs"]
 mod policy_prepare;
 #[path = "unit/prepare.rs"]
