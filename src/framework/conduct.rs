@@ -139,6 +139,13 @@ pub fn abort_startup(
     } else if let Err(e) = crate::runtime::remove_scratch(session_id) {
         eprintln!("error: startup abort cleanup: {e}");
     }
+    // Early-abort conducts may have recorded cleanup declarations
+    // (prepare succeeded, unit never installed): reap them here
+    // since no teardown runs on this path. Litter reports without
+    // failing the abort disposition.
+    for litter in crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id) {
+        eprintln!("warning: cleanup litter: {litter}");
+    }
     // Read uncertainty BEFORE release consumes the client, then
     // fold the release outcome in: the guest may enter a fatal
     // path DURING release itself (after wire terminate/remove

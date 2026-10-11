@@ -593,6 +593,12 @@ pub fn teardown_inner(container_name: &str, session_id: &str) -> Result<()> {
         // New XDG scratch plus legacy /tmp path; both must go, and a
         // removal failure fails teardown rather than reporting success.
         remove_scratch(session_id)?;
+        // Declared cleanup roots reap post-convergence: litter
+        // reports without failing teardown (the unit is gone
+        // either way — removal failure is litter, never residue).
+        for litter in crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id) {
+            eprintln!("warning: cleanup litter: {litter}");
+        }
     }
     Ok(())
 }

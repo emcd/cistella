@@ -466,6 +466,13 @@ fn conduct_session(
         landlock_selected,
         &evaluated.merged.guest_hooks,
     )?;
+    // Declared cleanup roots record post-prepare (guest shut
+    // down, observation stable); teardown reaps them, gc
+    // reconciles orphans. Failures refuse pre-create.
+    if !evaluated.merged.cleanup.is_empty() {
+        let base = cistella::lock::runtime_base();
+        cistella::cleanup::record_cleanup(&base, &id, &evaluated.merged.cleanup)?;
+    }
     // Hook staging: each requested hook resolves to a private
     // verified copy mounted RO at the known guest path before
     // create. The guards live for the session; Drop owns cleanup

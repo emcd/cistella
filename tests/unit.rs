@@ -5,6 +5,8 @@
 //! picks up `tests/unit.rs`; the `#[path]` attribute directs each
 //! submodule to its file in the subdirectory.
 
+#[path = "unit/cleanup.rs"]
+mod cleanup;
 #[path = "unit/cli_args.rs"]
 mod cli_args;
 #[path = "unit/conduct_eval.rs"]
