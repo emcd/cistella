@@ -132,27 +132,27 @@ pub fn registry_path(env: &HostEnv) -> Result<PathBuf> {
     Ok(base.join("cistella/registry.toml"))
 }
 
-/// Raw registry file shape (TOML): version plus the two genera tables.
+/// Raw registry file shape (TOML mirror): version plus the two genera tables.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct RegistryFile {
+struct RegistryRaw {
     /// Schema version (must equal [`REGISTRY_FORMAT_VERSION`];
     /// `Option` so absence refuses with the version diagnostic,
     /// not a missing-field error).
     format_version: Option<u32>,
     /// Third-party isolator entries (default none).
     #[serde(default)]
-    isolators: Vec<GuestEntry>,
+    isolators: Vec<GuestRaw>,
     /// Third-party extension entries (default none).
     #[serde(default)]
-    extensions: Vec<GuestEntry>,
+    extensions: Vec<GuestRaw>,
 }
 
-/// Raw registry entry shape (TOML): exact name, role, protocol, hash,
+/// Raw registry entry shape (TOML mirror, shared by both genera tables): exact name, role, protocol, hash,
 /// exactly one source, static argv.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct GuestEntry {
+struct GuestRaw {
     /// Exact registry name (nonempty, unique per table).
     name: String,
     /// Exact hello role string the guest must advertise.
@@ -160,7 +160,7 @@ struct GuestEntry {
     /// Wire protocol major the guest speaks.
     protocol: u32,
     /// Digest over the executed bytes (algorithm-selected).
-    source_digest: DigestSpec,
+    source_digest: SourceDigestRaw,
     /// Fetch source URL (exactly one of `source-url`/`source-path`).
     source_url: Option<String>,
     /// Absolute filesystem source path (exactly one of `source-url`/`source-path`).
@@ -178,7 +178,7 @@ struct GuestEntry {
 /// a silent reinterpretation.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct DigestSpec {
+struct SourceDigestRaw {
     /// Hash algorithm (only `sha256` in v1).
     algorithm: DigestAlgorithm,
     /// Hex digest value (shape checked per algorithm).
@@ -195,7 +195,7 @@ enum DigestAlgorithm {
 
 /// Validated entry source: fetch URL or absolute path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GuestSource {
+pub enum SourceLocation {
     /// Fetch URL (http/https) plus expected digest.
     Fetch {
         /// Source URL (transport untrusted; hash is the anchor).
@@ -223,7 +223,7 @@ pub struct RegisteredGuest {
     /// Wire protocol major the guest speaks.
     pub protocol: u32,
     /// Verified source (fetch URL or absolute path plus hash).
-    pub source: GuestSource,
+    pub source: SourceLocation,
     /// Static guest arguments, passed verbatim to the spawn.
     pub arguments: Vec<String>,
 }
@@ -300,7 +300,7 @@ impl Registry {
     /// Returns `CistellaError::Profile` on TOML, version, or entry
     /// refusal. Diagnostics name declarations, never values.
     pub fn parse(text: &str) -> Result<Self> {
-        let file: RegistryFile = toml::from_str(text)
+        let file: RegistryRaw = toml::from_str(text)
             .map_err(|e| CistellaError::Profile(format!("registry parse: {e}")))?;
         if file.format_version != Some(REGISTRY_FORMAT_VERSION) {
             return Err(CistellaError::Profile(format!(
@@ -347,7 +347,7 @@ impl Registry {
 
 /// Validates one genera table: nonempty names, per-table duplicate
 /// refusal, reserved-name shadowing refusal, per-entry checks.
-fn validate_table(entries: Vec<GuestEntry>, table: GuestTable) -> Result<Vec<RegisteredGuest>> {
+fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<RegisteredGuest>> {
     let reserved = match table {
         GuestTable::Isolators => SHIPPED_ISOLATOR_NAME,
         GuestTable::Extensions => SHIPPED_EXTENSION_NAME,
@@ -383,7 +383,7 @@ fn validate_table(entries: Vec<GuestEntry>, table: GuestTable) -> Result<Vec<Reg
 /// podman extension exists or is planned; `landlock` in
 /// `[[isolators]]` stays legal for the future sibling), digest
 /// shape, exactly-one-source, static-argument span refusal.
-fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGuest> {
+fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<RegisteredGuest> {
     if entry.role.is_empty() {
         return Err(CistellaError::Profile(format!(
             "registry entry {} role must not be empty",
@@ -417,7 +417,7 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
                     entry.name
                 )));
             }
-            GuestSource::Fetch { source_url, digest }
+            SourceLocation::Fetch { source_url, digest }
         }
         (None, Some(source_path)) => {
             reject_spans(&source_path, "registry entry source-path")?;
@@ -428,7 +428,7 @@ fn validate_entry(entry: GuestEntry, table: GuestTable) -> Result<RegisteredGues
                     entry.name
                 )));
             }
-            GuestSource::Path {
+            SourceLocation::Path {
                 source_path,
                 digest,
             }

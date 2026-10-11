@@ -19,7 +19,7 @@ use nix::fcntl::OFlag;
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::PROTOCOL_MAJOR;
 use crate::guest_anchor::{PinnedBinary, begin_anchored, openat_anchored, sha256_bytes};
-use crate::guest_registry::{GuestSource, HostEnv, RegisteredGuest};
+use crate::guest_registry::{HostEnv, RegisteredGuest, SourceLocation};
 
 /// Read ceiling for guest binaries at verify time: sized for
 /// debug binaries with symbols (tens of MB; release guests are
@@ -269,14 +269,14 @@ pub fn resolve(entry: &RegisteredGuest, ctx: &ResolveCtx) -> Result<ResolvedGues
         )));
     }
     let (display, pinned) = match &entry.source {
-        GuestSource::Path {
+        SourceLocation::Path {
             source_path,
             digest,
         } => (
             source_path.clone(),
             resolve_path_source(source_path, digest)?,
         ),
-        GuestSource::Fetch { source_url, digest } => {
+        SourceLocation::Fetch { source_url, digest } => {
             let outcome = fetch_source(source_url, digest, ctx)?;
             (outcome.slot, outcome.pinned)
         }

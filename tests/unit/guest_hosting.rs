@@ -8,7 +8,7 @@
 
 use cistella::framework::contract::Deadlines;
 use cistella::framework::guest::host_registered;
-use cistella::guest_registry::{GuestSource, RegisteredGuest};
+use cistella::guest_registry::{RegisteredGuest, SourceLocation};
 use cistella::guest_source::{ResolveCtx, resolve};
 
 /// Resolves a built example binary (newest-mtime executable match).
@@ -83,7 +83,7 @@ fn peer_entry(
         name: "test-peer".to_string(),
         role: role.to_string(),
         protocol: 1,
-        source: GuestSource::Path {
+        source: SourceLocation::Path {
             source_path: path,
             digest,
         },
@@ -310,7 +310,7 @@ fn swap_after_resolve_executes_pinned_bytes() {
         name: "seat-copy".to_string(),
         role: "example".to_string(),
         protocol: 1,
-        source: GuestSource::Path {
+        source: SourceLocation::Path {
             source_path: seat_copy.clone(),
             digest,
         },

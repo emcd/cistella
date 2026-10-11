@@ -246,7 +246,7 @@ fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::Registe
         name: "fetched".to_string(),
         role: "fetched-role".to_string(),
         protocol: 1,
-        source: cistella::guest_registry::GuestSource::Fetch {
+        source: cistella::guest_registry::SourceLocation::Fetch {
             source_url: url.to_string(),
             digest,
         },
@@ -538,14 +538,14 @@ fn fetch_deadline_refuses() {
 
 #[test]
 fn wrong_protocol_major_refuses_at_resolve() {
-    use cistella::guest_registry::{GuestSource, RegisteredGuest};
+    use cistella::guest_registry::{RegisteredGuest, SourceLocation};
     use cistella::guest_source::resolve;
     let dir = tempfile::tempdir().expect("tempdir");
     let entry = RegisteredGuest {
         name: "future".to_string(),
         role: "future-role".to_string(),
         protocol: 999,
-        source: GuestSource::Path {
+        source: SourceLocation::Path {
             source_path: dir.path().join("guest"),
             digest: fixture_digest(b"x"),
         },

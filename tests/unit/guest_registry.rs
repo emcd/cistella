@@ -45,7 +45,7 @@ fn positive_all_required_keys_parses() {
     assert_eq!(isolator.arguments, vec!["--flag".to_string()]);
     assert!(matches!(
         isolator.source,
-        cistella::guest_registry::GuestSource::Path { .. }
+        cistella::guest_registry::SourceLocation::Path { .. }
     ));
     let extension = registry
         .find(GuestTable::Extensions, "net-extension")
@@ -53,7 +53,7 @@ fn positive_all_required_keys_parses() {
     assert_eq!(extension.role, "netext");
     assert!(matches!(
         extension.source,
-        cistella::guest_registry::GuestSource::Fetch { .. }
+        cistella::guest_registry::SourceLocation::Fetch { .. }
     ));
     assert!(
         registry
