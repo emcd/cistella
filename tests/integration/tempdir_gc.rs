@@ -57,7 +57,7 @@ fn peer_digest(path: &std::path::Path) -> String {
 /// Writes a seat registry with tempdir entries into an isolated
 /// XDG config dir. Conducts take it via `XDG_CONFIG_HOME`;
 /// `gc`/`terminate` never read the registry.
-fn write_tempdir_registry(xdg: &std::path::Path) -> tempfile::TempDir {
+fn write_tempdir_registry() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let digest = peer_digest(&tempdir_peer_path());
     let text = format!(
@@ -78,7 +78,6 @@ fn write_tempdir_registry(xdg: &std::path::Path) -> tempfile::TempDir {
         std::fs::Permissions::from_mode(0o644),
     )
     .expect("chmod");
-    let _ = xdg;
     dir
 }
 
@@ -188,7 +187,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
         .expect("spawn driver stand-in")
         .id();
     let slice_b = make_slice(&session_b, "999-888");
-    std::fs::write(lease_path(&session_b), format!("driver {driver_b}\n")).expect("write lease B");
+    write_lease(&session_b, &format!("driver {driver_b}\n"));
     // Session A: driver stand-in plus hanging guest, both recorded.
     let mut driver_a = Command::new("/bin/sleep")
         .arg("300")
@@ -236,9 +235,12 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
         "uncertain lease is not removed"
     );
     // Quiescence proven (guest group dead): orphan cleanup proceeds.
+    // (Reap before the group poll: an unreaped SIGKILLed leader is a
+    // zombie that still answers kill(-pgid, 0), so the poll would
+    // never read dead.)
     kill_wait(guest_pid);
-    wait_group_dead(guest_pgid);
     let _ = hanging.wait();
+    wait_group_dead(guest_pgid);
     let out = run_cistella(&home, &["gc"]);
     assert!(
         out.status.success(),
@@ -275,8 +277,7 @@ fn tempdir_conduct_reaps_slice_on_teardown() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let xdg = tempfile::tempdir().expect("tempdir");
-    let _registry = write_tempdir_registry(xdg.path());
+    let registry = write_tempdir_registry();
     let profile = fixture_profile("tempdir.toml");
     let (mut conduct, id, mut guard) = spawn_conduct_full(
         &home,
@@ -286,7 +287,7 @@ fn tempdir_conduct_reaps_slice_on_teardown() {
         &["sleep", "300"],
         &[(
             "XDG_CONFIG_HOME",
-            xdg.path().to_string_lossy().to_string().as_str(),
+            registry.path().to_string_lossy().to_string().as_str(),
         )],
     );
     wait_active(&id);
@@ -326,8 +327,7 @@ fn tempdir_hooked_session_writes_tmp() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let xdg = tempfile::tempdir().expect("tempdir");
-    let _registry = write_tempdir_registry(xdg.path());
+    let registry = write_tempdir_registry();
     let profile = fixture_profile("tempdir-hooked.toml");
     let (mut conduct, id, mut guard) = spawn_conduct_full(
         &home,
@@ -337,7 +337,7 @@ fn tempdir_hooked_session_writes_tmp() {
         &["sleep", "300"],
         &[(
             "XDG_CONFIG_HOME",
-            xdg.path().to_string_lossy().to_string().as_str(),
+            registry.path().to_string_lossy().to_string().as_str(),
         )],
     );
     wait_active(&id);
