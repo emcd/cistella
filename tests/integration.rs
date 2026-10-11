@@ -34,6 +34,8 @@ mod recovery;
 mod selectors;
 #[path = "integration/signals.rs"]
 mod signals;
+#[path = "integration/tempdir_gc.rs"]
+mod tempdir_gc;
 #[path = "integration/transport.rs"]
 mod transport;
 #[path = "integration/wire_death.rs"]
