@@ -10,12 +10,17 @@
 use std::collections::HashSet;
 
 use crate::error::{CistellaError, Result};
+use crate::framework::contract::CapabilitySet;
+use crate::framework::contract::Provenance;
+use crate::framework::contract::gate_capabilities;
+use crate::framework::contract::merge_transacted_as;
+use crate::framework::contract::parse_capability;
 use crate::framework::contract::{Deadlines, MergeContext, MountTriple, PreparePlan};
 use crate::framework::guest::{GuestHost, host_external, host_registered};
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::prepare::{
     DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, check_hook_executable,
-    merge_transacted, run_extension_prepare, spawn_invitation, transact_prepare,
+    run_extension_prepare, spawn_invitation, transact_prepare,
 };
 use crate::guest_registry::HostEnv;
 use crate::guest_source::{ResolveCtx, cache_dir, resolve};
@@ -70,10 +75,13 @@ struct HostedOne {
 /// Shuts hosted guests in reverse hosting order; the first residue
 /// dominates (a clean shutdown preserves the incoming outcome).
 fn shutdown_guests(hosted: Vec<HostedOne>) -> Option<CistellaError> {
+    // Every hosted guest shuts down, even past the first
+    // residue: leaving a guest running to preserve an earlier
+    // error would strand it. The first residue dominates.
     let mut residue = None;
     for mut one in hosted.into_iter().rev() {
-        if residue.is_none()
-            && let Err(error) = one.guest.shutdown()
+        if let Err(error) = one.guest.shutdown()
+            && residue.is_none()
         {
             residue = Some(error);
         }
@@ -83,17 +91,20 @@ fn shutdown_guests(hosted: Vec<HostedOne>) -> Option<CistellaError> {
 
 /// Shuts already-hosted guests after a mid-flow failure and folds
 /// the outcome: clean shutdowns preserve the incoming error
-/// (quiescence proven, lease drops); residue dominates and the
-/// caller retains the uncertainty record.
+/// (quiescence proven, lease drops); residue dominates the
+/// incoming error and retains the uncertainty record.
 fn abort_hosted(
     hosted: Vec<HostedOne>,
     lease: &mut PrepareLease,
     error: CistellaError,
 ) -> CistellaError {
-    if shutdown_guests(hosted).is_some() {
-        lease.retain();
+    match shutdown_guests(hosted) {
+        Some(residue) => {
+            lease.retain();
+            residue
+        }
+        None => error,
     }
-    error
 }
 
 /// Prepares the selected extensions (none, one, or the
@@ -225,12 +236,18 @@ fn prepare_pair(
             }
         }
     }
-    // Host in declaration order; a mid-loop failure shuts
+    // Host in declaration order; a pending marker precedes
+    // each spawn (a crash between spawn and record leaves gc
+    // skipping, never assuming). A mid-loop failure shuts
     // previously hosted guests (clean shutdowns preserve the
     // original error and drop the lease; residue dominates and
-    // retains it).
+    // retains it); hosting failures always retain (the failed
+    // host's shutdown is unprovable post-hoc — stale-gc heals).
     let mut hosted: Vec<HostedOne> = Vec::with_capacity(spawns.len());
     for (index, spawn) in spawns.into_iter().enumerate() {
+        if let Err(error) = lease.mark_pending() {
+            return Err(abort_hosted(hosted, &mut lease, error));
+        }
         let (guest_id, offered, required) = spawn_invitation(&spawn);
         let extra = extra_args.get(index).map(Vec::as_slice).unwrap_or(&[]);
         let hosted_one = match spawn {
@@ -258,7 +275,10 @@ fn prepare_pair(
                     required,
                 });
             }
-            Err(error) => return Err(abort_hosted(hosted, &mut lease, error)),
+            Err(error) => {
+                lease.retain();
+                return Err(abort_hosted(hosted, &mut lease, error));
+            }
         }
     }
     // Required advertisements (pure check, no I/O).
@@ -283,7 +303,8 @@ fn prepare_pair(
     };
     let mut credentials = Vec::new();
     let mut capabilities: Vec<String> = Vec::new();
-    let mut first_id: Option<String> = None;
+    let mut provenances: std::collections::HashMap<String, Provenance> =
+        std::collections::HashMap::new();
     for one in hosted.iter_mut() {
         let outcome = transact_prepare(
             one.guest.exchange_mut(),
@@ -293,8 +314,24 @@ fn prepare_pair(
         );
         match outcome {
             Ok((transacted, creds)) => {
-                if first_id.is_none() {
-                    first_id = Some(one.guest_id.clone());
+                // Per-plan capability gate BEFORE concatenation:
+                // each raw plan authorizes only against its own
+                // negotiated set, so one guest cannot launder a
+                // contribution type through the other's
+                // advertisement. The union gate at merge stays as
+                // a second layer (types nobody advertised still
+                // refuse).
+                let own = CapabilitySet::new(
+                    &one.negotiated
+                        .iter()
+                        .filter_map(|name| parse_capability(name))
+                        .collect::<Vec<_>>(),
+                );
+                if let Err(error) = gate_capabilities(&transacted, &own) {
+                    return Err(abort_hosted(hosted, &mut lease, error));
+                }
+                for contribution in &transacted.environment {
+                    provenances.insert(contribution.name.clone(), contribution.provenance.clone());
                 }
                 plan.environment.extend(transacted.environment);
                 plan.mounts.extend(transacted.mounts);
@@ -316,11 +353,18 @@ fn prepare_pair(
     }
     let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec());
     let acceptances = acceptance_set(&profile.environment_acceptances);
-    let guest_id = first_id.expect("pair hosts at least one guest");
-    let outcome = merge_transacted(
+    // Per-name provenance: lattice evaluation sees the source
+    // that contributed each name (unreachable fallback — merge
+    // invents no names and duplicates refuse deterministically).
+    let outcome = merge_transacted_as(
         plan,
         credentials,
-        &guest_id,
+        &|name: &str| {
+            provenances
+                .get(name)
+                .cloned()
+                .unwrap_or(Provenance::Extension("pair-unknown".to_string()))
+        },
         &capabilities,
         &context,
         policy,

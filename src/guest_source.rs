@@ -18,7 +18,9 @@ use nix::fcntl::OFlag;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::PROTOCOL_MAJOR;
-use crate::guest_anchor::{PinnedBinary, begin_anchored, openat_anchored, sha256_bytes};
+use crate::guest_anchor::{
+    AnchoredDir, PinnedBinary, begin_anchored, open_state_dir, openat_anchored, sha256_bytes,
+};
 use crate::guest_registry::{Guest, HostEnv, SourceLocation};
 
 /// Read ceiling for guest binaries at verify time: sized for
@@ -345,70 +347,9 @@ pub fn fetch_source(url: &str, expected: &[u8; 32], ctx: &ResolveCtx) -> Result<
 /// ownership refusal, and `CistellaError::Io` on create/open/stat
 /// failure.
 pub fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| CistellaError::Profile(format!("registry cache {}: {e}", dir.display())))?;
-    // Open the leaf itself nofollow: a symlink at the cache path
-    // refuses here (ELOOP) instead of having its target chmodded,
-    // and a non-directory refuses (ENOTDIR) — `create_dir_all`
-    // follows symlinks, so the open is the enforcement point.
-    let raw = nix::fcntl::open(
-        dir,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-        nix::sys::stat::Mode::empty(),
-    )
-    .map_err(|errno| {
-        if errno == nix::errno::Errno::ELOOP {
-            CistellaError::Profile(format!(
-                "registry cache {} must not be a symlink",
-                dir.display()
-            ))
-        } else if errno == nix::errno::Errno::ENOTDIR {
-            // O_NOFOLLOW|O_DIRECTORY reports a symlink-to-dir as
-            // ENOTDIR rather than ELOOP: disambiguate for the
-            // diagnostic only (the nofollow open already refused —
-            // no trust decision rides this second look).
-            let symlink = std::fs::symlink_metadata(dir)
-                .map(|stat| stat.file_type().is_symlink())
-                .unwrap_or(false);
-            if symlink {
-                CistellaError::Profile(format!(
-                    "registry cache {} must not be a symlink",
-                    dir.display()
-                ))
-            } else {
-                CistellaError::Profile(format!(
-                    "registry cache {} must be a directory",
-                    dir.display()
-                ))
-            }
-        } else {
-            CistellaError::Io(std::io::Error::from(errno))
-        }
-    })?;
-    // SAFETY: freshly opened above, owned here, wrapped exactly once.
-    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
-    let stat = nix::sys::stat::fstat(fd.as_raw_fd())
-        .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
-    // SAFETY: getuid is inherently safe.
-    let seat = unsafe { nix::libc::getuid() };
-    if stat.st_uid != seat && stat.st_uid != 0 {
-        return Err(CistellaError::Profile(format!(
-            "registry cache {} must be seat- or root-owned",
-            dir.display()
-        )));
-    }
-    // fchmod on the open FD, never path chmod: the mode lands on
-    // the verified directory even if the path is substituted
-    // concurrently.
-    nix::sys::stat::fchmod(
-        fd.as_raw_fd(),
-        nix::sys::stat::Mode::from_bits_truncate(0o700),
-    )
-    .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
-    Ok(CacheDirGuard {
-        fd,
-        path: dir.to_path_buf(),
-    })
+    open_state_dir(dir)
+        .map(|dir| CacheDirGuard { dir })
+        .map_err(|error| CistellaError::Profile(format!("registry cache {error}")))
 }
 
 /// Open-directory guard pinning the verified cache directory:
@@ -422,16 +363,18 @@ pub fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
 #[derive(Debug)]
 pub struct CacheDirGuard {
     /// Open verified cache directory (all operations relative).
-    fd: OwnedFd,
-    /// Path (diagnostics and display paths only — never
-    /// re-resolved for trust).
-    path: PathBuf,
+    dir: AnchoredDir,
 }
 
 impl CacheDirGuard {
     /// Raw directory FD for dirfd-relative operations.
     fn dirfd(&self) -> RawFd {
-        self.fd.as_raw_fd()
+        self.dir.dirfd()
+    }
+
+    /// Directory path (diagnostics and display paths only).
+    fn dir_path(&self) -> &Path {
+        self.dir.path()
     }
 
     /// Fetches one URL into its content-addressed slot, entirely
@@ -459,9 +402,9 @@ impl CacheDirGuard {
         // Direct open, never an `exists()` probe: `exists()`
         // follows symlinks and suppresses errors, so a dangling
         // symlink would read as a miss.
-        match openat_anchored(self.dirfd(), &slot, MAX_GUEST_BYTES, &self.path)? {
+        match openat_anchored(self.dirfd(), &slot, MAX_GUEST_BYTES, self.dir_path())? {
             Some(open) => Ok(FetchOutcome {
-                slot: self.path.join(&slot),
+                slot: self.dir_path().join(&slot),
                 pinned: open.finish_binary(expected)?,
             }),
             None => self.download(url, expected, &slot, max_bytes, timeout),
@@ -519,13 +462,14 @@ impl CacheDirGuard {
             .write_all(&bytes)
             .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
         staged.persist(slot, url)?;
-        let Some(open) = openat_anchored(self.dirfd(), slot, MAX_GUEST_BYTES, &self.path)? else {
+        let Some(open) = openat_anchored(self.dirfd(), slot, MAX_GUEST_BYTES, self.dir_path())?
+        else {
             return Err(CistellaError::Profile(format!(
                 "registry fetch {url}: slot vanished after stage"
             )));
         };
         Ok(FetchOutcome {
-            slot: self.path.join(slot),
+            slot: self.dir_path().join(slot),
             pinned: open.finish_binary(expected)?,
         })
     }

@@ -280,6 +280,38 @@ pub(crate) fn run(
             );
             ExitCode::SUCCESS
         }
+        "prepare-hook-unadvertised" => {
+            // Contributes a valid-shape hook WITHOUT advertising
+            // guest-hooks: the per-plan gate must refuse it even
+            // when a paired guest advertises the type (no
+            // laundering through the union). Hello carries the
+            // role only.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "policy_claims": [],
+                    "guest_hooks": [
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        }
+                    ]
+                }),
+                &["test-cap"],
+            );
+            ExitCode::SUCCESS
+        }
         "prepare-vector-registered" => {
             // Same payload as the agentmux vector, but the hello
             // advertises the contribution types alongside the role:

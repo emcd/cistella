@@ -20,9 +20,10 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::error::{CistellaError, Result};
+pub use crate::framework::contract::EvaluatedPlan;
 use crate::framework::contract::{
-    Capability, CapabilitySet, Deadlines, EnvContribution, GuestHookRequest, MergeContext,
-    MountContribution, MountMode, MountTriple, PolicyClaim, PreparePlan, Provenance, merge_prepare,
+    Deadlines, EnvContribution, GuestHookRequest, MergeContext, MountContribution, MountMode,
+    MountTriple, PolicyClaim, PreparePlan, Provenance, merge_transacted,
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
 use crate::framework::guest::{host_external, host_registered};
@@ -79,40 +80,6 @@ struct PrepareResponse {
     /// Credential handles, variants only, never values (default empty).
     #[serde(default)]
     credentials: Vec<CredentialHandle>,
-}
-
-/// Evaluated plan: merged contributions plus claim diagnostics.
-///
-/// `diagnostics` records discarded weakenings (name-only); the merged
-/// plan is whole or the transaction refused — partial application
-/// never occurs. Admitted credential handles ride alongside for the
-/// dogfood gate to consume.
-#[derive(Debug, Clone)]
-pub struct EvaluatedPlan {
-    /// Centrally merged, policy-admitted plan.
-    pub merged: crate::framework::contract::MergedPlan,
-    /// Weakening-discard notes from claim partition.
-    pub diagnostics: Vec<String>,
-    /// Admitted credential handles (kinds + locator classes only).
-    pub credentials: Vec<AdmittedCredential>,
-}
-
-/// Parses a capability advertisement name.
-///
-/// Unknown names are ignored (forward-compatible strictness lives in
-/// the merge gate: undeclared contribution TYPES refuse, unknown
-/// advertisement STRINGS do not).
-#[must_use]
-pub fn parse_capability(name: &str) -> Option<Capability> {
-    match name {
-        "environment" => Some(Capability::Environment),
-        "mounts" => Some(Capability::Mounts),
-        "policy-claims" => Some(Capability::PolicyClaims),
-        "guest-hooks" => Some(Capability::GuestHooks),
-        "cleanup" => Some(Capability::Cleanup),
-        "credentials" => Some(Capability::Credentials),
-        _ => None,
-    }
 }
 
 /// Runs one prepare transaction against a guest exchange.
@@ -194,57 +161,6 @@ pub(crate) fn transact_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     let credentials = admit_all(&response.credentials)?;
     let plan = build_plan(response, &provenance)?;
     Ok((plan, credentials))
-}
-
-/// Merges one (or several concatenated) raw plans centrally:
-/// gates contribution types against the negotiated capabilities,
-/// merges atomically against the framework-owned baseline context
-/// (destination collisions refuse), partitions claims, and
-/// evaluates every contributed name against the lattice. Pair
-/// composition concatenates declaration-ordered raw plans and
-/// merges once here, so cross-plan collisions refuse
-/// deterministically under the same validators.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on admission, merge, claim,
-/// or policy refusal.
-pub(crate) fn merge_transacted(
-    plan: PreparePlan,
-    credentials: Vec<AdmittedCredential>,
-    guest_id: &str,
-    capabilities: &[String],
-    context: &MergeContext,
-    policy: &PolicySet,
-    acceptances: &HashSet<String>,
-) -> Result<EvaluatedPlan> {
-    let advertised = CapabilitySet::new(
-        &capabilities
-            .iter()
-            .filter_map(|name| parse_capability(name))
-            .collect::<Vec<_>>(),
-    );
-    if !credentials.is_empty() && !advertised.allows(Capability::Credentials) {
-        return Err(CistellaError::Contract(
-            "guest returned unadvertised contribution type: credentials".to_string(),
-        ));
-    }
-    let provenance = Provenance::Extension(guest_id.to_string());
-    let merged = merge_prepare(plan, &advertised, context)?;
-    let contributed: Vec<String> = merged
-        .environment
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect();
-    let (claims, diagnostics) = policy.partition_claims(&merged.policy_claims, &contributed)?;
-    for (name, _) in &merged.environment {
-        policy.evaluate(name, &provenance, acceptances, &claims)?;
-    }
-    Ok(EvaluatedPlan {
-        merged,
-        diagnostics,
-        credentials,
-    })
 }
 
 /// Extension binary name resolved sibling-relative to the driver.
@@ -352,6 +268,10 @@ pub fn run_extension_prepare(
     // retains the uncertainty record (residue and post-spawn
     // hosting failures, which leak it for stale-gc).
     let mut lease = crate::lock::PrepareLease::create(lease_base, session_id)?;
+    // Pending spawn recorded BEFORE hosting: a crash between
+    // spawn and record_guest leaves gc skipping (never assuming),
+    // cleared by the matching record below.
+    lease.mark_pending()?;
     let (mut guest, negotiated) = match match spawn {
         ExtensionSpawn::Landlock => host_external(
             exe_dir,

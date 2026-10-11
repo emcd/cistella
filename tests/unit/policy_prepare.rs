@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use serde_json::json;
 
+use cistella::framework::contract::parse_capability;
 use cistella::framework::contract::{MergeContext, Provenance, Scope, Severity};
 use cistella::framework::policy::{PolicySet, acceptance_set, evaluate_all};
-use cistella::framework::prepare::{parse_capability, run_prepare};
+use cistella::framework::prepare::run_prepare;
 use cistella::framework::protocol::{
     Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope,
     read_frame, write_frame,

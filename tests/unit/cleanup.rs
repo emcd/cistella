@@ -162,6 +162,8 @@ fn lease_roundtrip_parses() {
 fn malformed_lease_reads_as_error() {
     use cistella::cleanup::read_lease;
     let dir = tempfile::tempdir().expect("tempdir");
+    let statedir = dir.path().join("cistella-state");
+    std::fs::create_dir(&statedir).expect("mkdir state dir");
     for (name, content) in [
         ("no-driver", "guest 1 1\n"),
         ("bad-driver-pid", "driver xyz\n"),
@@ -169,7 +171,7 @@ fn malformed_lease_reads_as_error() {
         ("trailing-junk", "driver 1\nextra stuff here\n"),
         ("empty", ""),
     ] {
-        let path = dir.path().join(format!("cistella-prepare-{name}"));
+        let path = statedir.join(format!("cistella-prepare-{name}"));
         std::fs::write(&path, content).expect("write fixture");
         let error = read_lease(dir.path(), name).expect_err("malformed must err");
         assert!(error.to_string().contains("malformed"), "got: {error}");
@@ -247,4 +249,247 @@ fn seat_temp_root_rule() {
         seat_temp_root_from(Some("/tmp/scratch")),
         std::path::PathBuf::from("/tmp/scratch")
     );
+}
+
+fn state_subdir(base: &tempfile::TempDir) -> std::path::PathBuf {
+    let statedir = base.path().join("cistella-state");
+    std::fs::create_dir_all(&statedir).expect("mkdir state dir");
+    statedir
+}
+
+/// A certainly-dead pid and a certainly-dead lone process group
+/// (spawned, reaped): deterministic without privilege.
+fn dead_pids() -> (u32, u32) {
+    let mut driver = std::process::Command::new("/bin/true")
+        .spawn()
+        .expect("spawn true");
+    let driver_pid = driver.id();
+    driver.wait().expect("reap driver");
+    let mut guest = std::process::Command::new("/bin/true");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setpgid in the child before exec is standard.
+        unsafe {
+            guest.pre_exec(|| {
+                if nix::libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+    let mut guest = guest.spawn().expect("spawn guest");
+    let guest_pid = guest.id();
+    guest.wait().expect("reap guest");
+    (driver_pid, guest_pid)
+}
+
+#[test]
+fn forged_identity_record_refuses() {
+    // Hand-forged state JSON claims a bogus dev+ino for a real
+    // seat-owned dir: reap must refuse (identity mismatch), and
+    // the directory survives.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let statedir = state_subdir(&dir);
+    let root = seat_dir(&dir, "slice");
+    let forged = serde_json::json!([{
+        "path": root.to_string_lossy(),
+        "dev": 999001,
+        "ino": 999002,
+        "parent_dev": 999003,
+        "parent_ino": 999004,
+    }]);
+    std::fs::write(
+        statedir.join("cistella-cleanup-forged-1"),
+        serde_json::to_vec(&forged).expect("encode"),
+    )
+    .expect("plant forged record");
+    let litter = reap_cleanup(dir.path(), "forged-1");
+    assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
+    assert!(litter[0].contains("identity"), "got: {}", litter[0]);
+    assert!(root.exists(), "forged record reaps nothing");
+}
+
+#[test]
+fn parent_swap_refuses() {
+    // Move the admitted root under a fresh parent: root identity
+    // matches but the parent association does not — refuse.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent = seat_dir(&dir, "parent");
+    let root = parent.join("slice");
+    std::fs::create_dir(&root).expect("mkdir root");
+    record_cleanup(
+        dir.path(),
+        "test-session-1",
+        &[root.to_string_lossy().to_string()],
+    )
+    .expect("record admits");
+    let parent2 = dir.path().join("parent2");
+    std::fs::rename(&parent, &parent2).expect("rename parent aside");
+    std::fs::create_dir(&parent).expect("fresh parent");
+    std::fs::rename(parent2.join("slice"), parent.join("slice")).expect("move root back");
+    let litter = reap_cleanup(dir.path(), "test-session-1");
+    assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
+    assert!(litter[0].contains("parent"), "got: {}", litter[0]);
+    assert!(parent.join("slice").exists(), "moved root survives");
+}
+
+#[test]
+fn gone_root_is_complete_not_litter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = seat_dir(&dir, "slice");
+    record_cleanup(
+        dir.path(),
+        "test-session-1",
+        &[root.to_string_lossy().to_string()],
+    )
+    .expect("record admits");
+    std::fs::remove_dir(&root).expect("remove root out of band");
+    let litter = reap_cleanup(dir.path(), "test-session-1");
+    assert!(litter.is_empty(), "gone reads complete, got: {litter:?}");
+    // Retried states converge: the record is gone with its root.
+    let litter = reap_cleanup(dir.path(), "test-session-1");
+    assert!(litter.is_empty(), "retry clean, got: {litter:?}");
+}
+
+#[test]
+fn state_symlink_refuses_without_touching_target() {
+    // A symlink at the state DIRECTORY refuses (ELOOP at the
+    // nofollow open — never created through, chmodded, or
+    // operated in).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("cistella-state"))
+        .expect("plant dir symlink");
+    let victim = elsewhere.path().join("victim.txt");
+    std::fs::write(&victim, b"precious").expect("write victim");
+    let root = seat_dir(&dir, "slice");
+    let error = record_cleanup(
+        dir.path(),
+        "test-session-1",
+        &[root.to_string_lossy().to_string()],
+    )
+    .expect_err("symlinked state dir must refuse");
+    assert!(error.to_string().contains("symlink"), "got: {error}");
+    assert_eq!(std::fs::read(&victim).expect("victim intact"), b"precious");
+    assert!(root.exists(), "refusal stages nothing");
+}
+
+#[test]
+fn state_file_symlink_replaces_link_safely() {
+    // A symlink at the state FILE path itself is replaced (never
+    // traversed): renameat swaps the link for the record, and the
+    // link target is never written through.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let statedir = state_subdir(&dir);
+    let victim = dir.path().join("victim.txt");
+    std::fs::write(&victim, b"precious").expect("write victim");
+    std::os::unix::fs::symlink(&victim, statedir.join("cistella-cleanup-test-session-1"))
+        .expect("plant file symlink");
+    let root = seat_dir(&dir, "slice");
+    record_cleanup(
+        dir.path(),
+        "test-session-1",
+        &[root.to_string_lossy().to_string()],
+    )
+    .expect("record replaces the link");
+    assert_eq!(std::fs::read(&victim).expect("victim intact"), b"precious");
+    let state = statedir.join("cistella-cleanup-test-session-1");
+    assert!(
+        state.is_file() && !state.is_symlink(),
+        "state path is a real file now"
+    );
+    let litter = reap_cleanup(dir.path(), "test-session-1");
+    assert!(litter.is_empty(), "replaced record reaps, got: {litter:?}");
+    assert!(!root.exists(), "slice reaped");
+}
+
+#[test]
+fn pending_lease_skips_sweep() {
+    use cistella::cleanup::reap_tempdir_orphans_in;
+    use std::collections::HashSet;
+    // Pending marker with a dead driver: a guest may exist
+    // unrecorded — gc skips (never assumes), lease persists.
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let statedir = state_subdir(&base);
+    let (driver_pid, _) = dead_pids();
+    let session = "livetest-pending-1";
+    let slice = root.path().join(format!("cistella-tmp-{session}-111-222"));
+    std::fs::create_dir(&slice).expect("mkdir slice");
+    std::fs::write(
+        statedir.join(format!("cistella-prepare-{session}")),
+        format!("driver {driver_pid}\npending\n"),
+    )
+    .expect("write pending lease");
+    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    assert!(removed.is_empty(), "pending skips, got: {removed:?}");
+    assert!(slice.exists(), "pending slice survives");
+    assert!(
+        statedir
+            .join(format!("cistella-prepare-{session}"))
+            .exists(),
+        "pending lease persists"
+    );
+}
+
+#[test]
+fn stale_lease_and_orphan_go_together() {
+    use cistella::cleanup::reap_tempdir_orphans_in;
+    use std::collections::HashSet;
+    // Dead driver plus dead recorded group: the slice reaps and
+    // the stale lease file goes with it.
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let statedir = state_subdir(&base);
+    let (driver_pid, guest_pid) = dead_pids();
+    let session = "livetest-stale-1";
+    let slice = root.path().join(format!("cistella-tmp-{session}-111-222"));
+    std::fs::create_dir(&slice).expect("mkdir slice");
+    std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::write(
+        statedir.join(format!("cistella-prepare-{session}")),
+        format!("driver {driver_pid}\nguest {guest_pid} {guest_pid}\n"),
+    )
+    .expect("write stale lease");
+    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    assert_eq!(
+        removed,
+        vec![format!("cistella-tmp-{session}-111-222")],
+        "got: {removed:?}"
+    );
+    assert!(!slice.exists(), "orphan reaped");
+    assert!(
+        !statedir
+            .join(format!("cistella-prepare-{session}"))
+            .exists(),
+        "stale lease removed"
+    );
+}
+
+#[test]
+fn guestless_dead_lease_proceeds() {
+    use cistella::cleanup::reap_tempdir_orphans_in;
+    use std::collections::HashSet;
+    // No guest lines, no pending marker, dead driver: spawn never
+    // happened (pending always commits first), so nothing stands
+    // in the way — slice reaps, lease goes with it.
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let statedir = state_subdir(&base);
+    let (driver_pid, _) = dead_pids();
+    let session = "livetest-guestless-1";
+    let slice = root.path().join(format!("cistella-tmp-{session}-111-222"));
+    std::fs::create_dir(&slice).expect("mkdir slice");
+    std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::write(
+        statedir.join(format!("cistella-prepare-{session}")),
+        format!("driver {driver_pid}\n"),
+    )
+    .expect("write guestless lease");
+    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    assert_eq!(removed.len(), 1, "got: {removed:?}");
+    assert!(!slice.exists(), "orphan reaped");
 }

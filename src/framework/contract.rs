@@ -25,6 +25,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CistellaError, Result};
+use crate::framework::credentials::AdmittedCredential;
+use crate::framework::policy::PolicySet;
 use crate::mount::validate_mounts;
 pub use crate::mount::{MountMode, MountTriple};
 use crate::profile::validate_env_name;
@@ -326,6 +328,24 @@ pub struct MergedPlan {
     pub cleanup: Vec<String>,
 }
 
+/// Evaluated plan: merged contributions plus claim diagnostics.
+///
+/// `diagnostics` records discarded weakenings (name-only); the merged
+/// plan is whole or the transaction refused — partial application
+/// never occurs. Admitted credential handles ride alongside for the
+/// dogfood gate to consume.
+#[derive(Debug, Clone)]
+pub struct EvaluatedPlan {
+    /// Centrally merged, policy-admitted plan.
+    pub merged: MergedPlan,
+    /// Weakening-discard notes from claim partition.
+    pub diagnostics: Vec<String>,
+    /// Admitted credential handles (kinds + locator classes only).
+    pub credentials: Vec<AdmittedCredential>,
+}
+
+// Re-exported through `prepare` so existing import roots keep working.
+
 /// Framework-owned baseline inputs for central merge.
 ///
 /// The extension's sets never merge in isolation: environment
@@ -418,7 +438,7 @@ fn contract_error(error: CistellaError) -> CistellaError {
     CistellaError::Contract(error.to_string())
 }
 
-fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) -> Result<()> {
+pub(crate) fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) -> Result<()> {
     for (nonempty, capability, what) in [
         (
             !plan.environment.is_empty(),
@@ -850,4 +870,104 @@ impl Deadlines {
             ControlDeadline::FrameCompletion => self.frame_completion,
         }
     }
+}
+
+/// Parses a capability advertisement name.
+///
+/// Unknown names are ignored (forward-compatible strictness lives in
+/// the merge gate: undeclared contribution TYPES refuse, unknown
+/// advertisement STRINGS do not).
+#[must_use]
+pub fn parse_capability(name: &str) -> Option<Capability> {
+    match name {
+        "environment" => Some(Capability::Environment),
+        "mounts" => Some(Capability::Mounts),
+        "policy-claims" => Some(Capability::PolicyClaims),
+        "guest-hooks" => Some(Capability::GuestHooks),
+        "cleanup" => Some(Capability::Cleanup),
+        "credentials" => Some(Capability::Credentials),
+        _ => None,
+    }
+}
+
+/// Merges one (or several concatenated) raw plans centrally:
+/// gates contribution types against the negotiated capabilities,
+/// merges atomically against the framework-owned baseline context
+/// (destination collisions refuse), partitions claims, and
+/// evaluates every contributed name against the lattice. Pair
+/// composition concatenates declaration-ordered raw plans and
+/// merges once here, so cross-plan collisions refuse
+/// deterministically under the same validators.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on admission, merge, claim,
+/// or policy refusal.
+pub(crate) fn merge_transacted(
+    plan: PreparePlan,
+    credentials: Vec<AdmittedCredential>,
+    guest_id: &str,
+    capabilities: &[String],
+    context: &MergeContext,
+    policy: &PolicySet,
+    acceptances: &HashSet<String>,
+) -> Result<EvaluatedPlan> {
+    let fallback = Provenance::Extension(guest_id.to_string());
+    merge_transacted_as(
+        plan,
+        credentials,
+        &|_| fallback.clone(),
+        capabilities,
+        context,
+        policy,
+        acceptances,
+    )
+}
+
+/// Merges with per-name provenance: each contributed name
+/// evaluates under the provenance of the plan that contributed
+/// it (pair composition keeps per-source authorization instead
+/// of collapsing to the first guest). Names missing from the
+/// map fall back to `fallback` (unreachable when the map covers
+/// every raw plan — merge invents no names).
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on admission, merge, claim,
+/// or policy refusal.
+pub(crate) fn merge_transacted_as(
+    plan: PreparePlan,
+    credentials: Vec<AdmittedCredential>,
+    provenance_of: &dyn Fn(&str) -> Provenance,
+    capabilities: &[String],
+    context: &MergeContext,
+    policy: &PolicySet,
+    acceptances: &HashSet<String>,
+) -> Result<EvaluatedPlan> {
+    let advertised = CapabilitySet::new(
+        &capabilities
+            .iter()
+            .filter_map(|name| parse_capability(name))
+            .collect::<Vec<_>>(),
+    );
+    if !credentials.is_empty() && !advertised.allows(Capability::Credentials) {
+        return Err(CistellaError::Contract(
+            "guest returned unadvertised contribution type: credentials".to_string(),
+        ));
+    }
+    let merged = merge_prepare(plan, &advertised, context)?;
+    let contributed: Vec<String> = merged
+        .environment
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    let (claims, diagnostics) = policy.partition_claims(&merged.policy_claims, &contributed)?;
+    for (name, _) in &merged.environment {
+        policy.evaluate(name, &provenance_of(name), acceptances, &claims)?;
+    }
+    Ok(EvaluatedPlan {
+        merged,
+        diagnostics,
+        credentials,
+    })
 }

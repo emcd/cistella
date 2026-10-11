@@ -8,7 +8,10 @@ use cistella::lock::PrepareLease;
 fn lease_create_record_remove_lifecycle() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
-    let path = dir.path().join("cistella-prepare-test-session-1");
+    let path = dir
+        .path()
+        .join("cistella-state")
+        .join("cistella-prepare-test-session-1");
     assert!(path.exists(), "lease file present after create");
     let first = std::fs::read_to_string(&path).expect("read lease");
     assert!(first.starts_with("driver "), "got: {first}");
@@ -54,7 +57,76 @@ fn lease_bad_session_id_refuses() {
 fn lease_retain_survives_drop() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
-    let path = dir.path().join("cistella-prepare-test-session-1");
+    let path = dir
+        .path()
+        .join("cistella-state")
+        .join("cistella-prepare-test-session-1");
     lease.retain();
     assert!(path.exists(), "retained lease survives drop");
+}
+
+#[test]
+fn lease_pending_roundtrip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
+    lease.mark_pending().expect("pending marks");
+    let path = dir
+        .path()
+        .join("cistella-state")
+        .join("cistella-prepare-test-session-1");
+    let text = std::fs::read_to_string(&path).expect("read lease");
+    assert!(text.contains("\npending\n"), "got: {text}");
+    lease.record_guest(1111, 1111).expect("record clears");
+    let text = std::fs::read_to_string(&path).expect("read lease");
+    assert!(!text.contains("pending"), "pending cleared, got: {text}");
+    assert!(text.contains("\nguest 1111 1111\n"), "got: {text}");
+}
+
+#[test]
+fn lease_symlink_at_path_refuses_without_touching_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let statedir = dir.path().join("cistella-state");
+    std::fs::create_dir(&statedir).expect("mkdir state dir");
+    let victim = dir.path().join("victim.txt");
+    std::fs::write(&victim, b"precious").expect("write victim");
+    std::os::unix::fs::symlink(&victim, statedir.join("cistella-prepare-test-session-1"))
+        .expect("plant symlink");
+    let error = PrepareLease::create(dir.path(), "test-session-1")
+        .expect_err("symlink at lease path must refuse");
+    assert!(
+        error.to_string().contains("already exists") || error.to_string().contains("symlink"),
+        "got: {error}"
+    );
+    assert_eq!(std::fs::read(&victim).expect("victim intact"), b"precious");
+}
+
+#[test]
+fn state_dir_hardens_mode_and_refuses_foreign_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let statedir = dir.path().join("cistella-state");
+    std::fs::create_dir(&statedir).expect("mkdir state dir");
+    std::fs::set_permissions(&statedir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let _lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
+    assert_eq!(
+        std::fs::metadata(&statedir)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "pre-existing dir hardens to 0700"
+    );
+    // SAFETY: getuid is inherently safe.
+    if unsafe { nix::libc::getuid() } != 0 {
+        eprintln!("skip: foreign-owner state dir needs root (chown)");
+        return;
+    }
+    std::os::unix::fs::chown(&statedir, Some(65534), None).expect("chown nobody");
+    let error = PrepareLease::create(dir.path(), "test-session-2")
+        .expect_err("foreign state dir must refuse");
+    assert!(
+        error.to_string().contains("seat- or root-owned"),
+        "got: {error}"
+    );
 }

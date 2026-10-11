@@ -626,3 +626,93 @@ fn tempdir_guest_mints_contributes_declares() {
     // separately — never leave /tmp dirty on success paths).
     std::fs::remove_dir(&triple.host_source).expect("remove fixture slice");
 }
+
+#[test]
+fn unadvertised_hook_does_not_launder_through_pair() {
+    use cistella::framework::prepare_select::prepare_selected_extension;
+    use cistella::profile::ExtensionResolution;
+    // Capability laundering probe: the registered peer contributes
+    // a hook WITHOUT advertising guest-hooks, while landlock (its
+    // pair partner) advertises the type. The per-plan gate must
+    // refuse the whole transaction — the union gate alone would
+    // admit it through landlock's advertisement.
+    let exe = tempfile::tempdir().expect("tempdir");
+    stage_landlock_peer(&exe);
+    let (entry, _ctx, _dir) = peer_entry(
+        "fake_guest",
+        "test-cap",
+        vec!["--mode=prepare-hook-unadvertised".to_string()],
+    );
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let error = prepare_selected_extension(
+        vec![
+            ExtensionResolution::Landlock,
+            ExtensionResolution::Registered(entry),
+        ],
+        exe.path(),
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-launder-1",
+        lease_base.path(),
+        &[
+            vec!["--mode=extension-landlock-hook".to_string()],
+            Vec::new(),
+        ],
+    )
+    .expect_err("unadvertised hook must refuse whole");
+    assert!(
+        error.to_string().contains("unadvertised contribution type"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn second_guest_host_failure_shuts_first_and_retains() {
+    use cistella::framework::prepare_select::prepare_selected_extension;
+    use cistella::profile::ExtensionResolution;
+    // Mid-pair hosting failure: the first guest shuts down too
+    // (no stranded peer — the error is the contract refusal, not
+    // residue), and the lease is retained (the failed host's
+    // shutdown is unprovable post-hoc — stale-gc heals).
+    let exe = tempfile::tempdir().expect("tempdir");
+    stage_landlock_peer(&exe);
+    let (entry, _ctx, _dir) = peer_entry(
+        "fake_guest",
+        "other-role",
+        vec!["--mode=hello-real-capabilities".to_string()],
+    );
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let error = prepare_selected_extension(
+        vec![
+            ExtensionResolution::Landlock,
+            ExtensionResolution::Registered(entry),
+        ],
+        exe.path(),
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-abort-1",
+        lease_base.path(),
+        &[
+            vec!["--mode=extension-landlock-hook".to_string()],
+            Vec::new(),
+        ],
+    )
+    .expect_err("role mismatch must refuse");
+    assert!(error.to_string().contains("role mismatch"), "got: {error}");
+    assert!(
+        lease_base
+            .path()
+            .join("cistella-state")
+            .join("cistella-prepare-test-session-abort-1")
+            .exists(),
+        "uncertainty retained for stale-gc"
+    );
+}
