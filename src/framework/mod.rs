@@ -14,6 +14,7 @@ pub mod hooks;
 pub mod isolator;
 pub mod policy;
 pub mod prepare;
+pub mod prepare_select;
 pub mod protocol;
 pub mod registry;
 pub mod signals;

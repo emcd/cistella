@@ -120,3 +120,122 @@ impl LockGuard {
         }
     }
 }
+
+/// Returns the runtime state base: `$XDG_RUNTIME_DIR` when set,
+/// else `/tmp`. Session-attributable driver state (prepare
+/// leases) lives directly under it, mirroring the lock and
+/// scratch fallbacks.
+///
+/// Callers pass the base explicitly into lease creation so tests
+/// pin behavior against tempdirs without touching process env.
+#[must_use]
+pub fn runtime_base() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    PathBuf::from("/tmp")
+}
+
+/// Durable prepare lease: proves a session's prepare phase is (or
+/// was recently) hosted, so `gc` never reaps slices of a
+/// possibly-live prepare guest.
+///
+/// Lifecycle: `create` (O_EXCL, driver pid) before the first
+/// prepare spawn, `record_guest` (atomic tmp+rename adding guest
+/// pid and process-group id) once hosted, dropped (best-effort
+/// file removal) when guest shutdown is proven and the unit
+/// lifecycle converges — or the failure converges with
+/// quiescence proven. Drop removes unconditionally: callers keep
+/// the handle exactly while quiescence is proven, and `retain`
+/// it on paths where shutdown is unproven (residue errors,
+/// hosting failures past spawn) so the uncertainty record
+/// outlives the process and stale-ifies naturally for `gc`.
+///
+/// Content is two text lines (`driver <pid>`, then `guest <pid>
+/// <pgid>` once recorded); malformed leases mean skip, never
+/// proceed. Session ids are framework-minted (`[a-z0-9-]`); anything
+/// else refuses rather than joining a path.
+#[derive(Debug)]
+pub struct PrepareLease {
+    /// Lease file (removed on drop unless retained).
+    path: PathBuf,
+}
+
+impl PrepareLease {
+    /// Lease file path under `base` for one session id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Runtime` on an unmintable session id.
+    pub fn path_for(base: &std::path::Path, session_id: &str) -> Result<PathBuf> {
+        if session_id.is_empty()
+            || !session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(CistellaError::Runtime(format!(
+                "prepare lease needs a framework-minted session id: {session_id}"
+            )));
+        }
+        Ok(base.join(format!("cistella-prepare-{session_id}")))
+    }
+
+    /// Creates the lease O_EXCL with the driver pid inside.
+    /// EEXIST refuses typed (session ids are unique per conduct —
+    /// an existing lease is a stale record or a bug, never
+    /// overwritten blindly).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Runtime` on bad session id,
+    /// existing lease, or I/O failure.
+    pub fn create(base: &std::path::Path, session_id: &str) -> Result<Self> {
+        let path = Self::path_for(base, session_id)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = options.open(&path).map_err(|e| {
+            CistellaError::Runtime(format!("create prepare lease {}: {e}", path.display()))
+        })?;
+        use std::io::Write;
+        writeln!(file, "driver {}", std::process::id()).map_err(|e| {
+            CistellaError::Runtime(format!("write prepare lease {}: {e}", path.display()))
+        })?;
+        Ok(Self { path })
+    }
+
+    /// Atomically records the hosted guest pid and process-group id
+    /// (tmp file plus rename — readers never see a torn lease).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CistellaError::Runtime` on I/O failure.
+    pub fn record_guest(&self, pid: u32, pgid: u32) -> Result<()> {
+        let tmp = self.path.with_extension("tmp");
+        let content = format!("driver {}\nguest {pid} {pgid}\n", std::process::id());
+        std::fs::write(&tmp, content).map_err(|e| {
+            CistellaError::Runtime(format!("write prepare lease {}: {e}", tmp.display()))
+        })?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            CistellaError::Runtime(format!("stage prepare lease {}: {e}", self.path.display()))
+        })?;
+        Ok(())
+    }
+
+    /// Retains the lease past drop: shutdown is unproven (residue
+    /// errors, post-spawn hosting failures), so the uncertainty
+    /// record must outlive the process and stale-ify naturally
+    /// for `gc`. Deliberate leak of a path-only handle (no FD).
+    pub fn retain(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for PrepareLease {
+    /// Best-effort removal: quiescence was proven wherever the
+    /// handle is dropped normally; `retain` covers the rest.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}

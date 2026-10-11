@@ -225,7 +225,8 @@ fn registered_extension_prepare_converges_plain() {
     let policy_dir = tempfile::tempdir().expect("tempdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let plan = run_extension_prepare(
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
         &[],
@@ -233,6 +234,7 @@ fn registered_extension_prepare_converges_plain() {
         &[],
         &policy,
         "test-session-7f3a",
+        lease_base.path(),
     )
     .expect("registered prepare converges");
     assert!(plan.merged.environment.is_empty());
@@ -371,7 +373,8 @@ fn registered_nonempty_contribution_merges() {
     std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
     let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
         .expect("policy loads");
-    let plan = run_extension_prepare(
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
         &[],
@@ -379,6 +382,7 @@ fn registered_nonempty_contribution_merges() {
         &[],
         &policy,
         "test-session-7f3a",
+        lease_base.path(),
     )
     .expect("nonempty prepare merges");
     assert_eq!(
@@ -415,7 +419,8 @@ fn session_id_threads_into_prepare() {
     std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
     let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
         .expect("policy loads");
-    let plan = run_extension_prepare(
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
         &[],
@@ -423,6 +428,7 @@ fn session_id_threads_into_prepare() {
         &[],
         &policy,
         "test-session-echo-1",
+        lease_base.path(),
     )
     .expect("session id threads through");
     assert_eq!(

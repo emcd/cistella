@@ -4,7 +4,7 @@ use cistella::cli::{Cli, Command};
 use cistella::framework::conduct::{abort_startup, host_isolator, release_client, report_release};
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::prepare_selected_extension;
+use cistella::framework::prepare_select::prepare_selected_extension;
 use cistella::framework::signals;
 use cistella::guest_registry::Registry;
 use cistella::isolators::client::WireClient;
@@ -452,7 +452,18 @@ fn conduct_session(
         extension,
         Some(cistella::profile::ExtensionResolution::Landlock)
     );
-    let evaluated = prepare_selected_extension(extension, exe_dir, &prof, &triples, &policy, &id)?;
+    // The prepare lease drops here on every path (quiescence was
+    // proven in-runner wherever a handle came back; unproven paths
+    // retain their record for stale-gc instead of returning one).
+    let (evaluated, _prepare_lease) = prepare_selected_extension(
+        extension,
+        exe_dir,
+        &prof,
+        &triples,
+        &policy,
+        &id,
+        &cistella::lock::runtime_base(),
+    )?;
     // Declared-but-empty refuses here, before staging or
     // create: a selected extension answering zero hooks must
     // never start a plain session silently (the selection is a

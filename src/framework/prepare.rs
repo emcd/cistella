@@ -31,9 +31,7 @@ use crate::framework::protocol::Exchange;
 use crate::framework::registry::{
     MIN_LANDLOCK_ABI, REQUIRED_HANDLED_FS, STAGED_WRAPPER_GUEST_PATH,
 };
-use crate::guest_registry::HostEnv;
-use crate::guest_source::{ResolveCtx, ResolvedGuest, cache_dir, resolve};
-use crate::profile::ExtensionResolution;
+use crate::guest_source::ResolvedGuest;
 
 /// Wire form of one environment contribution (provenance is injected
 /// by the host as the responding guest, never trusted from the wire).
@@ -262,7 +260,10 @@ pub enum ExtensionSpawn {
 ///
 /// Returns `CistellaError::Contract` on discovery, admission, or
 /// merge refusal, and `CistellaError::Protocol` on transport or
-/// shutdown failure.
+/// shutdown failure. Nine parameters mirror the transaction inputs
+/// one-to-one (spawn, discovery base, argv, profile, baseline,
+/// policy, session, lease base); bundling would only move them.
+#[allow(clippy::too_many_arguments)]
 pub fn run_extension_prepare(
     spawn: ExtensionSpawn,
     exe_dir: &std::path::Path,
@@ -271,7 +272,8 @@ pub fn run_extension_prepare(
     triples: &[MountTriple],
     policy: &PolicySet,
     session_id: &str,
-) -> Result<EvaluatedPlan> {
+    lease_base: &std::path::Path,
+) -> Result<(EvaluatedPlan, Option<crate::lock::PrepareLease>)> {
     let (guest_id, offered, required) = match &spawn {
         ExtensionSpawn::Landlock => (
             EXTENSION_BIN.to_string(),
@@ -284,21 +286,43 @@ pub fn run_extension_prepare(
             (resolved.name.clone(), offered, vec![resolved.role.clone()])
         }
     };
-    let (mut guest, negotiated) = match spawn {
+    // Durable prepare lease before the first spawn: quiescence is
+    // unproven from here on, so every error path below either
+    // proves it (clean shutdowns, which drop the handle) or
+    // retains the uncertainty record (residue and post-spawn
+    // hosting failures, which leak it for stale-gc).
+    let lease = crate::lock::PrepareLease::create(lease_base, session_id)?;
+    let (mut guest, negotiated) = match match spawn {
         ExtensionSpawn::Landlock => host_external(
             exe_dir,
             EXTENSION_BIN,
             extra_args,
             &offered,
             Deadlines::default(),
-        )?,
+        ),
         ExtensionSpawn::Registered(resolved) => {
-            host_registered(resolved, extra_args, &offered, Deadlines::default())?
+            host_registered(resolved, extra_args, &offered, Deadlines::default())
+        }
+    } {
+        Ok((guest, negotiated)) => (guest, negotiated),
+        Err(error) => {
+            lease.retain();
+            return Err(error);
         }
     };
+    // The guest is hosted: record its pid plus process-group id
+    // (the group leads from the spawned pid by pre_exec
+    // setpgid). gc observes this identity without signaling.
+    if let Err(error) = lease.record_guest(guest.pid(), guest.pid()) {
+        lease.retain();
+        return Err(error);
+    }
     for required_capability in &required {
         if !negotiated.contains(required_capability) {
-            guest.shutdown()?;
+            if let Err(residue) = guest.shutdown() {
+                lease.retain();
+                return Err(residue);
+            }
             return Err(CistellaError::Contract(format!(
                 "extension guest {guest_id} must advertise {required_capability}"
             )));
@@ -326,7 +350,10 @@ pub fn run_extension_prepare(
     let shutdown = guest.shutdown();
     let plan = match (outcome, shutdown) {
         (Ok(plan), Ok(())) => plan,
-        (_, Err(residue)) => return Err(residue),
+        (_, Err(residue)) => {
+            lease.retain();
+            return Err(residue);
+        }
         (Err(error), Ok(())) => return Err(error),
     };
     // Artifact-executable binding invariant: the hook executable must be exactly the staged
@@ -342,97 +369,12 @@ pub fn run_extension_prepare(
     for hook in &plan.merged.guest_hooks {
         check_hook_executable(hook)?;
     }
-    Ok(plan)
+    Ok((plan, Some(lease)))
 }
 
 /// Driver-injected env names reserved against extension
 /// contributions (unit-baked HOME, ssh-agent pointer, exec-time TERM).
 const DRIVER_ENV: [&str; 3] = ["HOME", "SSH_AUTH_SOCK", "TERM"];
-
-/// Runs the Landlock extension prepare transaction: the shipped
-/// guest through [`run_extension_prepare`]. Behavior is unchanged
-/// (same offer, same required `guest-hooks` advertisement, same
-/// merge) — this boundary keeps the production call site and the
-/// existing conformance pins stable.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on discovery, admission, or
-/// merge refusal, and `CistellaError::Protocol` on transport or
-/// shutdown failure.
-pub fn run_landlock_prepare(
-    exe_dir: &std::path::Path,
-    extra_args: &[String],
-    profile: &crate::profile::Profile,
-    triples: &[MountTriple],
-    policy: &PolicySet,
-    session_id: &str,
-) -> Result<EvaluatedPlan> {
-    run_extension_prepare(
-        ExtensionSpawn::Landlock,
-        exe_dir,
-        extra_args,
-        profile,
-        triples,
-        policy,
-        session_id,
-    )
-}
-
-/// Prepares the single selected extension (or none): undeclared
-/// means the empty plan (pure Podman behavior — no extension guest
-/// spawned); shipped Landlock runs unchanged; a registered entry
-/// resolves to verified bytes first (failures refuse pre-create),
-/// then answers through the generalized runner with its recorded
-/// role required and hooks optional.
-///
-/// Resolution inputs build lazily from the live seat environment
-/// only for registered entries, so undeclared and shipped-only
-/// conducts never touch cache environment shapes.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on admission or merge
-/// refusal, `CistellaError::Protocol` on transport or shutdown
-/// failure, and `CistellaError::Profile` on registry or
-/// verification refusal.
-pub fn prepare_selected_extension(
-    extension: Option<ExtensionResolution>,
-    exe_dir: &std::path::Path,
-    profile: &crate::profile::Profile,
-    triples: &[MountTriple],
-    policy: &PolicySet,
-    session_id: &str,
-) -> Result<EvaluatedPlan> {
-    match extension {
-        None => Ok(EvaluatedPlan {
-            merged: crate::framework::contract::MergedPlan {
-                environment: Vec::new(),
-                mounts: Vec::new(),
-                policy_claims: Vec::new(),
-                guest_hooks: Vec::new(),
-            },
-            diagnostics: Vec::new(),
-            credentials: Vec::new(),
-        }),
-        Some(ExtensionResolution::Landlock) => {
-            run_landlock_prepare(exe_dir, &[], profile, triples, policy, session_id)
-        }
-        Some(ExtensionResolution::Registered(entry)) => {
-            let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
-            let resolved = resolve(&entry, &ctx)?;
-            run_extension_prepare(
-                ExtensionSpawn::Registered(resolved),
-                exe_dir,
-                &[],
-                profile,
-                triples,
-                policy,
-                session_id,
-            )
-        }
-    }
-}
 
 /// Checks one merged hook names exactly the staged wrapper
 /// executable (singleton prefix).

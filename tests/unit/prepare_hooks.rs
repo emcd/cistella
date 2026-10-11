@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use cistella::framework::contract::GuestHookRequest;
 use cistella::framework::hooks::gate_hook_attestation;
 use cistella::framework::policy::PolicySet;
-use cistella::framework::prepare::{EXTENSION_BIN, check_hook_executable, run_landlock_prepare};
+use cistella::framework::prepare::{EXTENSION_BIN, check_hook_executable};
+use cistella::framework::prepare_select::run_landlock_prepare;
 use cistella::profile::{CredentialSurface, Profile};
 
 /// Compiled defaults via load: an absent file means defaults only.
@@ -99,13 +100,14 @@ fn extension_prepare_merges_hook_and_shuts_down_clean() {
     let mode = "--mode=extension-landlock-hook".to_string();
     // `Ok` already proves clean shutdown: residue dominates inside
     // `run_landlock_prepare`, so a stranded peer would fail here.
-    let evaluated = run_landlock_prepare(
+    let (evaluated, _lease) = run_landlock_prepare(
         dir.path(),
         &[mode],
         &bare_profile(),
         &[],
         &defaults(),
         "test-session",
+        dir.path(),
     )
     .unwrap();
     assert_eq!(evaluated.merged.guest_hooks.len(), 1);
@@ -133,6 +135,7 @@ fn extension_prepare_without_hooks_capability_refuses() {
         &[],
         &defaults(),
         "test-session",
+        dir.path(),
     )
     .unwrap_err();
     assert!(

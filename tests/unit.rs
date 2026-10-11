@@ -43,6 +43,8 @@ mod policy_prepare;
 mod prepare;
 #[path = "unit/prepare_hooks.rs"]
 mod prepare_hooks;
+#[path = "unit/prepare_lease.rs"]
+mod prepare_lease;
 #[path = "unit/profile_resolution.rs"]
 mod profile_resolution;
 #[path = "unit/protocol.rs"]

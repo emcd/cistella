@@ -1,7 +1,7 @@
 ## 1. Prepare carries session identity
 
 - [x] 1.1 Session id in the prepare request: extend the wire request shape with the opaque session id (additive field, major unchanged); pin an actual old guest binary completing prepare against the new request (decoder tolerance, not assumed).
-- [ ] 1.2 Runner threads the id: run_extension_prepare/run_prepare pass the conduct session id into the request; slice paths use the fixed prefix plus validated session charset plus randomness with exclusive-create (no unsanitized concatenation). Driver lease marker per hosted prepare (O_EXCL create before first spawn, atomic updates with guest pid/pgid, removal on proven shutdown + convergence/quiescence); pin lease lifecycle fast.
+- [x] 1.2 Runner threads the id: run_extension_prepare/run_prepare pass the conduct session id into the request; slice paths use the fixed prefix plus validated session charset plus randomness with exclusive-create (no unsanitized concatenation). Driver lease marker per hosted prepare (O_EXCL create before first spawn, atomic updates with guest pid/pgid, removal on proven shutdown + convergence/quiescence); pin lease lifecycle fast.
 
 ## 2. Declared RW honored
 
