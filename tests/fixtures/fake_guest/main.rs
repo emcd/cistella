@@ -36,6 +36,7 @@
 //!   `--mode=stderr-fill`                write to stderr past `STDERR_CAP` then exit
 //!   `--mode=prepare-vector-agentmux`      Agentmux-support design vector
 //!   `--mode=prepare-echo-session-id`      echo the prepare session_id as env
+//!   `--mode=prepare-vector-rw-mount`       one RW mount contribution
 //!   `--mode=prepare-vector-registered`   agentmux payload advertising its contribution types
 //!   `--mode=prepare-vector-ssh`           SSH design vector
 //!   `--mode=prepare-vector-token`         token-shaped env from an extension

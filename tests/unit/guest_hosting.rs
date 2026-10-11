@@ -439,3 +439,37 @@ fn session_id_threads_into_prepare() {
         )]
     );
 }
+
+#[test]
+fn extension_rw_mount_contribution_merges() {
+    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    // No blanket refusal: a valid-shape RW triple merges through
+    // the central validators like any declared triple (reserved
+    // collisions still refuse at the contract layer).
+    let (entry, ctx, _dir) = peer_entry(
+        "fake_guest",
+        "test-cap",
+        vec!["--mode=prepare-vector-rw-mount".to_string()],
+    );
+    let resolved = resolve(&entry, &ctx).expect("peer resolves");
+    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+    let lease_base = tempfile::tempdir().expect("tempdir");
+    let (plan, _lease) = run_extension_prepare(
+        ExtensionSpawn::Registered(resolved),
+        std::path::Path::new("/nonexistent-exe-dir"),
+        &[],
+        &minimal_profile(),
+        &[],
+        &policy,
+        "test-session-rw-1",
+        lease_base.path(),
+    )
+    .expect("RW contribution merges");
+    assert_eq!(plan.merged.mounts.len(), 1);
+    let triple = &plan.merged.mounts[0];
+    assert_eq!(triple.host_source, "/tmp");
+    assert_eq!(triple.container_target, "/vectmp");
+    assert_eq!(triple.mode, cistella::framework::contract::MountMode::Rw);
+}

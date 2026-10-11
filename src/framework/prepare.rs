@@ -168,18 +168,6 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     let credentials = admit_all(&response.credentials)?;
     let plan = build_plan(response, &provenance)?;
     let merged = merge_prepare(plan, &advertised, context)?;
-    // Extension read-write mounts are never admitted (tier-2
-    // hardening): merged mounts are extension-provided by
-    // construction — profile/CLI/session triples ride the occupied
-    // baseline, never the plan — and no Mounts policy admission
-    // exists, so an RW triple here would compose into a FULL
-    // Landlock carveout on untrusted say-so. Read-only
-    // contributions still merge (vectors pin the bus-socket
-    // shape): they cannot grant writes through compose, and the
-    // RO-under-FULL retention keeps their Podman binding
-    // read-only. Remove this refusal only with explicit policy
-    // admission for extension mounts.
-    refuse_extension_rw_mounts(&merged.mounts)?;
     let contributed: Vec<String> = merged
         .environment
         .iter()
@@ -209,9 +197,8 @@ const EXTENSION_HOOKS: &str = "guest-hooks";
 /// merge-admission set. Offered to registered extensions alongside
 /// their recorded role so a non-hook extension can contribute
 /// environment, mounts, policy claims, or credentials — gating
-/// stays central (contribution validators, the RW-mount refusal
-/// without policy admission, credential admission, lattice
-/// evaluation). The offer only decides what the guest may
+/// stays central (contribution validators, credential admission,
+/// lattice evaluation). The offer only decides what the guest may
 /// advertise without tripping the closed-negotiation subset check;
 /// hooks stay optional (only the recorded role is required).
 const REGISTERED_OFFERED: [&str; 5] = [
@@ -387,26 +374,6 @@ pub fn check_hook_executable(hook: &GuestHookRequest) -> Result<()> {
     if hook.argv_prefix.len() != 1 || hook.argv_prefix[0] != STAGED_WRAPPER_GUEST_PATH {
         return Err(CistellaError::Contract(
             "guest hook argv must name exactly the staged wrapper path".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// Refuses extension read-write mount contributions: merged
-/// mounts are extension-provided by construction, and no Mounts
-/// policy admission exists, so an RW triple would compose into a
-/// FULL Landlock carveout on untrusted say-so. Pure over the
-/// merged mount set; diagnostics name the contribution type,
-/// never paths.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on the first RW triple.
-pub fn refuse_extension_rw_mounts(mounts: &[MountTriple]) -> Result<()> {
-    if mounts.iter().any(|t| t.mode == MountMode::Rw) {
-        return Err(CistellaError::Contract(
-            "extension read-write mount contributions are not admitted: no Mounts policy admission exists"
-                .to_string(),
         ));
     }
     Ok(())

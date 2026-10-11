@@ -245,7 +245,7 @@ pub(crate) fn run(
                 "protocol": PROTOCOL_MAJOR,
                 "id": id,
                 "op": "prepare",
-                "payload": {
+                    "payload": {
                     "environment": [{"name": "SESSION_ID_ECHO", "value": session}],
                     "mounts": [],
                     "policy_claims": [],
@@ -254,6 +254,30 @@ pub(crate) fn run(
             });
             let body = serde_json::to_vec(&response).expect("serialize");
             let _ = write_frame(stdout_lock, &body, 64 * 1024);
+            ExitCode::SUCCESS
+        }
+        "prepare-vector-rw-mount" => {
+            // One read-write mount contribution with otherwise
+            // valid shape: proves RW triples merge through the
+            // central validators (no blanket refusal). Hello
+            // advertises the contribution type.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [
+                        {
+                            "host_source": "/tmp",
+                            "container_target": "/vectmp",
+                            "mode": "rw"
+                        }
+                    ],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }),
+                &["test-cap", "mounts"],
+            );
             ExitCode::SUCCESS
         }
         "prepare-vector-registered" => {

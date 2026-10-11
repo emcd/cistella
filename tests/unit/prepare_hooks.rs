@@ -655,29 +655,6 @@ fn full_grant_routes_mirror_compose_carveouts() {
 }
 
 #[test]
-fn refuse_extension_rw_mounts_gates_carveout_admission() {
-    use cistella::framework::prepare::refuse_extension_rw_mounts;
-    use cistella::mount::{MountMode, MountTriple};
-    let rw = MountTriple {
-        host_source: "/srv/data".to_string(),
-        container_target: "/data".to_string(),
-        mode: MountMode::Rw,
-    };
-    let ro = MountTriple {
-        host_source: "/run/vector/agentmux-bus".to_string(),
-        container_target: "/run/vector/agentmux-bus".to_string(),
-        mode: MountMode::Ro,
-    };
-    // An RW triple refuses (it would compose into a FULL
-    // carveout); RO contributions still merge (vectors pin the
-    // bus-socket shape).
-    let error = refuse_extension_rw_mounts(&[ro.clone(), rw]).unwrap_err();
-    assert!(error.to_string().contains("not admitted"), "got: {error}");
-    refuse_extension_rw_mounts(&[]).expect("empty passes");
-    refuse_extension_rw_mounts(&[ro]).expect("read-only passes");
-}
-
-#[test]
 fn compose_canonicalizes_target_spellings_for_coverage() {
     use cistella::framework::prepare::compose_hook_argv;
     use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
