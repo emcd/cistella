@@ -19,7 +19,7 @@ use nix::fcntl::OFlag;
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::PROTOCOL_MAJOR;
 use crate::guest_anchor::{PinnedBinary, begin_anchored, openat_anchored, sha256_bytes};
-use crate::guest_registry::{HostEnv, RegisteredGuest, SourceLocation};
+use crate::guest_registry::{Guest, HostEnv, SourceLocation};
 
 /// Read ceiling for guest binaries at verify time: sized for
 /// debug binaries with symbols (tens of MB; release guests are
@@ -261,7 +261,7 @@ pub struct ResolvedGuest {
 ///
 /// Returns `CistellaError::Profile` on protocol, path, fetch, or
 /// verification refusal.
-pub fn resolve(entry: &RegisteredGuest, ctx: &ResolveCtx) -> Result<ResolvedGuest> {
+pub fn resolve(entry: &Guest, ctx: &ResolveCtx) -> Result<ResolvedGuest> {
     if entry.protocol != PROTOCOL_MAJOR {
         return Err(CistellaError::Profile(format!(
             "registered guest {} wants protocol {}, host speaks {}",

@@ -8,7 +8,7 @@
 
 use cistella::framework::contract::Deadlines;
 use cistella::framework::guest::host_registered;
-use cistella::guest_registry::{RegisteredGuest, SourceLocation};
+use cistella::guest_registry::{Guest, SourceLocation};
 use cistella::guest_source::{ResolveCtx, resolve};
 
 /// Resolves a built example binary (newest-mtime executable match).
@@ -65,7 +65,7 @@ fn peer_entry(
     binary: &str,
     role: &str,
     arguments: Vec<String>,
-) -> (RegisteredGuest, ResolveCtx, tempfile::TempDir) {
+) -> (Guest, ResolveCtx, tempfile::TempDir) {
     use sha2::Digest;
     use std::os::unix::fs::PermissionsExt;
     let source = example_binary(binary);
@@ -79,7 +79,7 @@ fn peer_entry(
     let path = dir.path().join(binary);
     std::fs::write(&path, &bytes).expect("stage peer copy");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let entry = RegisteredGuest {
+    let entry = Guest {
         name: "test-peer".to_string(),
         role: role.to_string(),
         protocol: 1,
@@ -306,7 +306,7 @@ fn swap_after_resolve_executes_pinned_bytes() {
         use sha2::Digest;
         sha2::Sha256::digest(&bytes).into()
     };
-    let entry = RegisteredGuest {
+    let entry = Guest {
         name: "seat-copy".to_string(),
         role: "example".to_string(),
         protocol: 1,

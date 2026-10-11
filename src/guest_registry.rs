@@ -215,7 +215,7 @@ pub enum SourceLocation {
 /// Validated registry entry: parse- and schema-checked, ready to
 /// resolve (fetch/download or path open plus digest verify).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegisteredGuest {
+pub struct Guest {
     /// Exact registry name.
     pub name: String,
     /// Exact hello role string the guest must advertise.
@@ -244,9 +244,9 @@ pub enum GuestTable {
 #[derive(Debug, Clone, Default)]
 pub struct Registry {
     /// Validated `[[isolators]]` entries.
-    pub isolators: Vec<RegisteredGuest>,
+    pub isolators: Vec<Guest>,
     /// Validated `[[extensions]]` entries.
-    pub extensions: Vec<RegisteredGuest>,
+    pub extensions: Vec<Guest>,
 }
 
 impl Registry {
@@ -317,7 +317,7 @@ impl Registry {
 
     /// Finds an entry by exact name in one genera table.
     #[must_use]
-    pub fn find(&self, table: GuestTable, name: &str) -> Option<&RegisteredGuest> {
+    pub fn find(&self, table: GuestTable, name: &str) -> Option<&Guest> {
         match table {
             GuestTable::Isolators => self.isolators.iter().find(|e| e.name == name),
             GuestTable::Extensions => self.extensions.iter().find(|e| e.name == name),
@@ -328,7 +328,7 @@ impl Registry {
     /// diagnostics: a name registered in the other table refuses as
     /// a wrong-slot entry, never as unknown).
     #[must_use]
-    pub fn find_any(&self, name: &str) -> Option<(GuestTable, &RegisteredGuest)> {
+    pub fn find_any(&self, name: &str) -> Option<(GuestTable, &Guest)> {
         if let Some(entry) = self.find(GuestTable::Isolators, name) {
             return Some((GuestTable::Isolators, entry));
         }
@@ -347,7 +347,7 @@ impl Registry {
 
 /// Validates one genera table: nonempty names, per-table duplicate
 /// refusal, reserved-name shadowing refusal, per-entry checks.
-fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<RegisteredGuest>> {
+fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<Guest>> {
     let reserved = match table {
         GuestTable::Isolators => SHIPPED_ISOLATOR_NAME,
         GuestTable::Extensions => SHIPPED_EXTENSION_NAME,
@@ -383,7 +383,7 @@ fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<Regis
 /// podman extension exists or is planned; `landlock` in
 /// `[[isolators]]` stays legal for the future sibling), digest
 /// shape, exactly-one-source, static-argument span refusal.
-fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<RegisteredGuest> {
+fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<Guest> {
     if entry.role.is_empty() {
         return Err(CistellaError::Profile(format!(
             "registry entry {} role must not be empty",
@@ -446,7 +446,7 @@ fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<RegisteredGuest>
             )));
         }
     };
-    Ok(RegisteredGuest {
+    Ok(Guest {
         name: entry.name,
         role: entry.role,
         protocol: entry.protocol,

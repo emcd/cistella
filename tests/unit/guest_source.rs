@@ -241,8 +241,8 @@ fn serve_queued(responses: Vec<(u16, Vec<u8>, std::time::Duration)>) -> FixtureO
     FixtureOrigin { url, hits }
 }
 
-fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::RegisteredGuest {
-    cistella::guest_registry::RegisteredGuest {
+fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::Guest {
+    cistella::guest_registry::Guest {
         name: "fetched".to_string(),
         role: "fetched-role".to_string(),
         protocol: 1,
@@ -538,10 +538,10 @@ fn fetch_deadline_refuses() {
 
 #[test]
 fn wrong_protocol_major_refuses_at_resolve() {
-    use cistella::guest_registry::{RegisteredGuest, SourceLocation};
+    use cistella::guest_registry::{Guest, SourceLocation};
     use cistella::guest_source::resolve;
     let dir = tempfile::tempdir().expect("tempdir");
-    let entry = RegisteredGuest {
+    let entry = Guest {
         name: "future".to_string(),
         role: "future-role".to_string(),
         protocol: 999,

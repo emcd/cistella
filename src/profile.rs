@@ -26,7 +26,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::{CistellaError, Result};
-use crate::guest_registry::{GuestTable, RegisteredGuest, Registry};
+use crate::guest_registry::{Guest, GuestTable, Registry};
 use crate::template::expand_templates;
 
 use crate::mount::{MountTriple, canonicalize_container_target, validate_mounts};
@@ -190,7 +190,7 @@ pub enum IsolatorResolution {
     /// Podman lifecycle backend (shipped).
     Podman,
     /// Third-party isolator (verified at host).
-    Registered(RegisteredGuest),
+    Registered(Guest),
 }
 
 /// Extension selection outcome per declared entry: the shipped
@@ -203,7 +203,7 @@ pub enum ExtensionResolution {
     /// Landlock confinement guest (shipped).
     Landlock,
     /// Third-party extension (verified at prepare).
-    Registered(RegisteredGuest),
+    Registered(Guest),
 }
 
 fn default_container_home() -> String {
