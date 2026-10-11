@@ -410,6 +410,81 @@ fn gate_drain_clean_session_has_no_detail() {
 }
 
 #[test]
+fn compose_admitted_tmp_slice_grants_full_with_scratch_nested() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    // A contributed RW triple targeting /tmp composes a FULL
+    // carveout by declared mode (no /tmp-specific rule exists —
+    // the generic carveout covers it); nested /tmp/scratch keeps
+    // its own grant (depth-ordered mounts, union semantics).
+    let slice = tempfile::tempdir().expect("slice dir");
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![
+        MountTriple {
+            host_source: slice.path().to_string_lossy().to_string(),
+            container_target: "/tmp".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: scratch.path().to_string_lossy().to_string(),
+            container_target: "/tmp/scratch".to_string(),
+            mode: MountMode::Rw,
+        },
+    ];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        slice.path(),
+        slice.path(),
+        &["true".to_string()],
+    )
+    .unwrap();
+    assert!(
+        argv.contains(&"--allow-rw=/tmp".to_string()),
+        "admitted slice grants full, got: {argv:?}"
+    );
+    assert!(
+        argv.contains(&"--allow-rw=/tmp/scratch".to_string()),
+        "nested scratch keeps its grant, got: {argv:?}"
+    );
+}
+
+#[test]
+fn compose_undeclared_tmp_gets_no_grant() {
+    use cistella::framework::prepare::compose_hook_argv;
+    use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
+    use cistella::mount::{MountMode, MountTriple};
+    // Default topology (no triple admitting /tmp): no FULL grant
+    // names /tmp, so writes stay denied (the outlet remains
+    // /tmp/scratch).
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
+    let triples = vec![MountTriple {
+        host_source: scratch.path().to_string_lossy().to_string(),
+        container_target: "/tmp/scratch".to_string(),
+        mode: MountMode::Rw,
+    }];
+    let argv = compose_hook_argv(
+        &[hook],
+        &triples,
+        scratch.path(),
+        scratch.path(),
+        &["true".to_string()],
+    )
+    .unwrap();
+    assert!(
+        !argv.contains(&"--allow-rw=/tmp".to_string()),
+        "undeclared /tmp must not grant, got: {argv:?}"
+    );
+    assert!(
+        argv.contains(&"--allow-rw=/tmp/scratch".to_string()),
+        "outlet keeps its grant, got: {argv:?}"
+    );
+}
+
+#[test]
 fn compose_declared_mounts_grant_by_mode() {
     use cistella::framework::prepare::compose_hook_argv;
     use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
