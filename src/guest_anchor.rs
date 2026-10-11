@@ -331,11 +331,19 @@ static STATE_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 /// Returns `Err` on symlink, non-directory, ownership, or I/O
 /// refusal with a message naming the path.
 pub fn open_state_dir(path: &Path) -> std::result::Result<AnchoredDir, String> {
-    match std::fs::create_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => {
-            return Err(format!("state dir {}: {error}", path.display()));
+    // 0700-at-creation (DirBuilder mode is umask-masked, but
+    // 0700 has no group/other bits for any umask to clear), then
+    // fchmod hardening below covers pre-existing directories.
+    // A symlink at the path refuses at the nofollow open — never
+    // created through.
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!("state dir {}: {error}", path.display()));
+            }
         }
     }
     let raw = nix::fcntl::open(

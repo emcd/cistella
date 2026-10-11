@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CistellaError, Result};
+use crate::guest_source::{AncestorVerdict, ancestor_verdict};
 
 /// Recursion ceiling for FD-relative traversal (fail-closed past
 /// it — session slices are shallow; depth beyond this is either an
@@ -135,7 +136,7 @@ pub fn record_cleanup(base: &Path, session_id: &str, paths: &[String]) -> Result
 fn open_session_state(
     base: &Path,
 ) -> std::result::Result<crate::guest_anchor::AnchoredDir, String> {
-    crate::guest_anchor::open_state_dir(&base.join("cistella-state"))
+    crate::guest_anchor::open_state_dir(&crate::lock::PrepareLease::state_dir(base))
 }
 
 /// Reaps the recorded cleanup roots for one session: admits each
@@ -271,6 +272,7 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
             record.path.display()
         ));
     }
+    traversal_trusted(&parent_open, seat, &format!("parent {}", parent.display()))?;
     let Some(name) = record.path.file_name() else {
         return Err(format!(
             "cleanup root names no file: {}",
@@ -337,6 +339,34 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Traversal trust for one open directory description: the
+/// owner must be the seat or root, and the mode must admit entry
+/// mutation (rename/remove/bind) to trusted actors only —
+/// non-world-writable, or sticky with a trusted owner (same rule
+/// as path ancestors: everyone else is refused by bits). Every
+/// directory the traversal descends through or unlinks from meets
+/// this on its OPEN FD, so the check-then-use window admits only
+/// trusted interleavers — stated explicitly as the trusted-writer
+/// scope for all mutating path operations in this module.
+fn traversal_trusted(
+    stat: &nix::sys::stat::FileStat,
+    seat: nix::libc::uid_t,
+    what: &str,
+) -> std::result::Result<(), String> {
+    if stat.st_uid != seat && stat.st_uid != 0 {
+        return Err(format!("cleanup traversal owner untrusted: {what}"));
+    }
+    match ancestor_verdict(stat.st_mode, stat.st_uid, seat) {
+        AncestorVerdict::Pass => Ok(()),
+        AncestorVerdict::WorldWritable => {
+            Err(format!("cleanup traversal parent world-writable: {what}"))
+        }
+        AncestorVerdict::StickyUntrusted => Err(format!(
+            "cleanup traversal parent sticky with untrusted owner: {what}"
+        )),
+    }
+}
+
 /// Removes a directory's CONTENTS via its open FD (the directory
 /// itself is removed by the caller): subdirectories recurse by
 /// FD, ordinary files and symlinks unlink as entries without
@@ -346,6 +376,14 @@ fn remove_tree(dirfd: RawFd, depth: u32) -> std::result::Result<(), String> {
     if depth > MAX_TRAVERSAL_DEPTH {
         return Err("cleanup traversal too deep".to_string());
     }
+    // Every descended directory meets traversal trust on its OPEN
+    // FD (owner + mutation-restricted mode): untrusted writers
+    // anywhere on the descent path refuse the whole removal
+    // rather than risk operating among attacker-controlled entries.
+    // SAFETY: getuid is inherently safe.
+    let seat = unsafe { nix::libc::getuid() };
+    let here = nix::sys::stat::fstat(dirfd).map_err(|e| format!("cleanup fstat: {e}"))?;
+    traversal_trusted(&here, seat, "traversed directory")?;
     let dup = nix::unistd::dup(dirfd).map_err(|e| format!("cleanup dup: {e}"))?;
     // SAFETY: freshly duped above, owned here, wrapped exactly once.
     let owned: OwnedFd = unsafe { OwnedFd::from_raw_fd(dup) };
@@ -698,10 +736,13 @@ fn orphan_eligible(base: &Path, session: &str) -> std::result::Result<bool, Stri
 }
 
 /// Removes one enumerated orphan FD-relative: temproot opens
-/// nofollow, the candidate opens nofollow within it, kind plus
-/// ownership verify on the open descriptions, traversal is
-/// FD-relative, and the name unlinks from the temproot FD.
+/// nofollow with traversal trust, the candidate opens nofollow
+/// within it, kind plus ownership verify on the open descriptions,
+/// traversal is FD-relative, the name reverifies before unlink,
+/// and the name unlinks from the temproot FD.
 fn remove_orphan(root: &Path, name: &str) -> std::result::Result<(), String> {
+    // SAFETY: getuid is inherently safe.
+    let seat = unsafe { nix::libc::getuid() };
     let root_raw = nix::fcntl::open(
         root,
         nix::fcntl::OFlag::O_RDONLY
@@ -713,6 +754,9 @@ fn remove_orphan(root: &Path, name: &str) -> std::result::Result<(), String> {
     .map_err(|e| format!("cleanup open temproot {}: {e}", root.display()))?;
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
     let root_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(root_raw) };
+    let root_open = nix::sys::stat::fstat(root_fd.as_raw_fd())
+        .map_err(|e| format!("cleanup fstat temproot {}: {e}", root.display()))?;
+    traversal_trusted(&root_open, seat, &format!("temproot {}", root.display()))?;
     let candidate_raw = nix::fcntl::openat(
         Some(root_fd.as_raw_fd()),
         Path::new(name),
@@ -727,13 +771,37 @@ fn remove_orphan(root: &Path, name: &str) -> std::result::Result<(), String> {
     let candidate_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(candidate_raw) };
     let stat = nix::sys::stat::fstat(candidate_fd.as_raw_fd())
         .map_err(|e| format!("cleanup fstat orphan {name}: {e}"))?;
-    // SAFETY: getuid is inherently safe.
-    let seat = unsafe { nix::libc::getuid() };
     if stat.st_uid != seat && stat.st_uid != 0 {
         return Err(format!("cleanup orphan is not seat-owned: {name}"));
     }
+    let dev = stat.st_dev as u64;
+    let ino = stat.st_ino as u64;
     remove_tree(candidate_fd.as_raw_fd(), 0).map_err(|e| format!("cleanup {name}: {e}"))?;
     drop(candidate_fd);
+    // Re-verify the name still denotes the traversed object
+    // before unlinking (same replacement window as declared
+    // roots — untrusted parent writers are already refused
+    // above, this closes even trusted-actor races).
+    let recheck_raw = nix::fcntl::openat(
+        Some(root_fd.as_raw_fd()),
+        Path::new(name),
+        nix::fcntl::OFlag::O_RDONLY
+            | nix::fcntl::OFlag::O_NOFOLLOW
+            | nix::fcntl::OFlag::O_DIRECTORY
+            | nix::fcntl::OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )
+    .map_err(|e| format!("cleanup reverify {name}: {e}"))?;
+    // SAFETY: freshly opened above, owned here, wrapped exactly once.
+    let recheck_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(recheck_raw) };
+    let recheck = nix::sys::stat::fstat(recheck_fd.as_raw_fd())
+        .map_err(|e| format!("cleanup fstat {name}: {e}"))?;
+    drop(recheck_fd);
+    if recheck.st_dev as u64 != dev || recheck.st_ino as u64 != ino {
+        return Err(format!(
+            "cleanup orphan rebound during traversal (refusing): {name}"
+        ));
+    }
     nix::unistd::unlinkat(
         Some(root_fd.as_raw_fd()),
         Path::new(name),

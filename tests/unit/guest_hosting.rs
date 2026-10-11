@@ -707,10 +707,12 @@ fn second_guest_host_failure_shuts_first_and_retains() {
     )
     .expect_err("role mismatch must refuse");
     assert!(error.to_string().contains("role mismatch"), "got: {error}");
+    // SAFETY: getuid is inherently safe.
+    let seat = unsafe { nix::libc::getuid() };
     assert!(
         lease_base
             .path()
-            .join("cistella-state")
+            .join(format!("cistella-state-{seat}"))
             .join("cistella-prepare-test-session-abort-1")
             .exists(),
         "uncertainty retained for stale-gc"

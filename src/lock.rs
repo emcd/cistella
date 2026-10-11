@@ -206,6 +206,17 @@ impl PrepareLease {
         Ok(format!("cistella-prepare-{session_id}"))
     }
 
+    /// Verified private state directory for one seat under
+    /// `base`: per-seat namespace (`cistella-state-<uid>`) so one
+    /// seat creating the fallback first never locks another seat
+    /// uid out of its own state. Created 0700-compatible (the
+    /// open enforces ownership and hardens mode).
+    pub fn state_dir(base: &std::path::Path) -> PathBuf {
+        // SAFETY: getuid is inherently safe.
+        let seat = unsafe { nix::libc::getuid() };
+        base.join(format!("cistella-state-{seat}"))
+    }
+
     /// Lease file path under `base` for one session id (display
     /// and test compatibility — trust decisions ride the open
     /// directory, never this path).
@@ -214,14 +225,12 @@ impl PrepareLease {
     ///
     /// Returns `CistellaError::Runtime` on an unmintable session id.
     pub fn path_for(base: &std::path::Path, session_id: &str) -> Result<PathBuf> {
-        Ok(base
-            .join("cistella-state")
-            .join(Self::file_name(session_id)?))
+        Ok(Self::state_dir(base).join(Self::file_name(session_id)?))
     }
 
     /// Opens (creating) the verified private state directory.
     fn open_state(base: &std::path::Path) -> Result<crate::guest_anchor::AnchoredDir> {
-        crate::guest_anchor::open_state_dir(&base.join("cistella-state"))
+        crate::guest_anchor::open_state_dir(&Self::state_dir(base))
             .map_err(|error| CistellaError::Runtime(format!("prepare lease state: {error}")))
     }
 
@@ -257,7 +266,7 @@ impl PrepareLease {
     /// existing lease, or I/O failure.
     pub fn create(base: &std::path::Path, session_id: &str) -> Result<Self> {
         let name = Self::file_name(session_id)?;
-        let path = base.join("cistella-state").join(&name);
+        let path = Self::state_dir(base).join(&name);
         let dir = Self::open_state(base)?;
         let mut file = dir.create_file(&name).map_err(|error| {
             CistellaError::Runtime(format!("prepare lease {}: {error}", path.display()))

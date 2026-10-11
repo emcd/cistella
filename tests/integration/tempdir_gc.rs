@@ -148,6 +148,12 @@ fn lease_path(session: &str) -> std::path::PathBuf {
         .expect("lease path forms")
 }
 
+fn write_lease(session: &str, content: &str) {
+    let path = lease_path(session);
+    std::fs::create_dir_all(path.parent().expect("lease has a parent")).expect("mkdir lease dir");
+    std::fs::write(&path, content).expect("write lease");
+}
+
 fn slice_path(session: &str, rand: &str) -> std::path::PathBuf {
     seat_root().join(format!("cistella-tmp-{session}-{rand}"))
 }
@@ -197,11 +203,10 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     let guest_pid = hanging.id();
     let guest_pgid = guest_pid;
     let slice_a = make_slice(&session, "111-222");
-    std::fs::write(
-        lease_path(&session),
-        format!("driver {driver_a_pid}\nguest {guest_pid} {guest_pgid}\n"),
-    )
-    .expect("write lease A");
+    write_lease(
+        &session,
+        &format!("driver {driver_a_pid}\nguest {guest_pid} {guest_pgid}\n"),
+    );
     // Live driver: gc skips everything.
     let out = run_cistella(&home, &["gc"]);
     assert!(

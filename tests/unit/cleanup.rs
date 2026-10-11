@@ -162,8 +162,7 @@ fn lease_roundtrip_parses() {
 fn malformed_lease_reads_as_error() {
     use cistella::cleanup::read_lease;
     let dir = tempfile::tempdir().expect("tempdir");
-    let statedir = dir.path().join("cistella-state");
-    std::fs::create_dir(&statedir).expect("mkdir state dir");
+    let statedir = state_subdir(&dir);
     for (name, content) in [
         ("no-driver", "guest 1 1\n"),
         ("bad-driver-pid", "driver xyz\n"),
@@ -257,7 +256,7 @@ fn seat_temp_root_rule() {
 }
 
 fn state_subdir(base: &tempfile::TempDir) -> std::path::PathBuf {
-    let statedir = base.path().join("cistella-state");
+    let statedir = cistella::lock::PrepareLease::state_dir(base.path());
     std::fs::create_dir_all(&statedir).expect("mkdir state dir");
     statedir
 }
@@ -342,6 +341,30 @@ fn parent_swap_refuses() {
 }
 
 #[test]
+fn world_writable_parent_refuses() {
+    // Mutating path operations happen only under trusted
+    // parents: a world-writable non-sticky parent lets untrusted
+    // actors swap entries, so traversal refuses the whole entry
+    // (fail-closed litter, retryable).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent = seat_dir(&dir, "parent");
+    let root = parent.join("slice");
+    std::fs::create_dir(&root).expect("mkdir root");
+    record_cleanup(
+        dir.path(),
+        "test-session-1",
+        &[root.to_string_lossy().to_string()],
+    )
+    .expect("record admits");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let litter = reap_cleanup(dir.path(), "test-session-1");
+    assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
+    assert!(litter[0].contains("world-writable"), "got: {}", litter[0]);
+    assert!(root.exists(), "refused root survives");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[test]
 fn gone_root_is_complete_not_litter() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = seat_dir(&dir, "slice");
@@ -366,8 +389,11 @@ fn state_symlink_refuses_without_touching_target() {
     // operated in).
     let dir = tempfile::tempdir().expect("tempdir");
     let elsewhere = tempfile::tempdir().expect("tempdir");
-    std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("cistella-state"))
-        .expect("plant dir symlink");
+    std::os::unix::fs::symlink(
+        elsewhere.path(),
+        cistella::lock::PrepareLease::state_dir(dir.path()),
+    )
+    .expect("plant dir symlink");
     let victim = elsewhere.path().join("victim.txt");
     std::fs::write(&victim, b"precious").expect("write victim");
     let root = seat_dir(&dir, "slice");
