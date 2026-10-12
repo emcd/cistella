@@ -1,16 +1,36 @@
 //! Scoped nested-mountpoint pre-create pins.
 
+use std::os::unix::fs::PermissionsExt;
+
 use cistella::mount::{MountMode, MountTriple};
+
+/// Owner-only tempdir base plus trusted subdir: tempfile and
+/// create_dir honor the host umask, so a permissive build-host
+/// umask (e.g. 0002) would leave group-writable dirs that
+/// traversal trust (lifetime test) refuses.
+fn test_tree() -> tempfile::TempDir {
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::set_permissions(tree.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod base");
+    tree
+}
+
+fn test_subdir(tree: &tempfile::TempDir, name: &str) -> std::path::PathBuf {
+    let path = tree.path().join(name);
+    std::fs::create_dir(&path).expect("mkdir subdir");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
 
 #[test]
 fn precreate_nested_mountpoints_seeds_parent_source() {
     use cistella::mount_init::precreate_nested_mountpoints;
-    let tree = tempfile::tempdir().expect("tree");
+    let tree = test_tree();
     let host = tree.path().to_string_lossy().to_string();
     // Slice parent exists (prepare minted it) and is a declared
     // cleanup root; the scratch mountpoint does not yet — podman
     // would create it as container-root without the pre-create.
-    std::fs::create_dir(tree.path().join("slice")).expect("slice");
+    test_subdir(&tree, "slice");
     let roots = [format!("{host}/slice")];
     let triples = [
         MountTriple {
@@ -49,7 +69,7 @@ fn precreate_nested_mountpoints_seeds_parent_source() {
     // Nesting under an existing source outside the declared
     // roots skips: no writes into user source trees (podman
     // legacy behavior there, unchanged).
-    std::fs::create_dir(tree.path().join("work")).expect("work");
+    test_subdir(&tree, "work");
     let work = MountTriple {
         host_source: format!("{host}/work"),
         container_target: "/work".to_string(),
@@ -70,13 +90,12 @@ fn precreate_nested_mountpoints_seeds_parent_source() {
 #[test]
 fn precreate_refuses_planted_symlink() {
     use cistella::mount_init::precreate_nested_mountpoints;
-    let tree = tempfile::tempdir().expect("tree");
+    let tree = test_tree();
     let host = tree.path().to_string_lossy().to_string();
-    std::fs::create_dir(tree.path().join("slice")).expect("slice");
+    test_subdir(&tree, "slice");
     // Guest plants a symlink where the mountpoint will land,
     // pointing outside the admitted source.
-    let outside = tree.path().join("outside");
-    std::fs::create_dir(&outside).expect("outside");
+    let outside = test_subdir(&tree, "outside");
     std::os::unix::fs::symlink(&outside, tree.path().join("slice/scratch")).expect("plant link");
     let roots = [format!("{host}/slice")];
     let triples = [
@@ -109,10 +128,10 @@ fn precreated_mountpoint_dies_with_cleanup_root() {
     // Lifetime contract: pre-create runs under declared roots,
     // so a later planning refusal strands nothing — teardown
     // (or gc) reaps the mountpoint with its root.
-    let base = tempfile::tempdir().expect("base");
-    let tree = tempfile::tempdir().expect("tree");
+    let base = test_tree();
+    let tree = test_tree();
     let host = tree.path().to_string_lossy().to_string();
-    std::fs::create_dir(tree.path().join("slice")).expect("slice");
+    test_subdir(&tree, "slice");
     let roots = [format!("{host}/slice")];
     record_cleanup(base.path(), "test-session-9", &roots).expect("record admits");
     let triples = [

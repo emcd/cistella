@@ -15,15 +15,34 @@ fn seat_dir(dir: &tempfile::TempDir, name: &str) -> std::path::PathBuf {
     path
 }
 
+/// Owner-only tempdir base: tempfile honors the host umask, so a
+/// permissive build-host umask (e.g. 0002) would leave a
+/// group-writable base that traversal trust refuses. Every test
+/// base in this file goes through here.
+fn test_base() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    dir
+}
+
+/// Writes a lease/state fixture file owner-only: a permissive
+/// host umask (e.g. 0002) must not leave group-writable fixtures
+/// that fail-closed validation refuses.
+fn write_fixture_file(path: &std::path::Path, content: impl AsRef<[u8]>) {
+    std::fs::write(path, content).expect("write fixture");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+}
+
 #[test]
 fn populated_tree_removes_fully_outside_target_survives() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let root = seat_dir(&dir, "slice");
     // Harness litter: files, a subdir, and a nested symlink
     // pointing outside the slice.
     std::fs::write(root.join("file.txt"), b"data").expect("write file");
     let sub = root.join("sub");
     std::fs::create_dir(&sub).expect("mkdir sub");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     std::fs::write(sub.join("nested.txt"), b"nested").expect("write nested");
     let outside = dir.path().join("outside.txt");
     std::fs::write(&outside, b"precious").expect("write outside");
@@ -45,7 +64,7 @@ fn populated_tree_removes_fully_outside_target_survives() {
 
 #[test]
 fn swapped_root_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let root = seat_dir(&dir, "slice");
     record_cleanup(
         dir.path(),
@@ -56,6 +75,7 @@ fn swapped_root_refuses() {
     // Symlink swap: refuse without following.
     let target = dir.path().join("target");
     std::fs::create_dir(&target).expect("mkdir target");
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     std::fs::remove_dir(&root).expect("remove original");
     std::os::unix::fs::symlink(&target, &root).expect("swap symlink");
     let litter = reap_cleanup(dir.path(), "test-session-1");
@@ -79,7 +99,7 @@ fn swapped_root_refuses() {
 
 #[test]
 fn undeclared_mounts_survive_teardown() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let project = seat_dir(&dir, "project");
     // No declarations recorded: reap is a no-op (absent state).
     let litter = reap_cleanup(dir.path(), "test-session-1");
@@ -89,7 +109,7 @@ fn undeclared_mounts_survive_teardown() {
 
 #[test]
 fn non_directory_root_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let file = dir.path().join("file");
     std::fs::write(&file, b"x").expect("write file");
     let error = record_cleanup(
@@ -106,7 +126,7 @@ fn non_directory_root_refuses() {
 
 #[test]
 fn relative_declaration_and_bad_session_refuse() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let error = record_cleanup(dir.path(), "test-session-1", &["relative/path".to_string()])
         .expect_err("relative must refuse");
     assert!(error.to_string().contains("absolute"), "got: {error}");
@@ -128,7 +148,7 @@ fn untrusted_root_owner_refuses() {
         eprintln!("skip: untrusted-owner root needs root (chown)");
         return;
     }
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let root = seat_dir(&dir, "slice");
     std::os::unix::fs::chown(&root, Some(65534), None).expect("chown nobody");
     let error = record_cleanup(
@@ -147,7 +167,7 @@ fn untrusted_root_owner_refuses() {
 fn lease_roundtrip_parses() {
     use cistella::cleanup::read_lease;
     use cistella::lock::PrepareLease;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     // Absent lease reads as none (no prepare recorded).
     assert!(
         read_lease(dir.path(), "test-session-1")
@@ -167,7 +187,7 @@ fn lease_roundtrip_parses() {
 #[test]
 fn malformed_lease_reads_as_error() {
     use cistella::cleanup::read_lease;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let statedir = state_subdir(&dir);
     for (name, content) in [
         ("no-driver", "guest 1 1\n"),
@@ -177,7 +197,7 @@ fn malformed_lease_reads_as_error() {
         ("empty", ""),
     ] {
         let path = statedir.join(format!("cistella-prepare-{name}"));
-        std::fs::write(&path, content).expect("write fixture");
+        write_fixture_file(&path, content);
         let error = read_lease(dir.path(), name).expect_err("malformed must err");
         assert!(error.to_string().contains("malformed"), "got: {error}");
     }
@@ -264,6 +284,7 @@ fn seat_temp_root_rule() {
 fn state_subdir(base: &tempfile::TempDir) -> std::path::PathBuf {
     let statedir = cistella::lock::PrepareLease::state_dir(base.path());
     std::fs::create_dir_all(&statedir).expect("mkdir state dir");
+    std::fs::set_permissions(&statedir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     statedir
 }
 
@@ -301,7 +322,7 @@ fn forged_identity_record_refuses() {
     // Hand-forged state JSON claims a bogus dev+ino for a real
     // seat-owned dir: reap must refuse (identity mismatch), and
     // the directory survives.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let statedir = state_subdir(&dir);
     let root = seat_dir(&dir, "slice");
     let forged = serde_json::json!([{
@@ -311,11 +332,10 @@ fn forged_identity_record_refuses() {
         "parent_dev": 999003,
         "parent_ino": 999004,
     }]);
-    std::fs::write(
-        statedir.join("cistella-cleanup-forged-1"),
+    write_fixture_file(
+        &statedir.join("cistella-cleanup-forged-1"),
         serde_json::to_vec(&forged).expect("encode"),
-    )
-    .expect("plant forged record");
+    );
     let litter = reap_cleanup(dir.path(), "forged-1");
     assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
     assert!(litter[0].contains("identity"), "got: {}", litter[0]);
@@ -326,10 +346,11 @@ fn forged_identity_record_refuses() {
 fn parent_swap_refuses() {
     // Move the admitted root under a fresh parent: root identity
     // matches but the parent association does not — refuse.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let parent = seat_dir(&dir, "parent");
     let root = parent.join("slice");
     std::fs::create_dir(&root).expect("mkdir root");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     record_cleanup(
         dir.path(),
         "test-session-1",
@@ -339,6 +360,7 @@ fn parent_swap_refuses() {
     let parent2 = dir.path().join("parent2");
     std::fs::rename(&parent, &parent2).expect("rename parent aside");
     std::fs::create_dir(&parent).expect("fresh parent");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     std::fs::rename(parent2.join("slice"), parent.join("slice")).expect("move root back");
     let litter = reap_cleanup(dir.path(), "test-session-1");
     assert_eq!(litter.len(), 1, "one refusal, got: {litter:?}");
@@ -352,10 +374,11 @@ fn world_writable_parent_refuses() {
     // parents: a world-writable non-sticky parent lets untrusted
     // actors swap entries, so traversal refuses the whole entry
     // (fail-closed litter, retryable).
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let parent = seat_dir(&dir, "parent");
     let root = parent.join("slice");
     std::fs::create_dir(&root).expect("mkdir root");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     record_cleanup(
         dir.path(),
         "test-session-1",
@@ -372,7 +395,7 @@ fn world_writable_parent_refuses() {
 
 #[test]
 fn gone_root_is_complete_not_litter() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let root = seat_dir(&dir, "slice");
     record_cleanup(
         dir.path(),
@@ -393,8 +416,8 @@ fn state_symlink_refuses_without_touching_target() {
     // A symlink at the state DIRECTORY refuses (ELOOP at the
     // nofollow open — never created through, chmodded, or
     // operated in).
-    let dir = tempfile::tempdir().expect("tempdir");
-    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
+    let elsewhere = test_base();
     std::os::unix::fs::symlink(
         elsewhere.path(),
         cistella::lock::PrepareLease::state_dir(dir.path()),
@@ -419,7 +442,7 @@ fn state_file_symlink_replaces_link_safely() {
     // A symlink at the state FILE path itself is replaced (never
     // traversed): renameat swaps the link for the record, and the
     // link target is never written through.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     let statedir = state_subdir(&dir);
     let victim = dir.path().join("victim.txt");
     std::fs::write(&victim, b"precious").expect("write victim");
@@ -449,18 +472,18 @@ fn pending_lease_skips_sweep() {
     use std::collections::HashSet;
     // Pending marker with a dead driver: a guest may exist
     // unrecorded — gc skips (never assumes), lease persists.
-    let base = tempfile::tempdir().expect("tempdir");
-    let root = tempfile::tempdir().expect("tempdir");
+    let base = test_base();
+    let root = test_base();
     let statedir = state_subdir(&base);
     let (driver_pid, _) = dead_pids();
     let session = "livetest-pending-1";
     let slice = root.path().join(format!("cistella-tmp-{session}-111-222"));
     std::fs::create_dir(&slice).expect("mkdir slice");
-    std::fs::write(
-        statedir.join(format!("cistella-prepare-{session}")),
+    std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    write_fixture_file(
+        &statedir.join(format!("cistella-prepare-{session}")),
         format!("driver {driver_pid}\npending\n"),
-    )
-    .expect("write pending lease");
+    );
     let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert!(removed.is_empty(), "pending skips, got: {removed:?}");
     assert!(slice.exists(), "pending slice survives");
@@ -478,19 +501,18 @@ fn stale_lease_and_orphan_go_together() {
     use std::collections::HashSet;
     // Dead driver plus dead recorded group: the slice reaps and
     // the stale lease file goes with it.
-    let base = tempfile::tempdir().expect("tempdir");
-    let root = tempfile::tempdir().expect("tempdir");
+    let base = test_base();
+    let root = test_base();
     let statedir = state_subdir(&base);
     let (driver_pid, guest_pid) = dead_pids();
     let session = "livetest-stale-1";
     let slice = root.path().join(format!("cistella-tmp-{session}-111-222"));
     std::fs::create_dir(&slice).expect("mkdir slice");
     std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    std::fs::write(
-        statedir.join(format!("cistella-prepare-{session}")),
+    write_fixture_file(
+        &statedir.join(format!("cistella-prepare-{session}")),
         format!("driver {driver_pid}\nguest {guest_pid} {guest_pid}\n"),
-    )
-    .expect("write stale lease");
+    );
     let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert_eq!(
         removed,
@@ -513,19 +535,18 @@ fn guestless_dead_lease_proceeds() {
     // No guest lines, no pending marker, dead driver: spawn never
     // happened (pending always commits first), so nothing stands
     // in the way — slice reaps, lease goes with it.
-    let base = tempfile::tempdir().expect("tempdir");
-    let root = tempfile::tempdir().expect("tempdir");
+    let base = test_base();
+    let root = test_base();
     let statedir = state_subdir(&base);
     let (driver_pid, _) = dead_pids();
     let session = "livetest-guestless-1";
     let slice = root.path().join(format!("cistella-tmp-{session}-111-222"));
     std::fs::create_dir(&slice).expect("mkdir slice");
     std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    std::fs::write(
-        statedir.join(format!("cistella-prepare-{session}")),
+    write_fixture_file(
+        &statedir.join(format!("cistella-prepare-{session}")),
         format!("driver {driver_pid}\n"),
-    )
-    .expect("write guestless lease");
+    );
     let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert_eq!(removed.len(), 1, "got: {removed:?}");
     assert!(!slice.exists(), "orphan reaped");
@@ -539,8 +560,8 @@ fn recorded_replacement_survives_gc_while_unrecorded_reaps() {
     // refuses it, then gc must preserve the replacement (never
     // fall back to name-only authority) while a genuinely
     // unrecorded orphan in the same sweep still reaps.
-    let base = tempfile::tempdir().expect("tempdir");
-    let root = tempfile::tempdir().expect("tempdir");
+    let base = test_base();
+    let root = test_base();
     let session = "gc-record-1";
     let path = root.path().join(format!("cistella-tmp-{session}-111-222"));
     std::fs::create_dir(&path).expect("mkdir slice");
@@ -572,11 +593,12 @@ fn group_writable_parent_refuses() {
     // renamers, so traversal refuses them even when seat-owned
     // (stricter than the shared mount-ancestor rule on purpose —
     // deletion needs the stronger guarantee).
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = test_base();
     for (name, mode) in [("gw-dir", 0o770), ("gw-file", 0o775)] {
         let parent = seat_dir(&dir, name);
         let root = parent.join("slice");
         std::fs::create_dir(&root).expect("mkdir root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         record_cleanup(
             dir.path(),
             &format!("test-session-{name}"),
@@ -601,8 +623,8 @@ fn moved_admitted_object_converges_through_gc() {
     // identity plus association both hold, so gc removes it
     // through the record-carried tail. Contrast with the
     // replacement case (same path, different object → preserved).
-    let base = tempfile::tempdir().expect("tempdir");
-    let root = tempfile::tempdir().expect("tempdir");
+    let base = test_base();
+    let root = test_base();
     let session = "gc-move-1";
     let original = root.path().join(format!("cistella-tmp-{session}-111-222"));
     std::fs::create_dir(&original).expect("mkdir slice");
@@ -632,9 +654,9 @@ fn moved_to_new_parent_preserves_through_gc() {
     // (association broken). The declared path still names the
     // old location, so this is a teardown-refused state — gc
     // preserves it rather than deleting through enumeration.
-    let base = tempfile::tempdir().expect("tempdir");
-    let root = tempfile::tempdir().expect("tempdir");
-    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let base = test_base();
+    let root = test_base();
+    let elsewhere = test_base();
     let session = "gc-moveparent-1";
     let original = elsewhere
         .path()
