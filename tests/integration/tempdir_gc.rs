@@ -36,7 +36,7 @@ fn tempdir_peer_path() -> std::path::PathBuf {
         }
     }
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
-    candidates
+    let selected = candidates
         .into_iter()
         .next()
         .map(|(_, path)| path)
@@ -45,7 +45,14 @@ fn tempdir_peer_path() -> std::path::PathBuf {
                 "example binary tempdir_guest not found in {}; run `cargo build --examples` first",
                 examples_dir.display()
             )
-        })
+        });
+    // Registry verification refuses group/world-writable guest
+    // binaries, and cargo honors the host umask (0002 builders
+    // emit 775): normalize the peer to 755 at resolution so
+    // every consumer conducts a conforming binary.
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod peer binary");
+    selected
 }
 
 fn peer_digest(path: &std::path::Path) -> String {

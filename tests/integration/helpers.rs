@@ -1,6 +1,7 @@
 //! Shared helpers for lifecycle integration tests.
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -575,23 +576,31 @@ pub fn example_binary(name: &str) -> std::path::PathBuf {
     // Prefer the deterministic canonical path (bare name)
     // when present; newest-mtime hashed matches are the
     // fallback for incremental filtered runs.
-    if let Some((_, path)) = candidates
+    let selected = if let Some((_, path)) = candidates
         .iter()
         .find(|(_, path)| path.file_name().is_some_and(|file| file == name))
         .cloned()
     {
-        return path;
-    }
-    candidates
-        .into_iter()
-        .next()
-        .map(|(_, path)| path)
-        .unwrap_or_else(|| {
-            panic!(
-                "example binary {name} not found in {}; run `cargo build --examples` first",
-                examples_dir.display()
-            )
-        })
+        path
+    } else {
+        candidates
+            .into_iter()
+            .next()
+            .map(|(_, path)| path)
+            .unwrap_or_else(|| {
+                panic!(
+                    "example binary {name} not found in {}; run `cargo build --examples` first",
+                    examples_dir.display()
+                )
+            })
+    };
+    // Registry verification refuses group/world-writable guest
+    // binaries, and cargo honors the host umask (0002 builders
+    // emit 775): normalize the peer to 755 at resolution so
+    // every consumer conducts a conforming binary.
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod peer binary");
+    selected
 }
 
 /// Session worktree tempdir anchored under `~/src`: hooked
