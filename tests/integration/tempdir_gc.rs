@@ -322,6 +322,48 @@ fn tempdir_conduct_reaps_slice_on_teardown() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
+fn tempdir_natural_exit_reaps_slice() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let registry = write_tempdir_registry();
+    let profile = fixture_profile("tempdir.toml");
+    // Short harness: the session completes naturally (no
+    // terminate), exercising the teardown_unit clean path.
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &[],
+        &["sleep", "2"],
+        &[(
+            "XDG_CONFIG_HOME",
+            registry.path().to_string_lossy().to_string().as_str(),
+        )],
+    );
+    wait_active(&id);
+    let status = conduct.wait().expect("conduct completes");
+    assert!(status.success(), "natural exit 0, got: {status:?}");
+    guard.id = None;
+    // Natural completion reaps the declared slice (same promise
+    // as the terminate path — previously the clean path ran no
+    // reap and the slice littered).
+    let root = seat_root();
+    let leftovers: Vec<_> = std::fs::read_dir(&root)
+        .expect("read seat root")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
+        .collect();
+    assert!(leftovers.is_empty(), "no slice litter, got: {leftovers:?}");
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
 fn tempdir_hooked_session_writes_tmp() {
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");

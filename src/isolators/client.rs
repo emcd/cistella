@@ -658,7 +658,15 @@ impl WireClient {
                 .and_then(|_| self.remove(handle, key).map(|_| ())),
         );
         match outcome {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // Natural completion reaps declared cleanup roots:
+                // error paths converge through teardown (which
+                // reaps), but the clean path ran nothing — the
+                // same omission class as the terminate arm.
+                // Litter reports, never fails the disposition.
+                crate::cleanup::reap_and_report(&crate::lock::runtime_base(), session_id);
+                Ok(())
+            }
             Err(error) => {
                 if self.shutdown_uncertain() {
                     // Unverified quiescence first (both-true resolves
