@@ -5,7 +5,7 @@
 ## Requirements
 ### Requirement: Guest-visible topology translation
 
-Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct SHALL translate the canonical host ancestor/subtree through the validated guest mount topology to every guest-visible route before restricting. Profiles with UNTRANSLATABLE aliases (symlinked ancestors with no guest route, undescribable shapes) SHALL refuse pre-create rather than confine partially. A second bind mount into the same sibling that DOES translate admits or denies BY DECLARED MODE: declared read-write grafts compose into full-rights carveouts (accounted, admitted), while second routes with no declared carveout stay denied. R+X ancestor plus full-rights subtree is correct union semantics only within one verified layer and a complete path view.
+Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct SHALL translate the canonical host ancestor/subtree through the validated guest mount topology to every guest-visible route before restricting. Profiles with UNTRANSLATABLE aliases (symlinked ancestors with no guest route, undescribable shapes) SHALL refuse pre-create rather than confine partially. A second bind mount into the same sibling that DOES translate admits or denies BY DECLARED MODE: declared read-write grafts compose into full-rights carveouts (accounted, admitted), while second routes with no declared carveout stay denied. R+X ancestor plus full-rights subtree is correct union semantics only within one verified layer and a complete path view. Declared read-write triples SHALL compose as full-rights carveouts wherever they target — including an admitted `/tmp` slice contributed by a tempdir extension. Undeclared `/tmp` writes stay denied (the `/tmp`-denied default with the `/tmp/scratch` outlet is unchanged for paths no triple admits).
 
 #### Scenario: Rules land on the guest target
 - **WHEN** the guest mount topology maps the host ancestor to a different guest target path
@@ -28,6 +28,18 @@ Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct S
 - **WHEN** the suite writes a marker to the guest-visible sibling path with the same uid/mount mode before restrictions apply, cleans the marker, applies Landlock, and repeats the identical write
 - **THEN** the pre-restriction write succeeds and the post-restriction write fails with `EACCES`, attributing the denial to the ruleset and not a pre-existing kernel wall; repeat for every alternate-bind route
 
+#### Scenario: Admitted /tmp slice writes
+- **WHEN** a hooked session declares the tempdir extension, whose slice targets `/tmp`
+- **THEN** the harness writes inside `/tmp` succeed (FULL carveout on the admitted target)
+
+#### Scenario: Undeclared /tmp stays denied under hook
+- **WHEN** a hooked session carries no triple admitting `/tmp`
+- **THEN** harness writes to `/tmp` fail with `EACCES` exactly as before (the outlet remains `/tmp/scratch`; plain sessions without Landlock are outside this guarantee)
+
+#### Scenario: Sibling denial beside an admitted /tmp
+- **WHEN** a hooked session admits `/tmp` and the harness writes outside it to a sibling subtree path
+- **THEN** the sibling write fails with `EACCES` (the FULL directory rule on `/tmp` covers its descendants; denial evidence comes from outside the admitted target), and nested `/tmp/scratch` keeps its existing handling
+
 ### Requirement: Subtree confinement from the session directory
 
 The Landlock extension SHALL confine the worktree ancestor so that the session's project subtree is writable and every path under the ancestor WITHOUT a declared read-write carveout SHALL deny writes (declared read-write directory mounts grant full rights on their guest targets wherever they sit — per-project grafts, state dirs, scratch — by operator direction; declarations are authoritative intent). The ancestor/subtree source is conduct's already-canonicalized session directory (`~/src/<project>` or `~/src/CLONES/<project>/<lane>`); the ruleset itself SHALL grant read/execute on the translated guest ancestor route and full rights on the translated guest project-subtree route (Landlock union semantics make the exception exact). No new profile schema and no per-seat authored rules SHALL be required. Enforcement covers the wrapped harness lineage only (see the guarantee-scope requirement): companion shells are trusted and unconfined by operator decision.
@@ -42,7 +54,7 @@ The Landlock extension SHALL confine the worktree ancestor so that the session's
 
 ### Requirement: Confinement guarantee scope (operator-revised 2026-09-26)
 
-Modifies the subtree-confinement guarantee above under explicit operator direction (trusted operator, harness-only threat model). Enforcement SHALL cover the wrapped harness lineage ONLY: companion exec (`cistella enter`, plain `podman exec`) runs outside Landlock by design — the operator holds host-equivalent access, so restricting their own shell defends no principal. Declared read-write directory mounts SHALL each receive a full-rights Landlock carveout on their guest target wherever they sit (project grafts, state dirs, scratch); declared read-only mounts outside all routes SHALL receive read-execute readability; a declared read-only directory at or under a full-granted route SHALL keep its Podman binding read-only, and a read-only directory at or under FULL-backed content (the subtree, admitted read-write grafts) SHALL likewise retain read-only whatever its guest target (Landlock union cannot subtract the FULL grant through any alias — the VFS binding carries that enforcement), and a read-only directory holding a declared read-write descendant SHALL refuse pre-create as contradictory. A read-write graft of ancestor-tree content outside the subtree SHALL refuse pre-create (same-source different-rights binds alias at the dentry layer — Landlock is mount-agnostic — so the graft FULL would admit through every alias; move grafted content outside the tree or inside the subtree). Extension read-write mount contributions SHALL be refused (no Mounts policy admission exists); extension read-only contributions may merge (bus-socket vectors) but SHALL never compose into write grants.
+Modifies the subtree-confinement guarantee above under explicit operator direction (trusted operator, harness-only threat model). Enforcement SHALL cover the wrapped harness lineage ONLY: companion exec (`cistella enter`, plain `podman exec`) runs outside Landlock by design — the operator holds host-equivalent access, so restricting their own shell defends no principal. Declared read-write directory mounts SHALL each receive a full-rights Landlock carveout on their guest target wherever they sit (project grafts, state dirs, scratch); declared read-only mounts outside all routes SHALL receive read-execute readability; a declared read-only directory at or under a full-granted route SHALL keep its Podman binding read-only, and a read-only directory at or under FULL-backed content (the subtree, admitted read-write grafts) SHALL likewise retain read-only whatever its guest target (Landlock union cannot subtract the FULL grant through any alias — the VFS binding carries that enforcement), and a read-only directory holding a declared read-write descendant SHALL refuse pre-create as contradictory. A read-write graft of ancestor-tree content outside the subtree SHALL refuse pre-create (same-source different-rights binds alias at the dentry layer — Landlock is mount-agnostic — so the graft FULL would admit through every alias; move grafted content outside the tree or inside the subtree). Extension read-write mount contributions SHALL merge through the central validators like every declared triple (operator direction: declarations are authoritative intent — the framework enforces them, it does not second-guess them); extension read-only contributions may merge (bus-socket vectors) but SHALL never compose into write grants.
 
 #### Scenario: Declared graft admits writes
 - **WHEN** the harness writes through a declared read-write graft of content from OUTSIDE the bound tree (disjoint dentries, e.g. `/opt/state` at a second guest target)
@@ -68,9 +80,9 @@ Modifies the subtree-confinement guarantee above under explicit operator directi
 - **WHEN** the operator enters a hooked session via companion exec
 - **THEN** the shell runs unconfined (no Landlock rules apply); the session marker records confinement state only
 
-#### Scenario: Extension read-write mount refused
-- **WHEN** an extension prepare response carries a read-write mount contribution
-- **THEN** conduct refuses the transaction pre-create with a typed error; no session starts
+#### Scenario: Extension read-write mount merges
+- **WHEN** an extension prepare response carries a read-write mount contribution with otherwise valid shape
+- **THEN** central validators admit it like any declared triple (operator direction: declarations are authoritative intent); malformed contributions still refuse typed
 
 ### Requirement: Complete write-denial rights coverage
 

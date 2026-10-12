@@ -131,7 +131,9 @@ fn mkdir_anchored(parent: &Path, remainder: &str, display: &str) -> Result<()> {
 /// Final joint topology gate over the merged set (extension mounts
 /// plus credential volumes): validate, nested-RO preflight, then
 /// nested-mountpoint pre-create scoped to declared cleanup roots.
-/// Callers run it pre-create, so a refusal leaves no residue.
+/// Callers run it pre-create, so a refusal leaves no unit or
+/// container residue (created mountpoints persist as attributable
+/// litter under their cleanup root until teardown or gc).
 ///
 /// # Errors
 ///

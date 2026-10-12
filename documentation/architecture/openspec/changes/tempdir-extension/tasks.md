@@ -19,5 +19,5 @@
 ## 4. Dogfood and docs
 
 - [x] 4.1 profiles.md tempdir reference: registry entry shape, profile shape, slice lifecycle, rotation/decommission notes.
-- [ ] 4.2 Agentmux acceptance: per-session RW /tmp backed by a host slice in a real seat; their /tmp/scratch workarounds removed; live tier on host per precedent.
-- [ ] 4.3 Validate: cargo fmt, cargo clippy --all-targets -- -D warnings, fast suite plus live tier on host; openspec validate --all --strict; sync and archive.
+- [x] 4.2 Agentmux acceptance: per-session RW /tmp backed by a host slice in a real seat (QA round-4: 620/620 tier, four tempdir live executed, natural-exit dogfood zero-residue; pre-create verified seat-owned 700 live); /tmp/scratch workaround removal is operator seat action, greenlit by QA.
+- [x] 4.3 Validate: cargo fmt, cargo clippy --all-targets -- -D warnings, fast suite (548) plus live tier on host (620 QA); openspec validate --all --strict; sync and archive.
