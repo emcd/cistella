@@ -320,7 +320,7 @@ fn wire_client_hosts_real_guest_and_closes() {
     // accept, orderly close with rendezvous cleanup.
     use cistella::isolators::client::WireClient;
     let (dir, _name) = guest_bin();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let client = WireClient::host(&dir, rendezvous.path(), tight_deadlines())
         .expect("host must negotiate with the real guest");
     client.close().expect("close must shut down and clean up");
@@ -337,7 +337,7 @@ fn wire_client_maps_backend_error_envelope() {
     use cistella::isolators::client::WireClient;
     use cistella::session::Session;
     let (dir, _name) = guest_bin();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let client = WireClient::host(&dir, rendezvous.path(), tight_deadlines())
         .expect("host must negotiate with the real guest");
     let spec = CreateSpec {
@@ -383,7 +383,7 @@ fn wire_client_terminate_serves_during_pending_await() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.apply = Duration::from_secs(15);
     let client = std::sync::Arc::new(
@@ -441,7 +441,7 @@ fn wire_client_accept_timeout_is_typed() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.hello = Duration::from_secs(2);
     let before = std::time::Instant::now();
@@ -488,7 +488,7 @@ fn wire_client_guest_death_fails_pending_without_hang() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.apply = Duration::from_secs(15);
     let client = std::sync::Arc::new(
@@ -559,7 +559,7 @@ fn host_scripted_extra(
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let scratch = tempfile::tempdir().expect("tempdir");
+    let scratch = tempfile::tempdir().expect("tmpdir");
     let leaked = Box::leak(Box::new(scratch));
     let mut args = vec![
         format!("--mode={mode}"),
@@ -667,7 +667,7 @@ fn wire_client_close_after_guest_death_cleans_up() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let scratch = tempfile::tempdir().expect("tempdir");
+    let scratch = tempfile::tempdir().expect("tmpdir");
     let leaked = Box::leak(Box::new(scratch));
     let leaked_path = leaked.path().to_path_buf();
     let client = WireClient::host_as(

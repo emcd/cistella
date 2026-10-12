@@ -171,15 +171,15 @@ source-url = 'https://example.invalid/my-extension'  # fetch source (http/https;
   Builders' reference: `tests/fixtures/example_guest/` (minimal
   correct hello plus prepare ack) beside the shipped binaries.
 
-## Tempdir sessions
+## Tmpdir sessions
 
-A registered tempdir extension provides a per-session writable
+A registered tmpdir extension provides a per-session writable
 `/tmp` backed by host storage (replacing the image-private `/tmp`
 for sessions that declare it):
 
 ```toml
 [[extensions]]
-name = 'tempdir-test'
+name = 'tmpdir'
 ```
 
 with a seat registry entry mapping the name to a verified binary
@@ -189,11 +189,11 @@ with a seat registry entry mapping the name to a verified binary
 format-version = 1
 
 [[extensions]]
-name = 'tempdir-test'
-role = 'tempdir'
+name = 'tmpdir'
+role = 'tmpdir'
 protocol = 1
 source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
-source-path = '/opt/guests/tempdir-guest'
+source-path = '/opt/guests/cistella-extension-tmpdir'
 ```
 
 At prepare the guest mints an owner-only slice
@@ -205,5 +205,6 @@ cleanup. Conduct mounts the slice (parent before nested
 reaps the declared directory afterwards; slices from failed
 conducts reconcile through `gc` by session-attributable names.
 At most landlock plus one other extension conducts in v1, so a
-hooked tempdir session declares both. Reference implementation:
-`tests/fixtures/tempdir_guest/` (example-grade, never installed).
+hooked tmpdir session declares both. Shipped implementation:
+`src/bin/cistella-extension-tmpdir.rs` (installed beside the
+driver, discovered sibling-relative).

@@ -541,7 +541,7 @@ fn post_exit_group_kill_reaches_left_behind_sleepers() {
     // Script quits at once leaving a SAME-GROUP sleeper that would
     // write a marker after 2 s. Shutdown signals the group even
     // though the leader already exited, so the marker never appears.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let marker = dir.path().join("marker").to_string_lossy().to_string();
     let script = format!("(sleep 2 && touch {marker}) & exit 0");
     let mut host = GuestHost::spawn(
@@ -576,7 +576,7 @@ fn group_escapee_with_closed_fds_outside_enforcement() {
         eprintln!("skip: setsid unavailable");
         return;
     }
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let marker = dir.path().join("marker").to_string_lossy().to_string();
     let script = format!("setsid sh -c 'exec >/dev/null 2>&1; sleep 2; touch {marker}' & exit 0");
     let mut host = GuestHost::spawn(

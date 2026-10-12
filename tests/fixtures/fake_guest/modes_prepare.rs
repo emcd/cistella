@@ -102,11 +102,11 @@ pub(crate) fn run(
                             "artifact": {
                                 "kind": "digest-pinned-blob",
                                 "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                                "source": {"registry": "shipped", "path": "cistella-supervisor-landlock"}
                             },
                             "staging": "isolator-staged",
                             "order": 0,
-                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "argv_prefix": ["/run/cistella/hooks/supervisor-landlock"],
                             "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
                             "on_failure": "fail-pre-exec"
                         },
@@ -114,11 +114,11 @@ pub(crate) fn run(
                             "artifact": {
                                 "kind": "digest-pinned-blob",
                                 "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                                "source": {"registry": "shipped", "path": "cistella-supervisor-landlock"}
                             },
                             "staging": "isolator-staged",
                             "order": 0,
-                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "argv_prefix": ["/run/cistella/hooks/supervisor-landlock"],
                             "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
                             "on_failure": "fail-pre-exec"
                         }
@@ -298,11 +298,11 @@ pub(crate) fn run(
                             "artifact": {
                                 "kind": "digest-pinned-blob",
                                 "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                                "source": {"registry": "shipped", "path": "cistella-supervisor-landlock"}
                             },
                             "staging": "isolator-staged",
                             "order": 0,
-                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "argv_prefix": ["/run/cistella/hooks/supervisor-landlock"],
                             "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
                             "on_failure": "fail-pre-exec"
                         }
@@ -474,11 +474,11 @@ pub(crate) fn run(
                             "artifact": {
                                 "kind": "digest-pinned-blob",
                                 "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                                "source": {"registry": "shipped", "path": "cistella-landlock-wrap"}
+                                "source": {"registry": "shipped", "path": "cistella-supervisor-landlock"}
                             },
                             "staging": "isolator-staged",
                             "order": 0,
-                            "argv_prefix": ["/run/cistella/hooks/landlock-wrap"],
+                            "argv_prefix": ["/run/cistella/hooks/supervisor-landlock"],
                             "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
                             "on_failure": "fail-pre-exec"
                         }

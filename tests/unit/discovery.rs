@@ -10,7 +10,7 @@ use cistella::framework::discovery::discover_in;
 use cistella::framework::guest::host_external;
 
 fn dir_with(name: &str, mode: u32) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let path = dir.path().join(name);
     std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write fixture");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
@@ -26,7 +26,7 @@ fn executable_sibling_resolves() {
 
 #[test]
 fn missing_binary_names_expected_path() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let error = discover_in(dir.path(), "cistella-guest-absent").expect_err("absence must refuse");
     let message = error.to_string();
     assert!(
@@ -44,7 +44,7 @@ fn non_executable_refuses() {
 
 #[test]
 fn directory_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::create_dir(dir.path().join("cistella-guest-dir")).expect("mkdir");
     let error = discover_in(dir.path(), "cistella-guest-dir").expect_err("directory must refuse");
     assert!(
@@ -70,7 +70,7 @@ fn symlink_sibling_refused_unfollowed() {
 
 #[test]
 fn escape_names_refuse() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     for name in ["", ".", "..", "sub/guest", "../guest", "/abs/guest"] {
         let error = discover_in(dir.path(), name).expect_err("escape must refuse");
         assert!(
@@ -82,7 +82,7 @@ fn escape_names_refuse() {
 
 #[test]
 fn host_external_missing_binary_spawns_nothing() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let deadlines = Deadlines {
         hello: std::time::Duration::from_secs(1),
         plan: std::time::Duration::from_secs(1),
@@ -102,7 +102,7 @@ fn host_external_missing_binary_spawns_nothing() {
 
 #[test]
 fn host_external_escape_name_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let deadlines = Deadlines {
         hello: std::time::Duration::from_secs(1),
         plan: std::time::Duration::from_secs(1),

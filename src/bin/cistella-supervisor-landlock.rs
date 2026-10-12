@@ -223,7 +223,7 @@ fn fail_apply(fd: RawFd, error: &str, code: u8) -> ExitCode {
     // control bytes without corrupting the frame.
     let line = serde_json::json!({"applied": false, "error": error}).to_string() + "\n";
     let _ = diagnose(fd, &line);
-    eprintln!("landlock-wrap: {error}");
+    eprintln!("supervisor-landlock: {error}");
     ExitCode::from(code)
 }
 
@@ -235,7 +235,7 @@ fn fail_apply(fd: RawFd, error: &str, code: u8) -> ExitCode {
 fn fail_transition(fd: RawFd, error: &str, code: u8) -> ExitCode {
     let line = serde_json::json!({"transitioned": false, "error": error}).to_string() + "\n";
     let _ = diagnose(fd, &line);
-    eprintln!("landlock-wrap: {error}");
+    eprintln!("supervisor-landlock: {error}");
     ExitCode::from(code)
 }
 
@@ -398,7 +398,7 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     .to_string()
         + "\n";
     if diagnose(fd, &attested).is_err() {
-        eprintln!("landlock-wrap: attestation write failed");
+        eprintln!("supervisor-landlock: attestation write failed");
         return ExitCode::from(2);
     }
     if nix::fcntl::fcntl(
@@ -609,7 +609,7 @@ fn observe_transition(
         Ok(WaitStatus::Signaled(_, signal, _)) => {
             if filled > 0 {
                 eprintln!(
-                    "landlock-wrap: signal with {filled} partial errno bytes before transition"
+                    "supervisor-landlock: signal with {filled} partial errno bytes before transition"
                 );
             }
             // Ambiguous by construction (wrapper pre-exec death
@@ -660,7 +660,7 @@ fn emit_transitioned(fd: RawFd, child: nix::unistd::Pid) -> Result<(), ExitCode>
     if diagnose(fd, &line).is_err() {
         let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
         let _ = waitpid(child, None);
-        eprintln!("landlock-wrap: transition write failed");
+        eprintln!("supervisor-landlock: transition write failed");
         return Err(ExitCode::from(2));
     }
     // SAFETY: borrowed fd close; the transition line already
@@ -687,7 +687,7 @@ fn emit_transitioned_and_exit(fd: RawFd, code: i32) -> ExitCode {
 fn emit_transitioned_for_reaped(fd: RawFd) -> Result<(), ExitCode> {
     let line = serde_json::json!({"transitioned": true}).to_string() + "\n";
     if diagnose(fd, &line).is_err() {
-        eprintln!("landlock-wrap: transition write failed");
+        eprintln!("supervisor-landlock: transition write failed");
         return Err(ExitCode::from(2));
     }
     // SAFETY: borrowed fd close; the transition line already
@@ -750,7 +750,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "--probe") {
         if args.len() != 1 {
-            eprintln!("landlock-wrap: --probe takes no arguments");
+            eprintln!("supervisor-landlock: --probe takes no arguments");
             return ExitCode::from(3);
         }
         return serve_probe();
@@ -758,7 +758,7 @@ fn main() -> ExitCode {
     let invocation = match parse_ancestor(&args) {
         Ok(invocation) => invocation,
         Err(error) => {
-            eprintln!("landlock-wrap: {error}");
+            eprintln!("supervisor-landlock: {error}");
             return ExitCode::from(3);
         }
     };

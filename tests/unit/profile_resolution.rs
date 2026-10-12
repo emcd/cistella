@@ -1,6 +1,6 @@
 //! Profile resolution: tiered lookup, closed supplied tiers, seed-if-absent.
 //!
-//! All fixtures use tempdirs passed explicitly as lookup inputs, so no test
+//! All fixtures use tmpdirs passed explicitly as lookup inputs, so no test
 //! touches the real cwd, `XDG_CONFIG_HOME`, or `HOME` — except
 //! `env_tier_end_to_end`, the single test that mutates process env, which
 //! saves and restores every var it sets.

@@ -127,7 +127,7 @@ fn bundle_without_fds_refuses() {
 
 #[test]
 fn rendezvous_authenticates_same_user() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (listener, path) = bind_rendezvous(dir.path()).expect("bind");
     assert!(
         path.starts_with(dir.path()),
@@ -311,7 +311,7 @@ fn same_uid_impostor_refuses() {
     // not guest identity. The impostor is a python subprocess that
     // connects and lingers; the test's own pid is the expected
     // guest the impostor is not.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (listener, path) = bind_rendezvous(dir.path()).expect("bind");
     let path_text = path.to_str().expect("socket path UTF-8").to_string();
     let mut impostor = std::process::Command::new("python3")

@@ -677,7 +677,7 @@ pub fn parse_slice_session(name: &str) -> Option<String> {
     Some(session)
 }
 
-/// Reaps orphaned tempdir slices: enumerates the seat temp root
+/// Reaps orphaned tmpdir slices: enumerates the seat temp root
 /// for session-attributable names, skips sessions with live units
 /// and anything not provably quiescent, and removes the rest
 /// FD-relative. Returns removed directory names; litter reports
@@ -696,8 +696,8 @@ pub fn parse_slice_session(name: &str) -> Option<String> {
 /// orphans carry no recorded identity (nothing was admitted), so
 /// name-attribution plus liveness gates are the safety, never a
 /// baseline comparison.
-pub fn reap_tempdir_orphans(live_sessions: &std::collections::HashSet<String>) -> Vec<String> {
-    reap_tempdir_orphans_in(
+pub fn reap_tmpdir_orphans(live_sessions: &std::collections::HashSet<String>) -> Vec<String> {
+    reap_tmpdir_orphans_in(
         &seat_temp_root(),
         &crate::lock::runtime_base(),
         live_sessions,
@@ -706,8 +706,8 @@ pub fn reap_tempdir_orphans(live_sessions: &std::collections::HashSet<String>) -
 
 /// Orphan sweep with explicit roots (the unit-pinned entry point):
 /// `root` enumerates candidate slices, `base` holds lease state.
-/// Same safety contract as [`reap_tempdir_orphans`].
-pub fn reap_tempdir_orphans_in(
+/// Same safety contract as [`reap_tmpdir_orphans`].
+pub fn reap_tmpdir_orphans_in(
     root: &Path,
     base: &Path,
     live_sessions: &std::collections::HashSet<String>,

@@ -1,5 +1,5 @@
-# Hooked pair profile for tempdir tests: landlock confinement
-# plus the tempdir extension. Test fixture, not a baked example.
+# Hooked pair profile for tmpdir tests: landlock confinement
+# plus the tmpdir extension. Test fixture, not a baked example.
 image = 'localhost/cistella/opencode:example'
 credential-surface = 'none'
 container-home = '/home/cistella'
@@ -15,4 +15,4 @@ mode = 'ro'
 name = 'landlock'
 
 [[extensions]]
-name = 'tempdir-test'
+name = 'tmpdir'

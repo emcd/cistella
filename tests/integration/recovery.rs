@@ -108,7 +108,7 @@ fn wait_death_observed(client: &WireClient) {
     );
 }
 
-/// Builds a session plus volumes over a worktree tempdir.
+/// Builds a session plus volumes over a worktree tmpdir.
 fn plan_session(image: &str, worktree: &TempDir) -> (Session, Vec<String>) {
     let id = mint_session_id();
     let directory = worktree.path().to_string_lossy().to_string();
@@ -165,9 +165,9 @@ fn recovery_create_unknown_applied_converges() {
     // fresh install, adopt, or fail-closed typed refusal with the
     // partial state converged directly by name.
     let Some(image) = fixture_image() else { return };
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree);
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -203,7 +203,7 @@ fn recovery_create_unknown_applied_converges() {
     let _ = holder.take().close();
 
     // Replacement client, same key and spec: every branch converges.
-    let rendezvous2 = TempDir::new().expect("tempdir");
+    let rendezvous2 = TempDir::new().expect("tmpdir");
     let mut second = CloseGuard::new(host_wire(&rendezvous2));
     let second_ref = second.get();
     match second_ref.create(&spec, &key) {
@@ -259,9 +259,9 @@ fn recovery_initiate_started_converges_by_adopt() {
     // identity), re-initiate is an idempotent no-op start, and the
     // session converges through the adopted handle.
     let Some(image) = fixture_image() else { return };
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree);
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -283,7 +283,7 @@ fn recovery_initiate_started_converges_by_adopt() {
     wait_death_observed(first.get());
     let _ = first.take().close();
 
-    let rendezvous2 = TempDir::new().expect("tempdir");
+    let rendezvous2 = TempDir::new().expect("tmpdir");
     let mut second = CloseGuard::new(host_wire(&rendezvous2));
     let adopted = second
         .get()
@@ -322,9 +322,9 @@ fn recovery_second_death_fails_stop_with_residue() {
     // the residue check (not the raw death error) dominates, so a
     // replacement would adopt rather than pass silently.
     let Some(image) = fixture_image() else { return };
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree);
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -347,7 +347,7 @@ fn recovery_second_death_fails_stop_with_residue() {
     wait_death_observed(first.get());
     let _ = first.take().close();
 
-    let rendezvous2 = TempDir::new().expect("tempdir");
+    let rendezvous2 = TempDir::new().expect("tmpdir");
     let mut second = CloseGuard::new(host_wire(&rendezvous2));
     let adopted = second
         .get()
@@ -398,9 +398,9 @@ fn recovery_launch_death_runs_harness_once() {
     // never re-launches. The run-once marker proves exactly one
     // execution happened — no resurrection, no double run.
     let Some(image) = fixture_image() else { return };
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree);
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -525,7 +525,7 @@ fn recovery_launch_noack_never_replays() {
     // name-based guard stays armed until `residue_gone` proves
     // clean.
     let Some(image) = fixture_image() else { return };
-    let marker_base = TempDir::new().expect("marker base tempdir");
+    let marker_base = TempDir::new().expect("marker base tmpdir");
     // SAFETY: unique variable name no other test reads; the
     // per-unit arm file gates siblings (a lingering variable
     // without an arm file leaves the hook inert, and arm files die
@@ -536,9 +536,9 @@ fn recovery_launch_noack_never_replays() {
             marker_base.path().to_string_lossy().to_string(),
         );
     }
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree);
     let container = session.container_name();
     let session_id = session.id.clone();

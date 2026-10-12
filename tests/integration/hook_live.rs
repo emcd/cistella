@@ -73,7 +73,7 @@ impl Drop for HookUnitGuard {
 /// Hooked fixture: ancestor tree `T` mounted broad-RW at `/src`,
 /// project subtree `T/proj`, sibling `T/sib` (never grafted —
 /// the denial path must carry no RW alias), graft content from
-/// a DISJOINT tempdir `G` at `/src/graft` (same-source grafts
+/// a DISJOINT tmpdir `G` at `/src/graft` (same-source grafts
 /// would alias `T/sib` at the dentry layer and admit through
 /// it), staged wrapper RO.
 /// Declaration order is the unwind order (reversed): name guard
@@ -100,8 +100,8 @@ struct HookFixture {
 }
 
 fn hook_fixture(image: &str) -> HookFixture {
-    let rendezvous = TempDir::new().expect("rendezvous tempdir");
-    let tree = TempDir::new().expect("tree tempdir");
+    let rendezvous = TempDir::new().expect("rendezvous tmpdir");
+    let tree = TempDir::new().expect("tree tmpdir");
     let proj = tree.path().join("proj");
     std::fs::create_dir_all(&proj).expect("proj dir");
     std::fs::create_dir_all(tree.path().join("sib")).expect("sib dir");
@@ -110,7 +110,7 @@ fn hook_fixture(image: &str) -> HookFixture {
     // dentry layer — Landlock is mount-agnostic, so the graft
     // FULL would admit writes through `/src/sib` and the
     // denial run would (correctly, per declarations) succeed.
-    let graft_src = TempDir::new().expect("graft tempdir");
+    let graft_src = TempDir::new().expect("graft tmpdir");
     let graft_dir = graft_src.path().join("data");
     std::fs::create_dir_all(&graft_dir).expect("graft data dir");
     // Mountpoint placeholder for the inside-tree graft target:
@@ -142,7 +142,7 @@ fn hook_fixture(image: &str) -> HookFixture {
     // the tree like graft content) and a bound socket
     // (credential-surface shape — its allow derivation must
     // skip non-directories, never fail apply with ENOTDIR).
-    let cache_src = TempDir::new().expect("cache tempdir");
+    let cache_src = TempDir::new().expect("cache tmpdir");
     let cache_dir = cache_src.path().join("data");
     std::fs::create_dir_all(&cache_dir).expect("cache data dir");
     let _agent_socket = std::os::unix::net::UnixListener::bind(tree.path().join("agent.sock"))
@@ -801,7 +801,7 @@ fn fixture_hook() -> GuestHookRequest {
             sha256: "unused-live".to_string(),
             source: HookSource {
                 registry: "shipped".to_string(),
-                path: "cistella-landlock-wrap".to_string(),
+                path: "cistella-supervisor-landlock".to_string(),
             },
         },
         staging: "isolator-staged".to_string(),

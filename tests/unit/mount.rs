@@ -120,7 +120,7 @@ fn volume_args_mount_parent_before_child() {
 
 #[test]
 fn volume_args_tmp_slice_before_nested_scratch() {
-    // Tempdir nesting: the admitted /tmp slice emits before the
+    // Tmpdir nesting: the admitted /tmp slice emits before the
     // nested /tmp/scratch outlet regardless of declaration order,
     // so podman never mounts the child onto a path the parent
     // mount would shadow (same stacking contract as
@@ -574,7 +574,7 @@ fn guest_routes_empty_without_cover() {
 #[test]
 fn nested_ro_preflight_refuses_missing_chain() {
     use cistella::mount::{MountMode, MountTriple, nested_ro_preflight};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let host = dir.path().to_string_lossy().to_string();
     let triples = vec![
         MountTriple {
@@ -609,7 +609,7 @@ fn nested_ro_preflight_refuses_missing_chain() {
 #[test]
 fn revise_ro_directories_for_confinement() {
     use cistella::mount::{MountMode, MountTriple, revise_ro_for_confinement};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let host = dir.path().to_string_lossy().to_string();
     let file = dir.path().join("sock");
     std::fs::write(&file, b"x").expect("file");
@@ -647,7 +647,7 @@ fn revise_ro_directories_for_confinement() {
 #[test]
 fn revise_retains_ro_under_full_routes() {
     use cistella::mount::{MountMode, MountTriple, revise_ro_for_confinement};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
     let host = dir.path().to_string_lossy().to_string();
     let triples = vec![
@@ -675,7 +675,7 @@ fn revise_retains_ro_under_full_routes() {
 #[test]
 fn ro_confinement_preflight_refuses_rw_descendant() {
     use cistella::mount::{MountMode, MountTriple, ro_confinement_preflight};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
     let host = dir.path().to_string_lossy().to_string();
     let ro = MountTriple {
@@ -701,7 +701,7 @@ fn ro_confinement_preflight_refuses_rw_descendant() {
 #[test]
 fn revise_retains_ro_for_alias_spellings_and_dev() {
     use cistella::mount::{MountMode, MountTriple, revise_ro_for_confinement};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
     std::fs::create_dir_all(dir.path().join("dev-data")).expect("dev-data");
     let host = dir.path().to_string_lossy().to_string();
@@ -734,7 +734,7 @@ fn revise_retains_ro_for_alias_spellings_and_dev() {
 #[test]
 fn ro_confinement_preflight_collides_alias_spellings() {
     use cistella::mount::{MountMode, MountTriple, ro_confinement_preflight};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::create_dir_all(dir.path().join("ro-data")).expect("ro-data");
     let host = dir.path().to_string_lossy().to_string();
     let ro = MountTriple {

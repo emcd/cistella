@@ -603,7 +603,7 @@ pub fn example_binary(name: &str) -> std::path::PathBuf {
     selected
 }
 
-/// Session worktree tempdir anchored under `~/src`: hooked
+/// Session worktree tmpdir anchored under `~/src`: hooked
 /// conducts refuse sessions outside the confinement root, so live
 /// fixtures must look like real sessions (`TempDir::new_in`,
 /// auto-cleaned, unique per test). Plain sessions behave

@@ -31,11 +31,11 @@ use crate::mount::{MountMode, MountTriple};
 pub const SHIPPED_REGISTRY_ID: &str = "shipped";
 
 /// Wrapper file name inside the shipped registry.
-pub const WRAPPER_FILE_NAME: &str = "cistella-landlock-wrap";
+pub const WRAPPER_FILE_NAME: &str = "cistella-supervisor-landlock";
 
 /// Known guest path where the isolator stages the wrapper RO
 /// pre-initiate; the hook `argv_prefix` names exactly this path.
-pub const STAGED_WRAPPER_GUEST_PATH: &str = "/run/cistella/hooks/landlock-wrap";
+pub const STAGED_WRAPPER_GUEST_PATH: &str = "/run/cistella/hooks/supervisor-landlock";
 
 /// Canonical guest-context probe operation for the Landlock hook.
 pub const LANDLOCK_PROBE_OP: &str = "probe_capabilities";

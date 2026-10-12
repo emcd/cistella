@@ -693,7 +693,7 @@ fn complete_close_joins_dead_worker_and_unlinks() {
     // still join and unlink the path, then report typed
     // termination instead of hanging or stranding.
     use std::sync::mpsc;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let socket = dir.path().join("guest-dead.sock");
     std::fs::write(&socket, b"stale").expect("stage stale socket file");
     // Dropped sender with no message: simulates a worker that
@@ -718,7 +718,7 @@ fn complete_close_reports_live_shutdown() {
     // Happy path through the same helper: a live worker replying
     // Ok still joins, unlinks, and reports Ok.
     use std::sync::mpsc;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let socket = dir.path().join("guest-live.sock");
     std::fs::write(&socket, b"stale").expect("stage stale socket file");
     let (reply_tx, reply_rx) = mpsc::channel::<Result<(), cistella::error::CistellaError>>();

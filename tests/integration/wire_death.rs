@@ -72,7 +72,7 @@ fn wire_client_two_inflight_calls_fail_typed_on_death() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.apply = Duration::from_secs(15);
     let client = std::sync::Arc::new(
@@ -176,7 +176,7 @@ fn wire_client_crash_after_create_residue_dominates() {
         return;
     }
     let (dir, _name) = guest_bin();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let client = WireClient::host(&dir, rendezvous.path(), Default::default())
         .expect("host must negotiate with the real guest");
     let session_id = mint_session_id();
@@ -291,7 +291,7 @@ fn wire_client_send_timeout_is_fatal_and_latches() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.apply = Duration::from_secs(2);
     // Elapsed bound: the framework's 2s apply deadline must bound
@@ -384,7 +384,7 @@ fn wire_client_oversize_refused_locally_latch_clear() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let client = WireClient::host_as(
         &dir,
         &name,
@@ -448,7 +448,7 @@ fn wire_client_close_after_death_reports() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let client = WireClient::host_as(
         &dir,
         &name,
@@ -489,7 +489,7 @@ fn teardown_unit_lock_held_branch_completes_under_guard() {
     use cistella::framework::isolator::Isolator;
     use cistella::isolators::client::WireClient;
     let dir = examples_dir();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.apply = Duration::from_secs(15);
     let name = peer_path()
@@ -567,7 +567,7 @@ fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let mut deadlines = tight_deadlines();
     deadlines.apply = Duration::from_secs(15);
     let client = WireClient::host_as(

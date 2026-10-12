@@ -1,10 +1,10 @@
-//! Tempdir service live proofs: gc lease discipline, teardown
+//! Tmpdir service live proofs: gc lease discipline, teardown
 //! reap, and hooked `/tmp` admission through production conduct.
 //!
 //! The gc tests drive the real `gc` binary against hand-built
 //! leases, slices, and guest processes (no conduct orchestration
 //! needed for the lease logic); the conduct tests run full
-//! sessions with the reference tempdir fixture through the seat
+//! sessions with the reference tmpdir fixture through the seat
 //! registry.
 
 use std::os::unix::fs::PermissionsExt;
@@ -13,19 +13,23 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 
-fn tempdir_peer_path() -> std::path::PathBuf {
+fn tmpdir_peer_path() -> std::path::PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
-    let examples_dir = my_path
+    // Sibling release binary (profile dir, not the examples
+    // dir): the guest ships beside the driver like any
+    // extension guest. Newest mtime wins (incremental builds).
+    let profile_dir = my_path
         .ancestors()
         .nth(2)
-        .expect("target/<profile>/deps ancestors")
-        .join("examples");
+        .expect("target/<profile>/deps ancestors");
     let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&examples_dir) {
+    if let Ok(entries) = std::fs::read_dir(profile_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name != "tempdir_guest" && !name.starts_with("tempdir_guest-") {
+            if name != "cistella-extension-tmpdir"
+                && !name.starts_with("cistella-extension-tmpdir-")
+            {
                 continue;
             }
             let metadata = entry.metadata().expect("metadata");
@@ -35,15 +39,14 @@ fn tempdir_peer_path() -> std::path::PathBuf {
             candidates.push((metadata.modified().expect("mtime"), entry.path()));
         }
     }
-    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
     let selected = candidates
         .into_iter()
-        .next()
+        .max_by_key(|candidate| candidate.0)
         .map(|(_, path)| path)
         .unwrap_or_else(|| {
             panic!(
-                "example binary tempdir_guest not found in {}; run `cargo build --examples` first",
-                examples_dir.display()
+                "shipped binary cistella-extension-tmpdir not found in {}; run `cargo build` first",
+                profile_dir.display()
             )
         });
     // Registry verification refuses group/world-writable guest
@@ -61,21 +64,21 @@ fn peer_digest(path: &std::path::Path) -> String {
     hex::encode(sha2::Sha256::digest(&bytes))
 }
 
-/// Writes a seat registry with tempdir entries into an isolated
+/// Writes a seat registry with tmpdir entries into an isolated
 /// XDG config dir. Conducts take it via `XDG_CONFIG_HOME`;
 /// `gc`/`terminate` never read the registry.
-fn write_tempdir_registry() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let digest = peer_digest(&tempdir_peer_path());
+fn write_tmpdir_registry() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let digest = peer_digest(&tmpdir_peer_path());
     let text = format!(
         "format-version = 1\n\
          [[extensions]]\n\
-         name = \"tempdir-test\"\n\
-         role = \"tempdir\"\n\
+         name = \"tmpdir\"\n\
+         role = \"tmpdir\"\n\
          protocol = 1\n\
          source-digest = {{ algorithm = 'sha256', value = \"{digest}\" }}\n\
          source-path = \"{}\"\n",
-        tempdir_peer_path().display()
+        tmpdir_peer_path().display()
     );
     let config = dir.path().join("cistella");
     std::fs::create_dir_all(&config).expect("mkdir config");
@@ -91,9 +94,9 @@ fn write_tempdir_registry() -> tempfile::TempDir {
 /// Spawns a hanging fake_guest (hello, then sleeps) in its own
 /// process group: stands in for a paused pre-response prepare
 /// guest. The caller owns quiescence (kill, then wait).
-fn spawn_hanging_guest(examples: &std::path::Path) -> std::process::Child {
+fn spawn_hanging_guest() -> std::process::Child {
     use std::os::unix::process::CommandExt;
-    let mut child = Command::new(examples.join("fake_guest"));
+    let mut child = Command::new(example_binary("fake_guest"));
     // SAFETY: setpgid in the child before exec is the standard
     // process-group setup.
     unsafe {
@@ -204,11 +207,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
         .spawn()
         .expect("spawn driver stand-in");
     let driver_a_pid = driver_a.id();
-    let examples = tempdir_peer_path()
-        .parent()
-        .expect("examples dir")
-        .to_path_buf();
-    let mut hanging = spawn_hanging_guest(&examples);
+    let mut hanging = spawn_hanging_guest();
     let guest_pid = hanging.id();
     let guest_pgid = guest_pid;
     let slice_a = make_slice(&session, "111-222");
@@ -279,7 +278,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn tempdir_conduct_reaps_slice_on_teardown() {
+fn tmpdir_conduct_reaps_slice_on_teardown() {
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");
         return;
@@ -287,8 +286,8 @@ fn tempdir_conduct_reaps_slice_on_teardown() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let registry = write_tempdir_registry();
-    let profile = fixture_profile("tempdir.toml");
+    let registry = write_tmpdir_registry();
+    let profile = fixture_profile("tmpdir.toml");
     let (mut conduct, id, mut guard) = spawn_conduct_full(
         &home,
         &profile,
@@ -329,7 +328,7 @@ fn tempdir_conduct_reaps_slice_on_teardown() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn tempdir_natural_exit_reaps_slice() {
+fn tmpdir_natural_exit_reaps_slice() {
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");
         return;
@@ -337,8 +336,8 @@ fn tempdir_natural_exit_reaps_slice() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let registry = write_tempdir_registry();
-    let profile = fixture_profile("tempdir.toml");
+    let registry = write_tmpdir_registry();
+    let profile = fixture_profile("tmpdir.toml");
     // Short harness: the session completes naturally (no
     // terminate), exercising the teardown_unit clean path.
     let (mut conduct, id, mut guard) = spawn_conduct_full(
@@ -393,7 +392,7 @@ fn tempdir_natural_exit_reaps_slice() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn tempdir_hooked_session_writes_tmp() {
+fn tmpdir_hooked_session_writes_tmp() {
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");
         return;
@@ -401,8 +400,8 @@ fn tempdir_hooked_session_writes_tmp() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let registry = write_tempdir_registry();
-    let profile = fixture_profile("tempdir-hooked.toml");
+    let registry = write_tmpdir_registry();
+    let profile = fixture_profile("tmpdir-hooked.toml");
     let (mut conduct, id, mut guard) = spawn_conduct_full(
         &home,
         &profile,

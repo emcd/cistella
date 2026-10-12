@@ -1,6 +1,6 @@
 //! Declared-root cleanup: admit, record, and FD-relative reap.
 //!
-//! All fixtures use explicit tempdir bases (no process env).
+//! All fixtures use explicit tmpdir bases (no process env).
 //! Ownership gates pass as the seat user; untrusted-owner arms
 //! are root-conditional with documented skips.
 
@@ -15,12 +15,12 @@ fn seat_dir(dir: &tempfile::TempDir, name: &str) -> std::path::PathBuf {
     path
 }
 
-/// Owner-only tempdir base: tempfile honors the host umask, so a
+/// Owner-only tmpdir base: tempfile honors the host umask, so a
 /// permissive build-host umask (e.g. 0002) would leave a
 /// group-writable base that traversal trust refuses. Every test
 /// base in this file goes through here.
 fn test_base() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
     dir
 }
@@ -468,7 +468,7 @@ fn state_file_symlink_replaces_link_safely() {
 
 #[test]
 fn pending_lease_skips_sweep() {
-    use cistella::cleanup::reap_tempdir_orphans_in;
+    use cistella::cleanup::reap_tmpdir_orphans_in;
     use std::collections::HashSet;
     // Pending marker with a dead driver: a guest may exist
     // unrecorded — gc skips (never assumes), lease persists.
@@ -484,7 +484,7 @@ fn pending_lease_skips_sweep() {
         &statedir.join(format!("cistella-prepare-{session}")),
         format!("driver {driver_pid}\npending\n"),
     );
-    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    let removed = reap_tmpdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert!(removed.is_empty(), "pending skips, got: {removed:?}");
     assert!(slice.exists(), "pending slice survives");
     assert!(
@@ -497,7 +497,7 @@ fn pending_lease_skips_sweep() {
 
 #[test]
 fn stale_lease_and_orphan_go_together() {
-    use cistella::cleanup::reap_tempdir_orphans_in;
+    use cistella::cleanup::reap_tmpdir_orphans_in;
     use std::collections::HashSet;
     // Dead driver plus dead recorded group: the slice reaps and
     // the stale lease file goes with it.
@@ -513,7 +513,7 @@ fn stale_lease_and_orphan_go_together() {
         &statedir.join(format!("cistella-prepare-{session}")),
         format!("driver {driver_pid}\nguest {guest_pid} {guest_pid}\n"),
     );
-    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    let removed = reap_tmpdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert_eq!(
         removed,
         vec![format!("cistella-tmp-{session}-111-222")],
@@ -530,7 +530,7 @@ fn stale_lease_and_orphan_go_together() {
 
 #[test]
 fn guestless_dead_lease_proceeds() {
-    use cistella::cleanup::reap_tempdir_orphans_in;
+    use cistella::cleanup::reap_tmpdir_orphans_in;
     use std::collections::HashSet;
     // No guest lines, no pending marker, dead driver: spawn never
     // happened (pending always commits first), so nothing stands
@@ -547,14 +547,14 @@ fn guestless_dead_lease_proceeds() {
         &statedir.join(format!("cistella-prepare-{session}")),
         format!("driver {driver_pid}\n"),
     );
-    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    let removed = reap_tmpdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert_eq!(removed.len(), 1, "got: {removed:?}");
     assert!(!slice.exists(), "orphan reaped");
 }
 
 #[test]
 fn recorded_replacement_survives_gc_while_unrecorded_reaps() {
-    use cistella::cleanup::reap_tempdir_orphans_in;
+    use cistella::cleanup::reap_tmpdir_orphans_in;
     use std::collections::HashSet;
     // The rendezvous pin: a recorded root is replaced, teardown
     // refuses it, then gc must preserve the replacement (never
@@ -577,7 +577,7 @@ fn recorded_replacement_survives_gc_while_unrecorded_reaps() {
     let control = root.path().join("cistella-tmp-gc-control-1-333-444");
     std::fs::create_dir(&control).expect("mkdir control");
     std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    let removed = reap_tmpdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert_eq!(
         removed,
         vec!["cistella-tmp-gc-control-1-333-444".to_string()],
@@ -616,7 +616,7 @@ fn group_writable_parent_refuses() {
 
 #[test]
 fn moved_admitted_object_converges_through_gc() {
-    use cistella::cleanup::reap_tempdir_orphans_in;
+    use cistella::cleanup::reap_tmpdir_orphans_in;
     use std::collections::HashSet;
     // The admitted object renamed within the temproot (same
     // inode, new prefix-valid name, same parent association):
@@ -637,7 +637,7 @@ fn moved_admitted_object_converges_through_gc() {
     .expect("record admits");
     let moved = root.path().join(format!("cistella-tmp-{session}-333-444"));
     std::fs::rename(&original, &moved).expect("rename within temproot");
-    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    let removed = reap_tmpdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert_eq!(
         removed,
         vec![format!("cistella-tmp-{session}-333-444")],
@@ -648,7 +648,7 @@ fn moved_admitted_object_converges_through_gc() {
 
 #[test]
 fn moved_to_new_parent_preserves_through_gc() {
-    use cistella::cleanup::reap_tempdir_orphans_in;
+    use cistella::cleanup::reap_tmpdir_orphans_in;
     use std::collections::HashSet;
     // Case 3: same object (dev/ino match) under a new parent
     // (association broken). The declared path still names the
@@ -671,7 +671,7 @@ fn moved_to_new_parent_preserves_through_gc() {
     .expect("record admits");
     let moved = root.path().join(format!("cistella-tmp-{session}-333-444"));
     std::fs::rename(&original, &moved).expect("move under new parent");
-    let removed = reap_tempdir_orphans_in(root.path(), base.path(), &HashSet::new());
+    let removed = reap_tmpdir_orphans_in(root.path(), base.path(), &HashSet::new());
     assert!(
         removed.is_empty(),
         "moved object preserved, got: {removed:?}"

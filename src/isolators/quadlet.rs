@@ -767,7 +767,7 @@ pub fn gc_exited_locked() -> Result<GcResult> {
     // could be silently swallowed.
     let mut to_reap: Vec<(String, String, bool)> = Vec::new();
     // Session ids of units still present after this run (running
-    // or otherwise not selected): tempdir-orphan eligibility skips
+    // or otherwise not selected): tmpdir-orphan eligibility skips
     // them. A failed unit scan aborts the whole gc before any
     // mutation (above), so this set never reads failure as
     // absence — failed scan is not "no unit".
@@ -876,10 +876,10 @@ pub fn gc_exited_locked() -> Result<GcResult> {
             reaped.push(name.clone());
         }
     }
-    // Phase 3: tempdir orphans attributable to dead sessions. Unit
+    // Phase 3: tmpdir orphans attributable to dead sessions. Unit
     // teardowns above converged (any failure propagated instead),
     // so sessions absent from the live set are dead — orphans with
     // live leases or live guest groups still skip inside.
-    reaped.extend(crate::cleanup::reap_tempdir_orphans(&live_sessions));
+    reaped.extend(crate::cleanup::reap_tmpdir_orphans(&live_sessions));
     Ok(GcResult { reaped })
 }

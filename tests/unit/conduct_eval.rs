@@ -21,7 +21,7 @@ fn minimal_toml(body: &str) -> String {
 /// defaults only (pins the unchanged-defaults refusal path, not just
 /// a hand-built default set).
 fn defaults_via_absent_file() -> (tempfile::TempDir, PolicySet) {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let policy = PolicySet::load(Some(dir.path())).expect("absent file means defaults");
     (dir, policy)
 }

@@ -127,7 +127,7 @@ impl LockGuard {
 /// scratch fallbacks.
 ///
 /// Callers pass the base explicitly into lease creation so tests
-/// pin behavior against tempdirs without touching process env.
+/// pin behavior against tmpdirs without touching process env.
 #[must_use]
 pub fn runtime_base() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")

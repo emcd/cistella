@@ -1,6 +1,6 @@
 //! Shipped Landlock wrapper fast tests.
 //!
-//! These drive the REAL `cistella-landlock-wrap` binary directly on
+//! These drive the REAL `cistella-supervisor-landlock` binary directly on
 //! this seat (kernel Landlock, seccomp off — same basis as the
 //! spike's local smoke): probe shape, usage refusals, admitted
 //! apply, and the denial matrix (write, create, unlink, truncate)
@@ -26,7 +26,9 @@ fn wrapper_path() -> PathBuf {
         for entry in entries {
             let entry = entry.expect("dir entry");
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name != "cistella-landlock-wrap" && !name.starts_with("cistella-landlock-wrap-") {
+            if name != "cistella-supervisor-landlock"
+                && !name.starts_with("cistella-supervisor-landlock-")
+            {
                 continue;
             }
             let metadata = entry.metadata().expect("metadata");
@@ -39,7 +41,7 @@ fn wrapper_path() -> PathBuf {
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
     candidates.into_iter().next().map(|(_, path)| path).unwrap_or_else(|| {
         panic!(
-            "cistella-landlock-wrap executable not found in {}; run `cargo build --bin cistella-landlock-wrap` first",
+            "cistella-supervisor-landlock executable not found in {}; run `cargo build --bin cistella-supervisor-landlock` first",
             profile_dir.display()
         )
     })
@@ -76,9 +78,9 @@ fn run_wrapped(allowed: &std::path::Path, python: &str) -> (i32, String, String,
 }
 
 /// Scratch tree with `allowed/` (rw) and `denied/` (no rule)
-/// siblings under one tempdir.
+/// siblings under one tmpdir.
 fn scratch_tree() -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let allowed = dir.path().join("allowed");
     std::fs::create_dir_all(&allowed).expect("allowed dir");
     std::fs::create_dir_all(dir.path().join("denied")).expect("denied dir");

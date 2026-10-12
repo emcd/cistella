@@ -374,7 +374,7 @@ fn write_registry(dir: &tempfile::TempDir, name: &str, text: &str) -> std::path:
 
 #[test]
 fn absent_file_loads_empty() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let registry =
         Registry::load_from_path(&dir.path().join("registry.toml")).expect("absent loads");
     assert!(registry.is_empty());
@@ -382,7 +382,7 @@ fn absent_file_loads_empty() {
 
 #[test]
 fn symlink_registry_refuses_unfollowed() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let real = write_registry(&dir, "registry.toml", &valid_registry());
     let link = dir.path().join("link.toml");
     std::os::unix::fs::symlink(&real, &link).expect("symlink");
@@ -392,7 +392,7 @@ fn symlink_registry_refuses_unfollowed() {
 
 #[test]
 fn group_writable_registry_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let path = write_registry(&dir, "registry.toml", &valid_registry());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).expect("chmod");
     let error = Registry::load_from_path(&path).expect_err("group-writable must refuse");
@@ -404,7 +404,7 @@ fn group_writable_registry_refuses() {
 
 #[test]
 fn swap_before_open_validates_the_new_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let path = write_registry(&dir, "registry.toml", &valid_registry());
     Registry::load_from_path(&path).expect("valid loads");
     std::fs::write(&path, "format-version = [unclosed").expect("overwrite");
@@ -415,7 +415,7 @@ fn swap_before_open_validates_the_new_file() {
 
 #[test]
 fn pathname_swap_after_open_parses_pinned_original() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let path = write_registry(&dir, "registry.toml", &valid_registry());
     let open = begin_anchored(&path, 1024 * 1024)
         .expect("open anchors")
@@ -442,7 +442,7 @@ fn pathname_swap_after_open_parses_pinned_original() {
 
 #[test]
 fn in_place_mode_change_during_read_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let path = write_registry(&dir, "registry.toml", &valid_registry());
     let open = begin_anchored(&path, 1024 * 1024)
         .expect("open anchors")

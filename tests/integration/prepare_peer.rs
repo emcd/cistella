@@ -25,7 +25,7 @@ use super::protocol_peer::peer_path;
 
 /// Compiled defaults via load: an absent file means defaults only.
 fn defaults() -> PolicySet {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     PolicySet::load(Some(dir.path())).expect("absent file means defaults")
 }
 

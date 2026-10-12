@@ -658,7 +658,7 @@ fn same_tree_rw_graft_refuses_pre_create() {
     // Sibling of the session dir: strictly under ~/src,
     // outside the session subtree (random name, auto-cleaned).
     let sib = tempfile::TempDir::new_in(worktree.path().parent().expect("worktree sits in ~/src"))
-        .expect("sibling tempdir");
+        .expect("sibling tmpdir");
     let sib_str = sib.path().to_string_lossy().to_string();
     let src_root = format!("{home}/src");
     let profile = worktree.path().join("tmpl-graft-alias.toml");
@@ -763,7 +763,7 @@ fn hooked_conduct_confines_declared_session() {
             "--",
             "sh",
             "-c",
-            "echo ok > marker; if /run/cistella/hooks/landlock-wrap --probe; then echo bad > /src/escape || echo DENIED; fi",
+            "echo ok > marker; if /run/cistella/hooks/supervisor-landlock --probe; then echo bad > /src/escape || echo DENIED; fi",
         ],
     );
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

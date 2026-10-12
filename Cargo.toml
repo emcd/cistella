@@ -48,10 +48,6 @@ name = "example_guest"
 path = "tests/fixtures/example_guest/main.rs"
 
 [[example]]
-name = "tempdir_guest"
-path = "tests/fixtures/tempdir_guest/main.rs"
-
-[[example]]
 name = "deny_probe"
 path = "tests/probes/deny_probe.rs"
 

@@ -1,26 +1,22 @@
-//! Reference tempdir extension: the builders' reference for a
-//! third-party extension that mints host state.
-//!
-//! Correct behavior only (not a fault injector): hello advertising
-//! its role plus the contribution types it returns, then one
-//! prepare transaction that mints an owner-only uniquely-named
-//! slice under `/tmp`, contributes it as a read-write triple
-//! targeting `/tmp`, and declares it for cleanup. A zero-hook
-//! answer converges plain downstream.
+//! Tmpdir extension: per-session writable `/tmp` backed by a
+//! host slice. Hello advertises its role plus the contribution
+//! types it returns, then one prepare transaction mints an
+//! owner-only uniquely-named slice, contributes it as a
+//! read-write triple targeting `/tmp`, and declares it for
+//! cleanup. A zero-hook answer converges plain downstream.
 //!
 //! Behavior is selected by argv (the protocol host spawns a pinned
 //! absolute path, so behavior stays scriptable through argv):
 //!
-//!   `--role=<name>`   hello role string (default `tempdir`)
+//!   `--role=<name>`   hello role string (default `tmpdir`)
 //!
 //! Slice names embed the prepare session id for attribution
 //! (`cistella-tmp-<session>-<pid>-<nanos>`, O_EXCL create, 0700).
 //! Mint failure fails the prepare loudly (fail-closed), never an
 //! undeclared session.
 //!
-//! Cargo treats this file as an example target only (see
-//! `Cargo.toml`'s `[[example]]` tables); `package.include`
-//! excludes `tests/**`, so the guest never ships to crates.io.
+//! Shipped sibling binary (autobins): installed and discovered
+//! beside the driver like `cistella-extension-landlock`.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -37,7 +33,7 @@ fn read_role() -> String {
             return value.to_string();
         }
     }
-    "tempdir".to_string()
+    "tmpdir".to_string()
 }
 
 fn read_frame<R: Read>(reader: &mut R) -> std::io::Result<Vec<u8>> {

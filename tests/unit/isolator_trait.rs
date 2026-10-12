@@ -296,7 +296,7 @@ fn ps_output_parsing_yields_candidate_names() {
 #[test]
 fn unit_dir_scan_finds_key_and_ignores_others() {
     use cistella::isolators::podman::scan_unit_dir;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::write(
         dir.path().join("cistella-abc.container"),
         "[Container]\nLabel=cistella.reconciliation-key=\"key-1\"\nLabel=cistella.id=\"abc\"\n",
@@ -323,7 +323,7 @@ fn unit_dir_scan_finds_key_and_ignores_others() {
 #[test]
 fn unit_dir_scan_refuses_unreadable_candidates() {
     use cistella::isolators::podman::scan_unit_dir;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let locked = dir.path().join("cistella-locked.container");
     std::fs::write(&locked, "[Container]\nLabel=cistella.id=\"x\"\n").expect("write unit");
     // Owner bits fully cleared (read-only alone stays readable).

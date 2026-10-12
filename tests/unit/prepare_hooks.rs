@@ -18,7 +18,7 @@ use cistella::profile::{CredentialSurface, Profile};
 
 /// Compiled defaults via load: an absent file means defaults only.
 fn defaults() -> PolicySet {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     PolicySet::load(Some(dir.path())).expect("absent file means defaults")
 }
 
@@ -65,7 +65,7 @@ fn fake_guest_path() -> PathBuf {
 /// Stages the fake guest under the extension binary name in a
 /// scratch dir: discovery pins the bare name, never PATH.
 fn stage_extension_peer() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let staged = dir.path().join(EXTENSION_BIN);
     std::fs::copy(fake_guest_path(), &staged).expect("stage peer");
     use std::os::unix::fs::PermissionsExt;
@@ -115,7 +115,7 @@ fn extension_prepare_merges_hook_and_shuts_down_clean() {
     assert_eq!(hook.order, 0);
     assert_eq!(
         hook.argv_prefix,
-        vec!["/run/cistella/hooks/landlock-wrap".to_string()]
+        vec!["/run/cistella/hooks/supervisor-landlock".to_string()]
     );
     assert!(evaluated.merged.environment.is_empty());
     assert!(evaluated.merged.mounts.is_empty());
@@ -152,7 +152,7 @@ fn singleton_hook(prefix: Vec<String>) -> GuestHookRequest {
             sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
             source: HookSource {
                 registry: "shipped".to_string(),
-                path: "cistella-landlock-wrap".to_string(),
+                path: "cistella-supervisor-landlock".to_string(),
             },
         },
         staging: "isolator-staged".to_string(),
@@ -812,7 +812,7 @@ fn compose_skips_proven_nondirectories_but_grants_missing() {
     use cistella::mount::{MountMode, MountTriple};
     use std::os::unix::net::UnixListener;
     use std::path::Path;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let host = dir.path().to_string_lossy().to_string();
     let subtree = dir.path().join("proj");
     std::fs::create_dir_all(&subtree).expect("proj dir");

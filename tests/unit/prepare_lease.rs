@@ -1,12 +1,12 @@
 //! Durable prepare leases: create/update/remove lifecycle, all
-//! against explicit tempdir bases (no process env — parallel-safe
+//! against explicit tmpdir bases (no process env — parallel-safe
 //! and hermetic).
 
 use cistella::lock::PrepareLease;
 
 #[test]
 fn lease_create_record_remove_lifecycle() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
     let path =
         cistella::lock::PrepareLease::state_dir(dir.path()).join("cistella-prepare-test-session-1");
@@ -28,7 +28,7 @@ fn lease_create_record_remove_lifecycle() {
 
 #[test]
 fn lease_create_existing_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let _first = PrepareLease::create(dir.path(), "test-session-1").expect("first creates");
     let error = PrepareLease::create(dir.path(), "test-session-1").expect_err("EEXIST must refuse");
     assert!(
@@ -41,7 +41,7 @@ fn lease_create_existing_refuses() {
 
 #[test]
 fn lease_bad_session_id_refuses() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     for bad in ["", "../escape", "a/b", "has space", "semi;colon"] {
         let error = PrepareLease::create(dir.path(), bad).expect_err("bad id must refuse");
         assert!(
@@ -53,7 +53,7 @@ fn lease_bad_session_id_refuses() {
 
 #[test]
 fn lease_retain_survives_drop() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
     let path =
         cistella::lock::PrepareLease::state_dir(dir.path()).join("cistella-prepare-test-session-1");
@@ -63,7 +63,7 @@ fn lease_retain_survives_drop() {
 
 #[test]
 fn lease_pending_roundtrip() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let mut lease = PrepareLease::create(dir.path(), "test-session-1").expect("lease creates");
     lease.mark_pending().expect("pending marks");
     let path =
@@ -78,7 +78,7 @@ fn lease_pending_roundtrip() {
 
 #[test]
 fn lease_symlink_at_path_refuses_without_touching_target() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let statedir = cistella::lock::PrepareLease::state_dir(dir.path());
     std::fs::create_dir(&statedir).expect("mkdir state dir");
     let victim = dir.path().join("victim.txt");
@@ -97,7 +97,7 @@ fn lease_symlink_at_path_refuses_without_touching_target() {
 #[test]
 fn state_dir_hardens_mode_and_refuses_foreign_owner() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let statedir = cistella::lock::PrepareLease::state_dir(dir.path());
     std::fs::create_dir(&statedir).expect("mkdir state dir");
     std::fs::set_permissions(&statedir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
@@ -129,7 +129,7 @@ fn state_dir_hardens_mode_and_refuses_foreign_owner() {
 fn state_dir_is_per_seat() {
     // Per-seat namespace: one seat creating the fallback first
     // never locks another seat uid out of its own state.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     // SAFETY: getuid is inherently safe.
     let seat = unsafe { nix::libc::getuid() };
     assert_eq!(

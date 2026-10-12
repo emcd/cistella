@@ -25,7 +25,7 @@ fn write_guest(dir: &tempfile::TempDir, name: &str, mode: u32) -> (std::path::Pa
 #[test]
 fn path_source_verifies_and_pins() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (path, bytes) = write_guest(&dir, "guest", 0o755);
     let pinned = resolve_path_source(&path, &fixture_digest(&bytes)).expect("valid resolves");
     assert_eq!(pinned.digest, fixture_digest(&bytes));
@@ -34,7 +34,7 @@ fn path_source_verifies_and_pins() {
 #[test]
 fn replaced_path_guest_refuses_at_conduct() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (path, bytes) = write_guest(&dir, "guest", 0o755);
     let expected = fixture_digest(&bytes);
     resolve_path_source(&path, &expected).expect("original resolves");
@@ -60,7 +60,7 @@ fn relative_registered_path_refuses() {
 #[test]
 fn symlink_final_registered_path_refuses() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (real, bytes) = write_guest(&dir, "real", 0o755);
     let link = dir.path().join("link");
     std::os::unix::fs::symlink(&real, &link).expect("symlink");
@@ -72,7 +72,7 @@ fn symlink_final_registered_path_refuses() {
 #[test]
 fn non_executable_registered_path_refuses() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (path, bytes) = write_guest(&dir, "guest", 0o644);
     let error =
         resolve_path_source(&path, &fixture_digest(&bytes)).expect_err("non-exec must refuse");
@@ -82,7 +82,7 @@ fn non_executable_registered_path_refuses() {
 #[test]
 fn group_writable_registered_path_refuses() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let (path, bytes) = write_guest(&dir, "guest", 0o775);
     let error = resolve_path_source(&path, &fixture_digest(&bytes))
         .expect_err("group-writable must refuse");
@@ -95,7 +95,7 @@ fn group_writable_registered_path_refuses() {
 #[test]
 fn symlinked_parent_canonicalizes() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let real = dir.path().join("real");
     std::fs::create_dir(&real).expect("mkdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
@@ -111,7 +111,7 @@ fn symlinked_parent_canonicalizes() {
 #[test]
 fn world_writable_ancestor_refuses_sticky_passes() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     for (name, mode, ok) in [("open", 0o777, false), ("sticky", 0o1777, true)] {
         let sub = dir.path().join(name);
         std::fs::create_dir(&sub).expect("mkdir");
@@ -127,7 +127,7 @@ fn world_writable_ancestor_refuses_sticky_passes() {
             let error = outcome.expect_err("world-writable ancestor must refuse");
             assert!(error.to_string().contains("world-writable"), "got: {error}");
         }
-        // Restore owner-write access for tempdir cleanup on strict umasks.
+        // Restore owner-write access for tmpdir cleanup on strict umasks.
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
 }
@@ -161,7 +161,7 @@ fn cache_dir_location_rules() {
 #[test]
 fn missing_registered_path_refuses_typed() {
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let error = resolve_path_source(&dir.path().join("absent"), &fixture_digest(b"x"))
         .expect_err("absence must refuse");
     assert!(error.to_string().contains("absent"), "got: {error}");
@@ -298,7 +298,7 @@ fn sticky_untrusted_owner_ancestor_refuses() {
         return;
     }
     use cistella::guest_source::resolve_path_source;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let sub = dir.path().join("sticky-alien");
     std::fs::create_dir(&sub).expect("mkdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
@@ -322,7 +322,7 @@ fn dangling_symlink_slot_refuses_without_fetch() {
     // A dangling symlink at the hash slot must refuse as a
     // poisoned slot (typed, zero HTTP requests, symlink left in
     // place) — never read as a miss that fetches over it.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let bytes = b"fixture bytes".to_vec();
     let digest = fixture_digest(&bytes);
     let origin = serve_queued(vec![(200, bytes, std::time::Duration::ZERO)]);
@@ -348,7 +348,7 @@ fn dangling_symlink_slot_refuses_without_fetch() {
 #[test]
 fn cache_dir_symlink_refuses() {
     use cistella::guest_source::{ResolveCtx, fetch_source};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let real = dir.path().join("real-cache");
     std::fs::create_dir(&real).expect("mkdir");
     let link = dir.path().join("link-cache");
@@ -377,7 +377,7 @@ fn cache_dir_foreign_owner_refuses() {
         return;
     }
     use cistella::guest_source::{ResolveCtx, fetch_source};
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let cache = dir.path().join("cache");
     std::fs::create_dir(&cache).expect("mkdir");
     std::os::unix::fs::chown(&cache, Some(65534), None).expect("chown nobody");
@@ -400,7 +400,7 @@ fn cache_dir_foreign_owner_refuses() {
 #[test]
 fn fetch_miss_slots_and_hit_reverifies_without_refetch() {
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
     let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let ctx = fetch_ctx(&dir);
@@ -423,7 +423,7 @@ fn fetch_miss_slots_and_hit_reverifies_without_refetch() {
 #[test]
 fn fetch_digest_mismatch_refuses_pre_create_leaving_no_slot() {
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let origin = serve_queued(vec![(
         200,
         b"attacker bytes".to_vec(),
@@ -447,7 +447,7 @@ fn fetch_digest_mismatch_refuses_pre_create_leaving_no_slot() {
 #[test]
 fn fetch_rotation_requires_registry_edit() {
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let old_bytes = b"v1 bytes".to_vec();
     let new_bytes = b"v2 bytes".to_vec();
     let origin = serve_queued(vec![
@@ -474,7 +474,7 @@ fn fetch_rotation_requires_registry_edit() {
 #[test]
 fn poisoned_cache_slot_refuses_per_use() {
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
     let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let ctx = fetch_ctx(&dir);
@@ -497,7 +497,7 @@ fn poisoned_cache_slot_refuses_per_use() {
 #[test]
 fn fetch_error_status_and_size_bound_refuse() {
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let origin = serve_queued(vec![(404, b"nope".to_vec(), std::time::Duration::ZERO)]);
     let ctx = fetch_ctx(&dir);
     let entry = fetch_entry(&origin.url, fixture_digest(b"nope"));
@@ -522,7 +522,7 @@ fn fetch_error_status_and_size_bound_refuse() {
 #[test]
 fn fetch_deadline_refuses() {
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let bytes = b"slow bytes".to_vec();
     let origin = serve_queued(vec![(
         200,
@@ -540,7 +540,7 @@ fn fetch_deadline_refuses() {
 fn wrong_protocol_major_refuses_at_resolve() {
     use cistella::guest_registry::{Guest, SourceLocation};
     use cistella::guest_source::resolve;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let entry = Guest {
         name: "future".to_string(),
         role: "future-role".to_string(),
@@ -564,7 +564,7 @@ fn substitution_after_guard_open_stages_into_guarded_dir() {
     // and slot operation runs relative to the held directory FD,
     // so the fetch lands in the guarded original — never through
     // the swapped path.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let cache = dir.path().join("cache");
     let guard = prepare_cache_dir(&cache).expect("guard opens");
     let real = dir.path().join("cache-real");

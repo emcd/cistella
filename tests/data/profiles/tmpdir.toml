@@ -1,4 +1,4 @@
-# Minimal profile for tempdir tests: image plus worktree.
+# Minimal profile for tmpdir tests: image plus worktree.
 # Test fixture, not a baked example: live tests conduct against
 # this file by explicit path, never by baked name.
 image = 'localhost/cistella/opencode:example'
@@ -8,4 +8,4 @@ command = ['sleep', 'infinity']
 mounts = []
 
 [[extensions]]
-name = 'tempdir-test'
+name = 'tmpdir'

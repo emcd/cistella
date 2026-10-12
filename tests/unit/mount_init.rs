@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use cistella::mount::{MountMode, MountTriple};
 
-/// Owner-only tempdir base plus trusted subdir: tempfile and
+/// Owner-only tmpdir base plus trusted subdir: tempfile and
 /// create_dir honor the host umask, so a permissive build-host
 /// umask (e.g. 0002) would leave group-writable dirs that
 /// traversal trust (lifetime test) refuses.

@@ -16,26 +16,29 @@ use cistella::guest_source::{ResolveCtx, resolve};
 /// Requires `cargo build --examples` first for filtered runs
 /// (`cargo test --test unit` does not build examples; full
 /// `cargo nextest run` does via the default target set).
+/// Shipped sibling binaries (not in `examples/`) resolve by
+/// fallback to the profile dir (e.g. `cistella-extension-tmpdir`).
 fn example_binary(name: &str) -> std::path::PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
-    let examples_dir = my_path
+    let profile_dir = my_path
         .ancestors()
         .nth(2)
-        .expect("target/<profile>/deps ancestors")
-        .join("examples");
+        .expect("target/<profile>/deps ancestors");
     let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&examples_dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            if file_name != name && !file_name.starts_with(&format!("{name}-")) {
-                continue;
+    for dir in [profile_dir.join("examples"), profile_dir.to_path_buf()] {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+                    continue;
+                }
+                let metadata = entry.metadata().expect("metadata");
+                if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
+                    continue;
+                }
+                candidates.push((metadata.modified().expect("mtime"), entry.path()));
             }
-            let metadata = entry.metadata().expect("metadata");
-            if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
-                continue;
-            }
-            candidates.push((metadata.modified().expect("mtime"), entry.path()));
         }
     }
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
@@ -45,8 +48,8 @@ fn example_binary(name: &str) -> std::path::PathBuf {
         .map(|(_, path)| path)
         .unwrap_or_else(|| {
             panic!(
-                "example binary {name} not found in {}; run `cargo build --examples` first",
-                examples_dir.display()
+                "example binary {name} not found in {}; run `cargo build` first",
+                profile_dir.display()
             )
         })
 }
@@ -71,7 +74,7 @@ fn peer_entry(
     let source = example_binary(binary);
     let bytes = std::fs::read(&source).expect("read peer binary");
     let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     // Private owned 0755 copy: build-output permissions follow
     // the seat umask (0002 leaves group-writable binaries the
     // ownership gate correctly refuses), so resolution pins its
@@ -222,10 +225,10 @@ fn registered_extension_prepare_converges_plain() {
     // behavior is a conformance failure.
     let (entry, ctx, _dir) = peer_entry("example_guest", "example", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("example resolves");
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
@@ -252,7 +255,7 @@ fn registered_isolator_serves_lifecycle() {
     // The scripted peer speaks the isolator wire through the
     // registered path: rendezvous accept, concurrent dispatcher,
     // and op service are identical past hello (same serve tail).
-    let rendezvous = tempfile::tempdir().expect("tempdir");
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
     let (entry, ctx, _dir) = peer_entry(
         "fake_guest",
         "isolator",
@@ -299,7 +302,7 @@ fn swap_after_resolve_executes_pinned_bytes() {
     // still executes the pinned original (the swapped bytes never
     // execute without a fresh verify — the re-resolve below
     // refuses).
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     let peer = example_binary("example_guest");
     let bytes = std::fs::read(&peer).expect("read peer binary");
     let seat_copy = dir.path().join("seat-copy");
@@ -363,7 +366,7 @@ fn registered_nonempty_contribution_merges() {
         vec!["--mode=prepare-vector-registered".to_string()],
     );
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let mut text = String::from("format_version = 1\n");
     for name in ["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"] {
         text.push_str("[[acknowledgements]]\nname = \"");
@@ -373,7 +376,7 @@ fn registered_nonempty_contribution_merges() {
     std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
     let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
         .expect("policy loads");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
@@ -414,12 +417,12 @@ fn session_id_threads_into_prepare() {
         vec!["--mode=prepare-echo-session-id".to_string()],
     );
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let text = "format_version = 1\n[[acknowledgements]]\nname = \"SESSION_ID_ECHO\"\n";
     std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
     let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
         .expect("policy loads");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
@@ -452,10 +455,10 @@ fn extension_rw_mount_contribution_merges() {
         vec!["--mode=prepare-vector-rw-mount".to_string()],
     );
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
@@ -493,14 +496,14 @@ fn landlock_plus_registered_compose_through_production_select() {
     // (not a hand-composed fixture): landlock contributes its
     // hook, the registered peer its env pair plus RO mount, one
     // atomic central merge carries both.
-    let exe = tempfile::tempdir().expect("tempdir");
+    let exe = tempfile::tempdir().expect("tmpdir");
     stage_landlock_peer(&exe);
     let (entry, _ctx, _dir) = peer_entry(
         "fake_guest",
         "test-cap",
         vec!["--mode=prepare-vector-registered".to_string()],
     );
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let mut text = String::from("format_version = 1\n");
     for name in ["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"] {
         text.push_str("[[acknowledgements]]\nname = \"");
@@ -510,7 +513,7 @@ fn landlock_plus_registered_compose_through_production_select() {
     std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
     let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
         .expect("policy loads");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,
@@ -549,10 +552,10 @@ fn two_non_landlock_extensions_refuse() {
     use cistella::profile::ExtensionResolution;
     let (first, _ctx1, _dir1) = peer_entry("fake_guest", "test-cap", Vec::new());
     let (second, _ctx2, _dir2) = peer_entry("fake_guest", "other-cap", Vec::new());
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Registered(first),
@@ -574,18 +577,18 @@ fn two_non_landlock_extensions_refuse() {
 }
 
 #[test]
-fn tempdir_guest_mints_contributes_declares() {
+fn tmpdir_extension_mints_contributes_declares() {
     use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
-    // The reference tempdir extension through the registered
+    // The shipped tmpdir extension through the registered
     // path: mints an owner-only slice, contributes the RW triple
     // targeting /tmp, and declares it for cleanup — all three
     // verified, not just trusted.
-    let (entry, ctx, _dir) = peer_entry("tempdir_guest", "tempdir", Vec::new());
-    let resolved = resolve(&entry, &ctx).expect("tempdir resolves");
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let (entry, ctx, _dir) = peer_entry("cistella-extension-tmpdir", "tmpdir", Vec::new());
+    let resolved = resolve(&entry, &ctx).expect("tmpdir resolves");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
         std::path::Path::new("/nonexistent-exe-dir"),
@@ -596,7 +599,7 @@ fn tempdir_guest_mints_contributes_declares() {
         "test-session-tmp-1",
         lease_base.path(),
     )
-    .expect("tempdir prepare merges");
+    .expect("tmpdir prepare merges");
     assert_eq!(plan.merged.mounts.len(), 1);
     let triple = &plan.merged.mounts[0];
     assert_eq!(triple.container_target, "/tmp");
@@ -636,17 +639,17 @@ fn unadvertised_hook_does_not_launder_through_pair() {
     // pair partner) advertises the type. The per-plan gate must
     // refuse the whole transaction — the union gate alone would
     // admit it through landlock's advertisement.
-    let exe = tempfile::tempdir().expect("tempdir");
+    let exe = tempfile::tempdir().expect("tmpdir");
     stage_landlock_peer(&exe);
     let (entry, _ctx, _dir) = peer_entry(
         "fake_guest",
         "test-cap",
         vec!["--mode=prepare-hook-unadvertised".to_string()],
     );
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,
@@ -678,17 +681,17 @@ fn second_guest_host_failure_shuts_first_and_retains() {
     // (no stranded peer — the error is the contract refusal, not
     // residue), and the lease is retained (the failed host's
     // shutdown is unprovable post-hoc — stale-gc heals).
-    let exe = tempfile::tempdir().expect("tempdir");
+    let exe = tempfile::tempdir().expect("tmpdir");
     stage_landlock_peer(&exe);
     let (entry, _ctx, _dir) = peer_entry(
         "fake_guest",
         "other-role",
         vec!["--mode=hello-real-capabilities".to_string()],
     );
-    let policy_dir = tempfile::tempdir().expect("tempdir");
+    let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
-    let lease_base = tempfile::tempdir().expect("tempdir");
+    let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,

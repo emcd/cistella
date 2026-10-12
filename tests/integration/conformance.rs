@@ -62,7 +62,7 @@ fn fixture_image() -> Option<String> {
     }
 }
 
-/// Builds a session plus volumes over a worktree tempdir (mirrors the
+/// Builds a session plus volumes over a worktree tmpdir (mirrors the
 /// conduct planning the prepare transaction will centralize in 2.2).
 fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<String>) {
     let id = mint_session_id();
@@ -101,7 +101,7 @@ fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<
 fn launch_unit(image: &str, env: Vec<String>) -> (Fixture, TempDir) {
     let backend = PodmanIsolator::new();
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(image, &worktree, "marker");
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -260,7 +260,7 @@ fn conformance_reconciliation_survives_restart() {
     let Some(image) = fixture_image() else { return };
     let backend = PodmanIsolator::new();
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree, "marker");
     let container = session.container_name();
     let session_id = session.id.clone();

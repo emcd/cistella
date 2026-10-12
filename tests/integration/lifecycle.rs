@@ -456,11 +456,11 @@ fn project_name_template_live() {
         String::from_utf8_lossy(&out.stdout).contains("/tmpl-QAPROJECT"),
         "mount landed at expanded target"
     );
-    // Basename default: tempdir file name fills the template.
+    // Basename default: tmpdir file name fills the template.
     let basename = worktree
         .path()
         .file_name()
-        .expect("tempdir basename")
+        .expect("tmpdir basename")
         .to_string_lossy()
         .to_string();
     let target = format!("/tmpl-{basename}");

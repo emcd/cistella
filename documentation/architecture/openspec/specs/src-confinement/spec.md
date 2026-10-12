@@ -5,7 +5,7 @@
 ## Requirements
 ### Requirement: Guest-visible topology translation
 
-Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct SHALL translate the canonical host ancestor/subtree through the validated guest mount topology to every guest-visible route before restricting. Profiles with UNTRANSLATABLE aliases (symlinked ancestors with no guest route, undescribable shapes) SHALL refuse pre-create rather than confine partially. A second bind mount into the same sibling that DOES translate admits or denies BY DECLARED MODE: declared read-write grafts compose into full-rights carveouts (accounted, admitted), while second routes with no declared carveout stay denied. R+X ancestor plus full-rights subtree is correct union semantics only within one verified layer and a complete path view. Declared read-write triples SHALL compose as full-rights carveouts wherever they target — including an admitted `/tmp` slice contributed by a tempdir extension. Undeclared `/tmp` writes stay denied (the `/tmp`-denied default with the `/tmp/scratch` outlet is unchanged for paths no triple admits).
+Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct SHALL translate the canonical host ancestor/subtree through the validated guest mount topology to every guest-visible route before restricting. Profiles with UNTRANSLATABLE aliases (symlinked ancestors with no guest route, undescribable shapes) SHALL refuse pre-create rather than confine partially. A second bind mount into the same sibling that DOES translate admits or denies BY DECLARED MODE: declared read-write grafts compose into full-rights carveouts (accounted, admitted), while second routes with no declared carveout stay denied. R+X ancestor plus full-rights subtree is correct union semantics only within one verified layer and a complete path view. Declared read-write triples SHALL compose as full-rights carveouts wherever they target — including an admitted `/tmp` slice contributed by a tmpdir extension. Undeclared `/tmp` writes stay denied (the `/tmp`-denied default with the `/tmp/scratch` outlet is unchanged for paths no triple admits).
 
 #### Scenario: Rules land on the guest target
 - **WHEN** the guest mount topology maps the host ancestor to a different guest target path
@@ -29,7 +29,7 @@ Landlock rules SHALL apply to guest-visible paths, not host pathnames: conduct S
 - **THEN** the pre-restriction write succeeds and the post-restriction write fails with `EACCES`, attributing the denial to the ruleset and not a pre-existing kernel wall; repeat for every alternate-bind route
 
 #### Scenario: Admitted /tmp slice writes
-- **WHEN** a hooked session declares the tempdir extension, whose slice targets `/tmp`
+- **WHEN** a hooked session declares the tmpdir extension, whose slice targets `/tmp`
 - **THEN** the harness writes inside `/tmp` succeed (FULL carveout on the admitted target)
 
 #### Scenario: Undeclared /tmp stays denied under hook

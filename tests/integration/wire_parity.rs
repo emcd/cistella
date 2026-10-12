@@ -80,7 +80,7 @@ fn fixture_image() -> Option<String> {
     }
 }
 
-/// Builds a session plus volumes over a worktree tempdir (same
+/// Builds a session plus volumes over a worktree tmpdir (same
 /// shape as the reference conformance planner).
 fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<String>) {
     let id = mint_session_id();
@@ -175,9 +175,9 @@ impl Drop for WireFixture {
 /// Launches a unit through the wire backend (mirror of the
 /// reference `launch_unit`).
 fn launch_wire_unit(image: &str, env: Vec<String>) -> WireFixture {
-    let rendezvous = TempDir::new().expect("rendezvous tempdir");
+    let rendezvous = TempDir::new().expect("rendezvous tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(image, &worktree, "marker");
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -234,7 +234,7 @@ fn wire_parity_full_cycle_with_fidelity() {
     let Some(image) = fixture_image() else { return };
     // Same capabilities the reference asserts: the wire client
     // realizes exactly what its guest does.
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let mut probe = CloseGuard::new(host_wire(&rendezvous));
     let capabilities = probe.get().capabilities();
     assert!(capabilities.supports(Capability::Environment));
@@ -343,9 +343,9 @@ fn wire_parity_reconciliation_survives_replacement() {
     // then converges through it. This is the primitive conduct's
     // pre-exec episode composes.
     let Some(image) = fixture_image() else { return };
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree, "marker");
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -369,7 +369,7 @@ fn wire_parity_reconciliation_survives_replacement() {
     // involved (the crash variant lives in recovery.rs). The first
     // client closes only after the replacement converges, so the
     // unit survives the switch.
-    let rendezvous2 = TempDir::new().expect("tempdir");
+    let rendezvous2 = TempDir::new().expect("tmpdir");
     let mut second = CloseGuard::new(host_wire(&rendezvous2));
     let adopted = second
         .get()
@@ -681,7 +681,7 @@ fn wire_parity_removed_handle_create_refuses_live() {
     use cistella::framework::guest::host_external;
     let Some(image) = fixture_image() else { return };
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree, "marker");
     let container = session.container_name();
     let session_id = session.id.clone();
@@ -814,7 +814,7 @@ fn wire_parity_transcript_matches_reference() {
     let env = vec!["CISTELLA_PARITY=cistella-parity".to_string()];
     // Reference leg (in-process: no guest, same shape anyway).
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree, "marker");
     let mut guard = LiveUnitGuard {
         container_name: Some(session.container_name()),
@@ -841,13 +841,13 @@ fn wire_parity_transcript_matches_reference() {
     // Wire leg: guard armed before the client exists, so unwind
     // closes the guest before converging by name.
     let key = ReconciliationKey::generate();
-    let worktree = TempDir::new().expect("worktree tempdir");
+    let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree, "marker");
     let mut guard = LiveUnitGuard {
         container_name: Some(session.container_name()),
         session_id: Some(session.id.clone()),
     };
-    let rendezvous = TempDir::new().expect("tempdir");
+    let rendezvous = TempDir::new().expect("tmpdir");
     let mut holder = CloseGuard::new(host_wire(&rendezvous));
     let spec = CreateSpec {
         session,

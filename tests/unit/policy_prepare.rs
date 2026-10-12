@@ -35,7 +35,7 @@ fn empty_acceptances() -> HashSet<String> {
 
 /// Compiled defaults via load: an absent file means defaults only.
 fn defaults() -> PolicySet {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     PolicySet::load(Some(dir.path())).expect("absent file means defaults")
 }
 
@@ -156,7 +156,7 @@ fn inviolable_on_extensions_refuses_despite_acknowledgement() {
 
 #[test]
 fn present_empty_file_refuses_instead_of_defaulting() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::write(dir.path().join("policies.toml"), b"").expect("write empty");
     let error = PolicySet::load(Some(dir.path())).unwrap_err();
     assert!(error.to_string().contains("empty"));
