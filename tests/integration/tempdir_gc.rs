@@ -346,6 +346,28 @@ fn tempdir_natural_exit_reaps_slice() {
         )],
     );
     wait_active(&id);
+    // Pre-exit observation: the slice must exist mid-session.
+    // Absence-only would pass even if nothing was ever minted;
+    // the live-slice check proves the fixture exercises the reap
+    // (same shape as the terminate test's mid-run assertion).
+    let root = seat_root();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let slices = loop {
+        let found: Vec<_> = std::fs::read_dir(&root)
+            .expect("read seat root")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
+            .collect();
+        if !found.is_empty() {
+            break found;
+        }
+        if Instant::now() >= deadline {
+            panic!("session slice never minted for {id}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(slices.len(), 1, "one session slice, got: {slices:?}");
     let status = conduct.wait().expect("conduct completes");
     assert!(status.success(), "natural exit 0, got: {status:?}");
     guard.id = None;
