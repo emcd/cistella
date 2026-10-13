@@ -359,11 +359,18 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
             let (ta, ha) = &canon_hosts[i];
             let (tb, hb) = &canon_hosts[j];
             if ha == hb {
-                return Err(CistellaError::Mount(format!(
-                    "overlapping host_sources after canonicalize: {} and {}",
-                    ha.display(),
-                    hb.display()
-                )));
+                // Identical sources bound twice: admitted only when
+                // both are read-only (union is read-only — no
+                // rights ambiguity); any write side keeps the
+                // ambiguous-intent refusal.
+                if !(ta.mode == MountMode::Ro && tb.mode == MountMode::Ro) {
+                    return Err(CistellaError::Mount(format!(
+                        "overlapping host_sources after canonicalize: {} and {}",
+                        ha.display(),
+                        hb.display()
+                    )));
+                }
+                continue;
             }
             if (ha.starts_with(hb) || hb.starts_with(ha))
                 && !overlap_allowed_host(ta.mode, tb.mode, ha, hb)

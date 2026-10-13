@@ -912,3 +912,38 @@ fn ro_confinement_preflight_catches_source_retained_contradiction() {
         ro_confinement_preflight(&[ro, rw], &["/src/proj".to_string()], &sources).unwrap_err();
     assert!(error.to_string().contains("/extra/private"), "got: {error}");
 }
+
+#[test]
+fn identical_ro_sources_admit_while_write_side_refuses() {
+    use cistella::mount::validate_mounts;
+    // Identical sources bound twice read-only: union is
+    // read-only, no rights ambiguity — admitted (the alias
+    // retention proof needs one source at two RO targets).
+    // Any write side keeps the ambiguous-intent refusal.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("shared")).expect("shared");
+    let ro_a = MountTriple {
+        host_source: format!("{host}/shared"),
+        container_target: "/tmp".to_string(),
+        mode: MountMode::Ro,
+    };
+    let ro_b = MountTriple {
+        host_source: format!("{host}/shared"),
+        container_target: "/mirror".to_string(),
+        mode: MountMode::Ro,
+    };
+    assert!(
+        validate_mounts(&[ro_a.clone(), ro_b.clone()], "/home/cistella").is_ok(),
+        "identical RO+RO admits"
+    );
+    let rw_b = MountTriple {
+        host_source: format!("{host}/shared"),
+        container_target: "/mirror".to_string(),
+        mode: MountMode::Rw,
+    };
+    assert!(
+        validate_mounts(&[ro_a, rw_b], "/home/cistella").is_err(),
+        "RO+RW identical sources still refuse"
+    );
+}

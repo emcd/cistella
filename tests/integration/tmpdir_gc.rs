@@ -303,22 +303,32 @@ fn tmpdir_hooked_session_writes_tmp() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("tmpdir-hooked.toml");
-    let (mut conduct, id, mut guard) =
-        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "300"], &[]);
+    // Wrapped-lineage admission: the harness itself writes
+    // inside the admitted /tmp (podman exec runs outside the
+    // guarantee and proves only plumbing). The host-side probe
+    // file proves the confined write landed.
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &[],
+        &["sh", "-c", "touch /tmp/admit-probe && sleep 300"],
+        &[],
+    );
     wait_active(&id);
     let container = format!("cistella-{id}");
     wait_harness(&container, "sleep 300");
-    // Admit: the hooked harness writes inside the admitted /tmp
-    // (mount plumbing through the slice; policy proof lives in
-    // the hook_live lineage tests).
-    let out = Command::new("podman")
-        .args(["exec", &container, "touch", "/tmp/admit-probe"])
-        .output()
-        .expect("podman exec");
+    let root = seat_root();
+    let slices: Vec<_> = std::fs::read_dir(&root)
+        .expect("read seat root")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
+        .collect();
+    assert_eq!(slices.len(), 1, "one session slice, got: {slices:?}");
     assert!(
-        out.status.success(),
-        "hooked /tmp write admits: {}",
-        String::from_utf8_lossy(&out.stderr)
+        root.join(&slices[0]).join("admit-probe").exists(),
+        "wrapped harness wrote inside the admitted slice"
     );
     let out = run_cistella(&home, &["terminate", &id]);
     assert!(
@@ -329,7 +339,6 @@ fn tmpdir_hooked_session_writes_tmp() {
     guard.id = None;
     let _ = conduct.wait();
     // The slice is gone with the session (reaped, not litter).
-    let root = seat_root();
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .expect("read seat root")
         .flatten()
@@ -461,14 +470,32 @@ fn hooked_ancestor_alias_refuses_precreate() {
         format!("[[mounts]]\nhost-source = '{sib_str}'\ncontainer-target = '/tmp'\nmode = 'ro'\n");
     let profdir = tempfile::tempdir().expect("profile dir");
     let profile = write_hooked_profile(profdir.path(), &extra);
-    let (mut conduct, _id, mut guard) =
-        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "300"], &[]);
-    let status = conduct.wait().expect("conduct completes");
-    assert!(
-        !status.success(),
-        "ancestor-covered alias must refuse pre-create, got: {status:?}"
+    // Refused conducts never print an id line (no session
+    // starts): invoke directly and assert exit + message
+    // instead of waiting on spawn_conduct_full's id read.
+    let out = run_cistella(
+        &home,
+        &[
+            "conduct",
+            "--profile",
+            profile.as_str(),
+            "--session-directory",
+            worktree_str.as_str(),
+            "--",
+            "sleep",
+            "300",
+        ],
     );
-    guard.id = None;
+    assert!(
+        !out.status.success(),
+        "ancestor-covered alias must refuse pre-create, got: {}",
+        out.status
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        stderr.contains("aliases FULL-backed /tmp source"),
+        "refusal names the alias contract, got: {stderr}"
+    );
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
