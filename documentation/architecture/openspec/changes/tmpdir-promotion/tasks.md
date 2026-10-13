@@ -16,6 +16,6 @@
 
 ## 4. Validate and review
 
-- [ ] 4.1 Fast suite green under umask 002 and 022; clippy, fmt, `openspec validate --all --strict`; tier-1 review (tier-2 out of scope per operator routing; renames are trust-surface: staged paths, shipped resolution, peer resolution).
+- [x] 4.1 Fast suite green under umask 002 and 022; clippy, fmt, `openspec validate --all --strict`; tier-1 review (planning + implementation + redirect; tier-2 out of scope per operator routing). QA: 620/620 at 1d8f731 (behavior) + 620/620 at 8546487 (shipped mechanism, four executed + hooked).
 - [ ] 4.2 Operator prerequisites (outside this change, tracked here): install shipped binaries beside the driver → validate profile → re-conduct maintainer seat → observe stock-`/tmp` tooling, slice mint/reap → rollout or revert-file rollback.
 - [x] 4.3 Rework live tmpdir tests to declare the extension with no registry (proving shipped resolution); unit test uses the `Tmpdir` spawn directly.
