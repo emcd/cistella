@@ -81,7 +81,7 @@ The driver SHALL accept only an allowlist of explicit `(host-source, container-t
 - **THEN** validation fails before any container is created; the `--session-directory` pair form stays the only worktree-target knob
 
 #### Scenario: Opencode profile (canonical)
-- **WHEN** profile selects `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`, directory at `/work`, per-session scratch (`XDG_RUNTIME_DIR/cistella/<id>` with fallback `/tmp/cistella-<id>`, `Label=cistella.id`), and the seat's configured notebook repositories RW with config RO
+- **WHEN** profile selects `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`, directory at `/work`, and the seat's configured notebook repositories RW with config RO
 - **THEN** only those paths are mounted, each as its triple, and env vars (`HOME`, `XDG_*`) point at the container targets
 
 #### Scenario: HOME explicitly set

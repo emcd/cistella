@@ -1,6 +1,6 @@
 ## 1. Delete the scratch apparatus
 
-- [x] 1.1 Remove the unconditional scratch triple + teardown residue legs for scratch paths (including legacy scratch paths and `seat_temp_root` TMPDIR-awareness — no backcompat, pre-1.0); remove `TMPDIR`/`BUN_TMPDIR` from agentmux/coordinator/opencode profiles (maintainer already clean).
+- [x] 1.1 Remove the unconditional scratch triple + teardown residue legs for scratch paths (including legacy scratch paths and `seat_temp_root` TMPDIR-awareness — no backcompat, pre-1.0); `TMPDIR`/`BUN_TMPDIR` removal from agentmux/coordinator/opencode REVERTED 2026-10-13 — those seats run installed 0.2 (deny+outlet) without tmpdir, so the outlet stays until post-0.3 cutover (maintainer canary only).
 - [x] 1.2 Keep generic mountpoint pre-create (scoped, no framework-`/tmp` special case); add user-nested-bind acceptance pin (slice plus `/tmp/cache` bind: mountpoint seeded seat-owned, reap clean).
 
 ## 2. Unconditional tmpdir + grant
@@ -12,4 +12,4 @@
 ## 3. Specs, docs, validate
 
 - [x] 3.1 Deltas: `src-confinement` (always-FULL qualified by writable backing + RO guarantees), `tmpdir-service` (unconditional host-`/tmp`), `mounts` (scratch + nested-RO wording), `extension-protocol` (scope wording) — no `framework-lifecycle` delta (pre-create mechanism stays); image-`/tmp` read audit (grep + tier-2 Dockerfile findings + live read-probe) BEFORE live conduct; new hooked proofs execute the wrapped harness lineage (plain podman exec is outside the guarantee).
-- [ ] 3.2 Fast green both umasks; clippy, fmt, openspec validate; host live tier via QA (tmpdir shapes without outlet, hooked image-`/tmp` admission).
+- [x] 3.2 Fast green both umasks (558/558); clippy, fmt, openspec validate (16/16) clean; host live tier via QA 634/634 + targeted 11/11 + canary read-probe clean (2026-10-13).
