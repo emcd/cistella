@@ -12,7 +12,7 @@
 
 - [x] 3.1 Rename role strings: hello default, fixture profiles (`tmpdir.toml`, `tmpdir-hooked.toml`), `profiles.md` (registry stanza → shipped note), unit test role assertions (guest_hosting via shipped binary). No registries anywhere (test or production).
 - [x] 3.2 Rename the main spec directory `tempdir-service` → `tmpdir-service` (title, role strings, fixture-grade language → shipped-guest terms); delta `src-confinement` wordings (carveout body, admitted-slice scenario); add `guest-hosting` delta (shipped list + shipped-second scenario); verify standalone `tempdir` grep reads empty outside `archive/` and historical change-docs (`tempfile::TempDir` API stays).
-- [ ] 3.3 Maintainer canary profile edit (HELD until the shipped binary is installed beside the driver — an uninstalled sibling fails closed at spawn, so this edit is live, not inert): add the `tmpdir` extension block, drop `TMPDIR`/`BUN_TMPDIR` overrides.
+- [x] 3.3 Maintainer canary profile edit DONE (2026-10-13, operator-authorized): `tmpdir` extension added, `TMPDIR`/`BUN_TMPDIR` dropped, TOML-validated. Re-conduct + observation is 4.2 (operator).
 
 ## 4. Validate and review
 
