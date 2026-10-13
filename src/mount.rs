@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{CistellaError, Result};
+use crate::mount_alias::tmp_backing_source;
 
 /// Mount mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -829,96 +830,10 @@ pub fn full_grant_sources(triples: &[MountTriple], subtree_host: &std::path::Pat
     sources
 }
 
-/// Canonical host source backing guest `/tmp`, if any triple
-/// targets it: the dentries the unconditional baseline FULL
-/// rule roots on (image `/tmp` with no triple yields none —
-/// no host aliases possible).
-#[must_use]
-pub fn tmp_backing_source(triples: &[MountTriple]) -> Option<PathBuf> {
-    triples.iter().find_map(|triple| {
-        if canonicalize_container_target(&triple.container_target) == "/tmp" {
-            Some(canonicalize_host_source(&triple.host_source))
-        } else {
-            None
-        }
-    })
-}
-
-/// Refuses baseline-aliased `/tmp` backings pre-create
-/// (tier-2 hardening): with guest `/tmp` FULL by baseline, a
-/// host source backing it that is reachable through any other
-/// route not held read-only at the VFS layer admits writes
-/// past its declaration — the FULL rule is dentry-based and
-/// mount-agnostic. For every triple covering the backing
-/// (other than the `/tmp` triple itself): VFS-retained RO
-/// (read-only directory under a FULL route or FULL-backed
-/// source) is safe; FULL-intended (read-write declared, or
-/// under FULL already) is consistent union; anything else —
-/// read-only declared but flipping to Podman read-write for
-/// submount materialization, notably ancestor bindings — is
-/// a contradictory topology and refuses with both targets
-/// named. Dentry-equality closes same-dir-different-spelling
-/// aliases of the backing itself. Runs pre-create, so a
-/// refusal leaves no residue.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Mount` on the first contradictory alias.
-pub fn baseline_tmp_alias_preflight(
-    triples: &[MountTriple],
-    full_routes: &[String],
-    full_sources: &[PathBuf],
-) -> Result<()> {
-    let Some(backing) = tmp_backing_source(triples) else {
-        return Ok(());
-    };
-    let backing_id = crate::mount_alias::dentry_id(&backing);
-    for triple in triples {
-        let target = canonicalize_container_target(&triple.container_target);
-        if target == "/tmp" {
-            continue;
-        }
-        let source = canonicalize_host_source(&triple.host_source);
-        let covers = backing == source || backing.starts_with(join_root(&source));
-        let same_dentry = backing_id
-            .as_ref()
-            .is_some_and(|id| crate::mount_alias::dentry_id(&source).as_ref() == Some(id));
-        if !covers && !same_dentry {
-            continue;
-        }
-        if !std::path::Path::new(&triple.host_source).is_dir() {
-            continue;
-        }
-        if triple.mode == MountMode::Rw {
-            continue;
-        }
-        if under_full_route(&target, full_routes) || under_full_source(&source, full_sources) {
-            continue;
-        }
-        return Err(CistellaError::Mount(format!(
-            "read-only {} aliases FULL-backed /tmp source {}: move it outside the covering tree or declare it read-write",
-            triple.container_target,
-            backing.display()
-        )));
-    }
-    Ok(())
-}
-
-/// Joins a canonical source with a trailing slash for
-/// component-wise prefix comparison (so `/data` never prefixes
-/// `/data2`).
-fn join_root(source: &Path) -> String {
-    let mut rooted = source.to_string_lossy().into_owned();
-    if !rooted.ends_with('/') {
-        rooted.push('/');
-    }
-    rooted
-}
-
 /// Whether a canonical host source sits at or under a
 /// FULL-backed source (component-wise, same spelling the
 /// revision retains on).
-fn under_full_source(source: &std::path::Path, full_sources: &[PathBuf]) -> bool {
+pub(crate) fn under_full_source(source: &std::path::Path, full_sources: &[PathBuf]) -> bool {
     full_sources
         .iter()
         .any(|root| source == root || source.starts_with(root))
@@ -929,7 +844,7 @@ fn under_full_source(source: &std::path::Path, full_sources: &[PathBuf]) -> bool
 /// and rendering emits — so a non-canonical declaration
 /// (`/x/../work/ro-data`, duplicate slashes, dot segments)
 /// cannot dodge retention.
-fn under_full_route(target: &str, full_routes: &[String]) -> bool {
+pub(crate) fn under_full_route(target: &str, full_routes: &[String]) -> bool {
     let canon = canonicalize_container_target(target);
     full_routes
         .iter()

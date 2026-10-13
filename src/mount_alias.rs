@@ -39,7 +39,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{CistellaError, Result};
-use crate::mount::{MountMode, MountTriple, canonicalize_host_source};
+use crate::mount::{
+    MountMode, MountTriple, canonicalize_container_target, canonicalize_host_source,
+};
 
 /// Dentry identity of one directory: owning device plus inode
 /// number. Equal pairs on one host are the same directory,
@@ -499,4 +501,127 @@ fn devices_agree(stat_dev: u64, table_dev: (u64, u64)) -> bool {
     let stat_minor = minor(raw) as u64;
     let (major_number, minor_number) = table_dev;
     stat_major == major_number && stat_minor == minor_number
+}
+
+/// Canonical host source backing guest `/tmp`, if any triple
+/// targets it: the dentries the unconditional baseline FULL
+/// rule roots on (image `/tmp` with no triple yields none —
+/// no host aliases possible).
+#[must_use]
+pub fn tmp_backing_source(triples: &[MountTriple]) -> Option<PathBuf> {
+    triples.iter().find_map(|triple| {
+        if canonicalize_container_target(&triple.container_target) == "/tmp" {
+            Some(canonicalize_host_source(&triple.host_source))
+        } else {
+            None
+        }
+    })
+}
+
+/// Refuses baseline-aliased `/tmp` backings pre-create
+/// (tier-2 hardening): with guest `/tmp` FULL by baseline, a
+/// host source backing it that is reachable through any other
+/// route not held read-only at the VFS layer admits writes
+/// past its declaration — the FULL rule is dentry-based and
+/// mount-agnostic. Alias class is filesystem-relative through
+/// the mount table (same device plus containment in either
+/// direction), so bind mounts cannot hide behind spellings;
+/// spelling equality and dentry equality are subsumed, not
+/// separate legs. For every alias of the backing (other than
+/// the `/tmp` triple itself): VFS-retained RO (read-only
+/// directory under a FULL route or FULL-backed source) is
+/// safe; FULL-intended (read-write declared) is consistent
+/// union; anything else — read-only declared but flipping to
+/// Podman read-write for submount materialization, notably
+/// ancestor bindings — is a contradictory topology and
+/// refuses with both targets named. Unresolvable backing,
+/// missing table, or unresolvable candidate refuses
+/// fail-closed (alias disjointness is never assumed).
+/// Runs pre-create, so a refusal leaves no residue.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on the first contradictory alias.
+pub fn baseline_tmp_alias_preflight(
+    triples: &[MountTriple],
+    full_routes: &[String],
+    full_sources: &[PathBuf],
+) -> Result<()> {
+    baseline_tmp_alias_preflight_with(
+        triples,
+        full_routes,
+        full_sources,
+        crate::mount_alias::MountTable::read_host().as_ref(),
+        &|path| {
+            std::fs::metadata(path)
+                .ok()
+                .is_some_and(|meta| meta.is_dir())
+        },
+    )
+}
+
+/// Testable core: alias comparison with an injected mount
+/// table and directory probe. Production passes the live
+/// table plus filesystem metadata; tests pass fixture tables
+/// (bind layouts need no privilege to script).
+pub fn baseline_tmp_alias_preflight_with(
+    triples: &[MountTriple],
+    full_routes: &[String],
+    full_sources: &[PathBuf],
+    table: Option<&crate::mount_alias::MountTable>,
+    is_dir: &dyn Fn(&Path) -> bool,
+) -> Result<()> {
+    let Some(backing) = tmp_backing_source(triples) else {
+        return Ok(());
+    };
+    if !is_dir(&backing) {
+        return Ok(());
+    }
+    let Some(table) = table else {
+        return Err(CistellaError::Mount(
+            "cannot prove /tmp backing alias-disjoint: mount table unavailable".to_string(),
+        ));
+    };
+    let Some((backing_dev, backing_rel)) = table.filesystem_path(&backing) else {
+        return Err(CistellaError::Mount(
+            "cannot resolve /tmp backing through the mount table".to_string(),
+        ));
+    };
+    for triple in triples {
+        let target = canonicalize_container_target(&triple.container_target);
+        if target == "/tmp" {
+            continue;
+        }
+        let source = canonicalize_host_source(&triple.host_source);
+        if !is_dir(&source) {
+            continue;
+        }
+        let Some((source_dev, source_rel)) = table.filesystem_path(&source) else {
+            return Err(CistellaError::Mount(format!(
+                "cannot resolve {} through the mount table",
+                triple.container_target
+            )));
+        };
+        if source_dev != backing_dev
+            || (source_rel != backing_rel
+                && !backing_rel.starts_with(&source_rel)
+                && !source_rel.starts_with(&backing_rel))
+        {
+            continue;
+        }
+        if triple.mode == MountMode::Rw {
+            continue;
+        }
+        if crate::mount::under_full_route(&target, full_routes)
+            || crate::mount::under_full_source(&source, full_sources)
+        {
+            continue;
+        }
+        return Err(CistellaError::Mount(format!(
+            "read-only {} aliases FULL-backed /tmp source {}: move it outside the covering tree or declare it read-write",
+            triple.container_target,
+            backing.display()
+        )));
+    }
+    Ok(())
 }

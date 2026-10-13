@@ -510,7 +510,7 @@ fn conduct_session(
         // so an RO-elsewhere alias of that source (duplicate or
         // ancestor-covered) would admit writes past its
         // declaration — contradictory topologies refuse here.
-        cistella::mount::baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources)?;
+        cistella::mount_alias::baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources)?;
         cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
         cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
     };

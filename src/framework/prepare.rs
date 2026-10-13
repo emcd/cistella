@@ -827,7 +827,7 @@ fn compute_grants(
 /// `/dev` is container-private (no host aliases possible);
 /// `/tmp` is admitted by construction under hook (operator
 /// direction — whatever backs it), with baseline alias
-/// accounting (see `mount::baseline_tmp_alias_preflight`)
+/// accounting (see `mount_alias::baseline_tmp_alias_preflight`)
 /// closing the host-source alias hole a blanket FULL would
 /// otherwise open. Guest targets receiving full rights
 /// unconditionally. Shared with the RO-retention revision so

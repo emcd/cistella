@@ -449,3 +449,182 @@ fn live_wrapper_passes_disjoint_graft() {
     )
     .expect("disjoint live graft passes");
 }
+
+fn triple(host: &str, target: &str, mode: MountMode) -> MountTriple {
+    MountTriple {
+        host_source: host.to_string(),
+        container_target: target.to_string(),
+        mode,
+    }
+}
+
+#[test]
+fn baseline_tmp_alias_allows_fresh_slice() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight;
+    // Fresh slice backing /tmp with no other routes to its
+    // dentries: the common tmpdir shape passes.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("slice")).expect("slice");
+    let triples = [triple(&format!("{host}/slice"), "/tmp", MountMode::Rw)];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("slice")];
+    baseline_tmp_alias_preflight(&triples, &routes, &sources).expect("fresh slice passes");
+}
+
+#[test]
+fn baseline_tmp_alias_retains_ro_duplicate() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight;
+    // Same host source bound RO at /tmp and RO at /mirror: both
+    // routes retain Podman read-only (VFS-held), so the FULL
+    // Landlock rule on the dentries admits nothing — safe,
+    // proceeds. Retention (not refusal) closes this leg.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("shared")).expect("shared");
+    let triples = [
+        triple(&format!("{host}/shared"), "/tmp", MountMode::Ro),
+        triple(&format!("{host}/shared"), "/mirror", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("shared")];
+    baseline_tmp_alias_preflight(&triples, &routes, &sources).expect("retained duplicate passes");
+}
+
+#[test]
+fn baseline_tmp_alias_refuses_ancestor_covered() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight;
+    // Ancestor binding flipped to Podman RW for materialization
+    // covers the /tmp backing: writes would admit through it
+    // past the RO declaration — refuse.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir_all(tree.path().join("anc/sub")).expect("tree");
+    let triples = [
+        triple(&format!("{host}/anc"), "/src", MountMode::Ro),
+        triple(&format!("{host}/anc/sub"), "/tmp", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("anc/sub")];
+    let error =
+        baseline_tmp_alias_preflight(&triples, &routes, &sources).expect_err("ancestor refuses");
+    assert!(
+        error.to_string().contains("/src"),
+        "names ancestor, got: {error}"
+    );
+}
+
+#[test]
+fn baseline_tmp_alias_allows_consistent_shapes() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight;
+    // RW elsewhere is consistent union; retained RO (VFS-held)
+    // is safe — only flipping aliases refuse.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("shared")).expect("shared");
+    let rw_pair = [
+        triple(&format!("{host}/shared"), "/tmp", MountMode::Rw),
+        triple(&format!("{host}/shared"), "/mirror", MountMode::Rw),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("shared")];
+    baseline_tmp_alias_preflight(&rw_pair, &routes, &sources).expect("RW pair passes");
+    let retained_ro = [
+        triple(&format!("{host}/shared"), "/tmp", MountMode::Rw),
+        triple(&format!("{host}/shared"), "/mirror", MountMode::Ro),
+    ];
+    baseline_tmp_alias_preflight(&retained_ro, &routes, &sources).expect("retained RO passes");
+}
+
+/// Fixture mount table with a bind alias: `/tree/sib` exposed at
+/// `/B` (same device, filesystem-relative containment) plus an
+/// unrelated second device. No privilege needed to script.
+fn bind_alias_table() -> cistella::mount_alias::MountTable {
+    cistella::mount_alias::MountTable::parse(
+        "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         32 23 8:1 /tree/sib /B rw,relatime - ext4 /dev/sda1 rw\n\
+         33 23 8:2 / /mnt/other rw,relatime - ext4 /dev/sdb1 rw\n",
+    )
+    .expect("fixture table parses")
+}
+
+#[test]
+fn baseline_tmp_alias_refuses_bind_contained_ancestor() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight_with;
+    // Bind-hidden containment: /B exposes /tree/sib, which backs
+    // /tmp; the ancestor /tree is RO and flips to RW for
+    // materialization — spelling sees no relation, the table
+    // does. Refuse.
+    let is_dir = &|_: &std::path::Path| true;
+    let triples = [
+        triple("/tree", "/src", MountMode::Ro),
+        triple("/B", "/tmp", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![std::path::PathBuf::from("/B")];
+    let table = bind_alias_table();
+    let error =
+        baseline_tmp_alias_preflight_with(&triples, &routes, &sources, Some(&table), is_dir)
+            .expect_err("bind-contained ancestor refuses");
+    assert!(
+        error.to_string().contains("/src"),
+        "names ancestor, got: {error}"
+    );
+}
+
+#[test]
+fn baseline_tmp_alias_refuses_reverse_bind_descendant() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight_with;
+    // Reverse: /tree backs /tmp, RO bind-alias of its subdir at
+    // /mirror. Same device, descendant in namespace — refusal
+    // (the alias would flip, retention cannot see the spelling).
+    let is_dir = &|_: &std::path::Path| true;
+    let triples = [
+        triple("/tree", "/tmp", MountMode::Ro),
+        triple("/B", "/mirror", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![std::path::PathBuf::from("/tree")];
+    // Fixture /B exposes /tree/sib, but this shape needs a bind
+    // of /tree/sub — build that table inline.
+    let table = cistella::mount_alias::MountTable::parse(
+        "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         32 23 8:1 /tree/sub /B rw,relatime - ext4 /dev/sda1 rw\n",
+    )
+    .expect("fixture table parses");
+    let error =
+        baseline_tmp_alias_preflight_with(&triples, &routes, &sources, Some(&table), is_dir)
+            .expect_err("reverse bind descendant refuses");
+    assert!(
+        error.to_string().contains("/mirror"),
+        "names alias, got: {error}"
+    );
+}
+
+#[test]
+fn baseline_tmp_alias_disjoint_device_passes() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight_with;
+    // Different device, no containment: disjoint control passes.
+    let is_dir = &|_: &std::path::Path| true;
+    let triples = [
+        triple("/mnt/other", "/src", MountMode::Ro),
+        triple("/B", "/tmp", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![std::path::PathBuf::from("/B")];
+    let table = bind_alias_table();
+    baseline_tmp_alias_preflight_with(&triples, &routes, &sources, Some(&table), is_dir)
+        .expect("disjoint passes");
+}
+
+#[test]
+fn baseline_tmp_alias_missing_table_refuses() {
+    use cistella::mount_alias::baseline_tmp_alias_preflight_with;
+    // Fail-closed: no table proves no disjointness.
+    let is_dir = &|_: &std::path::Path| true;
+    let triples = [triple("/B", "/tmp", MountMode::Ro)];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![std::path::PathBuf::from("/B")];
+    baseline_tmp_alias_preflight_with(&triples, &routes, &sources, None, is_dir)
+        .expect_err("missing table refuses");
+}
