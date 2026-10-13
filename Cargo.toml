@@ -56,6 +56,10 @@ name = "bind_alias_probe"
 path = "tests/probes/bind_alias_probe.rs"
 
 [[example]]
+name = "tmp_backing_probe"
+path = "tests/probes/tmp_backing_probe.rs"
+
+[[example]]
 name = "landlock_helper"
 path = "tests/probes/landlock_helper.rs"
 

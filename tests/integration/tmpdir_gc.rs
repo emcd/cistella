@@ -338,3 +338,190 @@ fn tmpdir_hooked_session_writes_tmp() {
         .collect();
     assert!(leftovers.is_empty(), "no slice litter, got: {leftovers:?}");
 }
+
+/// Writes a minimal hooked profile (landlock + ~/src RO plus
+/// caller-supplied extra mount TOML) for admission/retention
+/// proofs that need no tmpdir extension.
+fn write_hooked_profile(dir: &std::path::Path, extra_mounts: &str) -> String {
+    let text = format!(
+        "image = 'localhost/cistella/opencode:example'\n\
+         credential-surface = 'none'\n\
+         container-home = '/home/cistella'\n\
+         command = ['sleep', 'infinity']\n\
+         [[mounts]]\n\
+         host-source = '~/src'\n\
+         container-target = '{{{{core:container-home}}}}/src'\n\
+         mode = 'ro'\n\
+         {extra_mounts}\
+         [[extensions]]\n\
+         name = 'landlock'\n"
+    );
+    let path = dir.join("hooked-test.toml");
+    std::fs::write(&path, text).expect("write profile");
+    path.to_string_lossy().to_string()
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn hooked_tmp_admits_through_wrapped_harness() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    // Unconditional baseline proof through the WRAPPED harness
+    // lineage (not podman exec, which runs outside the
+    // guarantee): the harness itself writes /tmp and exits
+    // cleanly — natural exit 0 proves admission.
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let profdir = tempfile::tempdir().expect("profile dir");
+    let profile = write_hooked_profile(profdir.path(), "");
+    let (mut conduct, _id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &[],
+        &["sh", "-c", "echo admitted > /tmp/admit-probe && sleep 5"],
+        &[],
+    );
+    let status = conduct.wait().expect("conduct completes");
+    assert!(
+        status.success(),
+        "wrapped /tmp write admits, got: {status:?}"
+    );
+    guard.id = None;
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn hooked_ro_mirror_denies_through_wrapped_harness() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    // Retention proof: a static source bound RO at /tmp (the
+    // baseline FULL roots its dentries) and RO at /mirror keeps
+    // VFS read-only on both routes — the wrapped harness cannot
+    // write through the alias and the host source is unmodified.
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let shared = tempfile::tempdir().expect("shared source");
+    let shared_str = shared.path().to_string_lossy().to_string();
+    std::fs::write(shared.path().join("victim"), "precious").expect("victim");
+    let extra = format!(
+        "[[mounts]]\nhost-source = '{shared_str}'\ncontainer-target = '/tmp'\nmode = 'ro'\n\
+         [[mounts]]\nhost-source = '{shared_str}'\ncontainer-target = '/mirror'\nmode = 'ro'\n"
+    );
+    let profdir = tempfile::tempdir().expect("profile dir");
+    let profile = write_hooked_profile(profdir.path(), &extra);
+    let (mut conduct, _id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &[],
+        &["sh", "-c", "echo intruder > /mirror/probe"],
+        &[],
+    );
+    let status = conduct.wait().expect("conduct completes");
+    assert!(
+        !status.success(),
+        "retained-RO alias write must fail, got: {status:?}"
+    );
+    guard.id = None;
+    assert_eq!(
+        std::fs::read(shared.path().join("victim")).expect("victim intact"),
+        b"precious"
+    );
+    assert!(
+        !shared.path().join("probe").exists(),
+        "no alias write landed"
+    );
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn hooked_ancestor_alias_refuses_precreate() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    // Ancestor-covered baseline alias: a sibling source bound RO
+    // at /tmp sits under the RO ~/src ancestor, which flips to
+    // Podman RW for materialization — contradictory topology
+    // refuses pre-create typed (no session starts).
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let sib = tempfile::TempDir::new_in(std::path::Path::new(&home).join("src"))
+        .expect("sibling under ancestor");
+    let sib_str = sib.path().to_string_lossy().to_string();
+    let extra =
+        format!("[[mounts]]\nhost-source = '{sib_str}'\ncontainer-target = '/tmp'\nmode = 'ro'\n");
+    let profdir = tempfile::tempdir().expect("profile dir");
+    let profile = write_hooked_profile(profdir.path(), &extra);
+    let (mut conduct, _id, mut guard) =
+        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "300"], &[]);
+    let status = conduct.wait().expect("conduct completes");
+    assert!(
+        !status.success(),
+        "ancestor-covered alias must refuse pre-create, got: {status:?}"
+    );
+    guard.id = None;
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn tmpdir_nested_user_bind_reaps_with_slice() {
+    if !systemd_available() {
+        eprintln!("skip: systemd user manager not available");
+        return;
+    }
+    // Generic pre-create live: a user bind nested under the
+    // slice gets its mountpoint seeded seat-owned (not
+    // container-root), writes through, and reaps with the root
+    // on orderly terminate.
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let cache_src = tempfile::tempdir().expect("cache source");
+    let cache_str = cache_src.path().to_string_lossy().to_string();
+    let profile = fixture_profile("tmpdir.toml");
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &["--mount", &format!("{cache_str}:/tmp/cache:rw")],
+        &["sleep", "300"],
+        &[],
+    );
+    wait_active(&id);
+    let container = format!("cistella-{id}");
+    wait_harness(&container, "sleep 300");
+    let out = Command::new("podman")
+        .args(["exec", &container, "touch", "/tmp/cache/nested-probe"])
+        .output()
+        .expect("podman exec");
+    assert!(
+        out.status.success(),
+        "nested user bind writes admit: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = run_cistella(&home, &["terminate", &id]);
+    assert!(
+        out.status.success(),
+        "terminate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    guard.id = None;
+    let _ = conduct.wait();
+    let root = seat_root();
+    let leftovers: Vec<_> = std::fs::read_dir(&root)
+        .expect("read seat root")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
+        .collect();
+    assert!(leftovers.is_empty(), "no slice litter, got: {leftovers:?}");
+}

@@ -34,6 +34,8 @@ mod recovery;
 mod selectors;
 #[path = "integration/signals.rs"]
 mod signals;
+#[path = "integration/tmp_alias.rs"]
+mod tmp_alias;
 #[path = "integration/tmpdir_gc.rs"]
 mod tmpdir_gc;
 #[path = "integration/transport.rs"]

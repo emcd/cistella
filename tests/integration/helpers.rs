@@ -259,8 +259,21 @@ pub fn spawn_conduct_full(
             }
         }
     };
-    // Hand the reader back so the pipe stays drained; sleep outputs nothing.
-    let _ = reader;
+    // Drain for conduct lifetime: dropping the readers closes the
+    // pipes, and conduct's later gate writes would die SIGPIPE
+    // (128+13) under main()'s deliberate SigDfl — a racy false
+    // failure (proven by QA strace: gate write lands after the
+    // drop on loaded seats). Detached drain threads hold the
+    // pipes open until EOF at conduct exit; product behavior is
+    // untouched (SigDfl hygiene stays).
+    std::thread::spawn(move || {
+        let mut drain = reader;
+        let _ = std::io::copy(&mut drain, &mut std::io::sink());
+    });
+    std::thread::spawn(move || {
+        let mut stderr = stderr;
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+    });
     (child, id.clone(), Guard { id: Some(id) })
 }
 
