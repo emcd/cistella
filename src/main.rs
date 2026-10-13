@@ -802,11 +802,16 @@ fn conduct_session(
     let volume_targets = cistella::mount::volume_targets(&all_volumes);
     let sources =
         cistella::mount::preparation_sources(&prof.mounts, &cli_triples, &worktree_target);
+    // Managed bind targets (triples rooted in declared cleanup
+    // roots): nested user binds beneath them are the admitted
+    // feature — the offender search exempts managed space only.
+    let managed = cistella::mount::managed_bind_targets(&revised, &evaluated.merged.cleanup);
     if let Err(e) = cistella::prepare::prepare_mountpoints(
         &container_name,
         &sources,
         &volume_targets,
         prof.home(),
+        &managed,
     ) {
         // Lock-held converge (the guard is still live): the full
         // converge re-acquires the creation-window lock and would

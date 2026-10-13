@@ -64,15 +64,24 @@ pub fn preparation_candidates(targets: &[String], container_home: &str) -> Vec<S
 /// Denies `/`, anything equal to a bind target, and anything beneath a
 /// bind target — checked before (and therefore overriding) tmpfs-home
 /// eligibility, so a home-lexical path resolving into a bind mount is
-/// refused. Everything else (tmpfs-home subtrees, container-local
-/// overlay paths) is eligible.
+/// refused. Managed space is exempt: a candidate at or beneath a
+/// framework-managed bind target (declared cleanup root) is the
+/// admitted nested-bind feature, not smuggling — while any
+/// non-managed cover still refuses. Everything else (tmpfs-home
+/// subtrees, container-local overlay paths) is eligible.
 #[must_use]
-pub fn preparation_authorized(resolved: &str, bind_targets: &[String]) -> bool {
+pub fn preparation_authorized(resolved: &str, bind_targets: &[String], managed: &[String]) -> bool {
     if resolved == "/" {
         return false;
     }
     for target in bind_targets {
         if resolved == target || is_beneath(resolved, target) {
+            if managed
+                .iter()
+                .any(|root| resolved == root || is_beneath(resolved, root))
+            {
+                continue;
+            }
             return false;
         }
     }
@@ -210,6 +219,7 @@ pub fn prepare_mountpoints(
     sources: &[String],
     binds: &[String],
     container_home: &str,
+    managed: &[String],
 ) -> Result<()> {
     let timeout = prepare_timeout();
     let candidates = preparation_candidates(sources, container_home);
@@ -244,7 +254,7 @@ pub fn prepare_mountpoints(
     let (resolved_cands, resolved_binds) = resolved.split_at(candidates.len());
     let mut authorized: Vec<String> = Vec::new();
     for r in resolved_cands {
-        if preparation_authorized(r, resolved_binds) {
+        if preparation_authorized(r, resolved_binds, managed) {
             authorized.push(r.clone());
             continue;
         }

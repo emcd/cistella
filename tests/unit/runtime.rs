@@ -350,26 +350,51 @@ fn preparation_candidates_drop_beneath_bind() {
 #[test]
 fn preparation_authorized_binds_win() {
     let binds = targets(&["/work", "/tree"]);
-    assert!(!preparation_authorized("/", &binds), "root denied");
+    assert!(!preparation_authorized("/", &binds, &[]), "root denied");
     assert!(
-        !preparation_authorized("/work", &binds),
+        !preparation_authorized("/work", &binds, &[]),
         "mount root denied"
     );
     assert!(
-        !preparation_authorized("/work/deep", &binds),
+        !preparation_authorized("/work/deep", &binds, &[]),
         "beneath-bind denied"
     );
     assert!(
-        !preparation_authorized("/tree/deep", &binds),
+        !preparation_authorized("/tree/deep", &binds, &[]),
         "nested-RO descendant denied"
     );
     assert!(
-        preparation_authorized("/home/cistella/.config", &binds),
+        preparation_authorized("/home/cistella/.config", &binds, &[]),
         "tmpfs-home descendant eligible"
     );
     assert!(
-        preparation_authorized("/home/me/stray", &binds),
+        preparation_authorized("/home/me/stray", &binds, &[]),
         "container-local overlay path eligible"
+    );
+}
+
+#[test]
+fn preparation_authorized_managed_space() {
+    // Managed bind targets (declared cleanup roots) exempt nested
+    // user binds from the offender search; every non-managed
+    // cover still refuses.
+    let binds = targets(&["/tmp", "/work"]);
+    let managed = vec!["/tmp".to_string()];
+    assert!(
+        preparation_authorized("/tmp", &binds, &managed),
+        "managed root itself eligible"
+    );
+    assert!(
+        preparation_authorized("/tmp/cache", &binds, &managed),
+        "nested user bind beneath managed root eligible"
+    );
+    assert!(
+        !preparation_authorized("/work/deep", &binds, &managed),
+        "non-managed beneath-bind still denied"
+    );
+    assert!(
+        !preparation_authorized("/tmp/cache", &binds, &[]),
+        "without managed scope the same path refuses"
     );
 }
 
@@ -379,11 +404,11 @@ fn preparation_authorized_home_nested_bind_denied() {
     // subtree containing a bind denies beneath that bind.
     let binds = targets(&["/home/cistella/data"]);
     assert!(
-        !preparation_authorized("/home/cistella/data/deep", &binds),
+        !preparation_authorized("/home/cistella/data/deep", &binds, &[]),
         "bind wins over home origin"
     );
     assert!(
-        preparation_authorized("/home/cistella/.config", &binds),
+        preparation_authorized("/home/cistella/.config", &binds, &[]),
         "plain home subtree still eligible"
     );
 }
@@ -397,11 +422,11 @@ fn preparation_authorized_resolved_binds_win_over_lexical() {
     let lexical = targets(&["/alias/data"]);
     let resolved = targets(&["/actual/data"]);
     assert!(
-        !cistella::prepare::preparation_authorized("/actual/data/deep", &resolved),
+        !cistella::prepare::preparation_authorized("/actual/data/deep", &resolved, &[]),
         "resolved bind denies"
     );
     assert!(
-        cistella::prepare::preparation_authorized("/actual/data/deep", &lexical),
+        cistella::prepare::preparation_authorized("/actual/data/deep", &lexical, &[]),
         "lexical comparison would allow — this is the gap resolved binds close"
     );
 }

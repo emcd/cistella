@@ -837,6 +837,33 @@ pub fn full_grant_sources(triples: &[MountTriple], subtree_host: &std::path::Pat
     sources
 }
 
+/// Container targets of triples rooted in declared cleanup
+/// roots: framework-managed space (extension-minted, recorded,
+/// reaped with its root). The mountpoint-preparation offender
+/// search exempts these (a nested user bind beneath a managed
+/// root is the admitted feature, not symlink smuggling);
+/// every other beneath-bind resolution still refuses.
+#[must_use]
+pub fn managed_bind_targets(triples: &[MountTriple], cleanup_roots: &[String]) -> Vec<String> {
+    let roots: Vec<PathBuf> = cleanup_roots
+        .iter()
+        .map(|root| canonicalize_host_source(root))
+        .collect();
+    let mut out = Vec::new();
+    for triple in triples {
+        let source = canonicalize_host_source(&triple.host_source);
+        if roots
+            .iter()
+            .any(|root| source == *root || source.starts_with(root))
+        {
+            out.push(canonicalize_container_target(&triple.container_target));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Whether a canonical host source sits at or under a
 /// FULL-backed source (component-wise, same spelling the
 /// revision retains on).
