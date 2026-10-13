@@ -579,19 +579,25 @@ fn two_non_landlock_extensions_refuse() {
 #[test]
 fn tmpdir_extension_mints_contributes_declares() {
     use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
-    // The shipped tmpdir extension through the registered
-    // path: mints an owner-only slice, contributes the RW triple
+    // The shipped tmpdir extension through the shipped path:
+    // mints an owner-only slice, contributes the RW triple
     // targeting /tmp, and declares it for cleanup — all three
-    // verified, not just trusted.
-    let (entry, ctx, _dir) = peer_entry("cistella-extension-tmpdir", "tmpdir", Vec::new());
-    let resolved = resolve(&entry, &ctx).expect("tmpdir resolves");
+    // verified, not just trusted. No registry involved (shipped
+    // resolution); the sibling binary must be built (`cargo
+    // build` covers it in full runs).
+    let exe_dir = std::env::current_exe()
+        .expect("current test binary")
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile> ancestors")
+        .to_path_buf();
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
-        ExtensionSpawn::Registered(resolved),
-        std::path::Path::new("/nonexistent-exe-dir"),
+        ExtensionSpawn::Tmpdir,
+        &exe_dir,
         &[],
         &minimal_profile(),
         &[],

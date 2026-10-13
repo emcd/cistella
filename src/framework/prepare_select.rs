@@ -19,7 +19,7 @@ use crate::framework::contract::{Deadlines, MergeContext, MountTriple, PreparePl
 use crate::framework::guest::{GuestHost, host_external, host_registered};
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::prepare::{
-    DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, check_hook_executable,
+    DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, TMPDIR_BIN, check_hook_executable,
     run_extension_prepare, spawn_invitation, transact_prepare,
 };
 use crate::guest_registry::HostEnv;
@@ -180,6 +180,16 @@ pub fn prepare_selected_extension(
                     session_id,
                     lease_base,
                 ),
+                Some(ExtensionResolution::Tmpdir) => run_extension_prepare(
+                    ExtensionSpawn::Tmpdir,
+                    exe_dir,
+                    extra,
+                    profile,
+                    triples,
+                    policy,
+                    session_id,
+                    lease_base,
+                ),
                 Some(ExtensionResolution::Registered(entry)) => {
                     let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
                     let resolved = resolve(&entry, &ctx)?;
@@ -229,6 +239,7 @@ fn prepare_pair(
     for entry in extensions {
         match entry {
             ExtensionResolution::Landlock => spawns.push(ExtensionSpawn::Landlock),
+            ExtensionResolution::Tmpdir => spawns.push(ExtensionSpawn::Tmpdir),
             ExtensionResolution::Registered(registered) => {
                 let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
                 let resolved = resolve(&registered, &ctx)?;
@@ -258,6 +269,9 @@ fn prepare_pair(
                 &offered,
                 Deadlines::default(),
             ),
+            ExtensionSpawn::Tmpdir => {
+                host_external(exe_dir, TMPDIR_BIN, extra, &offered, Deadlines::default())
+            }
             ExtensionSpawn::Registered(resolved) => {
                 host_registered(resolved, extra, &offered, Deadlines::default())
             }

@@ -5,11 +5,12 @@ The per-session `/tmp` extension proved out its protocol as a test fixture (`tem
 ## What Changes
 
 - Promote the reference guest to a shipped binary: move `tests/fixtures/tempdir_guest/main.rs` to `src/bin/cistella-extension-tmpdir.rs`, installed and discovered sibling-relative exactly like `cistella-extension-landlock`. No protocol or behavior change; the guest code moves verbatim (plus the role default, below).
-- Align nomenclature to `tmpdir` throughout: registry role, hello default, profile extension names, fixture profiles, test registries, docs, and the `tempdir-service` spec (renamed to `tmpdir-service`). **BREAKING** for the two test-only registries (`tempdir-test` entries) — no production registry exists yet, so the break lands nowhere.
+- Resolve `tmpdir` as shipped (hardcoded, like `landlock`): profiles declare it with no registry entry; the runner spawns the sibling binary with install-dir trust (no digest verification — same trust as the landlock sibling). The registry stays third-party-only (proven by the `example_guest` integration test, which is sufficient per operator direction); forcing the vended guest through the registry would prove nothing and split two shipped extensions across two resolution paths incoherently.
+- Align nomenclature to `tmpdir` throughout: hello default, profile extension names, fixture profiles, docs, and the `tempdir-service` spec (renamed to `tmpdir-service`). No registry entries exist anywhere (test or production), so the rename breaks nothing.
 - Rename `cistella-landlock-wrap` to `cistella-supervisor-landlock` (binary, staged guest path, constant, docs, test references), reserving `cistella-supervisor-<backend>`. Implementation-only: no spec names the wrapper.
-- Correct the production-grade language: the "fixture-grade / promotion waits" clauses become shipped-guest terms (registry-resolved, digest-pinned, fleet-installed like any third-party guest).
-- Test-infra follow-through: tempdir peer resolution switches from the cargo-examples glob to sibling-relative release binaries (like shipped guests); fixture profiles and `profiles.md` reference the new names.
-- Maintainer canary wiring (profile side only): `cistella-maintainer.toml` gains the `tmpdir` extension and drops `TMPDIR`/`BUN_TMPDIR` overrides, proving a writable `/tmp` without the scratch outlet on a production seat. The host registry entry itself is operator action (prerequisite, not in this change); other fleet profiles keep workarounds until the canary proves out. Rollback is revert-file plus re-conduct.
+- Correct the production-grade language: the "fixture-grade / promotion waits" clauses become shipped-guest terms (sibling-installed, no registry, fleet-installed like the landlock extension).
+- Test-infra follow-through: tmpdir peer resolution switches from the cargo-examples glob to sibling-relative release binaries; fixture profiles and `profiles.md` reference the new names. Live tmpdir tests declare the extension with no registry (proving shipped resolution); registry coverage stays with the `example_guest` tests.
+- Maintainer canary wiring (profile side only): `cistella-maintainer.toml` gains the `tmpdir` extension and drops `TMPDIR`/`BUN_TMPDIR` overrides, proving a writable `/tmp` without the scratch outlet on a production seat. The shipped binary must be installed beside the driver first (prerequisite, operator action — an uninstalled sibling fails closed at spawn, so the edit waits for install); other fleet profiles keep workarounds until the canary proves out. Rollback is revert-file plus re-conduct.
 
 ## Capabilities
 
@@ -19,12 +20,13 @@ The per-session `/tmp` extension proved out its protocol as a test fixture (`tem
 
 ### Modified Capabilities
 
-- `tmpdir-service` (renamed from `tempdir-service`): role string `tempdir` → `tmpdir`; reference-vending requirement rewritten from fixture-grade to shipped-guest terms (sibling-installed, registry-resolved, digest-pinned).
+- `tmpdir-service` (renamed from `tempdir-service`): role string `tempdir` → `tmpdir`; reference-vending requirement rewritten from fixture-grade to shipped-guest terms (sibling-installed, no registry, like the landlock extension).
+- `guest-hosting`: shipped-guests list gains `tmpdir`; landlock-plus-one scenario admits a shipped second extension.
 - `src-confinement`: two `tempdir` wordings (`/tmp` carveout requirement body, admitted-slice scenario) → `tmpdir`; no semantic change.
 
 ## Impact
 
 - Code: one file move (`tests/fixtures/` → `src/bin/`), role-default constant, wrapper binary + staged-path rename, peer-resolution helpers, fixture profiles.
 - Release: new binary flows through the existing sibling-install path (cargo install / source builds, like the landlock extension today); the single-file GH artifact question (guests missing beside a lone `cistella` binary) is pre-existing and out of scope.
-- Systems: maintainer seat re-conduct picks up the canary (operator action); registry entry prerequisite (operator action).
+- Systems: maintainer seat re-conduct picks up the canary (operator action); binary install prerequisite (operator action).
 - Deferred (tracked `cistella:todos/45`): cargo feature-gating for isolator/extension bins.

@@ -202,6 +202,8 @@ pub enum IsolatorResolution {
 pub enum ExtensionResolution {
     /// Landlock confinement guest (shipped).
     Landlock,
+    /// Tmpdir host-state guest (shipped).
+    Tmpdir,
     /// Third-party extension (verified at prepare).
     Registered(Guest),
 }
@@ -461,6 +463,7 @@ impl Profile {
             seen.push(entry.name.clone());
             let id = match entry.name.as_str() {
                 "landlock" => ExtensionResolution::Landlock,
+                "tmpdir" => ExtensionResolution::Tmpdir,
                 other => match registry.find(GuestTable::Extensions, other) {
                     Some(registered) => ExtensionResolution::Registered(registered.clone()),
                     None => {

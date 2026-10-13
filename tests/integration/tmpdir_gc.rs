@@ -4,92 +4,14 @@
 //! The gc tests drive the real `gc` binary against hand-built
 //! leases, slices, and guest processes (no conduct orchestration
 //! needed for the lease logic); the conduct tests run full
-//! sessions with the reference tmpdir fixture through the seat
-//! registry.
+//! sessions with the shipped tmpdir extension (no registry —
+//! shipped resolution, the registry stays third-party-only).
 
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::helpers::*;
-
-fn tmpdir_peer_path() -> std::path::PathBuf {
-    use std::os::unix::fs::MetadataExt;
-    let my_path = std::env::current_exe().expect("current_exe");
-    // Sibling release binary (profile dir, not the examples
-    // dir): the guest ships beside the driver like any
-    // extension guest. Newest mtime wins (incremental builds).
-    let profile_dir = my_path
-        .ancestors()
-        .nth(2)
-        .expect("target/<profile>/deps ancestors");
-    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(profile_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name != "cistella-extension-tmpdir"
-                && !name.starts_with("cistella-extension-tmpdir-")
-            {
-                continue;
-            }
-            let metadata = entry.metadata().expect("metadata");
-            if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
-                continue;
-            }
-            candidates.push((metadata.modified().expect("mtime"), entry.path()));
-        }
-    }
-    let selected = candidates
-        .into_iter()
-        .max_by_key(|candidate| candidate.0)
-        .map(|(_, path)| path)
-        .unwrap_or_else(|| {
-            panic!(
-                "shipped binary cistella-extension-tmpdir not found in {}; run `cargo build` first",
-                profile_dir.display()
-            )
-        });
-    // Registry verification refuses group/world-writable guest
-    // binaries, and cargo honors the host umask (0002 builders
-    // emit 775): normalize the peer to 755 at resolution so
-    // every consumer conducts a conforming binary.
-    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod peer binary");
-    selected
-}
-
-fn peer_digest(path: &std::path::Path) -> String {
-    use sha2::Digest;
-    let bytes = std::fs::read(path).expect("read peer binary");
-    hex::encode(sha2::Sha256::digest(&bytes))
-}
-
-/// Writes a seat registry with tmpdir entries into an isolated
-/// XDG config dir. Conducts take it via `XDG_CONFIG_HOME`;
-/// `gc`/`terminate` never read the registry.
-fn write_tmpdir_registry() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let digest = peer_digest(&tmpdir_peer_path());
-    let text = format!(
-        "format-version = 1\n\
-         [[extensions]]\n\
-         name = \"tmpdir\"\n\
-         role = \"tmpdir\"\n\
-         protocol = 1\n\
-         source-digest = {{ algorithm = 'sha256', value = \"{digest}\" }}\n\
-         source-path = \"{}\"\n",
-        tmpdir_peer_path().display()
-    );
-    let config = dir.path().join("cistella");
-    std::fs::create_dir_all(&config).expect("mkdir config");
-    std::fs::write(config.join("registry.toml"), text).expect("write registry");
-    std::fs::set_permissions(
-        config.join("registry.toml"),
-        std::fs::Permissions::from_mode(0o644),
-    )
-    .expect("chmod");
-    dir
-}
 
 /// Spawns a hanging fake_guest (hello, then sleeps) in its own
 /// process group: stands in for a paused pre-response prepare
@@ -286,19 +208,9 @@ fn tmpdir_conduct_reaps_slice_on_teardown() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let registry = write_tmpdir_registry();
     let profile = fixture_profile("tmpdir.toml");
-    let (mut conduct, id, mut guard) = spawn_conduct_full(
-        &home,
-        &profile,
-        &worktree_str,
-        &[],
-        &["sleep", "300"],
-        &[(
-            "XDG_CONFIG_HOME",
-            registry.path().to_string_lossy().to_string().as_str(),
-        )],
-    );
+    let (mut conduct, id, mut guard) =
+        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "300"], &[]);
     wait_active(&id);
     let container = format!("cistella-{id}");
     wait_harness(&container, "sleep 300");
@@ -336,21 +248,11 @@ fn tmpdir_natural_exit_reaps_slice() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let registry = write_tmpdir_registry();
     let profile = fixture_profile("tmpdir.toml");
     // Short harness: the session completes naturally (no
     // terminate), exercising the teardown_unit clean path.
-    let (mut conduct, id, mut guard) = spawn_conduct_full(
-        &home,
-        &profile,
-        &worktree_str,
-        &[],
-        &["sleep", "2"],
-        &[(
-            "XDG_CONFIG_HOME",
-            registry.path().to_string_lossy().to_string().as_str(),
-        )],
-    );
+    let (mut conduct, id, mut guard) =
+        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "2"], &[]);
     wait_active(&id);
     // Pre-exit observation: the slice must exist mid-session.
     // Absence-only would pass even if nothing was ever minted;
@@ -400,19 +302,9 @@ fn tmpdir_hooked_session_writes_tmp() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let registry = write_tmpdir_registry();
     let profile = fixture_profile("tmpdir-hooked.toml");
-    let (mut conduct, id, mut guard) = spawn_conduct_full(
-        &home,
-        &profile,
-        &worktree_str,
-        &[],
-        &["sleep", "300"],
-        &[(
-            "XDG_CONFIG_HOME",
-            registry.path().to_string_lossy().to_string().as_str(),
-        )],
-    );
+    let (mut conduct, id, mut guard) =
+        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "300"], &[]);
     wait_active(&id);
     let container = format!("cistella-{id}");
     wait_harness(&container, "sleep 300");

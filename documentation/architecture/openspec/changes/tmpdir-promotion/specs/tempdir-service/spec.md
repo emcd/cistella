@@ -42,8 +42,8 @@ A registered tmpdir extension SHALL mint one host directory per session prepare 
 
 ### Requirement: Shipped extension vending
 
-The tmpdir extension SHALL ship as the `cistella-extension-tmpdir` sibling binary (installed and discovered beside the driver, like the Landlock extension) and resolve through the seat registry by name with digest-pinned verification — placement confers no discovery. Its hello role SHALL be `tmpdir`; it SHALL advertise `mounts` and `cleanup` (the merge gate admits nonempty contribution types only when advertised). Profiles SHALL name it by registry entry; fleet installs it like any third-party guest.
+The tmpdir extension SHALL ship as the `cistella-extension-tmpdir` sibling binary (installed and discovered beside the driver, like the Landlock extension): profiles declare `tmpdir` with no registry entry, and the runner spawns the sibling with install-dir trust (no digest verification — same trust as the landlock sibling). Its hello role SHALL be `tmpdir`; it SHALL advertise `mounts` and `cleanup` (the merge gate admits nonempty contribution types only when advertised). Fleet installs it like the landlock extension. The registry stays third-party-only (proven by the `example_guest` integration test).
 
-#### Scenario: Registry-resolved tmpdir guest hosts
-- **WHEN** the registry maps the tmpdir name to a verified binary and a profile declares it
-- **THEN** conduct hosts it exactly as any registered extension (prepare, merge, lifecycle); verification failures refuse pre-create typed
+#### Scenario: Declared tmpdir resolves shipped
+- **WHEN** a profile declares the `tmpdir` extension with no registry entry
+- **THEN** conduct hosts it exactly as any extension (prepare, merge, lifecycle); a missing sibling binary refuses pre-create typed

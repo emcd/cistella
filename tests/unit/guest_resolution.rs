@@ -157,7 +157,9 @@ fn registered_names_resolve_by_table() {
     assert_eq!(extensions.len(), 1);
     match &extensions[0] {
         ExtensionResolution::Registered(entry) => assert_eq!(entry.name, "file-extension"),
-        ExtensionResolution::Landlock => panic!("must resolve registered"),
+        ExtensionResolution::Landlock | ExtensionResolution::Tmpdir => {
+            panic!("must resolve registered")
+        }
     }
     // Shipped names resolve first even with a populated registry.
     let prof = profile_naming("podman", &["landlock"]);
@@ -168,6 +170,12 @@ fn registered_names_resolve_by_table() {
     assert_eq!(
         prof.resolve_extensions(&registry).unwrap(),
         vec![ExtensionResolution::Landlock]
+    );
+    // Tmpdir resolves shipped with no registry entry.
+    let prof = profile_naming("podman", &["tmpdir"]);
+    assert_eq!(
+        prof.resolve_extensions(&Registry::default()).unwrap(),
+        vec![ExtensionResolution::Tmpdir]
     );
 }
 

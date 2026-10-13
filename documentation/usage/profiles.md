@@ -182,19 +182,9 @@ for sessions that declare it):
 name = 'tmpdir'
 ```
 
-with a seat registry entry mapping the name to a verified binary
-(role: the guest's own name; it advertises `mounts` and `cleanup`):
-
-```toml
-format-version = 1
-
-[[extensions]]
-name = 'tmpdir'
-role = 'tmpdir'
-protocol = 1
-source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
-source-path = '/opt/guests/cistella-extension-tmpdir'
-```
+No registry entry: `tmpdir` resolves shipped (sibling
+`cistella-extension-tmpdir` binary, install-dir trust — same as
+the `landlock` extension). The registry stays third-party-only.
 
 At prepare the guest mints an owner-only slice
 (`<temproot>/cistella-tmp-<session>-<rand>`, where temproot is

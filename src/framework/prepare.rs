@@ -166,8 +166,14 @@ pub(crate) fn transact_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
 /// Extension binary name resolved sibling-relative to the driver.
 pub const EXTENSION_BIN: &str = "cistella-extension-landlock";
 
+/// Tmpdir extension binary name, resolved the same sibling way.
+pub const TMPDIR_BIN: &str = "cistella-extension-tmpdir";
+
 /// Role capability offered to the extension guest.
 const EXTENSION_ROLE: &str = "landlock";
+
+/// Role capability offered to the tmpdir guest.
+const TMPDIR_ROLE: &str = "tmpdir";
 
 /// Contribution capability the Landlock hook exercises.
 const EXTENSION_HOOKS: &str = "guest-hooks";
@@ -189,14 +195,17 @@ const REGISTERED_OFFERED: [&str; 6] = [
     "credentials",
 ];
 
-/// Which guest answers one prepare transaction: the shipped
-/// Landlock extension or one resolved registered entry (verified
-/// bytes plus recorded role, resolved before prepare so
+/// Which guest answers one prepare transaction: a shipped
+/// extension (Landlock confinement or tmpdir host state,
+/// sibling-relative discovery) or one resolved registered entry
+/// (verified bytes plus recorded role, resolved before prepare so
 /// verification failures refuse pre-create).
 #[derive(Debug)]
 pub enum ExtensionSpawn {
     /// Shipped Landlock extension (sibling-relative discovery).
     Landlock,
+    /// Shipped tmpdir extension (sibling-relative discovery).
+    Tmpdir,
     /// Third-party extension (verified open FD, static argv).
     Registered(ResolvedGuest),
 }
@@ -213,6 +222,19 @@ pub(crate) fn spawn_invitation(spawn: &ExtensionSpawn) -> (String, Vec<String>, 
             vec![EXTENSION_ROLE.to_string(), EXTENSION_HOOKS.to_string()],
             vec![EXTENSION_HOOKS.to_string()],
         ),
+        ExtensionSpawn::Tmpdir => {
+            // Shipped tmpdir negotiates like a registered guest
+            // (role plus the full contribution set, hooks
+            // optional) minus verification — install-dir trust,
+            // same as the landlock sibling.
+            let mut offered = vec![TMPDIR_ROLE.to_string()];
+            offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
+            (
+                TMPDIR_BIN.to_string(),
+                offered,
+                vec![TMPDIR_ROLE.to_string()],
+            )
+        }
         ExtensionSpawn::Registered(resolved) => {
             let mut offered = vec![resolved.role.clone()];
             offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
@@ -228,10 +250,11 @@ pub(crate) fn spawn_invitation(spawn: &ExtensionSpawn) -> (String, Vec<String>, 
 /// staged for the caller to hold.
 ///
 /// `extra_args` rides the guest spawn (production passes none;
-/// tests select deterministic peer modes). The shipped Landlock
-/// spawn requires the `guest-hooks` advertisement (its selection
-/// guarantees engagement); a registered spawn requires only its
-/// recorded role string (hooks stay optional — a zero-hook answer
+/// tests select deterministic peer modes). A shipped spawn
+/// requires its role advertisement (landlock additionally
+/// requires `guest-hooks` — its selection guarantees
+/// engagement); a registered spawn requires only its recorded
+/// role string (hooks stay optional — a zero-hook answer
 /// converges plain downstream).
 ///
 /// Admission checks the contribution type, not the role string:
@@ -276,6 +299,13 @@ pub fn run_extension_prepare(
         ExtensionSpawn::Landlock => host_external(
             exe_dir,
             EXTENSION_BIN,
+            extra_args,
+            &offered,
+            Deadlines::default(),
+        ),
+        ExtensionSpawn::Tmpdir => host_external(
+            exe_dir,
+            TMPDIR_BIN,
             extra_args,
             &offered,
             Deadlines::default(),
