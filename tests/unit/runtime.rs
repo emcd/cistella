@@ -396,6 +396,15 @@ fn preparation_authorized_managed_space() {
         !preparation_authorized("/tmp/cache", &binds, &[]),
         "without managed scope the same path refuses"
     );
+    // Non-managed nested cover beneath managed space: the user
+    // bind itself is never exempt (exemption is per covering
+    // mount, not outer prefix) — preparation must not mkdir or
+    // chown inside persistent user sources.
+    let nested_binds = targets(&["/tmp", "/tmp/cache"]);
+    assert!(
+        !preparation_authorized("/tmp/cache/deep", &nested_binds, &managed),
+        "nested non-managed cover refuses despite managed outer"
+    );
 }
 
 #[test]

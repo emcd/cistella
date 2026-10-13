@@ -64,10 +64,11 @@ pub fn preparation_candidates(targets: &[String], container_home: &str) -> Vec<S
 /// Denies `/`, anything equal to a bind target, and anything beneath a
 /// bind target — checked before (and therefore overriding) tmpfs-home
 /// eligibility, so a home-lexical path resolving into a bind mount is
-/// refused. Managed space is exempt: a candidate at or beneath a
-/// framework-managed bind target (declared cleanup root) is the
+/// refused. Managed binds are exempt per covering mount: a cover
+/// that IS a managed target (declared cleanup root itself) is the
 /// admitted nested-bind feature, not smuggling — while any
-/// non-managed cover still refuses. Everything else (tmpfs-home
+/// non-managed cover (including a user bind nested beneath a
+/// managed root) still refuses. Everything else (tmpfs-home
 /// subtrees, container-local overlay paths) is eligible.
 #[must_use]
 pub fn preparation_authorized(resolved: &str, bind_targets: &[String], managed: &[String]) -> bool {
@@ -76,10 +77,7 @@ pub fn preparation_authorized(resolved: &str, bind_targets: &[String], managed: 
     }
     for target in bind_targets {
         if resolved == target || is_beneath(resolved, target) {
-            if managed
-                .iter()
-                .any(|root| resolved == root || is_beneath(resolved, root))
-            {
+            if managed.iter().any(|root| target == root) {
                 continue;
             }
             return false;
@@ -234,27 +232,33 @@ pub fn prepare_mountpoints(
     })?;
     // Resolve bind targets in the same batch: lexical targets cannot see
     // image-baked symlink components, so authorization compares
-    // resolved-against-resolved. Order-preserved with a split index; the
-    // total count must match or a line was lost and nothing is provable.
+    // resolved-against-resolved — managed targets resolve in the
+    // same batch and namespace (an aliased managed spelling must
+    // not fail closed against its own resolved binds).
+    // Order-preserved with split indexes; the total count must
+    // match or a line was lost and nothing is provable.
     let mut rp_args = vec!["-m".to_string(), "--".to_string()];
     rp_args.extend(candidates.iter().cloned());
     rp_args.extend(binds.iter().cloned());
+    rp_args.extend(managed.iter().cloned());
     let rp_out = podman_exec(container, None, "realpath", &rp_args, timeout)?;
     let resolved: Vec<String> = String::from_utf8_lossy(&rp_out.stdout)
         .lines()
         .map(str::to_string)
         .collect();
-    if resolved.len() != candidates.len() + binds.len() {
+    if resolved.len() != candidates.len() + binds.len() + managed.len() {
         return Err(CistellaError::Runtime(format!(
             "realpath returned {} lines for {} paths",
             resolved.len(),
-            candidates.len() + binds.len()
+            candidates.len() + binds.len() + managed.len()
         )));
     }
-    let (resolved_cands, resolved_binds) = resolved.split_at(candidates.len());
+    let (resolved_cands, rest) = resolved.split_at(candidates.len());
+    let (resolved_binds, resolved_managed) = rest.split_at(binds.len());
+    let managed: Vec<String> = resolved_managed.to_vec();
     let mut authorized: Vec<String> = Vec::new();
     for r in resolved_cands {
-        if preparation_authorized(r, resolved_binds, managed) {
+        if preparation_authorized(r, resolved_binds, &managed) {
             authorized.push(r.clone());
             continue;
         }

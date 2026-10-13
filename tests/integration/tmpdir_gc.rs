@@ -425,18 +425,28 @@ fn hooked_ro_mirror_denies_through_wrapped_harness() {
     );
     let profdir = tempfile::tempdir().expect("profile dir");
     let profile = write_hooked_profile(profdir.path(), &extra);
+    // Single wrapped harness, exit 0 ONLY on (read-ok AND
+    // write-denied): exit 11 = alias not materialized, exit 7 =
+    // write wrongly admitted, exit 0 = read succeeded and the
+    // VFS read-only denial observed. Separate conducts would
+    // let any failed session masquerade as the denial.
     let (mut conduct, _id, mut guard) = spawn_conduct_full(
         &home,
         &profile,
         &worktree_str,
         &[],
-        &["sh", "-c", "echo intruder > /mirror/probe"],
+        &[
+            "sh",
+            "-c",
+            "[ \"$(cat /mirror/victim)\" = precious ] || exit 11; \
+             if echo intruder > /mirror/probe 2>/dev/null; then exit 7; else exit 0; fi",
+        ],
         &[],
     );
     let status = conduct.wait().expect("conduct completes");
     assert!(
-        !status.success(),
-        "retained-RO alias write must fail, got: {status:?}"
+        status.success(),
+        "wrapped read-ok plus write-denied must exit 0, got: {status:?}"
     );
     guard.id = None;
     assert_eq!(
