@@ -30,7 +30,7 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     // and bare "sleep" matches fire pre-harness).
     wait_harness(&container, "sleep 300");
 
-    // SIGKILL conduct: no teardown runs, unit file and scratch remain.
+    // SIGKILL conduct: no teardown runs, the orphan unit file remains.
     conduct.kill().expect("kill conduct");
     let _ = conduct.wait();
     guard.id = None;
@@ -55,7 +55,6 @@ fn inspect_postmortem_and_gc_reap_orphan() {
         unit_path(&home, &id).exists(),
         "unit file outlives external stop"
     );
-    assert!(!scratch_gone(&id), "scratch outlives external stop");
     drop(_creation_freeze);
 
     // inspect reads labels plus journald post-mortem from the orphan unit.
@@ -68,7 +67,7 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     let txt = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(txt.contains(&container), "inspect names session: {txt}");
 
-    // gc reaps the orphaned unit and scratch without manual pre-cleanup.
+    // gc reaps the orphaned unit without manual pre-cleanup.
     let out = run_cistella(&home, &["gc"]);
     assert!(
         out.status.success(),
@@ -76,5 +75,4 @@ fn inspect_postmortem_and_gc_reap_orphan() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!unit_path(&home, &id).exists(), "gc removes orphan unit");
-    assert!(scratch_gone(&id), "gc removes orphan scratch");
 }

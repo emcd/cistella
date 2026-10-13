@@ -98,8 +98,7 @@ pub fn resolve_path_source(path: &Path, expected: &[u8; 32]) -> Result<PinnedBin
 /// the file-ownership gate trusts): `/tmp` (root-owned, mode
 /// 1777) passes, a sticky dir owned by another uid refuses. A
 /// non-sticky world-writable ancestor refuses regardless of
-/// owner. The exception is load-bearing (seat scratch roots are
-/// sticky shared dirs) and admits exactly the configurations
+/// owner. The exception is load-bearing (sticky shared dirs) and admits exactly the configurations
 /// where no untrusted actor can swap the entry.
 fn check_ancestors(canonical_parent: &Path, original: &Path) -> Result<()> {
     // SAFETY: getuid is inherently safe.

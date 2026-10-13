@@ -78,21 +78,11 @@ fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<
         image: image.to_string(),
         container_home: "/home/cistella".to_string(),
     };
-    let scratch = cistella::lock::scratch_dir(&id)
-        .to_string_lossy()
-        .to_string();
-    let triples = vec![
-        MountTriple {
-            host_source: directory,
-            container_target: "/work".to_string(),
-            mode: MountMode::Rw,
-        },
-        MountTriple {
-            host_source: scratch,
-            container_target: "/tmp/scratch".to_string(),
-            mode: MountMode::Rw,
-        },
-    ];
+    let triples = vec![MountTriple {
+        host_source: directory,
+        container_target: "/work".to_string(),
+        mode: MountMode::Rw,
+    }];
     let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
     (session, volumes)
 }
@@ -146,11 +136,11 @@ fn conformance_full_cycle_with_fidelity() {
     assert!(capabilities.supports(Capability::Environment));
     assert!(capabilities.supports(Capability::Mounts));
     let env = vec!["CONFORMANCE_PROBE=cistella-conformance".to_string()];
-    let (mut fixture, _worktree) = launch_unit(&image, env);
+    let (mut fixture, worktree) = launch_unit(&image, env);
     let handle = fixture.handle.clone().expect("unit handle");
     let key = ReconciliationKey::generate();
 
-    // Env fidelity: the harness exfils the contribution via scratch.
+    // Env fidelity: the harness exfils the contribution via the worktree mount.
     let probe = fixture
         .backend
         .execute_launch(
@@ -158,7 +148,7 @@ fn conformance_full_cycle_with_fidelity() {
             &[
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo \"$CONFORMANCE_PROBE\" > /tmp/scratch/probe".to_string(),
+                "echo \"$CONFORMANCE_PROBE\" > /work/probe".to_string(),
             ],
             Some("/work"),
             StdioBinding::Inherit,
@@ -175,8 +165,7 @@ fn conformance_full_cycle_with_fidelity() {
             .expect("await probe"),
         ExecutionOutcome::Exited(0)
     );
-    let scratch_file = cistella::lock::scratch_dir(&fixture.session_id).join("probe");
-    let contents = std::fs::read_to_string(&scratch_file).expect("read probe");
+    let contents = std::fs::read_to_string(worktree.path().join("probe")).expect("read probe");
     assert_eq!(contents, "cistella-conformance\n");
 
     // Mount fidelity: the worktree marker is visible at /work.
@@ -248,7 +237,7 @@ fn conformance_full_cycle_with_fidelity() {
     );
     fixture.handle = None;
     assert!(
-        residue_gone(&fixture.container, &fixture.session_id),
+        residue_gone(&fixture.container),
         "teardown leaves no residue"
     );
 }
@@ -263,7 +252,6 @@ fn conformance_reconciliation_survives_restart() {
     let worktree = TempDir::new().expect("worktree tmpdir");
     let (session, volumes) = plan_session(&image, &worktree, "marker");
     let container = session.container_name();
-    let session_id = session.id.clone();
     let spec = CreateSpec {
         session,
         volumes,
@@ -301,39 +289,34 @@ fn conformance_reconciliation_survives_restart() {
         peer.state(&found).expect("state after converge"),
         LifecycleState::Absent
     );
-    assert!(
-        residue_gone(&container, &session_id),
-        "converged unit leaves no residue"
-    );
+    assert!(residue_gone(&container), "converged unit leaves no residue");
     drop(handle);
     drop(worktree);
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn conformance_absent_converge_clears_orphan_scratch() {
+fn conformance_absent_converge_clears_orphan_unit() {
     let Some(image) = fixture_image() else { return };
     let (mut fixture, _worktree) = launch_unit(&image, vec![]);
     let handle = fixture.handle.clone().expect("unit handle");
     let key = ReconciliationKey::generate();
     let grace = Duration::from_secs(10);
-    // Full teardown, then plant orphan scratch: converge on the
-    // absent unit must clear it rather than trust `state` alone.
+    // Full teardown, then plant an orphan unit file: converge on
+    // the absent unit must clear it rather than trust `state`
+    // alone.
     fixture
         .backend
         .terminate(&handle, grace, &key)
         .expect("terminate");
     fixture.backend.remove(&handle, &key).expect("remove");
-    let scratch = cistella::lock::scratch_dir(&fixture.session_id);
-    std::fs::create_dir_all(&scratch).expect("plant orphan scratch");
+    let home = home_dir();
+    std::fs::write(unit_path(&home, &fixture.session_id), "[Unit]\n").expect("plant orphan unit");
     fixture
         .backend
         .converge_clean(&handle, grace, &key)
-        .expect("converge absent clears scratch");
-    assert!(
-        residue_gone(&fixture.container, &fixture.session_id),
-        "orphan scratch cleared"
-    );
+        .expect("converge absent clears unit");
+    assert!(residue_gone(&fixture.container), "orphan unit cleared");
     fixture.handle = None;
 }
 
@@ -382,7 +365,7 @@ fn conformance_executing_state_observable() {
         .expect("remove after terminate");
     fixture.handle = None;
     assert!(
-        residue_gone(&fixture.container, &fixture.session_id),
+        residue_gone(&fixture.container),
         "terminated harness leaves no residue"
     );
 }

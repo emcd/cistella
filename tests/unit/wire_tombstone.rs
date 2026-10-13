@@ -92,10 +92,10 @@ fn remove_tombstones_repeatable_teardown() {
 }
 
 #[test]
-fn tombstone_reremove_clears_planted_scratch() {
-    // The delegation above is load-bearing, not incidental: scratch
+fn tombstone_reremove_clears_planted_residue() {
+    // The delegation above is load-bearing, not incidental: residue
     // planted AFTER the first remove must converge through a
-    // tombstone re-remove (the exact absent-with-scratch shape the
+    // tombstone re-remove (the exact absent-with-residue shape the
     // live mirror proves end to end).
     let backend = FakeBackend::default();
     let guest = IsolatorGuest::with_backend(backend.clone());
@@ -108,15 +108,15 @@ fn tombstone_reremove_clears_planted_scratch() {
         .dispatch(OP_REMOVE, &remove_payload("tombstone05", &key))
         .expect("remove must succeed");
     backend
-        .scratch
+        .residue
         .lock()
         .unwrap()
         .insert(spec.session.id.clone());
     guest
         .dispatch(OP_REMOVE, &remove_payload("tombstone05", &key))
-        .expect("re-remove converges planted scratch");
+        .expect("re-remove converges planted residue");
     assert!(
-        backend.scratch.lock().unwrap().is_empty(),
+        backend.residue.lock().unwrap().is_empty(),
         "tombstone re-remove clears residue"
     );
 }

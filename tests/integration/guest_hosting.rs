@@ -559,8 +559,8 @@ fn host_scripted_extra(
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let scratch = tempfile::tempdir().expect("tmpdir");
-    let leaked = Box::leak(Box::new(scratch));
+    let hold = tempfile::tempdir().expect("tmpdir");
+    let leaked = Box::leak(Box::new(hold));
     let mut args = vec![
         format!("--mode={mode}"),
         format!("--fd-watch={}", leaked.path().to_string_lossy()),
@@ -667,8 +667,8 @@ fn wire_client_close_after_guest_death_cleans_up() {
         .expect("peer file name")
         .to_string_lossy()
         .into_owned();
-    let scratch = tempfile::tempdir().expect("tmpdir");
-    let leaked = Box::leak(Box::new(scratch));
+    let hold = tempfile::tempdir().expect("tmpdir");
+    let leaked = Box::leak(Box::new(hold));
     let leaked_path = leaked.path().to_path_buf();
     let client = WireClient::host_as(
         &dir,

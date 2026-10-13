@@ -1,6 +1,6 @@
 //! Quadlet unit mechanics for the Podman isolator.
 //!
-//! Unit-content generation, install/start/stop/remove, scratch
+//! Unit-content generation, install/start/stop/remove
 //! handling, shared teardown, GC, and journal logs. The trait impl in
 //! [`super::podman`] drives these; the `runtime` module re-exports
 //! the unchanged paths.
@@ -11,7 +11,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::error::{CistellaError, Result};
-use crate::lock::{LockGuard, legacy_scratch_dir, scratch_dir};
+use crate::lock::LockGuard;
 use crate::registry::unit_file_label;
 use crate::session::{
     LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_LANDLOCK,
@@ -325,7 +325,7 @@ pub fn quadlet_dir() -> Option<PathBuf> {
 /// Writes a Quadlet unit to `~/.config/containers/systemd/` and reloads.
 ///
 /// Callers must hold the creation-window lock before any unit-file or
-/// scratch creation; this function only writes.
+/// unit-file creation; this function only writes.
 ///
 /// # Errors
 ///
@@ -439,31 +439,6 @@ pub(crate) fn query_unit_props(service: &str) -> HashMap<String, String> {
     map
 }
 
-/// Removes both scratch paths for a session id (XDG plus legacy `/tmp`).
-///
-/// A missing path is not an error; any other removal failure propagates so
-/// a failed cleanup cannot report success with residue left behind.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Runtime` when a present scratch path cannot be
-/// removed.
-pub fn remove_scratch(session_id: &str) -> Result<()> {
-    for path in [scratch_dir(session_id), legacy_scratch_dir(session_id)] {
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(CistellaError::Runtime(format!(
-                    "remove scratch {}: {e}",
-                    path.display()
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Stops a unit and settles it (stop + wait for inactive/failed).
 ///
 /// Under systemd this is `systemctl stop` plus the settle loop; without
@@ -559,7 +534,7 @@ pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<
 }
 
 /// Shared teardown: stops the unit, waits for it to settle, removes the
-/// unit file, reloads, resets failure state, and removes scratch.
+/// unit file, reloads, and resets failure state.
 ///
 /// Acquires the creation-window lock; callers that already hold it (like
 /// `gc`) use `teardown_inner` instead (nested `flock` on the same path in
@@ -590,9 +565,6 @@ pub fn teardown_inner(container_name: &str, session_id: &str) -> Result<()> {
         stop_settle(container_name, Duration::from_secs(2))?;
     }
     if !session_id.is_empty() {
-        // New XDG scratch plus legacy /tmp path; both must go, and a
-        // removal failure fails teardown rather than reporting success.
-        remove_scratch(session_id)?;
         // Declared cleanup roots reap post-convergence: litter
         // reports without failing teardown (the unit is gone
         // either way — removal failure is litter, never residue).
@@ -603,27 +575,24 @@ pub fn teardown_inner(container_name: &str, session_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reports whether teardown residue is gone: the unit file is absent and
-/// both scratch paths are removed.
+/// Reports whether teardown residue is gone: the unit file is absent.
 ///
 /// Lets `conduct` tell a benign race (another `terminate` reaped
 /// everything concurrently) from a real teardown failure that must fail
 /// the invocation even when the harness itself succeeded.
 #[must_use]
-pub fn residue_gone(container_name: &str, session_id: &str) -> bool {
+pub fn residue_gone(container_name: &str) -> bool {
     residue_gone_for_paths(
         &quadlet_dir()
             .map(|dir| dir.join(format!("{container_name}.container")))
             .unwrap_or_default(),
-        &[scratch_dir(session_id), legacy_scratch_dir(session_id)],
     )
 }
 
-/// Pure half of `residue_gone` over explicit paths (unit-testable).
+/// Pure half of `residue_gone` over an explicit path (unit-testable).
 #[must_use]
-pub fn residue_gone_for_paths(unit_file: &std::path::Path, scratches: &[PathBuf]) -> bool {
-    let unit_gone = unit_file.as_os_str().is_empty() || !unit_file.exists();
-    unit_gone && scratches.iter().all(|p| !p.exists())
+pub fn residue_gone_for_paths(unit_file: &std::path::Path) -> bool {
+    unit_file.as_os_str().is_empty() || !unit_file.exists()
 }
 
 /// Returns container logs. Under Quadlet systemd ownership `podman logs` is

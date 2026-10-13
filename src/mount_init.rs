@@ -16,9 +16,9 @@ use crate::mount::{
 /// source before container start. Podman auto-creates a missing
 /// mountpoint as container-root (host uid 100000 rootless); a
 /// stranger-owned dir inside a seat-owned tree later refuses
-/// traversal-trusted teardown (tmpdir slice plus the
-/// unconditional `/tmp/scratch` triple tripped every tmpdir
-/// session). Seat-owned pre-created dirs are reused as-is.
+/// traversal-trusted teardown (a nested bind whose mountpoint
+/// podman auto-creates as container-root). Seat-owned
+/// pre-created dirs are reused as-is.
 /// Strict nesting only; top-level mounts resolve into the image
 /// fs and need nothing. Scoped to declared cleanup roots — the
 /// parent source must sit at/under a root, so lifetime teardown

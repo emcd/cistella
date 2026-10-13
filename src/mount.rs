@@ -425,7 +425,7 @@ pub(crate) fn is_ancestor_or_equal(ancestor: &str, descendant: &str) -> bool {
 
 /// Returns podman volume args for the mounts in required ordering:
 ///
-/// session-home first (tmpfs or scratch), then triples sorted by path depth
+/// session-home first (tmpfs or bind), then triples sorted by path depth
 /// (shallowest first) so parents are mounted before children.
 ///
 #[must_use]
@@ -465,7 +465,7 @@ pub fn podman_volume_args(
 /// Container-side targets of every emitted `--volume` entry.
 ///
 /// Single source of truth for what podman actually mounts: profile, CLI,
-/// session-directory, scratch, and credential-surface volumes alike, with
+/// session-directory, and credential-surface volumes alike, with
 /// container targets in emitted (canonicalized) form — so authorization
 /// downstream can never miss a mount prefix whose profile spelling was
 /// noncanonical. The tmpfs session home has no volume entry and is
@@ -486,7 +486,7 @@ pub fn volume_targets(volumes: &[String]) -> Vec<String> {
 }
 
 /// Candidate-source targets for preparation: profile, CLI, and session
-/// triples, canonicalized. Scratch and credential-surface volumes are
+/// triples, canonicalized. Credential-surface volumes are
 /// internal primitives, not user mounts: they contribute to the
 /// authorization/exclusion set (via `volume_targets`) but never seed
 /// candidates — so internal mounts cannot trigger ownership changes to
@@ -793,10 +793,14 @@ pub fn revise_ro_for_confinement(
 }
 
 /// Canonical host sources whose content Landlock grants
-/// FULL: the subtree source (subtree rule) plus every
-/// read-write directory triple's source (its carveout). A
-/// read-only directory at or under any of these is FULL at the
-/// dentry layer through every alias — regardless of its own
+/// FULL: the subtree source (subtree rule), every read-write
+/// directory triple's source (its carveout), plus the backing
+/// source of a triple targeting guest `/tmp` (the unconditional
+/// baseline FULL roots rights on its dentries regardless of the
+/// triple's declared mode — Landlock is mount-agnostic, so the
+/// accounting must name it even when the declaration says RO).
+/// A read-only directory at or under any of these is FULL at
+/// the dentry layer through every alias — regardless of its own
 /// guest target — so the revision must retain its Podman
 /// binding read-only (the VFS binding carries the enforcement
 /// Landlock union cannot subtract). Pure over the triples.
@@ -811,7 +815,104 @@ pub fn full_grant_sources(triples: &[MountTriple], subtree_host: &std::path::Pat
             }
         }
     }
+    // Baseline-backed /tmp: the FULL rule lands on the backing
+    // dentries whatever the declared mode, so the source joins
+    // FULL accounting (retention keeps every RO route to it
+    // read-only at the VFS layer; the alias preflight below
+    // refuses the routes retention cannot cover).
+    if let Some(backing) = tmp_backing_source(triples)
+        && backing.is_dir()
+        && !sources.contains(&backing)
+    {
+        sources.push(backing);
+    }
     sources
+}
+
+/// Canonical host source backing guest `/tmp`, if any triple
+/// targets it: the dentries the unconditional baseline FULL
+/// rule roots on (image `/tmp` with no triple yields none —
+/// no host aliases possible).
+#[must_use]
+pub fn tmp_backing_source(triples: &[MountTriple]) -> Option<PathBuf> {
+    triples.iter().find_map(|triple| {
+        if canonicalize_container_target(&triple.container_target) == "/tmp" {
+            Some(canonicalize_host_source(&triple.host_source))
+        } else {
+            None
+        }
+    })
+}
+
+/// Refuses baseline-aliased `/tmp` backings pre-create
+/// (tier-2 hardening): with guest `/tmp` FULL by baseline, a
+/// host source backing it that is reachable through any other
+/// route not held read-only at the VFS layer admits writes
+/// past its declaration — the FULL rule is dentry-based and
+/// mount-agnostic. For every triple covering the backing
+/// (other than the `/tmp` triple itself): VFS-retained RO
+/// (read-only directory under a FULL route or FULL-backed
+/// source) is safe; FULL-intended (read-write declared, or
+/// under FULL already) is consistent union; anything else —
+/// read-only declared but flipping to Podman read-write for
+/// submount materialization, notably ancestor bindings — is
+/// a contradictory topology and refuses with both targets
+/// named. Dentry-equality closes same-dir-different-spelling
+/// aliases of the backing itself. Runs pre-create, so a
+/// refusal leaves no residue.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Mount` on the first contradictory alias.
+pub fn baseline_tmp_alias_preflight(
+    triples: &[MountTriple],
+    full_routes: &[String],
+    full_sources: &[PathBuf],
+) -> Result<()> {
+    let Some(backing) = tmp_backing_source(triples) else {
+        return Ok(());
+    };
+    let backing_id = crate::mount_alias::dentry_id(&backing);
+    for triple in triples {
+        let target = canonicalize_container_target(&triple.container_target);
+        if target == "/tmp" {
+            continue;
+        }
+        let source = canonicalize_host_source(&triple.host_source);
+        let covers = backing == source || backing.starts_with(join_root(&source));
+        let same_dentry = backing_id
+            .as_ref()
+            .is_some_and(|id| crate::mount_alias::dentry_id(&source).as_ref() == Some(id));
+        if !covers && !same_dentry {
+            continue;
+        }
+        if !std::path::Path::new(&triple.host_source).is_dir() {
+            continue;
+        }
+        if triple.mode == MountMode::Rw {
+            continue;
+        }
+        if under_full_route(&target, full_routes) || under_full_source(&source, full_sources) {
+            continue;
+        }
+        return Err(CistellaError::Mount(format!(
+            "read-only {} aliases FULL-backed /tmp source {}: move it outside the covering tree or declare it read-write",
+            triple.container_target,
+            backing.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Joins a canonical source with a trailing slash for
+/// component-wise prefix comparison (so `/data` never prefixes
+/// `/data2`).
+fn join_root(source: &Path) -> String {
+    let mut rooted = source.to_string_lossy().into_owned();
+    if !rooted.ends_with('/') {
+        rooted.push('/');
+    }
+    rooted
 }
 
 /// Whether a canonical host source sits at or under a

@@ -186,15 +186,13 @@ No registry entry: `tmpdir` resolves shipped (sibling
 `cistella-extension-tmpdir` binary, install-dir trust — same as
 the `landlock` extension). The registry stays third-party-only.
 
-At prepare the guest mints an owner-only slice
-(`<temproot>/cistella-tmp-<session>-<rand>`, where temproot is
-`$TMPDIR` when set and absolute, else `/tmp`), contributes it as
-a read-write triple targeting `/tmp`, and declares it for
-cleanup. Conduct mounts the slice (parent before nested
-`/tmp/scratch`), hooked sessions grant it FULL, and teardown
-reaps the declared directory afterwards; slices from failed
-conducts reconcile through `gc` by session-attributable names.
-At most landlock plus one other extension conducts in v1, so a
-hooked tmpdir session declares both. Shipped implementation:
+At prepare the guest mints an owner-only slice under host
+`/tmp` (`/tmp/cistella-tmp-<session>-<rand>`, no parent
+selection, no knobs), contributes it as a read-write triple
+targeting `/tmp`, and declares it for cleanup. Conduct mounts
+the slice, hooked sessions grant `/tmp` FULL by construction,
+and teardown reaps the declared directory afterwards; slices
+from failed conducts reconcile through `gc` by
+session-attributable names. Shipped implementation:
 `src/bin/cistella-extension-tmpdir.rs` (installed beside the
 driver, discovered sibling-relative).

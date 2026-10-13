@@ -221,43 +221,17 @@ fn generic_label_rules() {
     assert!(parse_cli_label("cistella.id=spoof").is_err());
 }
 
-#[ignore = "live: requires host-global writable /tmp legacy path"]
-#[test]
-fn remove_scratch_missing_ok_blocker_errs() {
-    // Missing scratch paths are Ok; a path blocked by a non-directory
-    // fails loudly instead of reporting success with residue.
-    let id = format!("zz9nosuch{}", std::process::id());
-    let blocker = std::path::PathBuf::from(format!("/tmp/cistella-{id}"));
-    let _ = std::fs::remove_file(&blocker);
-    assert!(cistella::runtime::remove_scratch(&id).is_ok());
-    std::fs::write(&blocker, "block").unwrap();
-    assert!(cistella::runtime::remove_scratch(&id).is_err());
-    std::fs::remove_file(&blocker).unwrap();
-}
-
 #[test]
 fn residue_gone_for_paths() {
     let dir = tempfile::tempdir().unwrap();
     let unit = dir.path().join("cistella-abc.container");
-    let scratch = dir.path().join("scratch");
     // Nothing exists: gone.
-    assert!(cistella::runtime::residue_gone_for_paths(
-        &unit,
-        std::slice::from_ref(&scratch)
-    ));
+    assert!(cistella::runtime::residue_gone_for_paths(&unit));
     // Unit file present: residue.
     std::fs::write(&unit, "x").unwrap();
-    assert!(!cistella::runtime::residue_gone_for_paths(
-        &unit,
-        std::slice::from_ref(&scratch)
-    ));
+    assert!(!cistella::runtime::residue_gone_for_paths(&unit));
     std::fs::remove_file(&unit).unwrap();
-    // Scratch present: residue.
-    std::fs::create_dir(&scratch).unwrap();
-    assert!(!cistella::runtime::residue_gone_for_paths(
-        &unit,
-        std::slice::from_ref(&scratch)
-    ));
+    assert!(cistella::runtime::residue_gone_for_paths(&unit));
 }
 
 #[test]

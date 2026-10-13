@@ -612,14 +612,13 @@ fn tmpdir_extension_mints_contributes_declares() {
     assert_eq!(triple.mode, cistella::framework::contract::MountMode::Rw);
     assert_eq!(plan.merged.cleanup.len(), 1);
     assert_eq!(plan.merged.cleanup[0], triple.host_source);
-    let root = std::env::var("TMPDIR")
-        .ok()
-        .filter(|dir| !dir.is_empty())
-        .unwrap_or_else(|| "/tmp".to_string());
-    let prefix = format!("{root}/cistella-tmp-test-session-tmp-1-");
+    // Hardcoded host-/tmp parent (no environment selection):
+    // fast tests mint real host-/tmp slices (session-unique,
+    // gc-reaped — same discipline live tests accept).
+    let prefix = "/tmp/cistella-tmp-test-session-tmp-1-";
     assert!(
-        triple.host_source.starts_with(&prefix),
-        "slice attributed to the session under the seat temp root, got: {}",
+        triple.host_source.starts_with(prefix),
+        "slice attributed to the session under host /tmp, got: {}",
         triple.host_source
     );
     let metadata = std::fs::symlink_metadata(&triple.host_source).expect("slice exists");

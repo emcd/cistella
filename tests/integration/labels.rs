@@ -67,12 +67,11 @@ fn gc_inspect_failure_fails_closed() {
         !out.status.success(),
         "gc must fail closed on inspect error"
     );
-    // Nothing reaped: unit, liveness, and scratch all intact.
+    // Nothing reaped: unit and liveness intact.
     assert!(
         unit_path(&home, &id).exists(),
         "unit untouched by failed gc"
     );
-    assert!(!scratch_gone(&id), "scratch untouched by failed gc");
     let out = run_cistella(&home, &["survey"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains(&container));
 
@@ -80,7 +79,7 @@ fn gc_inspect_failure_fails_closed() {
     assert!(out.status.success());
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
+    assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -153,7 +152,7 @@ fn command_label_edge_round_trip_live() {
     assert!(out.status.success());
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
+    assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -198,7 +197,7 @@ fn spaced_directory_conduct() {
     );
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
+    assert!(!unit_path(&home, &id).exists(), "unit reaped");
 
     // A literal `%` in the path must survive systemd specifier expansion
     // via `%%` doubling in both the Volume source and the directory label.
@@ -224,7 +223,7 @@ fn spaced_directory_conduct() {
     assert!(out.status.success());
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
+    assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -279,5 +278,5 @@ fn environment_values_verbatim() {
     );
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
+    assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }

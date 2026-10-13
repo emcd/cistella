@@ -679,7 +679,7 @@ pub fn confinement_roots(
 ///   project subtree, the read-write ancestor binding itself,
 ///   per-project grafts under shared read-only trees, outside
 ///   host sources bound inside ancestor routes (`/opt/state`
-///   at `/src/state`), uncovered scratch alike. Declarations
+///   at `/src/state`) alike. Declarations
 ///   are authoritative intent: a validated RW triple left
 ///   read-only would fail writes the operator declared
 ///   admissible.
@@ -696,9 +696,14 @@ pub fn confinement_roots(
 ///   skip (sockets cannot root a `path_beneath` rule);
 ///   not-yet-existing paths grant by mode (a wrong-kind
 ///   materialization fails loudly at apply).
-/// - `/tmp`, `$HOME` (container-private tmpfs), and `/dev/null`
-///   writes stay denied (outlets: `/tmp/scratch`): dogfood
-///   promotes only on evidence.
+/// - Guest `/tmp` carries FULL rights unconditionally under
+///   hook (operator direction — admitted by construction,
+///   whatever backs it). Landlock permission only: retained
+///   Podman RO bindings and filesystem modes still deny, and
+///   RO-elsewhere aliases of a host-backed `/tmp` refuse
+///   pre-create (baseline alias accounting).
+/// - `$HOME` (container-private tmpfs) and `/dev/null` writes
+///   stay denied: dogfood promotes only on evidence.
 ///   Entries deduplicate (first occurrence wins); harness argv
 ///   appends verbatim after `--`.
 ///
@@ -792,7 +797,7 @@ fn compute_grants(
             // wherever it sits — under-ancestor grafts, the
             // read-write ancestor binding itself, outside mounts
             // bound inside ancestor routes (`/opt/state` at
-            // `/src/state`), uncovered scratch alike. Declarations
+            // `/src/state`) alike. Declarations
             // are authoritative intent: a validated RW triple the
             // ruleset left read-only would fail writes the
             // operator declared admissible.
@@ -818,13 +823,19 @@ fn compute_grants(
 }
 
 /// Fixed FULL baselines every hooked launch grants outside the
-/// mount topology (system composition): guest targets receiving
-/// full rights unconditionally. Shared with the RO-retention
-/// revision so FULL accounting is complete — retention and
-/// preflight must see every FULL route, not just
-/// topology-derived ones. (`/` stays excluded: it grants
-/// read-execute, which union-safely denies writes.)
-const FULL_BASELINE_ROUTES: &[&str] = &["/dev"];
+/// mount topology (system composition) plus guest `/tmp`:
+/// `/dev` is container-private (no host aliases possible);
+/// `/tmp` is admitted by construction under hook (operator
+/// direction — whatever backs it), with baseline alias
+/// accounting (see `mount::baseline_tmp_alias_preflight`)
+/// closing the host-source alias hole a blanket FULL would
+/// otherwise open. Guest targets receiving full rights
+/// unconditionally. Shared with the RO-retention revision so
+/// FULL accounting is complete — retention and preflight must
+/// see every FULL route, not just topology-derived ones. (`/`
+/// stays excluded: it grants read-execute, which union-safely
+/// denies writes.)
+const FULL_BASELINE_ROUTES: &[&str] = &["/dev", "/tmp"];
 
 /// Guest targets receiving FULL Landlock rights: the fixed
 /// baselines, the subtree routes, plus every read-write

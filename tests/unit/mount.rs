@@ -119,16 +119,16 @@ fn volume_args_mount_parent_before_child() {
 }
 
 #[test]
-fn volume_args_tmp_slice_before_nested_scratch() {
-    // Tmpdir nesting: the admitted /tmp slice emits before the
-    // nested /tmp/scratch outlet regardless of declaration order,
+fn volume_args_slice_before_nested_user_bind() {
+    // Admitted nesting under a slice: a user bind at /tmp/cache
+    // emits after the /tmp slice regardless of declaration order,
     // so podman never mounts the child onto a path the parent
     // mount would shadow (same stacking contract as
-    // volume_args_mount_parent_before_child, pinned for the real
-    // targets).
+    // volume_args_mount_parent_before_child, pinned for the
+    // user-nested shape the generic pre-create serves).
     let slice = triple("/tmp/cistella-tmp-s1-1-2", "/tmp", MountMode::Rw);
-    let scratch = triple("/tmp/scratch-s1", "/tmp/scratch", MountMode::Rw);
-    let args = podman_volume_args(&[scratch, slice], "/home/cistella", None);
+    let nested = triple("/tmp/user-cache-s1", "/tmp/cache", MountMode::Rw);
+    let args = podman_volume_args(&[nested, slice], "/home/cistella", None);
     let volumes: Vec<&str> = args
         .windows(2)
         .filter(|w| w[0] == "--volume")
@@ -138,9 +138,9 @@ fn volume_args_tmp_slice_before_nested_scratch() {
         volumes,
         vec![
             "/tmp/cistella-tmp-s1-1-2:/tmp:rw",
-            "/tmp/scratch-s1:/tmp/scratch:rw"
+            "/tmp/user-cache-s1:/tmp/cache:rw"
         ],
-        "slice mounts before nested scratch: {volumes:?}"
+        "slice mounts before nested user bind: {volumes:?}"
     );
 }
 
@@ -684,8 +684,8 @@ fn ro_confinement_preflight_refuses_rw_descendant() {
         mode: MountMode::Ro,
     };
     let rw = MountTriple {
-        host_source: format!("{host}/ro-data/scratch"),
-        container_target: "/src/proj/ro-data/scratch".to_string(),
+        host_source: format!("{host}/ro-data/work"),
+        container_target: "/src/proj/ro-data/work".to_string(),
         mode: MountMode::Rw,
     };
     let full = vec!["/src/proj".to_string()];
@@ -694,7 +694,7 @@ fn ro_confinement_preflight_refuses_rw_descendant() {
     let error = ro_confinement_preflight(&[ro.clone(), rw], &full, &[]).unwrap_err();
     let text = error.to_string();
     assert!(text.contains("/src/proj/ro-data"), "got: {text}");
-    assert!(text.contains("/src/proj/ro-data/scratch"), "got: {text}");
+    assert!(text.contains("/src/proj/ro-data/work"), "got: {text}");
     ro_confinement_preflight(&[ro], &full, &[]).expect("retained RO without RW descendant passes");
 }
 
@@ -745,8 +745,8 @@ fn ro_confinement_preflight_collides_alias_spellings() {
     // Same target through dot-segment spelling: canonical
     // comparison still collides with the retained-RO dir.
     let rw = MountTriple {
-        host_source: format!("{host}/ro-data/scratch"),
-        container_target: "/src//proj/./ro-data/scratch".to_string(),
+        host_source: format!("{host}/ro-data/work"),
+        container_target: "/src//proj/./ro-data/work".to_string(),
         mode: MountMode::Rw,
     };
     let full = vec!["/src/proj".to_string()];
@@ -900,8 +900,8 @@ fn ro_confinement_preflight_catches_source_retained_contradiction() {
         mode: MountMode::Ro,
     };
     let rw = MountTriple {
-        host_source: format!("{host}/proj/private/scratch"),
-        container_target: "/extra/private/scratch".to_string(),
+        host_source: format!("{host}/proj/private/work"),
+        container_target: "/extra/private/work".to_string(),
         mode: MountMode::Rw,
     };
     // Source-retained (under subtree) with an RW descendant
@@ -911,4 +911,82 @@ fn ro_confinement_preflight_catches_source_retained_contradiction() {
     let error =
         ro_confinement_preflight(&[ro, rw], &["/src/proj".to_string()], &sources).unwrap_err();
     assert!(error.to_string().contains("/extra/private"), "got: {error}");
+}
+
+#[test]
+fn baseline_tmp_alias_allows_fresh_slice() {
+    use cistella::mount::baseline_tmp_alias_preflight;
+    // Fresh slice backing /tmp with no other routes to its
+    // dentries: the common tmpdir shape passes.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("slice")).expect("slice");
+    let triples = [triple(&format!("{host}/slice"), "/tmp", MountMode::Rw)];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("slice")];
+    baseline_tmp_alias_preflight(&triples, &routes, &sources).expect("fresh slice passes");
+}
+
+#[test]
+fn baseline_tmp_alias_retains_ro_duplicate() {
+    use cistella::mount::baseline_tmp_alias_preflight;
+    // Same host source bound RO at /tmp and RO at /mirror: both
+    // routes retain Podman read-only (VFS-held), so the FULL
+    // Landlock rule on the dentries admits nothing — safe,
+    // proceeds. Retention (not refusal) closes this leg.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("shared")).expect("shared");
+    let triples = [
+        triple(&format!("{host}/shared"), "/tmp", MountMode::Ro),
+        triple(&format!("{host}/shared"), "/mirror", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("shared")];
+    baseline_tmp_alias_preflight(&triples, &routes, &sources).expect("retained duplicate passes");
+}
+
+#[test]
+fn baseline_tmp_alias_refuses_ancestor_covered() {
+    use cistella::mount::baseline_tmp_alias_preflight;
+    // Ancestor binding flipped to Podman RW for materialization
+    // covers the /tmp backing: writes would admit through it
+    // past the RO declaration — refuse.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir_all(tree.path().join("anc/sub")).expect("tree");
+    let triples = [
+        triple(&format!("{host}/anc"), "/src", MountMode::Ro),
+        triple(&format!("{host}/anc/sub"), "/tmp", MountMode::Ro),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("anc/sub")];
+    let error =
+        baseline_tmp_alias_preflight(&triples, &routes, &sources).expect_err("ancestor refuses");
+    assert!(
+        error.to_string().contains("/src"),
+        "names ancestor, got: {error}"
+    );
+}
+
+#[test]
+fn baseline_tmp_alias_allows_consistent_shapes() {
+    use cistella::mount::baseline_tmp_alias_preflight;
+    // RW elsewhere is consistent union; retained RO (VFS-held)
+    // is safe — only flipping aliases refuse.
+    let tree = tempfile::tempdir().expect("tree");
+    let host = tree.path().to_string_lossy().to_string();
+    std::fs::create_dir(tree.path().join("shared")).expect("shared");
+    let rw_pair = [
+        triple(&format!("{host}/shared"), "/tmp", MountMode::Rw),
+        triple(&format!("{host}/shared"), "/mirror", MountMode::Rw),
+    ];
+    let routes = vec!["/dev".to_string(), "/tmp".to_string()];
+    let sources = vec![tree.path().join("shared")];
+    baseline_tmp_alias_preflight(&rw_pair, &routes, &sources).expect("RW pair passes");
+    let retained_ro = [
+        triple(&format!("{host}/shared"), "/tmp", MountMode::Rw),
+        triple(&format!("{host}/shared"), "/mirror", MountMode::Ro),
+    ];
+    baseline_tmp_alias_preflight(&retained_ro, &routes, &sources).expect("retained RO passes");
 }

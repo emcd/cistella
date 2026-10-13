@@ -53,7 +53,6 @@ fn conduct_exit_passthrough_and_mint() {
         .expect("conduct id line")
         .to_string();
     assert!(valid_minted_id(&id1));
-    assert!(scratch_gone(&id1), "no scratch residue");
     assert!(!unit_path(&home, &id1).exists(), "no unit residue");
 
     // Harness true exits 0 with a larger, time-sortable id.
@@ -138,7 +137,6 @@ fn conduct_exit_passthrough_and_mint() {
         .to_string();
     if let Some(id) = first.strip_prefix("conduct ") {
         assert!(!unit_path(&home, id).exists(), "no unit residue");
-        assert!(scratch_gone(id), "no scratch residue");
     }
 }
 
@@ -222,7 +220,6 @@ fn conduct_lifecycle_terminate_while_attached() {
     guard.id = None;
 
     assert!(!unit.exists(), "unit file removed by shared teardown");
-    assert!(scratch_gone(&id), "scratch removed by shared teardown");
     let show = Command::new("systemctl")
         .args([
             "--user",
@@ -315,7 +312,6 @@ fn name_resolves_from_foreign_cwd_live() {
     );
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -356,7 +352,6 @@ fn configuration_directory_plumbing_live() {
     assert!(out.status.success());
     let _ = conduct.wait();
     guard.id = None;
-    assert!(scratch_gone(&id));
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -560,13 +555,12 @@ fn terminate_stops_promptly_without_sigkill() {
     );
 
     // The harness exec ends with the stopped container, so the attached
-    // conduct runs shared teardown itself: unit file and scratch converge
+    // conduct runs shared teardown itself: unit file converges
     // away with no separate terminate needed.
     let status = conduct.wait().expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
-    assert!(scratch_gone(&id), "no scratch residue");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -647,7 +641,6 @@ fn template_env_and_labels_resolve_live() {
     let _ = conduct.wait();
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
-    assert!(scratch_gone(&id), "no scratch residue");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -716,7 +709,6 @@ fn environment_acceptances_forward_live() {
         None => unsafe { std::env::remove_var("CISTELLA_LIVE_ACCEPT") },
     }
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
-    assert!(scratch_gone(&id), "no scratch residue");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -738,13 +730,13 @@ fn environment_acceptances_absent_refuses_residue_free() {
     let child_tmp = child_tmp_root();
     // Serialize against concurrent live conducts: while the
     // creation-window lock is held here, no other conduct can create
-    // units, scratch, or containers, so the before/after diff is exact.
+    // units or containers, so the before/after diff is exact.
     // The refusal path never reaches lock acquisition, so no self-deadlock.
     let _creation = cistella::lock::LockGuard::acquire().expect("creation lock");
     let units_before = cistella_unit_names(&home);
-    let scratch_before = cistella_scratch_names()
+    let tmp_before = cistella_tmp_names()
         .into_iter()
-        .filter(|name| !is_foreign_scratch(name))
+        .filter(|name| !is_foreign_tmp(name))
         .collect::<Vec<_>>();
 
     let prev = std::env::var("CISTELLA_LIVE_REFUSE").ok();
@@ -855,21 +847,21 @@ fn environment_acceptances_absent_refuses_residue_free() {
         units_added.is_empty(),
         "refused conduct added units: {units_added:?}"
     );
-    // Foreign scratch (wire-test rendezvous, not conduct
+    // Foreign tmp (wire-test rendezvous, not conduct
     // products) is scoped out of both snapshots: the lock
     // excludes concurrent conducts, so any other addition
     // is our residue.
-    let scratch_now = cistella_scratch_names()
+    let tmp_now = cistella_tmp_names()
         .into_iter()
-        .filter(|name| !is_foreign_scratch(name))
+        .filter(|name| !is_foreign_tmp(name))
         .collect::<Vec<_>>();
-    let scratch_added: Vec<_> = scratch_now
+    let tmp_added: Vec<_> = tmp_now
         .iter()
-        .filter(|scratch| !scratch_before.contains(scratch))
+        .filter(|name| !tmp_before.contains(name))
         .collect();
     assert!(
-        scratch_added.is_empty(),
-        "refused conduct added scratch: {scratch_added:?}"
+        tmp_added.is_empty(),
+        "refused conduct added tmp state: {tmp_added:?}"
     );
     // Per-child attribution for the pre-lock rendezvous:
     // the refused conduct must leave its isolated temp root
@@ -980,5 +972,4 @@ fn template_namespaces_resolve_live() {
     let _ = conduct.wait();
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
-    assert!(scratch_gone(&id), "no scratch residue");
 }

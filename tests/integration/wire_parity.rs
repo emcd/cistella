@@ -96,21 +96,11 @@ fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<
         image: image.to_string(),
         container_home: "/home/cistella".to_string(),
     };
-    let scratch = cistella::lock::scratch_dir(&id)
-        .to_string_lossy()
-        .to_string();
-    let triples = vec![
-        MountTriple {
-            host_source: directory,
-            container_target: "/work".to_string(),
-            mode: MountMode::Rw,
-        },
-        MountTriple {
-            host_source: scratch,
-            container_target: "/tmp/scratch".to_string(),
-            mode: MountMode::Rw,
-        },
-    ];
+    let triples = vec![MountTriple {
+        host_source: directory,
+        container_target: "/work".to_string(),
+        mode: MountMode::Rw,
+    }];
     let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
     (session, volumes)
 }
@@ -139,7 +129,7 @@ impl WireFixture {
             let grace = Duration::from_secs(10);
             let wire_ok = client.terminate(&handle, grace, &self.key).is_ok()
                 && client.remove(&handle, &self.key).is_ok();
-            if teardown_disarms(wire_ok, residue_gone(&self.container, &self.session_id)) {
+            if teardown_disarms(wire_ok, residue_gone(&self.container)) {
                 self.guard.container_name = None;
                 self.guard.session_id = None;
             }
@@ -214,7 +204,7 @@ fn launch_wire_unit(image: &str, env: Vec<String>) -> WireFixture {
         LifecycleState::Initiated
     );
     // Fixture takes both guards from here: the name-based guard
-    // for unit/scratch, the close guard's client for its Drop.
+    // for the unit, the close guard's client for its Drop.
     let client = holder.take();
     WireFixture {
         _rendezvous: rendezvous,
@@ -246,14 +236,14 @@ fn wire_parity_full_cycle_with_fidelity() {
     let handle = fixture.handle.clone().expect("unit handle");
     let key = ReconciliationKey::generate();
 
-    // Env fidelity: the harness exfils the contribution via scratch.
+    // Env fidelity: the harness exfils the contribution via the worktree mount.
     let probe = client
         .execute_launch(
             &handle,
             &[
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo \"$CONFORMANCE_PROBE\" > /tmp/scratch/probe".to_string(),
+                "echo \"$CONFORMANCE_PROBE\" > /work/probe".to_string(),
             ],
             Some("/work"),
             StdioBinding::Inherit,
@@ -266,8 +256,8 @@ fn wire_parity_full_cycle_with_fidelity() {
             .expect("await probe"),
         ExecutionOutcome::Exited(0)
     );
-    let scratch_file = cistella::lock::scratch_dir(&fixture.session_id).join("probe");
-    let contents = std::fs::read_to_string(&scratch_file).expect("read probe");
+    let worktree_probe = fixture._worktree.path().join("probe");
+    let contents = std::fs::read_to_string(&worktree_probe).expect("read probe");
     assert_eq!(contents, "cistella-conformance\n");
 
     // Mount fidelity: the worktree marker is visible at /work.
@@ -327,7 +317,7 @@ fn wire_parity_full_cycle_with_fidelity() {
     );
     fixture.handle = None;
     assert!(
-        residue_gone(&fixture.container, &fixture.session_id),
+        residue_gone(&fixture.container),
         "teardown leaves no residue"
     );
     fixture.guard.container_name = None;
@@ -400,10 +390,7 @@ fn wire_parity_reconciliation_survives_replacement() {
         .get()
         .converge_clean(&adopted, Duration::from_secs(10), &key)
         .expect("converge adopted");
-    assert!(
-        residue_gone(&container, &session_id),
-        "converged unit leaves no residue"
-    );
+    assert!(residue_gone(&container), "converged unit leaves no residue");
     guard.container_name = None;
     guard.session_id = None;
     let _ = second.take().close();
@@ -414,27 +401,24 @@ fn wire_parity_reconciliation_survives_replacement() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn wire_parity_absent_converge_clears_orphan_scratch() {
+fn wire_parity_absent_converge_clears_orphan_unit() {
     let Some(image) = fixture_image() else { return };
     let mut fixture = launch_wire_unit(&image, vec![]);
     let client = fixture.client.as_ref().expect("wire client");
     let handle = fixture.handle.clone().expect("unit handle");
     let key = ReconciliationKey::generate();
     let grace = Duration::from_secs(10);
-    // Full teardown, then plant orphan scratch: converge on the
+    // Full teardown, then plant an orphan unit file: converge on the
     // tombstoned unit must clear it rather than trust `state`
     // alone (tombstone retains session identity for exactly this).
     client.terminate(&handle, grace, &key).expect("terminate");
     client.remove(&handle, &key).expect("remove");
-    let scratch = cistella::lock::scratch_dir(&fixture.session_id);
-    std::fs::create_dir_all(&scratch).expect("plant orphan scratch");
+    let home = home_dir();
+    std::fs::write(unit_path(&home, &fixture.session_id), "[Unit]\n").expect("plant orphan unit");
     client
         .converge_clean(&handle, grace, &key)
-        .expect("converge absent clears scratch");
-    assert!(
-        residue_gone(&fixture.container, &fixture.session_id),
-        "orphan scratch cleared"
-    );
+        .expect("converge absent clears unit");
+    assert!(residue_gone(&fixture.container), "orphan unit cleared");
     fixture.handle = None;
     fixture.guard.container_name = None;
     fixture.guard.session_id = None;
@@ -480,7 +464,7 @@ fn wire_parity_executing_state_observable() {
         .expect("remove after terminate");
     fixture.handle = None;
     assert!(
-        residue_gone(&fixture.container, &fixture.session_id),
+        residue_gone(&fixture.container),
         "terminated harness leaves no residue"
     );
     fixture.guard.container_name = None;
@@ -543,7 +527,6 @@ struct CycleOutput {
     evidence: CycleEvidence,
     handle: cistella::framework::contract::UnitHandle,
     container: String,
-    session_id: String,
 }
 
 /// Drives one full cycle's mutating phase on any backend.
@@ -559,6 +542,7 @@ fn drive_cycle(
     backend: &dyn Isolator,
     spec: CreateSpec,
     key: &ReconciliationKey,
+    worktree: &std::path::Path,
 ) -> Result<CycleOutput, cistella::error::CistellaError> {
     use cistella::error::CistellaError;
     let container = spec.session.container_name();
@@ -575,7 +559,7 @@ fn drive_cycle(
             &[
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo \"$CISTELLA_PARITY\" > /tmp/scratch/parity".to_string(),
+                "echo \"$CISTELLA_PARITY\" > /work/parity".to_string(),
             ],
             Some("/work"),
             StdioBinding::Inherit,
@@ -606,8 +590,7 @@ fn drive_cycle(
         .and_then(|failure| backend.await_result(&failure, &CancelFlag::default()))?;
     let snapshot = backend.inspect(&handle)?;
     let consistent = snapshot.unit_identity == container && snapshot.session_id == session_id;
-    let scratch_file = cistella::lock::scratch_dir(&session_id).join("parity");
-    let contents = std::fs::read_to_string(&scratch_file)
+    let contents = std::fs::read_to_string(worktree.join("parity"))
         .map_err(|error| CistellaError::Runtime(format!("parity probe read: {error}")))?;
     if contents != "cistella-parity\n" {
         return Err(CistellaError::Contract("parity probe mismatch".to_string()));
@@ -623,7 +606,6 @@ fn drive_cycle(
         },
         handle,
         container,
-        session_id,
     })
 }
 
@@ -644,7 +626,7 @@ fn converge_cycle(
     let wire_ok = backend.terminate(&output.handle, grace, key).is_ok()
         && backend.remove(&output.handle, key).is_ok();
     let post_state = backend.state(&output.handle);
-    let residue_clean = residue_gone(&output.container, &output.session_id);
+    let residue_clean = residue_gone(&output.container);
     if teardown_disarms(wire_ok, residue_clean) {
         guard.container_name = None;
         guard.session_id = None;
@@ -792,7 +774,7 @@ fn wire_parity_removed_handle_create_refuses_live() {
         "tombstone reports absent, got: {state}"
     );
     assert!(
-        residue_gone(&container, &session_id),
+        residue_gone(&container),
         "no residue after refused re-create"
     );
     host.shutdown().expect("guest shuts down clean");
@@ -828,7 +810,7 @@ fn wire_parity_transcript_matches_reference() {
         labels: vec![],
         landlock_hooked: false,
     };
-    let reference_output = match drive_cycle(&reference, spec, &key) {
+    let reference_output = match drive_cycle(&reference, spec, &key, worktree.path()) {
         Ok(output) => output,
         Err(error) => panic!("reference cycle: {error}"),
     };
@@ -856,7 +838,7 @@ fn wire_parity_transcript_matches_reference() {
         labels: vec![],
         landlock_hooked: false,
     };
-    let wire_output = match drive_cycle(holder.get(), spec, &key) {
+    let wire_output = match drive_cycle(holder.get(), spec, &key, worktree.path()) {
         Ok(output) => output,
         Err(error) => panic!("wire cycle: {error}"),
     };

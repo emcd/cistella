@@ -58,24 +58,18 @@ fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> std::io::Result<()> 
     writer.flush()
 }
 
-/// Mints the session slice: fixed prefix plus session id plus
-/// process id plus nanos, exclusive create, owner-only mode. Any
-/// failure fails loudly (the prepare must refuse, never run
-/// undeclared). The parent is the seat temp root (`$TMPDIR` when
-/// set and absolute, else `/tmp`) — standard temp conventions,
-/// so confined seats and capacity redirects work; gc enumerates
-/// the same computed root.
+/// Mints the session slice under host `/tmp`: fixed prefix plus
+/// session id plus process id plus nanos, exclusive create,
+/// owner-only mode. Any failure fails loudly (the prepare must
+/// refuse, never run undeclared). The parent is always host
+/// `/tmp` — no environment selection, no knobs.
 fn mint_slice(session: &str) -> std::io::Result<std::path::PathBuf> {
-    let root = std::env::var("TMPDIR")
-        .ok()
-        .filter(|dir| !dir.is_empty() && dir.starts_with('/'))
-        .unwrap_or_else(|| "/tmp".to_string());
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let name = format!("cistella-tmp-{session}-{}-{nanos}", std::process::id());
-    let path = std::path::PathBuf::from(root).join(name);
+    let path = std::path::PathBuf::from("/tmp").join(name);
     std::fs::create_dir(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
     Ok(path)

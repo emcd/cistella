@@ -34,7 +34,7 @@ use crate::profile::{IsolatorResolution, Profile};
 /// by construction); the slice shape stays for symmetry with the
 /// snapshot API.
 ///
-/// Call before unit/scratch creation: a refusal leaves no residue.
+/// Call before unit creation: a refusal leaves no residue.
 ///
 /// # Errors
 ///
@@ -136,8 +136,6 @@ pub fn abort_startup(
         let grace = Deadlines::default().terminate_grace;
         let _ = client.terminate(unit, grace, &key);
         let _ = client.remove(unit, &key);
-    } else if let Err(e) = crate::runtime::remove_scratch(session_id) {
-        eprintln!("error: startup abort cleanup: {e}");
     }
     // Early-abort conducts may have recorded cleanup declarations
     // (prepare succeeded, unit never installed): reap them here
@@ -157,7 +155,7 @@ pub fn abort_startup(
     let release_outcome = release_client(client, rendezvous_dir);
     let release_failed = release_outcome.is_err();
     report_release(release_outcome);
-    let residue_left = !crate::runtime::residue_gone(container_name, session_id);
+    let residue_left = !crate::runtime::residue_gone(container_name);
     if residue_left {
         eprintln!("error: startup abort left residue for {container_name}");
     }

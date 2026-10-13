@@ -31,12 +31,12 @@ pub struct FakeBackend {
     pub terminated: std::sync::Arc<std::sync::Mutex<Vec<UnitHandle>>>,
     /// Removed unit handles, in order.
     pub removed: std::sync::Arc<std::sync::Mutex<Vec<UnitHandle>>>,
-    /// Local handle to session id (scratch ownership for the
-    /// tombstone scratch model below).
+    /// Local handle to session id (residue ownership for the
+    /// tombstone residue model below).
     pub sessions: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<UnitHandle, String>>>,
-    /// Session ids with surviving scratch residue (planted by
-    /// tests, cleared by remove — the absent-scratch model).
-    pub scratch: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Session ids with surviving residue (planted by
+    /// tests, cleared by remove — the absent-residue model).
+    pub residue: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Isolator for FakeBackend {
@@ -148,11 +148,11 @@ impl Isolator for FakeBackend {
         _key: &ReconciliationKey,
     ) -> cistella::error::Result<RemovedAttestation> {
         self.removed.lock().unwrap().push(handle.clone());
-        // Scratch model: removing clears the unit's surviving
-        // residue, so a planted scratch plus a re-remove proves
+        // Residue model: removing clears the unit's surviving
+        // residue, so planted residue plus a re-remove proves
         // tombstone delegation end to end.
         if let Some(session_id) = self.sessions.lock().unwrap().get(handle) {
-            self.scratch.lock().unwrap().remove(session_id);
+            self.residue.lock().unwrap().remove(session_id);
         }
         Ok(RemovedAttestation {
             unit_identity: handle.as_str().to_string(),

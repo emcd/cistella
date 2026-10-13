@@ -122,17 +122,6 @@ pub fn unit_path(home: &str, id: &str) -> PathBuf {
         .join(format!("cistella-{id}.container"))
 }
 
-pub fn scratch_paths(id: &str) -> Vec<PathBuf> {
-    vec![
-        cistella::lock::scratch_dir(id),
-        cistella::lock::legacy_scratch_dir(id),
-    ]
-}
-
-pub fn scratch_gone(id: &str) -> bool {
-    scratch_paths(id).iter().all(|p| !p.exists())
-}
-
 /// Isolates one child conduct's temp root: production
 /// conduct builds `cistella-rdv-{id}` under
 /// `std::env::temp_dir()` ahead of the creation lock, so a
@@ -162,14 +151,14 @@ pub fn assert_child_tmp_empty(root: &tempfile::TempDir) {
     );
 }
 
-/// Shared-root scratch names that are never the isolated
+/// Shared-root tmp names that are never the isolated
 /// child's products: with its temp root redirected above,
 /// any `cistella-rdv-*` left in the shared root is a
 /// concurrent seat actor's wire-test rendezvous. Callers
 /// scope these out of both snapshots; the creation lock
 /// excludes concurrent conducts, so any other addition is
 /// the probe's own residue.
-pub fn is_foreign_scratch(name: &str) -> bool {
+pub fn is_foreign_tmp(name: &str) -> bool {
     name.starts_with("cistella-rdv-")
 }
 
@@ -189,9 +178,6 @@ impl Drop for Guard {
         if let Some(id) = self.id.take() {
             let home = home_dir();
             let _ = run_cistella(&home, &["terminate", &id]);
-            for path in scratch_paths(&id) {
-                let _ = std::fs::remove_dir_all(path);
-            }
             let _ = run_cistella(&home, &["gc"]);
         }
     }
@@ -505,7 +491,7 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
 }
 
 /// Session-state enumeration for residue-diff tests: unit files
-/// and scratch entries under the shared HOME registry.
+/// under the shared HOME registry.
 pub fn cistella_unit_names(home: &str) -> Vec<String> {
     dir_names_filtered(
         &std::path::PathBuf::from(home).join(".config/containers/systemd"),
@@ -513,11 +499,10 @@ pub fn cistella_unit_names(home: &str) -> Vec<String> {
     )
 }
 
-pub fn cistella_scratch_names() -> Vec<String> {
+pub fn cistella_tmp_names() -> Vec<String> {
     // XDG entries are bare session ids (plus the lock file itself, stable
     // across the test since the guard is acquired before snapshotting);
-    // the no-XDG fallback carries the `cistella-` prefix under /tmp, as
-    // does the legacy path.
+    // host /tmp carries the `cistella-` prefix (slices and rendezvous).
     let mut out = match std::env::var("XDG_RUNTIME_DIR") {
         Ok(rt) if !rt.is_empty() => {
             dir_names_filtered(&std::path::PathBuf::from(rt).join("cistella"), None)

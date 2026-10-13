@@ -253,7 +253,7 @@ fn wire_client_crash_after_create_residue_dominates() {
     // teardown-Ok with remaining residue still retries on panic.
     cistella::runtime::teardown(&container_name, &session_id).expect("direct teardown converges");
     assert!(
-        cistella::runtime::residue_gone(&container_name, &session_id),
+        cistella::runtime::residue_gone(&container_name),
         "no residue after direct converge"
     );
     guard.container_name = None;

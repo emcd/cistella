@@ -62,9 +62,9 @@ fn triple(host: &str, target: &str, mode: MountMode) -> MountTriple {
 
 #[test]
 fn preparation_sources_cover_user_mounts_only() {
-    // Profile + CLI + session targets seed candidates; scratch and
-    // credential-style internals never do (they join the authorization
-    // set via volume_targets, not here).
+    // Profile + CLI + session targets seed candidates; credential-style
+    // internals never do (they join the authorization set via
+    // volume_targets, not here).
     let profile = vec![triple("/data", "/home/cistella/.config/x", MountMode::Rw)];
     let cli = vec![triple("/n", "/srv/data", MountMode::Ro)];
     let got = preparation_sources(&profile, &cli, "/work");

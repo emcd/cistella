@@ -123,21 +123,11 @@ fn plan_session(image: &str, worktree: &TempDir) -> (Session, Vec<String>) {
         image: image.to_string(),
         container_home: "/home/cistella".to_string(),
     };
-    let scratch = cistella::lock::scratch_dir(&id)
-        .to_string_lossy()
-        .to_string();
-    let triples = vec![
-        MountTriple {
-            host_source: directory,
-            container_target: "/work".to_string(),
-            mode: MountMode::Rw,
-        },
-        MountTriple {
-            host_source: scratch,
-            container_target: "/tmp/scratch".to_string(),
-            mode: MountMode::Rw,
-        },
-    ];
+    let triples = vec![MountTriple {
+        host_source: directory,
+        container_target: "/work".to_string(),
+        mode: MountMode::Rw,
+    }];
     let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
     (session, volumes)
 }
@@ -242,10 +232,7 @@ fn recovery_create_unknown_applied_converges() {
             cistella::runtime::teardown(&container, &session_id).expect("direct converge");
         }
     }
-    assert!(
-        residue_gone(&container, &session_id),
-        "no residue after convergence"
-    );
+    assert!(residue_gone(&container), "no residue after convergence");
     guard.container_name = None;
     guard.session_id = None;
     let _ = second.take().close();
@@ -305,10 +292,7 @@ fn recovery_initiate_started_converges_by_adopt() {
         .get()
         .converge_clean(&adopted, Duration::from_secs(10), &key)
         .expect("converge adopted");
-    assert!(
-        residue_gone(&container, &session_id),
-        "no residue after convergence"
-    );
+    assert!(residue_gone(&container), "no residue after convergence");
     guard.container_name = None;
     guard.session_id = None;
     let _ = second.take().close();
@@ -381,10 +365,7 @@ fn recovery_second_death_fails_stop_with_residue() {
         "residue dominates, got: {error}"
     );
     cistella::runtime::teardown(&container, &session_id).expect("direct converge");
-    assert!(
-        residue_gone(&container, &session_id),
-        "no residue after direct converge"
-    );
+    assert!(residue_gone(&container), "no residue after direct converge");
     guard.container_name = None;
     guard.session_id = None;
     let _ = second.take().close();
@@ -435,10 +416,8 @@ fn recovery_launch_death_runs_harness_once() {
             &launch_key,
         )
         .expect("launch run-once harness");
-    // Harness-visible readiness in the WORKTREE mount (survives
-    // scratch removal): the marker proves the spawn happened
-    // before the kill lands. A scratch marker would be deleted by
-    // the very teardown under test.
+    // Harness-visible readiness in the WORKTREE mount: the marker
+    // proves the spawn happened before the kill lands.
     let marker = worktree.path().join("runs");
     let deadline = Instant::now() + Duration::from_secs(30);
     while std::fs::read_to_string(&marker)
@@ -472,7 +451,7 @@ fn recovery_launch_death_runs_harness_once() {
     let rerun_count = std::fs::read_to_string(&marker)
         .map(|runs| runs.lines().count())
         .ok();
-    let residue_clean = residue_gone(&container, &session_id);
+    let residue_clean = residue_gone(&container);
     let _ = holder.take().close();
     if residue_clean {
         guard.container_name = None;
@@ -663,7 +642,7 @@ fn recovery_launch_noack_never_replays() {
     let rerun_count = std::fs::read_to_string(&runs_marker)
         .map(|runs| runs.lines().count())
         .ok();
-    let residue_clean = residue_gone(&container, &session_id);
+    let residue_clean = residue_gone(&container);
     // Reclaim only after the joined thread dropped its Arc;
     // teardown above already ran through the shared borrow.
     let owned = match std::sync::Arc::try_unwrap(holder.take()) {
@@ -752,6 +731,5 @@ fn recovery_conduct_rehosts_through_guest_kill() {
     let status = child.wait().expect("conduct reaped");
     assert_eq!(status.code(), Some(0), "conduct recovers and exits 0");
     assert!(!upath.exists(), "adopted unit removed after recovery");
-    assert!(scratch_gone(&id), "scratch removed after recovery");
     guard.id = None;
 }

@@ -241,7 +241,7 @@ pub trait Isolator: Send + Sync {
     /// Declared capabilities for contribution gating.
     fn capabilities(&self) -> IsolatorCapabilities;
 
-    /// Creates the unit (unit file install, scratch creation) and
+    /// Creates the unit (unit file install) and
     /// returns a framework-opaque handle. Records the reconciliation
     /// key so a replacement peer can locate the unit by key when the
     /// handle never arrived.
@@ -321,8 +321,8 @@ pub trait Isolator: Send + Sync {
         key: &ReconciliationKey,
     ) -> Result<StoppedAttestation>;
 
-    /// Removes the unit file, reloads, resets failure state, removes
-    /// scratch; absent units succeed.
+    /// Removes the unit file, reloads, resets failure state;
+    /// absent units succeed.
     ///
     /// # Errors
     ///

@@ -10,7 +10,7 @@ use super::helpers::*;
 #[test]
 fn signal_during_startup_tears_down() {
     // SIGTERM landing between install and start (opened deterministically by
-    // the start-delay hook) must tear down the installed unit and scratch
+    // the start-delay hook) must tear down the installed unit
     // and exit 128+SIGTERM instead of dying by default action.
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");
@@ -65,7 +65,6 @@ fn signal_during_startup_tears_down() {
     assert_eq!(status.code(), Some(143), "128+SIGTERM, got {status:?}");
     guard.id = None;
     assert!(!upath.exists(), "installed unit removed by startup abort");
-    assert!(scratch_gone(&id), "scratch removed by startup abort");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -112,7 +111,7 @@ fn terminate_races_creation_waits() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn conduct");
-    let (id, _upath) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
+    let (id, upath) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
     let mut guard = Guard {
         id: Some(id.clone()),
     };
@@ -135,7 +134,7 @@ fn terminate_races_creation_waits() {
         "conduct started cleanly: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(scratch_gone(&id), "scratch removed by raced teardown");
+    assert!(!upath.exists(), "unit removed by raced teardown");
     let out = run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(!String::from_utf8_lossy(&out.stdout).contains(&id));
 }
@@ -167,7 +166,6 @@ fn sighup_conduct_tears_down() {
         !unit_path(&home, &id).exists(),
         "no unit residue after signal"
     );
-    assert!(scratch_gone(&id), "no scratch residue after signal");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -176,7 +174,7 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
     // Phase variant of the creation-window promise: hold the creation lock
     // for the whole test so fleet gc processes cannot steal the fixture,
     // prove a concurrent gc blocks, then reap in-process via the lock-held
-    // gc entry point and verify unit + scratch are gone.
+    // gc entry point and verify the unit is gone.
     if !systemd_available() {
         eprintln!("skip: systemd user manager not available");
         return;
@@ -187,8 +185,6 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
     let mut cleanup = Guard {
         id: Some(fake_id.to_string()),
     };
-    let scratch = cistella::lock::scratch_dir(fake_id);
-    std::fs::create_dir_all(&scratch).unwrap();
     let unit = unit_path(&home, fake_id);
     std::fs::write(
         &unit,
@@ -223,7 +219,6 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
     );
     cleanup.id = None;
     assert!(!unit.exists(), "orphan unit reaped");
-    assert!(scratch_gone(fake_id), "orphan scratch reaped");
 }
 
 #[ignore = "live: requires systemd user manager and podman"]

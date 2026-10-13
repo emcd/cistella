@@ -105,7 +105,7 @@ pub enum Command {
         #[arg(long = "label")]
         labels: Vec<String>,
     },
-    /// Reap orphaned cistella units and scratch.
+    /// Reap orphaned cistella units.
     Gc,
     /// Host preflight check.
     Check,

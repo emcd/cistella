@@ -308,7 +308,9 @@ fn tmpdir_hooked_session_writes_tmp() {
     wait_active(&id);
     let container = format!("cistella-{id}");
     wait_harness(&container, "sleep 300");
-    // Admit: the hooked harness writes inside the admitted /tmp.
+    // Admit: the hooked harness writes inside the admitted /tmp
+    // (mount plumbing through the slice; policy proof lives in
+    // the hook_live lineage tests).
     let out = Command::new("podman")
         .args(["exec", &container, "touch", "/tmp/admit-probe"])
         .output()
@@ -316,17 +318,6 @@ fn tmpdir_hooked_session_writes_tmp() {
     assert!(
         out.status.success(),
         "hooked /tmp write admits: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    // Nested outlet preserved: /tmp/scratch still writable beneath
-    // the admitted slice (depth-ordered mounts, subtree handling).
-    let out = Command::new("podman")
-        .args(["exec", &container, "touch", "/tmp/scratch/nested-probe"])
-        .output()
-        .expect("podman exec");
-    assert!(
-        out.status.success(),
-        "nested scratch writes admit: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let out = run_cistella(&home, &["terminate", &id]);

@@ -504,22 +504,13 @@ fn remove_tree(dirfd: RawFd, depth: u32) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Seat temp root for slice mint and orphan enumeration: `$TMPDIR`
-/// when set and absolute, else `/tmp`. Mint and gc MUST compute
-/// the same root (same env, same seat) or enumeration misses
-/// minted slices by construction.
+/// Seat temp root for slice mint and orphan enumeration: host
+/// `/tmp`, unconditionally (no environment selection, no legacy
+/// roots — pre-1.0 breaks freely). Mint and gc share this one
+/// root by construction.
 #[must_use]
 pub fn seat_temp_root() -> PathBuf {
-    seat_temp_root_from(std::env::var("TMPDIR").ok().as_deref())
-}
-
-/// Pure seat-temp-root rule (unit-pinned directly).
-#[must_use]
-pub fn seat_temp_root_from(tmpdir: Option<&str>) -> PathBuf {
-    match tmpdir.filter(|dir| !dir.is_empty()) {
-        Some(dir) if Path::new(dir).is_absolute() => PathBuf::from(dir),
-        _ => PathBuf::from("/tmp"),
-    }
+    PathBuf::from("/tmp")
 }
 
 /// Parsed prepare-lease state: driver pid, pending marker, plus

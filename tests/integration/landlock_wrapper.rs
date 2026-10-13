@@ -77,9 +77,9 @@ fn run_wrapped(allowed: &std::path::Path, python: &str) -> (i32, String, String,
     )
 }
 
-/// Scratch tree with `allowed/` (rw) and `denied/` (no rule)
+/// Fixture tree with `allowed/` (rw) and `denied/` (no rule)
 /// siblings under one tmpdir.
-fn scratch_tree() -> (tempfile::TempDir, PathBuf) {
+fn fixture_tree() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tmpdir");
     let allowed = dir.path().join("allowed");
     std::fs::create_dir_all(&allowed).expect("allowed dir");
@@ -139,7 +139,7 @@ fn usage_errors_exit_3_without_applying() {
 
 #[test]
 fn admitted_write_succeeds_attested() {
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let marker = allowed.join("marker");
     let (exit, attestation, _, _) = run_wrapped(
         &allowed,
@@ -159,7 +159,7 @@ fn admitted_write_succeeds_attested() {
 
 #[test]
 fn sibling_create_denied_attested() {
-    let (dir, allowed) = scratch_tree();
+    let (dir, allowed) = fixture_tree();
     let target = dir.path().join("denied").join("x");
     let (exit, attestation, _, _) = run_wrapped(
         &allowed,
@@ -176,7 +176,7 @@ fn sibling_create_denied_attested() {
 
 #[test]
 fn sibling_read_and_truncate_denied_file_unmodified() {
-    let (dir, allowed) = scratch_tree();
+    let (dir, allowed) = fixture_tree();
     let sibling = dir.path().join("denied").join("sib.txt");
     std::fs::write(&sibling, "SIB").expect("sibling fixture");
     let (exit, _, _, _) = run_wrapped(&allowed, &format!("open({:?}, 'r').read()", sibling));
@@ -200,7 +200,7 @@ fn sibling_read_and_truncate_denied_file_unmodified() {
 
 #[test]
 fn sibling_unlink_denied() {
-    let (dir, allowed) = scratch_tree();
+    let (dir, allowed) = fixture_tree();
     let sibling = dir.path().join("denied").join("gone.txt");
     std::fs::write(&sibling, "GONE").expect("sibling fixture");
     let (exit, _, _, _) = run_wrapped(&allowed, &format!("import os; os.unlink({:?})", sibling));
@@ -210,7 +210,7 @@ fn sibling_unlink_denied() {
 
 #[test]
 fn allowed_truncate_succeeds() {
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let target = allowed.join("truncme.txt");
     std::fs::write(&target, "OLD").expect("truncate fixture");
     let (exit, _, _, _) = run_wrapped(
@@ -264,7 +264,7 @@ fn injection_path_stays_framed_json() {
     // the diagnostics frame: serde owns escaping, and the first
     // stdout line still parses as a typed applied:false refusal
     // with no exec (marker absent).
-    let (_dir, _allowed) = scratch_tree();
+    let (_dir, _allowed) = fixture_tree();
     let evil = "/nonexistent-\"}\n,\"x\":\"y";
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
@@ -295,7 +295,7 @@ fn broken_diagnostics_exits_without_execing() {
     // The diagnostics fd number is never open in the child: the
     // attestation write fails, and the wrapper exits without
     // execing (marker absent). Exit is the post-apply class.
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let marker = allowed.join("noexec-marker");
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=99")
@@ -327,7 +327,7 @@ fn exec_failure_reports_wrapper_error() {
     // typed transitioned:false second line (wrapper failure, never
     // a harness outcome). The transitioned vocabulary (not
     // applied:false) classifies post-attestation failures.
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
         .arg("--allow-ro=/usr")
@@ -371,7 +371,7 @@ fn success_emits_transitioned_true() {
     // Positive exec-transition proof shape: attestation, then the
     // supervisor's transitioned:true, then EOF. The host gate
     // requires all three.
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
         .arg("--allow-ro=/usr")
@@ -410,7 +410,7 @@ fn fault_kill_after_attest_dies_by_signal_without_execing() {
     // The process dies by signal (never a clean exit, never an
     // exec): the host side must report session-signal, never a
     // fabricated harness outcome.
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let marker = allowed.join("fault-marker");
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
@@ -452,7 +452,7 @@ fn fast_harness_exit_relays_disposition() {
     // supervisor's waitpid check must relay (transitioned + exit
     // code), never misattribute as wrapper-death. /bin/true exits
     // in microseconds — fast enough to win the race.
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
         .arg("--allow-ro=/usr")
@@ -493,7 +493,7 @@ fn signalled_harness_relays_signal() {
     // 0.2s delay keeps the signal firmly during supervision —
     // the supervisor has observed the transition long before
     // the harness dies by its own hand.
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
         .arg("--allow-ro=/usr")
@@ -541,7 +541,7 @@ fn harness_exit_126_relays_as_harness_outcome() {
     // No exit code is squatted as a transition sentinel: a
     // harness exiting 126 relays as the harness outcome with a
     // clean transition (report failure self-signals instead).
-    let (_dir, allowed) = scratch_tree();
+    let (_dir, allowed) = fixture_tree();
     let output = Command::new(wrapper_path())
         .arg("--diagnostics-fd=1")
         .arg("--allow-ro=/usr")

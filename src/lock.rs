@@ -1,6 +1,6 @@
 //! Advisory creation-window lock for conduct/terminate/gc.
 //!
-//! `conduct` holds the lock from before any unit-file or scratch creation
+//! `conduct` holds the lock from before any unit-file creation
 //! through `create unit -> start`; `terminate`/`gc` hold it around
 //! scan-and-teardown. A concurrent `gc` therefore never reaps a session
 //! that is still being installed.
@@ -22,29 +22,6 @@ pub fn lock_path() -> PathBuf {
         return PathBuf::from(dir).join("cistella/lock");
     }
     PathBuf::from("/tmp/cistella.lock")
-}
-
-/// Returns the per-session scratch directory for `id`.
-///
-/// Prefers `$XDG_RUNTIME_DIR/cistella/<id>` (per-user tmpfs with the same
-/// lifetime as the user manager); falls back to `/tmp/cistella-<id>`.
-#[must_use]
-pub fn scratch_dir(session_id: &str) -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
-        && !dir.is_empty()
-    {
-        return PathBuf::from(dir).join(format!("cistella/{session_id}"));
-    }
-    PathBuf::from(format!("/tmp/cistella-{session_id}"))
-}
-
-/// Returns the legacy `/tmp/cistella-<id>` scratch path.
-///
-/// Sessions created before the XDG scratch move used this path; teardown
-/// removes both paths so orphaned legacy residue never survives.
-#[must_use]
-pub fn legacy_scratch_dir(session_id: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/cistella-{session_id}"))
 }
 
 /// Advisory exclusive lock guard.
@@ -123,8 +100,7 @@ impl LockGuard {
 
 /// Returns the runtime state base: `$XDG_RUNTIME_DIR` when set,
 /// else `/tmp`. Session-attributable driver state (prepare
-/// leases) lives directly under it, mirroring the lock and
-/// scratch fallbacks.
+/// leases) lives directly under it, mirroring the lock fallback.
 ///
 /// Callers pass the base explicitly into lease creation so tests
 /// pin behavior against tmpdirs without touching process env.

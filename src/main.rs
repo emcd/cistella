@@ -273,7 +273,7 @@ fn retire_and_rehost(
         Ok(fresh) => Ok(fresh),
         Err(rehost_error) => {
             let teardown_result = cistella::runtime::teardown_inner(container_name, session_id);
-            let residue_ok = cistella::runtime::residue_gone(container_name, session_id);
+            let residue_ok = cistella::runtime::residue_gone(container_name);
             Err(cistella::isolators::client::rehost_failure_verdict(
                 teardown_result,
                 residue_ok,
@@ -393,19 +393,9 @@ fn conduct_session(
     cistella::mount::validate_mounts(&triples, &prof.container_home)?;
     // Nested-under-RO availability preflight: admitted topologies start
     // only when the intermediate chain pre-exists in the RO ancestor's
-    // host source. Runs after validation, before scratch creation or
-    // unit install — a refusal leaves literally no residue.
+    // host source. Runs after validation, before unit install — a
+    // refusal leaves literally no residue.
     cistella::mount::nested_ro_preflight(&triples)?;
-    // Per-session scratch (XDG path, `/tmp` fallback; Label= tracks the id).
-    let scratch_host = cistella::lock::scratch_dir(&id)
-        .to_string_lossy()
-        .to_string();
-    triples.push(MountTriple {
-        host_source: scratch_host,
-        container_target: "/tmp/scratch".to_string(),
-        mode: MountMode::Rw,
-    });
-    cistella::mount::validate_mounts(&triples, prof.home())?;
     // Deliberate policy migration (0.2.0): the legacy unconditional
     // token-assignments veto is removed here and replaced by lattice
     // evaluation below. Refusals change error class from Identity to
@@ -515,6 +505,12 @@ fn conduct_session(
             &triples,
             &directory,
         )?;
+        // Baseline alias refusal second: the unconditional FULL
+        // on guest /tmp roots rights on its backing dentries,
+        // so an RO-elsewhere alias of that source (duplicate or
+        // ancestor-covered) would admit writes past its
+        // declaration — contradictory topologies refuse here.
+        cistella::mount::baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources)?;
         cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
         cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
     };
@@ -606,7 +602,7 @@ fn conduct_session(
     };
     let key = ReconciliationKey::generate();
     let grace = Deadlines::default().terminate_grace;
-    // Creation window: lock BEFORE any unit-file or scratch creation,
+    // Creation window: lock BEFORE any unit-file creation,
     // hold through install -> start, then release before exec. A lock
     // failure strands the hosted guest unless released here (the
     // client has no Drop): release first, then report.
@@ -622,7 +618,7 @@ fn conduct_session(
         report_release(release_client(client, &rendezvous_dir));
         return Ok(128 + signum);
     }
-    // Isolator create installs the unit file and scratch together; on
+    // Isolator create installs the unit file; on
     // failure the shared teardown converges any installed residue (a
     // failed daemon-reload leaves a unit file behind).
     let spec = CreateSpec {
@@ -714,7 +710,7 @@ fn conduct_session(
                         report_release(release_client(client, &rendezvous_dir));
                         drop(guard);
                         if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
-                            && !cistella::runtime::residue_gone(&container_name, &id)
+                            && !cistella::runtime::residue_gone(&container_name)
                         {
                             return Err(teardown_err);
                         }
@@ -762,7 +758,7 @@ fn conduct_session(
                 // Every failure past install runs teardown so no residue remains;
                 // a teardown failure with residue left behind dominates the report.
                 if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
-                    && !cistella::runtime::residue_gone(&container_name, &id)
+                    && !cistella::runtime::residue_gone(&container_name)
                 {
                     return Err(teardown_err);
                 }
@@ -782,7 +778,7 @@ fn conduct_session(
         )
     {
         let teardown_result = client.teardown_unit(&unit, grace, &key, &container_name, &id, true);
-        let residue_ok = cistella::runtime::residue_gone(&container_name, &id);
+        let residue_ok = cistella::runtime::residue_gone(&container_name);
         let uncertain = client.shutdown_uncertain();
         drop(guard);
         let error = cistella::isolators::client::select_teardown_error(
@@ -796,7 +792,7 @@ fn conduct_session(
     }
     // Mountpoint preparation runs under the creation-window lock, before
     // the harness attaches. Authorization consumes the canonical emitted
-    // volume targets (profile/CLI/session/scratch/credential volumes
+    // volume targets (profile/CLI/session/credential volumes
     // alike), so no mount prefix escapes on spelling; candidates are
     // seeded from user mounts only (profile/CLI/session), so internal
     // primitives never trigger ownership changes to system ancestors.
@@ -819,7 +815,7 @@ fn conduct_session(
         // uncertainty (never demote recorded shutdown residue to
         // the prepare error on a clean snapshot).
         let teardown_result = client.teardown_unit(&unit, grace, &key, &container_name, &id, true);
-        let residue_ok = cistella::runtime::residue_gone(&container_name, &id);
+        let residue_ok = cistella::runtime::residue_gone(&container_name);
         let uncertain = client.shutdown_uncertain();
         drop(guard);
         let error = cistella::isolators::client::select_teardown_error(
@@ -908,7 +904,7 @@ fn conduct_session(
                 let _ = client.terminate(&unit, grace, &key);
                 let _ = client.remove(&unit, &key);
                 report_release(release_client(client, &rendezvous_dir));
-                if !cistella::runtime::residue_gone(&container_name, &id) {
+                if !cistella::runtime::residue_gone(&container_name) {
                     eprintln!("error: signal teardown left residue for {container_name}");
                     return Ok(1);
                 }
@@ -956,7 +952,7 @@ fn conduct_session(
     // and pipe-EOF verification, which teardown cannot see).
     match client.teardown_unit(&unit, grace, &key, &container_name, &id, false) {
         Ok(()) => {}
-        Err(teardown_err) if !cistella::runtime::residue_gone(&container_name, &id) => {
+        Err(teardown_err) if !cistella::runtime::residue_gone(&container_name) => {
             let harness_note = match &status {
                 ExecutionOutcome::Signaled(signum) => format!("harness signaled 128+{signum}"),
                 ExecutionOutcome::Exited(code) => format!("harness exited {code}"),

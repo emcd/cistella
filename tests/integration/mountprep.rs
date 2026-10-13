@@ -320,7 +320,7 @@ fn mountpoint_prepare_timeout_fails_closed() {
         "typed deadline error: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Residue check: no unit files or scratches remain for the attempt.
+    // Residue check: no unit files remain for the attempt.
     // The id is unknown (conduct never printed it), so scan the registry
     // for leftovers from this worktree instead.
     let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
@@ -406,7 +406,7 @@ fn nested_ro_missing_chain_refuses_pre_mutation() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     // Intermediate link absent in the RO source: conduct refuses with a
-    // typed error naming both sides, before unit file or scratch exist.
+    // typed error naming both sides, before the unit file exists.
     let tree = TempDir::new().unwrap();
     let leaf_host = TempDir::new().unwrap();
     let profile = worktree.path().join("tmpl-miss.toml");
@@ -641,7 +641,7 @@ fn nested_rw_under_rw_conducts() {
 /// a read-write graft of ancestor-tree content outside the
 /// session subtree would dentry-alias RO-covered content
 /// (Landlock unions aliases toward FULL), so the hooked branch
-/// refuses with the graft named before any unit or scratch.
+/// refuses with the graft named before any unit exists.
 /// The graft target sits outside all routes (no RO ancestor
 /// above it) so nested_ro stays silent and the refusal proves
 /// the alias gate specifically.

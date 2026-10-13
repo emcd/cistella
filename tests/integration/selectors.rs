@@ -88,7 +88,6 @@ fn selectors_ambiguous_and_exclusive() {
     );
     let _ = child_a.wait();
     guard_a.id = None;
-    assert!(scratch_gone(&id_a));
 
     let out = run_cistella(&home, &["survey", "--directory", &worktree_str]);
     let txt = String::from_utf8_lossy(&out.stdout).to_string();

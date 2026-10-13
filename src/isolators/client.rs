@@ -688,7 +688,7 @@ impl WireClient {
                         crate::runtime::teardown(container_name, session_id)
                     };
                     if let Err(teardown_err) = converged
-                        && !crate::runtime::residue_gone(container_name, session_id)
+                        && !crate::runtime::residue_gone(container_name)
                     {
                         return Err(teardown_err);
                     }
@@ -938,11 +938,10 @@ impl Isolator for WireClient {
         key: &ReconciliationKey,
     ) -> Result<()> {
         // Mirrors the reference override (never trust `state`
-        // alone): an `Absent` unit with surviving scratch is
+        // alone): an `Absent` unit with a surviving unit file is
         // residue, not convergence. `remove` is idempotent through
-        // removal tombstones and owns both the unit file and
-        // scratch, so it closes every state including
-        // absent-with-residue.
+        // removal tombstones and owns the unit file, so it closes
+        // every state including absent-with-residue.
         match self.state(handle) {
             Ok(LifecycleState::Absent) => {
                 self.remove(handle, key)?;

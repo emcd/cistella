@@ -63,7 +63,7 @@ fn fake_guest_path() -> PathBuf {
 }
 
 /// Stages the fake guest under the extension binary name in a
-/// scratch dir: discovery pins the bare name, never PATH.
+/// temp dir: discovery pins the bare name, never PATH.
 fn stage_extension_peer() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tmpdir");
     let staged = dir.path().join(EXTENSION_BIN);
@@ -275,13 +275,15 @@ fn compose_hook_argv_orders_wrapper_args_then_harness() {
     .unwrap();
     // The read-write ancestor binding carves FULL on its own
     // route (declarations authoritative); routes render first,
-    // then carveouts, then the harness.
+    // then carveouts, then the harness. The /tmp baseline grants
+    // FULL unconditionally (second baseline, fixed position).
     assert_eq!(
         argv,
         vec![
             STAGED_WRAPPER_GUEST_PATH.to_string(),
             "--allow-ro=/".to_string(),
             "--allow-rw=/dev".to_string(),
+            "--allow-rw=/tmp".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
             "--allow-rw=/src".to_string(),
@@ -410,16 +412,16 @@ fn gate_drain_clean_session_has_no_detail() {
 }
 
 #[test]
-fn compose_admitted_tmp_slice_grants_full_with_scratch_nested() {
+fn compose_admitted_tmp_slice_grants_full_with_nested_bind() {
     use cistella::framework::prepare::compose_hook_argv;
     use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
     use cistella::mount::{MountMode, MountTriple};
     // A contributed RW triple targeting /tmp composes a FULL
     // carveout by declared mode (no /tmp-specific rule exists —
-    // the generic carveout covers it); nested /tmp/scratch keeps
+    // the generic carveout covers it); a nested user bind keeps
     // its own grant (depth-ordered mounts, union semantics).
     let slice = tempfile::tempdir().expect("slice dir");
-    let scratch = tempfile::tempdir().expect("scratch dir");
+    let cache = tempfile::tempdir().expect("cache dir");
     let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
     let triples = vec![
         MountTriple {
@@ -428,8 +430,8 @@ fn compose_admitted_tmp_slice_grants_full_with_scratch_nested() {
             mode: MountMode::Rw,
         },
         MountTriple {
-            host_source: scratch.path().to_string_lossy().to_string(),
-            container_target: "/tmp/scratch".to_string(),
+            host_source: cache.path().to_string_lossy().to_string(),
+            container_target: "/tmp/cache".to_string(),
             mode: MountMode::Rw,
         },
     ];
@@ -446,41 +448,37 @@ fn compose_admitted_tmp_slice_grants_full_with_scratch_nested() {
         "admitted slice grants full, got: {argv:?}"
     );
     assert!(
-        argv.contains(&"--allow-rw=/tmp/scratch".to_string()),
-        "nested scratch keeps its grant, got: {argv:?}"
+        argv.contains(&"--allow-rw=/tmp/cache".to_string()),
+        "nested user bind keeps its grant, got: {argv:?}"
     );
 }
 
 #[test]
-fn compose_undeclared_tmp_gets_no_grant() {
+fn compose_tmp_granted_by_baseline() {
     use cistella::framework::prepare::compose_hook_argv;
     use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
     use cistella::mount::{MountMode, MountTriple};
-    // Default topology (no triple admitting /tmp): no FULL grant
-    // names /tmp, so writes stay denied (the outlet remains
-    // /tmp/scratch).
-    let scratch = tempfile::tempdir().expect("scratch dir");
+    // Unconditional baseline: /tmp grants FULL under hook with
+    // no triple admitting it (operator direction — admitted by
+    // construction, whatever backs it).
+    let work = tempfile::tempdir().expect("work dir");
     let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
     let triples = vec![MountTriple {
-        host_source: scratch.path().to_string_lossy().to_string(),
-        container_target: "/tmp/scratch".to_string(),
+        host_source: work.path().to_string_lossy().to_string(),
+        container_target: "/work".to_string(),
         mode: MountMode::Rw,
     }];
     let argv = compose_hook_argv(
         &[hook],
         &triples,
-        scratch.path(),
-        scratch.path(),
+        work.path(),
+        work.path(),
         &["true".to_string()],
     )
     .unwrap();
     assert!(
-        !argv.contains(&"--allow-rw=/tmp".to_string()),
-        "undeclared /tmp must not grant, got: {argv:?}"
-    );
-    assert!(
-        argv.contains(&"--allow-rw=/tmp/scratch".to_string()),
-        "outlet keeps its grant, got: {argv:?}"
+        argv.contains(&"--allow-rw=/tmp".to_string()),
+        "baseline grants /tmp with no triple, got: {argv:?}"
     );
 }
 
@@ -493,15 +491,15 @@ fn compose_declared_mounts_grant_by_mode() {
     // Declared mounts grant by declared mode: the read-write
     // ancestor binding grants full on its own route (declarations
     // are authoritative — a validated RW triple left read-only
-    // would fail declared-admissible writes); scratch outside the
-    // ancestor domain with RW grants full; a socket file is
+    // would fail declared-admissible writes); a user bind under
+    // /tmp with RW grants full; a socket file is
     // skipped (cannot root path_beneath); an outside host source
     // bound inside the ancestor route (`/opt/state` at
     // `/src/state`) grants full wherever it sits; a read-write
     // sibling submount under the ancestor grants full as a
     // declared carveout; a read-only submount under the ancestor
     // grants nothing (the ancestor read-execute rule denies).
-    let scratch = tempfile::tempdir().expect("scratch dir");
+    let cache = tempfile::tempdir().expect("cache dir");
     let socket = tempfile::NamedTempFile::new().expect("socket stand-in");
     let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
     let triples = vec![
@@ -511,8 +509,8 @@ fn compose_declared_mounts_grant_by_mode() {
             mode: MountMode::Rw,
         },
         MountTriple {
-            host_source: scratch.path().to_string_lossy().to_string(),
-            container_target: "/tmp/scratch".to_string(),
+            host_source: cache.path().to_string_lossy().to_string(),
+            container_target: "/tmp/cache".to_string(),
             mode: MountMode::Rw,
         },
         MountTriple {
@@ -550,10 +548,11 @@ fn compose_declared_mounts_grant_by_mode() {
             STAGED_WRAPPER_GUEST_PATH.to_string(),
             "--allow-ro=/".to_string(),
             "--allow-rw=/dev".to_string(),
+            "--allow-rw=/tmp".to_string(),
             "--allow-ro=/src".to_string(),
             "--allow-rw=/src/proj".to_string(),
             "--allow-rw=/src".to_string(),
-            "--allow-rw=/tmp/scratch".to_string(),
+            "--allow-rw=/tmp/cache".to_string(),
             "--allow-rw=/other".to_string(),
             "--allow-rw=/src/state".to_string(),
             "--allow-ro=/rodata".to_string(),
@@ -702,15 +701,15 @@ fn full_grant_routes_mirror_compose_carveouts() {
             mode: MountMode::Rw,
         },
         MountTriple {
-            host_source: "/tmp/scratch".to_string(),
-            container_target: "/tmp/scratch".to_string(),
+            host_source: "/tmp/cache".to_string(),
+            container_target: "/tmp/cache".to_string(),
             mode: MountMode::Rw,
         },
     ];
-    // Fixed FULL baselines, subtree route, plus the RW
-    // carveout targets (project graft, outside source bound
-    // inside the ancestor route, and uncovered scratch);
-    // the RO ancestor is not FULL.
+    // Fixed FULL baselines (now including /tmp), subtree route,
+    // plus the RW carveout targets (project graft, outside
+    // source bound inside the ancestor route, and uncovered
+    // user bind); the RO ancestor is not FULL.
     let full = full_grant_routes(
         &[hook],
         &triples,
@@ -722,9 +721,10 @@ fn full_grant_routes_mirror_compose_carveouts() {
         full,
         vec![
             "/dev".to_string(),
+            "/tmp".to_string(),
             "/src/proj".to_string(),
             "/src/state".to_string(),
-            "/tmp/scratch".to_string()
+            "/tmp/cache".to_string()
         ]
     );
 }

@@ -352,7 +352,7 @@ pub struct EvaluatedPlan {
 /// contributions collide against the full destination namespace
 /// (profile assignments, acceptances, driver-injected names like
 /// `HOME`), and mount contributions validate jointly with the full
-/// emitted set (profile/CLI/session/scratch/credential triples).
+/// emitted set (profile/CLI/session/credential triples).
 #[derive(Debug, Clone, Default)]
 pub struct MergeContext {
     /// Container home for topology validation.

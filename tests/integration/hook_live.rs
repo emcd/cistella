@@ -188,9 +188,6 @@ fn hook_fixture(image: &str) -> HookFixture {
     };
     let container = session.container_name();
     let session_id = session.id.clone();
-    let scratch = cistella::lock::scratch_dir(&id)
-        .to_string_lossy()
-        .to_string();
     let triples = vec![
         // The broad mount declares RO (the 0.2 goal): revision
         // converts it to RW for Podman while the Landlock policy
@@ -199,11 +196,6 @@ fn hook_fixture(image: &str) -> HookFixture {
             host_source: tree.path().to_string_lossy().to_string(),
             container_target: "/src".to_string(),
             mode: MountMode::Ro,
-        },
-        MountTriple {
-            host_source: scratch,
-            container_target: "/tmp/scratch".to_string(),
-            mode: MountMode::Rw,
         },
         // Declared-RO directory under the FULL subtree: revision
         // retains Podman read-only (Landlock union cannot

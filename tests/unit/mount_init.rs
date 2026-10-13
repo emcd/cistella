@@ -28,8 +28,9 @@ fn precreate_nested_mountpoints_seeds_parent_source() {
     let tree = test_tree();
     let host = tree.path().to_string_lossy().to_string();
     // Slice parent exists (prepare minted it) and is a declared
-    // cleanup root; the scratch mountpoint does not yet — podman
-    // would create it as container-root without the pre-create.
+    // cleanup root; the user-nested mountpoint does not yet —
+    // podman would create it as container-root without the
+    // pre-create.
     test_subdir(&tree, "slice");
     let roots = [format!("{host}/slice")];
     let triples = [
@@ -39,14 +40,14 @@ fn precreate_nested_mountpoints_seeds_parent_source() {
             mode: MountMode::Rw,
         },
         MountTriple {
-            host_source: format!("{host}/scratch"),
-            container_target: "/tmp/scratch".to_string(),
+            host_source: format!("{host}/cache"),
+            container_target: "/tmp/cache".to_string(),
             mode: MountMode::Rw,
         },
     ];
     precreate_nested_mountpoints(&triples, &roots).expect("pre-create");
     assert!(
-        tree.path().join("slice/scratch").is_dir(),
+        tree.path().join("slice/cache").is_dir(),
         "mountpoint pre-exists seat-owned"
     );
     // Missing parents skip (validated elsewhere); top-level
@@ -96,7 +97,7 @@ fn precreate_refuses_planted_symlink() {
     // Guest plants a symlink where the mountpoint will land,
     // pointing outside the admitted source.
     let outside = test_subdir(&tree, "outside");
-    std::os::unix::fs::symlink(&outside, tree.path().join("slice/scratch")).expect("plant link");
+    std::os::unix::fs::symlink(&outside, tree.path().join("slice/cache")).expect("plant link");
     let roots = [format!("{host}/slice")];
     let triples = [
         MountTriple {
@@ -105,18 +106,18 @@ fn precreate_refuses_planted_symlink() {
             mode: MountMode::Rw,
         },
         MountTriple {
-            host_source: format!("{host}/scratch"),
-            container_target: "/tmp/scratch".to_string(),
+            host_source: format!("{host}/cache"),
+            container_target: "/tmp/cache".to_string(),
             mode: MountMode::Rw,
         },
     ];
     let error = precreate_nested_mountpoints(&triples, &roots).expect_err("link refuses");
     assert!(
-        error.to_string().contains("scratch"),
+        error.to_string().contains("cache"),
         "names the link, got: {error}"
     );
     assert!(
-        !outside.join("scratch").exists() && outside.read_dir().expect("read").next().is_none(),
+        !outside.join("cache").exists() && outside.read_dir().expect("read").next().is_none(),
         "nothing created through the link"
     );
 }
@@ -141,16 +142,13 @@ fn precreated_mountpoint_dies_with_cleanup_root() {
             mode: MountMode::Rw,
         },
         MountTriple {
-            host_source: format!("{host}/scratch"),
-            container_target: "/tmp/scratch".to_string(),
+            host_source: format!("{host}/cache"),
+            container_target: "/tmp/cache".to_string(),
             mode: MountMode::Rw,
         },
     ];
     precreate_nested_mountpoints(&triples, &roots).expect("pre-create");
-    assert!(
-        tree.path().join("slice/scratch").is_dir(),
-        "mountpoint made"
-    );
+    assert!(tree.path().join("slice/cache").is_dir(), "mountpoint made");
     let litter = reap_cleanup(base.path(), "test-session-9");
     assert!(litter.is_empty(), "clean reap, got: {litter:?}");
     assert!(

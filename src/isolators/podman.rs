@@ -30,9 +30,8 @@ use crate::framework::isolator::{
 use crate::framework::signals;
 use crate::isolators::quadlet::{
     container_exists, generate_quadlet_unit, install_quadlet, quadlet_dir, query_unit_props,
-    remove_scratch, remove_unit_file, start_quadlet, stop_settle,
+    remove_unit_file, start_quadlet, stop_settle,
 };
-use crate::lock::scratch_dir;
 use crate::registry::unit_file_label;
 use crate::session::{LABEL_ID, LABEL_RECONCILIATION_KEY};
 
@@ -41,7 +40,7 @@ use crate::session::{LABEL_ID, LABEL_RECONCILIATION_KEY};
 struct UnitRecord {
     /// Container name (unit identity).
     container_name: String,
-    /// Session id (scratch ownership).
+    /// Session id.
     session_id: String,
     /// Quadlet unit file name.
     unit_name: String,
@@ -51,7 +50,7 @@ struct UnitRecord {
 /// remove, a removal tombstone. Eviction clears the live binding
 /// (no resurrection through it); the tombstone retains session
 /// identity so identical convergent retries report absent
-/// attestations and absent-with-scratch still converges by handle.
+/// attestations and absent-with-unit still converges by handle.
 #[derive(Debug, Clone)]
 enum UnitEntry {
     /// Live backend unit.
@@ -60,7 +59,7 @@ enum UnitEntry {
     Removed {
         /// Container name (unit identity for attestations).
         container_name: String,
-        /// Session id (scratch ownership for re-converge).
+        /// Session id (identity for re-converge).
         session_id: String,
         /// Quadlet unit file name (presence checks).
         unit_name: String,
@@ -433,15 +432,7 @@ impl Isolator for PodmanIsolator {
             Some(key.as_str()),
             spec.landlock_hooked,
         )?;
-        // Scratch first, unit file second: any failure cleans what it
-        // made, so create leaves no partial unit behind.
-        let scratch_path = scratch_dir(&session.id);
-        std::fs::create_dir_all(&scratch_path)
-            .map_err(|e| CistellaError::Runtime(format!("create scratch: {e}")))?;
-        if let Err(error) = install_quadlet(&unit_name, &unit) {
-            let _ = remove_scratch(&session.id);
-            return Err(error);
-        }
+        install_quadlet(&unit_name, &unit)?;
         let handle = UnitHandle::mint();
         self.register(
             handle.clone(),
@@ -812,9 +803,6 @@ impl Isolator for PodmanIsolator {
             ),
         };
         remove_unit_file(&container_name, &unit_name)?;
-        if !session_id.is_empty() {
-            remove_scratch(&session_id)?;
-        }
         // Execution records die with the unit: outcomes stay
         // replayable until `remove`, never after.
         self.executions
@@ -870,9 +858,9 @@ impl Isolator for PodmanIsolator {
         grace: Duration,
         key: &ReconciliationKey,
     ) -> Result<()> {
-        // Never trust `state` alone: an `Absent` unit with surviving
-        // scratch is residue, not convergence. `remove` is idempotent
-        // and owns both the unit file and scratch, so it closes every
+        // Never trust `state` alone: an `Absent` unit with a surviving
+        // unit file is residue, not convergence. `remove` is idempotent
+        // and owns the unit file, so it closes every
         // state including absent-with-residue.
         match self.state(handle) {
             Ok(LifecycleState::Absent) => {

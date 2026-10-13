@@ -812,7 +812,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                     }
                     UnitBinding::Removed { local, .. } => {
                         // Idempotent repeat delegates to the backend
-                        // tombstone so surviving residue (e.g. scratch
+                        // tombstone so surviving residue (e.g. unit file
                         // planted after the first remove) still
                         // converges; absence re-attested, nothing
                         // resurrected.

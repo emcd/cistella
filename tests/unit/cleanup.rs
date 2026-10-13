@@ -265,20 +265,8 @@ fn slice_session_parses_or_skips() {
 
 #[test]
 fn seat_temp_root_rule() {
-    use cistella::cleanup::seat_temp_root_from;
-    assert_eq!(seat_temp_root_from(None), std::path::PathBuf::from("/tmp"));
-    assert_eq!(
-        seat_temp_root_from(Some("")),
-        std::path::PathBuf::from("/tmp")
-    );
-    assert_eq!(
-        seat_temp_root_from(Some("relative/dir")),
-        std::path::PathBuf::from("/tmp")
-    );
-    assert_eq!(
-        seat_temp_root_from(Some("/tmp/scratch")),
-        std::path::PathBuf::from("/tmp/scratch")
-    );
+    use cistella::cleanup::seat_temp_root;
+    assert_eq!(seat_temp_root(), std::path::PathBuf::from("/tmp"));
 }
 
 fn state_subdir(base: &tempfile::TempDir) -> std::path::PathBuf {
