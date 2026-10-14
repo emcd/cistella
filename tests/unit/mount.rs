@@ -18,7 +18,6 @@ fn rejects_container_home_traversal() {
     let prof = Profile::from_toml(
         r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 mounts = []
 container-home = "/home/cistella/../../etc"
 "#,
@@ -158,18 +157,23 @@ fn volume_args_order_home_first() {
 }
 
 #[test]
-fn profile_requires_credential_surface() {
-    let bad = r#"
-image = "localhost/cistella/opencode:example"
-container-home = "/home/cistella"
-"#;
-    assert!(Profile::from_toml(bad).is_err());
+fn profile_rejects_deleted_credential_surface() {
+    // The slot is gone: any spelling refuses at parse (deny
+    // unknown fields), never parses into behavior.
+    for body in [
+        "credential-surface = \"none\"\n",
+        "credential-surface = { ssh_agent = \"/run/seat.sock\" }\n",
+    ] {
+        let bad = format!(
+            "image = \"localhost/cistella/opencode:example\"\n{body}container-home = \"/home/cistella\"\n"
+        );
+        assert!(Profile::from_toml(&bad).is_err());
+    }
 }
 
 #[test]
 fn profile_requires_image() {
     let bad = r#"
-credential-surface = "none"
 mounts = []
 container-home = "/home/cistella"
 "#;
@@ -180,7 +184,6 @@ container-home = "/home/cistella"
 fn profile_requires_mounts() {
     let bad = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 container-home = "/home/cistella"
 "#;
     assert!(Profile::from_toml(bad).is_err());
@@ -190,7 +193,6 @@ container-home = "/home/cistella"
 fn profile_rejects_reserved_label() {
     let bad = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 mounts = []
 [labels]
 cistella.id = "spoof"
@@ -202,7 +204,6 @@ cistella.id = "spoof"
 fn profile_accepts_command_array_and_labels() {
     let ok = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 mounts = []
 command = ["opencode", "--model", "x"]
 [labels]
@@ -216,7 +217,6 @@ command = ["opencode", "--model", "x"]
 fn profile_expands_tilde_in_host_source() {
     let ok = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 [[mounts]]
 host-source = "~/.config/opencode"
 container-target = "/home/cistella/.config/opencode"
@@ -231,7 +231,6 @@ mode = "ro"
 fn profile_rejects_home_in_env() {
     let bad = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 mounts = []
 container-home = "/home/cistella"
 [environment-assignments]
@@ -244,7 +243,6 @@ HOME = "/override"
 fn profile_accepts_valid() {
     let ok = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 container-home = "/home/cistella"
 [[mounts]]
 host-source = "/tmp/a"
@@ -418,7 +416,6 @@ fn profile_from_toml_rejects_container_home_template() {
     // absolute-path form.
     let bad = r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 container-home = "/home/{{host-home}}"
 mounts = []
 "#;

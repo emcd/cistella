@@ -93,11 +93,7 @@ fn conduct_exit_passthrough_and_mint() {
 
     // Missing images are typed refusals naming the image (never pulled).
     let profile = worktree.path().join("missing.toml");
-    std::fs::write(
-        &profile,
-        "image = \"localhost/cistella/missing:example\"\ncredential-surface = \"none\"\n",
-    )
-    .unwrap();
+    std::fs::write(&profile, "image = \"localhost/cistella/missing:example\"\n").unwrap();
     let out = run_cistella(
         &home,
         &[
@@ -329,7 +325,6 @@ fn configuration_directory_plumbing_live() {
     std::fs::write(
         profiles.join("custom.toml"),
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          command = [\"sleep\", \"infinity\"]\n\
          mounts = []\n",
     )
@@ -411,7 +406,6 @@ fn project_name_template_live() {
     std::fs::write(
         profiles.join("tmpl.toml"),
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          command = [\"sleep\", \"infinity\"]\n\
          [[mounts]]\n\
          host-source = \"/tmp\"\n\
@@ -582,7 +576,6 @@ fn template_env_and_labels_resolve_live() {
     std::fs::write(
         &profile,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          container-home = \"/home/cistella\"\n\
          mounts = []\n\
          [environment-assignments]\n\
@@ -665,7 +658,6 @@ fn environment_acceptances_forward_live() {
     std::fs::write(
         &profile,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          container-home = \"/home/cistella\"\n\
          mounts = []\n\
          environment-acceptances = [\"CISTELLA_LIVE_ACCEPT\"]\n",
@@ -745,7 +737,6 @@ fn environment_acceptances_absent_refuses_residue_free() {
     std::fs::write(
         &profile,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          container-home = \"/home/cistella\"\n\
          mounts = []\n\
          environment-acceptances = [\"CISTELLA_LIVE_REFUSE\"]\n",
@@ -889,7 +880,6 @@ fn template_namespaces_resolve_live() {
     std::fs::write(
         &profile,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          container-home = \"{{environment:HOME}}\"\n\
          [[mounts]]\n\
          host-source = \"/tmp\"\n\

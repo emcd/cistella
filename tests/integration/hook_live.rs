@@ -160,7 +160,7 @@ fn hook_fixture(image: &str) -> HookFixture {
     // outside the subtree would refuse pre-create, see
     // graft_alias_preflight; runtime outlets live outside
     // the tree like graft content) and a bound socket
-    // (credential-surface shape — its allow derivation must
+    // (agent-socket shape — its allow derivation must
     // skip non-directories, never fail apply with ENOTDIR).
     let cache_src = TempDir::new().expect("cache tmpdir");
     let cache_dir = cache_src.path().join("data");

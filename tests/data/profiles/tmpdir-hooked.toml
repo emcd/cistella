@@ -1,7 +1,6 @@
 # Hooked pair profile for tmpdir tests: landlock confinement
 # plus the tmpdir extension. Test fixture, not a baked example.
 image = 'localhost/cistella/opencode:example'
-credential-surface = 'none'
 container-home = '/home/cistella'
 command = ['sleep', 'infinity']
 # The hook requires the ~/src confinement ancestor translatable

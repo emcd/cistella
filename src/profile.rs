@@ -1,8 +1,8 @@
 //! Declarative profile file with image, command, mounts, and labels.
 //!
 //! Cistella knows only profiles: the image tag or digest, the optional
-//! harness argv array, the allowlist mount triples, the credential-surface
-//! slot, environment exports, and optional generic labels. The harness
+//! harness argv array, the allowlist mount triples,
+//! environment exports, and optional generic labels. The harness
 //! itself is argv after `--` chosen by the caller.
 //!
 //! Name resolution order: explicit filesystem path, then supplied
@@ -33,75 +33,6 @@ use crate::mount::{MountTriple, canonicalize_container_target, validate_mounts};
 use crate::session::validate_generic_label;
 /// Re-exported template inputs for conduct and tests.
 pub use crate::template::{ProjectName, Supplements, parse_supplement_arg};
-
-/// Credential surface: `none` or a per-identity sign-only socket.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CredentialSurface {
-    /// No agent is mounted.
-    None,
-    /// Per-identity socket mounted RO at the same path inside.
-    Agent {
-        /// Host path of the per-identity `AF_UNIX` socket.
-        ssh_agent: String,
-    },
-}
-
-impl<'de> Deserialize<'de> for CredentialSurface {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{self, MapAccess, Visitor};
-        use std::fmt;
-        struct CsVisitor;
-        impl<'de> Visitor<'de> for CsVisitor {
-            type Value = CredentialSurface;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("`\"none\"` or `{ ssh_agent = \"/path\" }`")
-            }
-            fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v == "none" {
-                    Ok(CredentialSurface::None)
-                } else {
-                    Err(de::Error::custom(
-                        "credential_surface string must be \"none\"",
-                    ))
-                }
-            }
-            fn visit_string<E>(self, v: String) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                self.visit_str(&v)
-            }
-            fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut ssh_agent: Option<String> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    if key == "ssh_agent" {
-                        ssh_agent = Some(map.next_value()?);
-                    } else {
-                        return Err(de::Error::unknown_field(&key, &["ssh_agent"]));
-                    }
-                }
-                if let Some(s) = ssh_agent {
-                    if s.is_empty() || !s.starts_with('/') {
-                        return Err(de::Error::custom("ssh_agent must be an absolute path"));
-                    }
-                    Ok(CredentialSurface::Agent { ssh_agent: s })
-                } else {
-                    Err(de::Error::custom("missing ssh_agent"))
-                }
-            }
-        }
-        deserializer.deserialize_any(CsVisitor)
-    }
-}
 
 /// Declarative profile loaded from TOML (a baked example, an XDG user
 /// copy, a configuration-directory file, or an explicit path).
@@ -135,8 +66,6 @@ pub struct Profile {
     /// entries are defaults-equivalent and stay valid forever.
     #[serde(default)]
     pub environment_acceptances: Vec<String>,
-    /// Credential surface slot; `none` mounts nothing, `ssh_agent` mounts per-identity socket RO.
-    pub credential_surface: CredentialSurface,
     /// Single distinguished writable session-home root.
     #[serde(default = "default_container_home")]
     pub container_home: String,
@@ -245,6 +174,8 @@ pub enum ExtensionResolution {
     Landlock,
     /// Tmpdir host-state guest (shipped).
     Tmpdir,
+    /// SSH agent-forwarding guest (shipped).
+    Ssh,
     /// Third-party extension (verified at prepare).
     Registered(Guest),
 }
@@ -505,6 +436,7 @@ impl Profile {
             let id = match entry.name.as_str() {
                 "landlock" => ExtensionResolution::Landlock,
                 "tmpdir" => ExtensionResolution::Tmpdir,
+                "ssh" => ExtensionResolution::Ssh,
                 other => match registry.find(GuestTable::Extensions, other) {
                     Some(registered) => ExtensionResolution::Registered(registered.clone()),
                     None => {
@@ -524,13 +456,68 @@ impl Profile {
         Ok(out)
     }
 
+    /// Builds per-extension spawn argv from seat ambient: a declared
+    /// `ssh` extension is fed invoker `SSH_AUTH_SOCK` (declared
+    /// value P, canonicalized authority C) as `--socket=P
+    /// --socket-canonical=C`; every other extension gets empty
+    /// argv. Positionally parallel to the resolutions vector (the
+    /// runner indexes per guest). Ambient alone never injects —
+    /// undeclared `ssh` builds nothing. Declared-but-unprovidable
+    /// (unset, empty, relative, unresolvable, non-socket) refuses
+    /// typed, never an agentless session on a declared agent. The
+    /// guest re-checks kind on its side (untrusted argv).
+    /// Diagnostics name the condition, never the path.
+    pub fn ssh_selection_argv(
+        &self,
+        resolutions: &[ExtensionResolution],
+    ) -> Result<Vec<Vec<String>>> {
+        let mut extra_args: Vec<Vec<String>> = vec![Vec::new(); resolutions.len()];
+        for (index, entry) in resolutions.iter().enumerate() {
+            if !matches!(entry, ExtensionResolution::Ssh) {
+                continue;
+            }
+            let ambient = std::env::var("SSH_AUTH_SOCK").map_err(|_| {
+                CistellaError::Profile(
+                    "declared ssh requires invoker SSH_AUTH_SOCK; ambient is unset".to_string(),
+                )
+            })?;
+            if ambient.is_empty() || !ambient.starts_with('/') {
+                return Err(CistellaError::Profile(
+                    "declared ssh requires an absolute invoker SSH_AUTH_SOCK".to_string(),
+                ));
+            }
+            let canonical = std::fs::canonicalize(&ambient).map_err(|_| {
+                CistellaError::Profile(
+                    "declared ssh requires a resolvable invoker SSH_AUTH_SOCK".to_string(),
+                )
+            })?;
+            let is_socket = std::fs::metadata(&canonical)
+                .map(|metadata| {
+                    use std::os::unix::fs::FileTypeExt;
+                    metadata.file_type().is_socket()
+                })
+                .unwrap_or(false);
+            if !is_socket {
+                return Err(CistellaError::Profile(
+                    "declared ssh requires invoker SSH_AUTH_SOCK to name a socket".to_string(),
+                ));
+            }
+            extra_args[index] = vec![
+                format!("--socket={ambient}"),
+                format!("--socket-canonical={}", canonical.display()),
+            ];
+        }
+        Ok(extra_args)
+    }
+
     /// Snapshots accepted invoker-environment values for this profile, in
     /// profile-list order with deterministic first-error behavior.
     ///
     /// Three phases, each scanning in list order: snapshot every value
     /// (absent or non-Unicode names fail name-only — the `VarError` payload
     /// is discarded, never rendered), then collision checks (assignment
-    /// keys, `HOME` always, credential-surface-injected names), then the
+    /// keys, `HOME` always, `SSH_AUTH_SOCK` under declared `ssh` —
+    /// the owned name), then the
     /// shared value gate (line-break rejection, `=` permitted). Accepted
     /// values are never template-scanned. Call on the conduct path after
     /// resolution, before any session/runtime mutation.
@@ -561,11 +548,14 @@ impl Profile {
                         .to_string(),
                 ));
             }
-            if matches!(self.credential_surface, CredentialSurface::Agent { .. })
-                && name == "SSH_AUTH_SOCK"
-            {
+            // Owned-name collision: under declared `ssh` the
+            // instance owns `SSH_AUTH_SOCK`; an acceptance
+            // naming it refuses. Without declared `ssh` the
+            // acceptance forwards ambient verbatim (explicit
+            // operator override).
+            if name == "SSH_AUTH_SOCK" && self.extensions.iter().any(|entry| entry.name == "ssh") {
                 return Err(CistellaError::Profile(
-                    "environment-acceptances must not name SSH_AUTH_SOCK; injected by credential-surface"
+                    "environment-acceptances must not name SSH_AUTH_SOCK; owned by declared ssh"
                         .to_string(),
                 ));
             }
@@ -755,7 +745,6 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
     for (key, value) in &profile.labels {
         validate_generic_label(key, value).map_err(CistellaError::Profile)?;
     }
-    // credential_surface is required and validated by Deserialize; `None` is explicitly allowed.
     profile.container_home = normalize_container_home(&profile.container_home)?;
     let canon_home = profile.container_home.clone();
     // container_home is not a triple but must not be a sensitive root or traversal to one.

@@ -14,7 +14,7 @@ use cistella::framework::hooks::gate_hook_attestation;
 use cistella::framework::policy::PolicySet;
 use cistella::framework::prepare::{EXTENSION_BIN, check_hook_executable};
 use cistella::framework::prepare_select::run_landlock_prepare;
-use cistella::profile::{CredentialSurface, Profile};
+use cistella::profile::Profile;
 
 /// Compiled defaults via load: an absent file means defaults only.
 fn defaults() -> PolicySet {
@@ -83,7 +83,6 @@ fn bare_profile() -> Profile {
         command: None,
         environment_assignments: HashMap::new(),
         environment_acceptances: Vec::new(),
-        credential_surface: CredentialSurface::None,
         container_home: "/home/cistella".to_string(),
         labels: HashMap::new(),
         isolator: cistella::profile::IsolatorConfig {

@@ -16,12 +16,15 @@ use crate::framework::contract::Provenance;
 use crate::framework::contract::gate_capabilities;
 use crate::framework::contract::merge_transacted_as;
 use crate::framework::contract::parse_capability;
-use crate::framework::contract::{Deadlines, MergeContext, MountTriple, PreparePlan};
+use crate::framework::contract::{
+    Deadlines, InstanceExpectation, MergeContext, MountTriple, PreparePlan,
+};
 use crate::framework::guest::{GuestHost, host_external, host_registered};
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::prepare::{
-    DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, TMPDIR_BIN, check_hook_executable,
-    run_extension_prepare, spawn_invitation, transact_prepare,
+    DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, SSH_BIN, TMPDIR_BIN,
+    check_hook_executable, run_extension_prepare, spawn_invitation, ssh_expectation,
+    transact_prepare,
 };
 use crate::guest_registry::HostEnv;
 use crate::guest_source::{ResolveCtx, cache_dir, resolve};
@@ -198,6 +201,16 @@ pub fn prepare_selected_extension(
                     session_id,
                     lease_base,
                 ),
+                Some(ExtensionResolution::Ssh) => run_extension_prepare(
+                    ExtensionSpawn::Ssh,
+                    exe_dir,
+                    extra,
+                    profile,
+                    triples,
+                    policy,
+                    session_id,
+                    lease_base,
+                ),
                 Some(ExtensionResolution::Registered(entry)) => {
                     let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
                     let resolved = resolve(&entry, &ctx)?;
@@ -240,6 +253,19 @@ fn prepare_many(
     extra_args: &[Vec<String>],
 ) -> Result<(EvaluatedPlan, Option<PrepareLease>)> {
     let mut lease = PrepareLease::create(lease_base, session_id)?;
+    // Declared bundles (today: ssh only): derived from each
+    // ssh resolution's host-built argv, before any move or
+    // guest run. The same expectations authorize credential
+    // locators at transact time and enforce the exact tuple
+    // at merge time.
+    let expectations: Vec<InstanceExpectation> = extensions
+        .iter()
+        .zip(extra_args.iter().chain(std::iter::repeat(&Vec::new())))
+        .filter_map(|(resolution, extra)| match resolution {
+            ExtensionResolution::Ssh => ssh_expectation(extra),
+            _ => None,
+        })
+        .collect();
     // Resolve registered entries first (failures refuse pre-spawn
     // with no guest hosted yet — the lease drops unretained).
     let mut spawns = Vec::with_capacity(extensions.len());
@@ -247,6 +273,7 @@ fn prepare_many(
         match entry {
             ExtensionResolution::Landlock => spawns.push(ExtensionSpawn::Landlock),
             ExtensionResolution::Tmpdir => spawns.push(ExtensionSpawn::Tmpdir),
+            ExtensionResolution::Ssh => spawns.push(ExtensionSpawn::Ssh),
             ExtensionResolution::Registered(registered) => {
                 let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
                 let resolved = resolve(&registered, &ctx)?;
@@ -278,6 +305,9 @@ fn prepare_many(
             ),
             ExtensionSpawn::Tmpdir => {
                 host_external(exe_dir, TMPDIR_BIN, extra, &offered, Deadlines::default())
+            }
+            ExtensionSpawn::Ssh => {
+                host_external(exe_dir, SSH_BIN, extra, &offered, Deadlines::default())
             }
             ExtensionSpawn::Registered(resolved) => {
                 host_registered(resolved, extra, &offered, Deadlines::default())
@@ -352,6 +382,9 @@ fn prepare_many(
             &one.guest_id,
             Deadlines::default().plan,
             session_id,
+            expectations
+                .iter()
+                .find(|expected| expected.owner == Provenance::Extension(one.guest_id.clone())),
         );
         match outcome {
             Ok((transacted, creds)) => {
@@ -467,7 +500,8 @@ fn prepare_many(
     // image-private set; a future owner provides its own.
     let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
         .with_profile_permissions(profile_permissions)
-        .with_baselines(crate::framework::landlock_compiler::baseline_routes());
+        .with_baselines(crate::framework::landlock_compiler::baseline_routes())
+        .with_expectations(expectations);
     let acceptances = acceptance_set(&profile.environment_acceptances);
     // Per-name provenance: lattice evaluation sees the source
     // that contributed each name (unreachable fallback — merge

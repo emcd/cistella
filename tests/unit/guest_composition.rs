@@ -111,7 +111,6 @@ fn peer_entry_named(
 fn minimal_profile() -> cistella::profile::Profile {
     toml::from_str(
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          mounts = []\n",
     )
     .expect("minimal profile parses")
@@ -345,7 +344,7 @@ fn two_single_hook_guests_refuse_naming_both() {
         "got: {message}"
     );
     assert!(
-        message.contains("test-peer and test-peer"),
+        message.contains("registered:test-peer and registered:test-peer"),
         "both claimant positions named, got: {message}"
     );
 }
@@ -658,7 +657,6 @@ fn duplicate_extension_entries_refuse_at_resolution() {
     .expect("registry parses");
     let prof: cistella::profile::Profile = toml::from_str(
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          mounts = []\n\
          [[extensions]]\n\
          name = \"file-extension\"\n\

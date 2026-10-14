@@ -365,11 +365,10 @@ pub(crate) fn run(
         }
         "prepare-vector-ssh" => {
             // SSH identity wiring as a prepare transaction: the
-            // `SSH_AUTH_SOCK` pointer env plus the per-seat socket
-            // bind read-only (mirrors
-            // `identity::ssh_agent_volume_args`) plus the
-            // `seat-socket` credential handle for the same socket
-            // (mirrors the profile `credential_surface` Agent slot).
+            // `SSH_AUTH_SOCK` pointer env plus the socket bind
+            // read-only plus the `seat-socket` credential handle
+            // for the same socket (the design shape the shipped
+            // ssh guest implements against seat ambient).
             send_prepare_with_payload(
                 stdin_lock,
                 stdout_lock,

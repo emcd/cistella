@@ -54,9 +54,7 @@ impl Drop for EnvGuard {
 }
 
 fn minimal_toml(body: &str) -> String {
-    format!(
-        "image = \"localhost/cistella/opencode:example\"\ncredential-surface = \"none\"\nmounts = []\n{body}"
-    )
+    format!("image = \"localhost/cistella/opencode:example\"\nmounts = []\n{body}")
 }
 
 fn profile_with_acceptances(names: &[&str]) -> String {
@@ -169,18 +167,21 @@ fn collision_home_fails() {
 }
 
 #[test]
-fn collision_ssh_auth_sock_conditional_on_surface() {
+fn collision_ssh_auth_sock_conditional_on_declaration() {
+    // Owned-name rule: SSH_AUTH_SOCK in acceptances refuses under
+    // declared `ssh` (the instance owns the name) and forwards
+    // verbatim without it (explicit operator override).
     let _guard = EnvGuard::set(&[("SSH_AUTH_SOCK", "/run/fake.sock")]);
-    let agent = "image = \"localhost/cistella/opencode:example\"\ncredential-surface = { ssh_agent = \"/run/fake.sock\" }\nmounts = []\nenvironment-acceptances = [\"SSH_AUTH_SOCK\"]\n";
-    let prof = Profile::from_toml(agent).unwrap();
+    let declared = "image = \"localhost/cistella/opencode:example\"\nmounts = []\nenvironment-acceptances = [\"SSH_AUTH_SOCK\"]\n[[extensions]]\nname = \"ssh\"\n";
+    let prof = Profile::from_toml(declared).unwrap();
     assert!(
         prof.snapshot_acceptances().is_err(),
-        "injected name refuses under ssh_agent surface"
+        "owned name refuses under declared ssh"
     );
     let none = Profile::from_toml(&profile_with_acceptances(&["SSH_AUTH_SOCK"])).unwrap();
     assert!(
         none.snapshot_acceptances().is_ok(),
-        "same name forwards under none surface"
+        "same name forwards undeclared"
     );
 }
 

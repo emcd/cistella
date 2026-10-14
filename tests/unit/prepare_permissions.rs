@@ -436,7 +436,7 @@ fn compose_skips_proven_nondirectories_but_grants_missing() {
     // Proven non-directories: a file and a bound socket. A
     // socket fed to the wrapper fails apply (O_DIRECTORY on
     // a non-directory is ENOTDIR) and refuses the whole
-    // session — proven live by a credential-surface socket.
+    // session — proven live by an agent socket.
     std::fs::write(dir.path().join("agent-file"), b"x").expect("agent file");
     let _socket = UnixListener::bind(dir.path().join("agent.sock")).expect("agent socket");
     let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);

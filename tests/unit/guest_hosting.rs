@@ -209,7 +209,6 @@ fn registered_argv_rides_spawn_verbatim() {
 fn minimal_profile() -> cistella::profile::Profile {
     toml::from_str(
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          mounts = []\n",
     )
     .expect("minimal profile parses")
@@ -480,7 +479,9 @@ fn extension_rw_mount_contribution_merges() {
             target: "/vectmp".to_string(),
             rights: cistella::framework::contract::Rights::Full,
             claimants: vec![(
-                cistella::framework::contract::Provenance::Extension("test-peer".to_string()),
+                cistella::framework::contract::Provenance::Extension(
+                    "registered:test-peer".to_string(),
+                ),
                 cistella::framework::contract::Rights::Full,
             )],
             binding_intent_ro: false,

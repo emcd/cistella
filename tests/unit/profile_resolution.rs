@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use cistella::profile::{Profile, ProjectName, ResolutionSource, Supplements};
 
 fn minimal_toml(image: &str) -> String {
-    format!("image = \"{image}\"\ncredential-surface = \"none\"\nmounts = []\n")
+    format!("image = \"{image}\"\nmounts = []\n")
 }
 
 fn write_profile(dir: &Path, name: &str, image: &str) -> PathBuf {
@@ -269,7 +269,6 @@ fn from_host_env_puts_flag_first() {
 fn template_toml(host: &str, target: &str) -> String {
     format!(
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          container-home = \"/home/cistella\"\n\
          command = [\"run\", \"{{{{core:project-name}}}}\"]\n\
          [[mounts]]\n\
@@ -384,7 +383,6 @@ fn container_home_core_reference_is_a_cycle() {
     // `core:container-home` derives from this very field: any `core:`
     // span in container-home is a self-reference, rejected before lookup.
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"/home/{{core:host-home}}\"\n\
 mounts = []\n";
     let err = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap_err();
@@ -445,7 +443,6 @@ fn container_home_expands_canonical_not_raw() {
     // Finding 1: {{core:container-home}} is the canonical home even when the
     // literal form traverses.
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"/home/cistella/../other\"\n\
 [[mounts]]\n\
 host-source = \"/data\"\n\
@@ -582,7 +579,6 @@ fn brace_shaped_env_stays_literal_without_context() {
     // the command-argv span that template_toml carries.
     let toml = [
         "image = \"localhost/cistella/opencode:example\"",
-        "credential-surface = \"none\"",
         "container-home = \"/home/cistella\"",
         "[[mounts]]",
         "host-source = \"/data\"",
@@ -674,7 +670,6 @@ fn supplement_values_are_opaque_until_sink() {
     // No generic charset gate on the raw value: a whole path with `/`
     // survives into container-home, where the sink validator accepts it.
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"{{supplement:home}}\"\n\
 mounts = []\n";
     let supp = supplement_pairs(&[("home", "/home/opaque")]);
@@ -774,7 +769,6 @@ fn environment_invalid_names_rejected() {
 #[test]
 fn early_home_from_host_home_is_portable() {
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"{{environment:HOME}}\"\n\
 [[mounts]]\n\
 host-source = \"/data\"\n\
@@ -793,7 +787,6 @@ fn early_home_traversal_canonicalizes_like_literals() {
     // HOME-adjacent values are read-only here; HOME itself is untouched.
     let home = std::env::var("HOME").unwrap();
     let literal = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"/tmp/early/../early\"\n\
 mounts = []\n";
     let (literal_prof, _, _) =
@@ -802,7 +795,6 @@ mounts = []\n";
     let _ = home;
     let supp = supplement_pairs(&[("seg", "early/../early")]);
     let expanded = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"/tmp/{{supplement:seg}}\"\n\
 mounts = []\n";
     let (expanded_prof, _, _) =
@@ -818,7 +810,6 @@ mounts = []\n";
 fn early_home_dangerous_values_rejected() {
     for home in ["/etc", "/etc/ssh", "/", "relative/path"] {
         let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"{{supplement:home}}\"\n\
 mounts = []\n";
         let supp = supplement_pairs(&[("home", home)]);
@@ -826,7 +817,6 @@ mounts = []\n";
     }
     // Control characters via supplement into container-home.
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
-credential-surface = \"none\"\n\
 container-home = \"{{supplement:home}}\"\n\
 mounts = []\n";
     let supp = supplement_pairs(&[("home", "/tmp/has\nnewline")]);

@@ -28,7 +28,6 @@ fn mountpoint_parents_prepared_for_siblings() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{deep_str}\"\n\
@@ -96,7 +95,6 @@ fn mountpoint_host_alias_conducts() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{}\"\n\
@@ -160,7 +158,6 @@ fn mountpoint_nested_ro_excluded() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{}\"\n\
@@ -231,7 +228,6 @@ fn mountpoint_noncanonical_spelling_prepared() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{deep_str}\"\n\
@@ -285,7 +281,6 @@ fn mountpoint_prepare_timeout_fails_closed() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{deep_str}\"\n\
@@ -353,7 +348,6 @@ fn nested_ro_preexisting_chain_succeeds() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{}\"\n\
@@ -414,7 +408,6 @@ fn nested_ro_missing_chain_refuses_pre_mutation() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{}\"\n\
@@ -477,7 +470,6 @@ fn nested_ro_session_dogfood_shape_passes() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{}\"\n\
@@ -537,7 +529,6 @@ fn nested_ro_symlinked_source_resolves() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{}/alias\"\n\
@@ -597,7 +588,6 @@ fn nested_rw_under_rw_conducts() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [[mounts]]\n\
              host-source = \"{parent_str}\"\n\
@@ -666,7 +656,6 @@ fn same_tree_rw_graft_refuses_pre_create() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [isolator]\n\
              name = \"podman\"\n\
@@ -737,7 +726,6 @@ fn hooked_conduct_confines_declared_session() {
         &profile,
         format!(
             "image = \"localhost/cistella/opencode:example\"\n\
-             credential-surface = \"none\"\n\
              container-home = \"/home/cistella\"\n\
              [isolator]\n\
              name = \"podman\"\n\

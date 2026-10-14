@@ -12,9 +12,7 @@ use cistella::framework::policy::PolicySet;
 use cistella::profile::Profile;
 
 fn minimal_toml(body: &str) -> String {
-    format!(
-        "image = \"localhost/cistella/opencode:example\"\ncredential-surface = \"none\"\nmounts = []\n{body}"
-    )
+    format!("image = \"localhost/cistella/opencode:example\"\nmounts = []\n{body}")
 }
 
 /// Compiled defaults via load on an empty dir: absent file means

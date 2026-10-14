@@ -8,6 +8,7 @@ pub mod conduct;
 pub mod contract;
 pub mod credentials;
 pub mod discovery;
+pub mod expectations;
 pub mod fdpass;
 pub mod guest;
 pub mod hooks;

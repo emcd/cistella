@@ -14,7 +14,7 @@ fn guest_tables_default_plain() {
     let path = dir.path().join("plain.toml");
     std::fs::write(
         &path,
-        "image = \"localhost/cistella/opencode:example\"\ncredential-surface = \"none\"\nmounts = []\n",
+        "image = \"localhost/cistella/opencode:example\"\nmounts = []\n",
     )
     .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
@@ -39,7 +39,6 @@ fn guest_tables_admit_declared_landlock() {
     std::fs::write(
         &path,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          mounts = []\n\
          [isolator]\n\
          name = \"podman\"\n\
@@ -69,7 +68,6 @@ fn guest_tables_refuse_unknown_and_duplicate() {
     std::fs::write(
         &path,
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          mounts = []\n\
          [isolator]\n\
          name = \"docker\"\n",
@@ -95,7 +93,6 @@ fn guest_tables_refuse_unknown_and_duplicate() {
             &path,
             format!(
                 "image = \"localhost/cistella/opencode:example\"\n\
-                 credential-surface = \"none\"\n\
                  mounts = []\n\
                  [[extensions]]\n\
                  name = \"{name}\"\n{second}"
@@ -131,7 +128,6 @@ fn test_registry() -> Registry {
 fn profile_naming(isolator: &str, extensions: &[&str]) -> cistella::profile::Profile {
     let mut toml = format!(
         "image = \"localhost/cistella/opencode:example\"\n\
-         credential-surface = \"none\"\n\
          mounts = []\n\
          [isolator]\n\
          name = \"{isolator}\"\n"
@@ -157,7 +153,7 @@ fn registered_names_resolve_by_table() {
     assert_eq!(extensions.len(), 1);
     match &extensions[0] {
         ExtensionResolution::Registered(entry) => assert_eq!(entry.name, "file-extension"),
-        ExtensionResolution::Landlock | ExtensionResolution::Tmpdir => {
+        ExtensionResolution::Landlock | ExtensionResolution::Tmpdir | ExtensionResolution::Ssh => {
             panic!("must resolve registered")
         }
     }

@@ -408,25 +408,11 @@ fn conduct_session(
     let exe_dir = exe_dir.parent().ok_or_else(|| {
         CistellaError::Runtime("driver binary has no parent directory".to_string())
     })?;
-    // Credential-surface socket joins the occupied baseline BEFORE
-    // prepare: the central merge must see the SSH_AUTH_SOCK guest
-    // target, or an extension mount could collide past the gate.
-    // ssh_args is mixed ["--volume", "sock:sock:ro", "-e",
-    // "SSH_AUTH_SOCK=..."]; volumes join triples (rendered once
-    // below), env rides separately.
-    let ssh_args = cistella::identity::ssh_agent_volume_args(&prof);
-    let mut ssh_env = Vec::new();
-    let mut i = 0;
-    while i + 1 < ssh_args.len() {
-        let flag = &ssh_args[i];
-        let val = &ssh_args[i + 1];
-        if flag == "--volume" {
-            triples.push(cistella::mount::parse_mount_triple(val)?);
-        } else if flag == "-e" {
-            ssh_env.push(val.clone());
-        }
-        i += 2;
-    }
+    // SSH ambient selection rides positionally parallel to the
+    // extensions vector (see `Profile::ssh_selection_argv`):
+    // declared `ssh` is fed from seat ambient, everything else
+    // gets empty argv.
+    let extra_args = prof.ssh_selection_argv(&extensions)?;
     // Extension prepare: none, one, or many
     // (see `prepare_selected_extension` — undeclared means
     // the empty plan, pure Podman behavior; registered means the
@@ -446,7 +432,7 @@ fn conduct_session(
         &policy,
         &id,
         &cistella::lock::runtime_base(),
-        &[],
+        &extra_args,
     )?;
     // Declared-but-empty refuses here, before staging or
     // create: a selected extension answering zero hooks must
@@ -524,13 +510,10 @@ fn conduct_session(
     }
     // Extension contributions append after accepted pairs
     // (deterministic suffix; central merge already refused collisions).
+    // The ssh guest's SSH_AUTH_SOCK arrives here like every other
+    // guest env — no driver injection, no last-append privilege.
     for (k, v) in &evaluated.merged.environment {
         env_extra.push(format!("{k}={v}"));
-    }
-    // Driver-injected socket pointer env rides last (split from
-    // ssh_args alongside the credential volume above).
-    for val in &ssh_env {
-        env_extra.push(val.clone());
     }
     // Profile `labels` table merges under CLI `--label` (one rule, CLI wins).
     let mut merged = prof.labels.iter().collect::<Vec<_>>();

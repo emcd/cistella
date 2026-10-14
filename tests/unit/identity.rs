@@ -1,47 +1,46 @@
-//! Identity credential-surface enforcement.
+//! Identity: credential-surface deletion plus the surviving
+//! signing helper.
+//!
+//! Agent forwarding is a declared-extension concern (the shipped
+//! ssh guest fed by seat ambient). The slot is gone: profiles
+//! naming it refuse at parse.
 
 use cistella::profile::Profile;
 
 #[test]
-fn none_mounts_nothing_even_with_ambient_sock() {
-    // Set ambient SSH_AUTH_SOCK to a fake existing path, but profile is none → zero args.
-    let tmp = tempfile::tempdir().unwrap();
-    let sock = tmp.path().join("agent.sock");
-    std::fs::write(&sock, "").unwrap();
-    // SAFETY: set_env is unsafe in this toolchain
-    unsafe { std::env::set_var("SSH_AUTH_SOCK", &sock) };
+fn credential_surface_refuses_at_parse() {
+    // The deleted slot refuses in both spellings — migration is
+    // to declared `ssh`, never to a renamed slot.
+    for body in [
+        "credential-surface = \"none\"\n",
+        "credential-surface = { ssh_agent = \"/run/seat.sock\" }\n",
+    ] {
+        let toml = format!("image = \"localhost/cistella/opencode:example\"\n{body}mounts = []\n");
+        let error = Profile::from_toml(&toml).unwrap_err().to_string();
+        assert!(
+            error.contains("credential-surface") || error.contains("credential_surface"),
+            "slot must refuse naming itself, got: {error}"
+        );
+    }
+}
+
+#[test]
+fn minimal_profile_parses_without_surface() {
     let prof = Profile::from_toml(
         r#"
 image = "localhost/cistella/opencode:example"
-credential-surface = "none"
 mounts = []
 "#,
     )
     .unwrap();
-    let args = cistella::identity::ssh_agent_volume_args(&prof);
-    assert!(
-        args.is_empty(),
-        "none should produce zero args, got {args:?}"
-    );
-    unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
+    assert!(prof.environment_acceptances.is_empty());
 }
 
 #[test]
-fn agent_mounts_ro_from_profile() {
-    let tmp = tempfile::tempdir().unwrap();
-    let sock = tmp.path().join("seat.sock");
-    std::fs::write(&sock, "").unwrap();
-    let toml = format!(
-        r#"
-image = "localhost/cistella/opencode:example"
-credential-surface = {{ ssh_agent = "{}" }}
-mounts = []
-"#,
-        sock.display()
-    );
-    let prof = Profile::from_toml(&toml).unwrap();
-    let args = cistella::identity::ssh_agent_volume_args(&prof);
-    assert_eq!(args.len(), 4);
-    assert!(args[1].contains(":ro"));
-    assert!(args[3].contains(sock.to_string_lossy().as_ref()));
+fn allowed_signers_format_pins_principal_and_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("allowed_signers");
+    cistella::identity::write_allowed_signers(&path, "seat", "ssh-ed25519 AAAAC3test").unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(content, "seat ssh-ed25519 AAAAC3test\n");
 }

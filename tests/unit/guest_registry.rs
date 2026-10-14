@@ -106,7 +106,11 @@ fn malformed_toml_refuses() {
 
 #[test]
 fn shadowing_reserved_names_refuses_at_parse() {
-    for (table, name) in [("isolators", "podman"), ("extensions", "landlock")] {
+    for (table, name) in [
+        ("isolators", "podman"),
+        ("extensions", "landlock"),
+        ("extensions", "ssh"),
+    ] {
         let text = format!(
             "format-version = 1\n\
              [[{table}]]\n\
@@ -122,6 +126,50 @@ fn shadowing_reserved_names_refuses_at_parse() {
             "got: {error}"
         );
     }
+}
+
+#[test]
+fn colon_entry_names_refuse_at_parse() {
+    // Owner identities are namespaced `shipped:`/`registered:` —
+    // no entry may squat a shipped identity.
+    for name in ["shipped:ssh", "registered:x", "a:b"] {
+        let text = format!(
+            "format-version = 1\n\
+             [[extensions]]\n\
+             name = \"{name}\"\n\
+             role = \"helper\"\n\
+             protocol = 1\n\
+             source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
+             source-path = \"/opt/guests/helper\"\n"
+        );
+        let error = Registry::parse(&text).expect_err("colon name must refuse");
+        assert!(
+            error.to_string().contains("must not contain ':'"),
+            "got: {error}"
+        );
+    }
+}
+
+#[test]
+fn binary_name_entry_resolves_disjoint_from_shipped() {
+    // A legal entry named like a shipped binary resolves to a
+    // `registered:` identity — never the `shipped:` one — so a
+    // declared locator for one authorizes nothing for the other.
+    let text = format!(
+        "format-version = 1\n\
+         [[extensions]]\n\
+         name = \"cistella-extension-ssh\"\n\
+         role = \"ordinary-helper\"\n\
+         protocol = 1\n\
+         source-digest = {{ algorithm = 'sha256', value = \"{DIGEST}\" }}\n\
+         source-path = \"/opt/guests/helper\"\n"
+    );
+    let registry = Registry::parse(&text).expect("binary-name entry parses");
+    let entry = registry
+        .find(GuestTable::Extensions, "cistella-extension-ssh")
+        .expect("entry resolves");
+    assert_eq!(entry.name, "cistella-extension-ssh");
+    assert_ne!(entry.name, "shipped:ssh");
 }
 
 #[test]

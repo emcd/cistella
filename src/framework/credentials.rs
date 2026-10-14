@@ -20,16 +20,17 @@
 //!   `create`/`execute_launch` time (mirrors [`UnitHandle`]/
 //!   [`ExecutionHandle`]); resolution locality is the issuing
 //!   framework instance.
-//! - `seat-socket`: bounded absolute-path locator into the
-//!   framework-owned seat runtime directory (mirrors the profile
-//!   `credential_surface` socket mount); resolution locality is the
-//!   seat dir, and paths escaping it refuse.
+//! - `seat-socket`: bounded absolute-path locator — either into
+//!   the framework-owned seat runtime directory (standing prefix
+//!   gate), or exactly equal to a host-declared authorized locator
+//!   for the contributing instance (declared `ssh` socket);
+//!   resolution locality is the seat dir or the declaration, and
+//!   paths matching neither refuse.
 //!
 //! Capability advertisement for the seam is proven by the
 //! deterministic fake (forbidden shapes refused, admitted handles
 //! accepted, oversized strings refused), never by real credential
-//! transport: no seat runtime dir is provisioned, so real transport
-//! stays unwired.
+//! transport.
 //!
 //! Review record: each admitted kind's resolution path (where
 //! `opaque-reference` ids resolve to backing resources, where
@@ -174,6 +175,13 @@ impl CredentialHandle {
 
 /// Validates a batch of credential handles from one prepare response.
 ///
+/// Seat-socket handles bind to declared authorized locators
+/// `(owner, path)` when the host declared any: equality admits,
+/// anything else refuses — a second claimant can never borrow
+/// another instance's authorization. With no declared locators
+/// the standing prefix gate applies unchanged (never broadened).
+/// Diagnostics name the kind and locator class, never content.
+///
 /// # Errors
 ///
 /// Returns `CistellaError::Contract` on the first refusing handle;
@@ -181,8 +189,50 @@ impl CredentialHandle {
 pub fn admit_all(
     handles: &[CredentialHandle],
     owner: &crate::framework::contract::Provenance,
+    authorized: &[(crate::framework::contract::Provenance, String)],
 ) -> Result<Vec<AdmittedCredential>> {
-    handles.iter().map(|handle| handle.admit(owner)).collect()
+    handles
+        .iter()
+        .map(|handle| admit_one(handle, owner, authorized))
+        .collect()
+}
+
+/// Validates one handle: grammar, bounds, locality, authorization.
+///
+/// See [`admit_all`] for the authorized-locator rule.
+fn admit_one(
+    handle: &CredentialHandle,
+    owner: &crate::framework::contract::Provenance,
+    authorized: &[(crate::framework::contract::Provenance, String)],
+) -> Result<AdmittedCredential> {
+    if let CredentialHandle::SeatSocket { path } = handle
+        && !authorized.is_empty()
+    {
+        // Declared locators REPLACE the prefix gate (real agent
+        // sockets live outside any framework prefix): equality
+        // against a host-declared `(owner, path)` admits, with
+        // only the oversize bound re-checked. Anything else —
+        // wrong owner, undeclared path — refuses here.
+        let bound = authorized
+            .iter()
+            .any(|(instance, locator)| instance == owner && locator == path);
+        if !bound {
+            return Err(CistellaError::Contract(
+                "credential handle refused: seat-socket without declared locator".to_string(),
+            ));
+        }
+        if path.len() > MAX_LOCATOR_LEN {
+            return Err(CistellaError::Contract(
+                "credential handle oversize: seat-socket".to_string(),
+            ));
+        }
+        return Ok(AdmittedCredential {
+            kind: "seat-socket",
+            locator_class: "seat-socket",
+            owner: owner.clone(),
+        });
+    }
+    handle.admit(owner)
 }
 
 /// Parses credential handles from a wire value with unknown-field and

@@ -14,11 +14,11 @@
 //!   'AGENTMUX_SESSION']`; relay labels (`agentmux.session`) and the
 //!   `~/.config/agentmux` mount target appear in
 //!   `tests/unit/runtime.rs`.
-//! - SSH triple: `identity::ssh_agent_volume_args` wires
-//!   `{socket}:{socket}:ro` plus `SSH_AUTH_SOCK={socket}` from the
-//!   profile `credential_surface` Agent slot (never from acceptances,
-//!   never ambient); the `seat-socket` credential handle mirrors that
-//!   slot's bounded socket path.
+//! - SSH triple: the shipped ssh guest contributes
+//!   `SSH_AUTH_SOCK=P` plus the `C→P` read-only bind from seat
+//!   ambient under declared `ssh` (never from acceptances alone);
+//!   the `seat-socket` credential handle names the canonical path
+//!   by declared-locator equality.
 //! - Token refusal: the compiled-default push-credential guard and
 //!   the never-grandfathered-extension rule live in
 //!   `framework::policy`.

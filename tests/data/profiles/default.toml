@@ -2,7 +2,6 @@
 # Test fixture (todos/testing/11), not a baked example: live tests
 # conduct against this file by explicit path, never by baked name.
 image = 'localhost/cistella/opencode:example'
-credential-surface = 'none'
 container-home = '/home/cistella'
 command = ['sleep', 'infinity']
 mounts = []

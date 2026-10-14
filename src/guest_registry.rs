@@ -45,12 +45,19 @@ const MAX_REGISTRY_FILE_BYTES: u64 = 1024 * 1024;
 /// attack, never legitimate).
 pub const SHIPPED_ISOLATOR_NAME: &str = "podman";
 
-/// Reserved shipped name in `[[extensions]]`: entries shadowing it
-/// refuse at parse. Note the deliberate asymmetry: a `landlock`
+/// Reserved shipped names in `[[extensions]]`: entries shadowing
+/// them refuse at parse. Note the deliberate asymmetry: a `landlock`
 /// role string in `[[isolators]]` stays legal for the planned future
 /// sibling (guarded at runtime by the slot check plus the string
 /// compare), while no podman extension exists or is planned.
 pub const SHIPPED_EXTENSION_NAME: &str = "landlock";
+
+/// Second reserved shipped name in `[[extensions]]`: the ssh
+/// extension resolves shipped-first, so a registry entry of that
+/// name could never conduct — a typo or confusion, never
+/// legitimate. (`tmpdir` shadowing stays legal-but-shadowed as
+/// before: out of scope for this change.)
+pub const SHIPPED_SSH_NAME: &str = "ssh";
 
 /// Seat environment snapshot for registry location. Explicit so
 /// tests pin XDG/HOME shapes without mutating process env.
@@ -346,7 +353,9 @@ impl Registry {
 }
 
 /// Validates one genera table: nonempty names, per-table duplicate
-/// refusal, reserved-name shadowing refusal, per-entry checks.
+/// refusal, reserved-name shadowing refusal, colon refusal (owner
+/// identities are namespaced `shipped:`/`registered:` — no entry
+/// may squat a shipped identity), per-entry checks.
 fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<Guest>> {
     let reserved = match table {
         GuestTable::Isolators => SHIPPED_ISOLATOR_NAME,
@@ -361,13 +370,21 @@ fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<Guest
             ));
         }
         reject_spans(&entry.name, "registry entry name")?;
+        if entry.name.contains(':') {
+            return Err(CistellaError::Profile(format!(
+                "registry entry name must not contain ':': {}",
+                entry.name
+            )));
+        }
         if !seen.insert(entry.name.clone()) {
             return Err(CistellaError::Profile(format!(
                 "duplicate registry entry: {}",
                 entry.name
             )));
         }
-        if entry.name == reserved {
+        if entry.name == reserved
+            || (table == GuestTable::Extensions && entry.name == SHIPPED_SSH_NAME)
+        {
             return Err(CistellaError::Profile(format!(
                 "registry entry shadows shipped name: {}",
                 entry.name

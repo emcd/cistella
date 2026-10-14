@@ -659,3 +659,203 @@ fn unknown_permission_target_refuses() {
         "got: {error}"
     );
 }
+
+fn ssh_owner() -> Provenance {
+    Provenance::Extension("shipped:ssh".to_string())
+}
+
+fn ssh_env(p: &str) -> EnvContribution {
+    EnvContribution {
+        name: "SSH_AUTH_SOCK".to_string(),
+        value: p.to_string(),
+        provenance: ssh_owner(),
+    }
+}
+
+fn ssh_mount(c: &str, p: &str) -> MountContribution {
+    MountContribution {
+        placement: Placement {
+            host_source: c.to_string(),
+            container_target: p.to_string(),
+        },
+        provenance: ssh_owner(),
+    }
+}
+
+fn ssh_perm(p: &str) -> PermissionContribution {
+    PermissionContribution {
+        target: p.to_string(),
+        rights: Rights::Read,
+        provenance: ssh_owner(),
+    }
+}
+
+fn ssh_expectation(p: &str, c: &str) -> cistella::framework::contract::InstanceExpectation {
+    cistella::framework::contract::InstanceExpectation {
+        owner: ssh_owner(),
+        env: vec![("SSH_AUTH_SOCK".to_string(), p.to_string())],
+        mounts: vec![(c.to_string(), p.to_string())],
+        permissions: vec![(p.to_string(), Rights::Read)],
+        credentials: vec![("seat-socket".to_string(), c.to_string())],
+    }
+}
+
+fn ssh_context(p: &str, c: &str) -> MergeContext {
+    let mut reserved = HashSet::new();
+    reserved.insert("SSH_AUTH_SOCK".to_string());
+    MergeContext::new("/home/cistella", reserved, Vec::new())
+        .with_expectations(vec![ssh_expectation(p, c)])
+}
+
+fn ssh_plan(p: &str, c: &str) -> PreparePlan {
+    PreparePlan {
+        environment: vec![ssh_env(p)],
+        mounts: vec![ssh_mount(c, p)],
+        permissions: vec![ssh_perm(p)],
+        ..PreparePlan::default()
+    }
+}
+
+#[test]
+fn declared_bundle_merges_exact_tuple_despite_reservation() {
+    // The owned name is exempt for exactly its owner: the
+    // reservation still holds for everyone else (next test).
+    let merged = merge_prepare(
+        ssh_plan("/sock", "/sock"),
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap();
+    assert_eq!(
+        merged.environment,
+        vec![("SSH_AUTH_SOCK".to_string(), "/sock".to_string())]
+    );
+}
+
+#[test]
+fn undeclared_ssa_still_hits_reservation() {
+    // No expectations: the standing reserved refusal applies.
+    let mut reserved = HashSet::new();
+    reserved.insert("SSH_AUTH_SOCK".to_string());
+    let plan = PreparePlan {
+        environment: vec![env("SSH_AUTH_SOCK", "/sock")],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::new("/home/cistella", reserved, Vec::new()),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("reserved name"), "got: {error}");
+}
+
+#[test]
+fn other_guest_ssa_refuses_under_declaration() {
+    // Same name, different owner, ssh tuple absent: the bundle
+    // check fires (owned name unfulfilled) before the stranger
+    // could reach the reservation — either way it refuses.
+    let plan = PreparePlan {
+        environment: vec![env("SSH_AUTH_SOCK", "/sock")],
+        ..PreparePlan::default()
+    };
+    let error =
+        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    assert!(error.to_string().contains("bundle"), "got: {error}");
+}
+
+#[test]
+fn declared_bundle_empty_refuses() {
+    let error = merge_prepare(
+        PreparePlan::default(),
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("bundle"), "got: {error}");
+}
+
+#[test]
+fn declared_bundle_divergent_value_refuses() {
+    let mut plan = ssh_plan("/sock", "/sock");
+    plan.environment[0].value = "/elsewhere".to_string();
+    let error =
+        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    assert!(error.to_string().contains("bundle"), "got: {error}");
+}
+
+#[test]
+fn declared_bundle_extra_mount_refuses() {
+    let mut plan = ssh_plan("/sock", "/sock");
+    plan.mounts.push(ssh_mount("/extra", "/extra"));
+    let error =
+        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    assert!(error.to_string().contains("bundle"), "got: {error}");
+}
+
+#[test]
+fn declared_bundle_claim_refuses() {
+    let mut plan = ssh_plan("/sock", "/sock");
+    plan.policy_claims.push(PolicyClaim {
+        pattern: "SSH_AUTH_SOCK".to_string(),
+        severity: Severity::Suppressible,
+        scope: Scope::OnExtensions,
+        provenance: ssh_owner(),
+    });
+    let error =
+        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    assert!(error.to_string().contains("bundle"), "got: {error}");
+}
+
+#[test]
+fn stranger_ssa_refuses_reserved_beside_fulfilled_bundle() {
+    // ssh tuple present (bundle passes) plus a stranger SSA:
+    // the stranger hits the reservation — the exemption is
+    // owner-bound, never name-bound.
+    let mut plan = ssh_plan("/sock", "/sock");
+    plan.environment.push(env("SSH_AUTH_SOCK", "/sock"));
+    let error =
+        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    assert!(error.to_string().contains("reserved name"), "got: {error}");
+}
+
+#[test]
+fn expected_credentials_exact_kinds_admit() {
+    use cistella::framework::contract::check_expected_credentials;
+    use cistella::framework::credentials::AdmittedCredential;
+    let held = vec![AdmittedCredential {
+        kind: "seat-socket",
+        locator_class: "seat-socket",
+        owner: ssh_owner(),
+    }];
+    let context = ssh_context("/sock", "/sock");
+    check_expected_credentials(&held, &context.expectations).unwrap();
+}
+
+#[test]
+fn expected_credentials_missing_refuses() {
+    use cistella::framework::contract::check_expected_credentials;
+    let context = ssh_context("/sock", "/sock");
+    let error = check_expected_credentials(&[], &context.expectations).unwrap_err();
+    assert!(
+        error.to_string().contains("credential mismatch"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn expected_credentials_wrong_owner_refuses() {
+    use cistella::framework::contract::check_expected_credentials;
+    use cistella::framework::credentials::AdmittedCredential;
+    let held = vec![AdmittedCredential {
+        kind: "seat-socket",
+        locator_class: "seat-socket",
+        owner: Provenance::Extension("probe".to_string()),
+    }];
+    let context = ssh_context("/sock", "/sock");
+    let error = check_expected_credentials(&held, &context.expectations).unwrap_err();
+    assert!(
+        error.to_string().contains("credential mismatch"),
+        "got: {error}"
+    );
+}

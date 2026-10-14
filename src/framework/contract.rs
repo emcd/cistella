@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CistellaError, Result};
 use crate::framework::credentials::AdmittedCredential;
+use crate::framework::expectations::check_expectations;
 
 use crate::framework::policy::PolicySet;
 pub use crate::mount::{MountMode, MountTriple, Placement};
@@ -175,6 +176,7 @@ pub struct MountContribution {
     pub provenance: Provenance,
 }
 
+pub use crate::framework::expectations::{InstanceExpectation, check_expected_credentials};
 pub use crate::framework::permissions::{
     EffectiveGrant, EffectivePermissions, PermissionContribution, Rights, render_placements,
 };
@@ -386,6 +388,15 @@ pub struct MergeContext {
     /// (owner-provided: production fills the owning compiler's
     /// set explicitly; empty means no baselines known).
     pub baselines: Vec<String>,
+    /// Host-declared expected contribution bundles, one per
+    /// instance that owns its slot by declaration (today: the
+    /// ssh instance under declared `ssh`). The merge enforces
+    /// each bundle exactly — omission, divergence, and extras
+    /// refuse — so a buggy empty/partial plan can never leave
+    /// its owned name open for another claimant. Empty means
+    /// no declared bundles: every existing caller behaves
+    /// exactly as before.
+    pub expectations: Vec<InstanceExpectation>,
 }
 
 impl MergeContext {
@@ -401,7 +412,15 @@ impl MergeContext {
             occupied_mounts,
             profile_permissions: Vec::new(),
             baselines: Vec::new(),
+            expectations: Vec::new(),
         }
+    }
+
+    /// Attaches host-declared expected contribution bundles.
+    #[must_use]
+    pub fn with_expectations(mut self, expectations: Vec<InstanceExpectation>) -> Self {
+        self.expectations = expectations;
+        self
     }
 
     /// Attaches explicit profile `[[permissions]] contributions.
@@ -430,6 +449,7 @@ impl MergeContext {
             occupied_mounts: Vec::new(),
             profile_permissions: Vec::new(),
             baselines: Vec::new(),
+            expectations: Vec::new(),
         }
     }
 }
@@ -457,7 +477,22 @@ pub fn merge_prepare(
     context: &MergeContext,
 ) -> Result<MergedPlan> {
     gate_capabilities(&plan, advertised)?;
-    let environment = merge_environment(&plan.environment, &context.reserved_env)?;
+    check_expectations(&plan, context)?;
+    // Owner-bound reservation exemption: names an expectation
+    // owns are admittable from exactly that owner — every other
+    // claimant still refuses. Derived, never configured: the
+    // exemption set is the expectations' own env names.
+    let exempt: Vec<(&Provenance, &str)> = context
+        .expectations
+        .iter()
+        .flat_map(|expected| {
+            expected
+                .env
+                .iter()
+                .map(|(name, _)| (&expected.owner, name.as_str()))
+        })
+        .collect();
+    let environment = merge_environment(&plan.environment, &context.reserved_env, &exempt)?;
     let placements: Vec<Placement> = plan
         .mounts
         .iter()
@@ -537,6 +572,7 @@ pub(crate) fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) 
 fn merge_environment(
     contributions: &[EnvContribution],
     reserved: &HashSet<String>,
+    exempt: &[(&Provenance, &str)],
 ) -> Result<Vec<(String, String)>> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut merged = Vec::with_capacity(contributions.len());
@@ -551,7 +587,10 @@ fn merge_environment(
                 contribution.name
             )));
         }
-        if reserved.contains(&contribution.name) {
+        let owned = exempt
+            .iter()
+            .any(|(owner, name)| *owner == &contribution.provenance && *name == contribution.name);
+        if reserved.contains(&contribution.name) && !owned {
             return Err(CistellaError::Contract(format!(
                 "contribution collides with reserved name: {}",
                 contribution.name
@@ -853,6 +892,7 @@ pub(crate) fn merge_transacted_as(
         .map(|contribution| contribution.placement.clone())
         .collect();
     let merged = merge_prepare(plan, &advertised, context)?;
+    check_expected_credentials(&credentials, &context.expectations)?;
     // Owner-grouped partition and evaluation: each guest's claims
     // constrain only names carrying its own provenance. A claim
     // matching another guest's names (but none of its owner's)

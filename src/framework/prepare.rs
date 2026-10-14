@@ -22,9 +22,9 @@ use serde::Deserialize;
 use crate::error::{CistellaError, Result};
 pub use crate::framework::contract::EvaluatedPlan;
 use crate::framework::contract::{
-    Deadlines, EffectivePermissions, EnvContribution, GuestHookRequest, MergeContext,
-    MountContribution, MountTriple, PermissionContribution, Placement, PolicyClaim, PreparePlan,
-    Provenance, Rights, merge_transacted,
+    Deadlines, EffectivePermissions, EnvContribution, GuestHookRequest, InstanceExpectation,
+    MergeContext, MountContribution, MountTriple, PermissionContribution, Placement, PolicyClaim,
+    PreparePlan, Provenance, Rights, merge_transacted,
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
 use crate::framework::guest::{host_external, host_registered};
@@ -142,7 +142,16 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     timeout: Duration,
     session_id: &str,
 ) -> Result<EvaluatedPlan> {
-    let (plan, credentials) = transact_prepare(exchange, guest_id, timeout, session_id)?;
+    let (plan, credentials) = transact_prepare(
+        exchange,
+        guest_id,
+        timeout,
+        session_id,
+        context
+            .expectations
+            .iter()
+            .find(|expected| expected.owner == Provenance::Extension(guest_id.to_string())),
+    )?;
     // Single-set-single-request admission (single-guest path):
     // one guest returning two hook requests refuses here; the
     // multi-claimant half lives in the N-guest runner. The merge
@@ -183,6 +192,7 @@ pub(crate) fn transact_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     guest_id: &str,
     timeout: Duration,
     session_id: &str,
+    expectation: Option<&InstanceExpectation>,
 ) -> Result<(PreparePlan, Vec<AdmittedCredential>)> {
     // The opaque session id rides the request (additive field):
     // extensions MAY mint per-session host state keyed by it and
@@ -197,7 +207,30 @@ pub(crate) fn transact_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
         CistellaError::Contract("bad prepare response: shape violation".to_string())
     })?;
     let provenance = Provenance::Extension(guest_id.to_string());
-    let credentials = admit_all(&response.credentials, &provenance)?;
+    // Expectation-bound guests (hooks/cleanup carry no owner
+    // provenance at merge, so their emptiness is enforced here,
+    // where attribution is exact): any claim, hook, or cleanup
+    // declaration refuses the transaction.
+    if let Some(expected) = expectation
+        && expected.owner == provenance
+        && (!response.policy_claims.is_empty()
+            || !response.guest_hooks.is_empty()
+            || !response.cleanup.is_empty())
+    {
+        return Err(CistellaError::Contract(
+            "declared bundle forbids claims, hooks, and cleanup".to_string(),
+        ));
+    }
+    let authorized: Vec<(Provenance, String)> = expectation
+        .iter()
+        .flat_map(|expected| {
+            expected
+                .credentials
+                .iter()
+                .map(|(_, locator)| (expected.owner.clone(), locator.clone()))
+        })
+        .collect();
+    let credentials = admit_all(&response.credentials, &provenance, &authorized)?;
     let plan = build_plan(response, &provenance)?;
     Ok((plan, credentials))
 }
@@ -208,11 +241,17 @@ pub const EXTENSION_BIN: &str = "cistella-extension-landlock";
 /// Tmpdir extension binary name, resolved the same sibling way.
 pub const TMPDIR_BIN: &str = "cistella-extension-tmpdir";
 
+/// SSH extension binary name, resolved the same sibling way.
+pub const SSH_BIN: &str = "cistella-extension-ssh";
+
 /// Role capability offered to the extension guest.
 const EXTENSION_ROLE: &str = "landlock";
 
 /// Role capability offered to the tmpdir guest.
 const TMPDIR_ROLE: &str = "tmpdir";
+
+/// Role capability offered to the ssh guest.
+const SSH_ROLE: &str = "ssh";
 
 /// Contribution capability the Landlock hook exercises.
 const EXTENSION_HOOKS: &str = "guest-hooks";
@@ -235,17 +274,55 @@ const REGISTERED_OFFERED: [&str; 7] = [
     "credentials",
 ];
 
+/// Host-unique instance identity for the shipped ssh guest.
+/// The generic authorized-locator and expected-bundle machinery
+/// binds to this string — never to the binary filename or the
+/// declaration name (both collide with legal registry entries).
+pub const SSH_INSTANCE_ID: &str = "shipped:ssh";
+
+/// Builds the declared ssh bundle from host-supplied spawn argv
+/// (`--socket=P --socket-canonical=C`): the exact tuple the
+/// instance must return, plus the authorized credential locator.
+/// `None` when argv is absent or malformed — the guest then
+/// refuses at prepare, and the merge's standing gates refuse
+/// whatever it returns (fail-closed either way; production
+/// always supplies argv, refusing earlier on bad ambient).
+#[must_use]
+pub fn ssh_expectation(extra: &[String]) -> Option<InstanceExpectation> {
+    let mut declared = None;
+    let mut canonical = None;
+    for arg in extra {
+        if let Some(value) = arg.strip_prefix("--socket=") {
+            declared = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--socket-canonical=") {
+            canonical = Some(value.to_string());
+        }
+    }
+    let (declared, canonical) = match (declared, canonical) {
+        (Some(declared), Some(canonical)) => (declared, canonical),
+        _ => return None,
+    };
+    Some(InstanceExpectation {
+        owner: Provenance::Extension(SSH_INSTANCE_ID.to_string()),
+        env: vec![("SSH_AUTH_SOCK".to_string(), declared.clone())],
+        mounts: vec![(canonical.clone(), declared.clone())],
+        permissions: vec![(declared, Rights::Read)],
+        credentials: vec![("seat-socket".to_string(), canonical)],
+    })
+}
 /// Which guest answers one prepare transaction: a shipped
-/// extension (Landlock confinement or tmpdir host state,
-/// sibling-relative discovery) or one resolved registered entry
-/// (verified bytes plus recorded role, resolved before prepare so
-/// verification failures refuse pre-create).
+/// extension (Landlock confinement, tmpdir host state, or ssh
+/// agent forwarding; sibling-relative discovery) or one resolved
+/// registered entry (verified bytes plus recorded role, resolved
+/// before prepare so verification failures refuse pre-create).
 #[derive(Debug)]
 pub enum ExtensionSpawn {
     /// Shipped Landlock extension (sibling-relative discovery).
     Landlock,
     /// Shipped tmpdir extension (sibling-relative discovery).
     Tmpdir,
+    /// Shipped ssh extension (sibling-relative discovery).
+    Ssh,
     /// Third-party extension (verified open FD, static argv).
     Registered(ResolvedGuest),
 }
@@ -255,10 +332,18 @@ pub enum ExtensionSpawn {
 /// and the advertisements the runner requires before planning.
 /// Shared by the single-transaction runner and N composition
 /// so both negotiate identically.
+///
+/// Provenance identities are host-unique namespaced instance
+/// IDs (`shipped:<selection>` for shipped guests,
+/// `registered:<entry>` for registered ones), distinct from
+/// discovery display names (binary filenames, entry names):
+/// no registry entry can own a shipped identity, so a declared
+/// locator authorization for one instance is never borrowable
+/// by another guest (registry `:` names refuse at parse).
 pub(crate) fn spawn_invitation(spawn: &ExtensionSpawn) -> (String, Vec<String>, Vec<String>) {
     match spawn {
         ExtensionSpawn::Landlock => (
-            EXTENSION_BIN.to_string(),
+            "shipped:landlock".to_string(),
             vec![EXTENSION_ROLE.to_string(), EXTENSION_HOOKS.to_string()],
             vec![EXTENSION_HOOKS.to_string()],
         ),
@@ -270,15 +355,35 @@ pub(crate) fn spawn_invitation(spawn: &ExtensionSpawn) -> (String, Vec<String>, 
             let mut offered = vec![TMPDIR_ROLE.to_string()];
             offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
             (
-                TMPDIR_BIN.to_string(),
+                "shipped:tmpdir".to_string(),
                 offered,
                 vec![TMPDIR_ROLE.to_string()],
+            )
+        }
+        ExtensionSpawn::Ssh => {
+            // Shipped ssh negotiates like the tmpdir sibling
+            // (role plus the full contribution set, hooks
+            // optional) minus verification — install-dir trust.
+            // Socket paths ride spawn argv (`--socket=P
+            // --socket-canonical=C`, both host-supplied), never
+            // the wire: the guest's only filesystem read is the
+            // kind check.
+            let mut offered = vec![SSH_ROLE.to_string()];
+            offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
+            (
+                "shipped:ssh".to_string(),
+                offered,
+                vec![SSH_ROLE.to_string()],
             )
         }
         ExtensionSpawn::Registered(resolved) => {
             let mut offered = vec![resolved.role.clone()];
             offered.extend(REGISTERED_OFFERED.iter().map(|name| name.to_string()));
-            (resolved.name.clone(), offered, vec![resolved.role.clone()])
+            (
+                format!("registered:{}", resolved.name),
+                offered,
+                vec![resolved.role.clone()],
+            )
         }
     }
 }
@@ -335,6 +440,10 @@ pub fn run_extension_prepare(
     // spawn and record_guest leaves gc skipping (never assuming),
     // cleared by the matching record below.
     lease.mark_pending()?;
+    // Declared-bundle flag BEFORE the hosting match moves the
+    // spawn: the ssh expectation derives from host-built argv,
+    // needed again at context assembly below.
+    let is_ssh = matches!(spawn, ExtensionSpawn::Ssh);
     let (mut guest, negotiated) = match match spawn {
         ExtensionSpawn::Landlock => host_external(
             exe_dir,
@@ -350,6 +459,9 @@ pub fn run_extension_prepare(
             &offered,
             Deadlines::default(),
         ),
+        ExtensionSpawn::Ssh => {
+            host_external(exe_dir, SSH_BIN, extra_args, &offered, Deadlines::default())
+        }
         ExtensionSpawn::Registered(resolved) => {
             host_registered(resolved, extra_args, &offered, Deadlines::default())
         }
@@ -391,7 +503,12 @@ pub fn run_extension_prepare(
     // image-private set; a future owner provides its own.
     let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
         .with_profile_permissions(profile_permissions)
-        .with_baselines(crate::framework::landlock_compiler::baseline_routes());
+        .with_baselines(crate::framework::landlock_compiler::baseline_routes())
+        .with_expectations(if is_ssh {
+            ssh_expectation(extra_args).into_iter().collect()
+        } else {
+            Vec::new()
+        });
     let acceptances = acceptance_set(&profile.environment_acceptances);
     let outcome = run_prepare(
         guest.exchange_mut(),

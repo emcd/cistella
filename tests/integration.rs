@@ -34,6 +34,8 @@ mod recovery;
 mod selectors;
 #[path = "integration/signals.rs"]
 mod signals;
+#[path = "integration/ssh_guest.rs"]
+mod ssh_guest;
 #[path = "integration/tmp_alias.rs"]
 mod tmp_alias;
 #[path = "integration/tmpdir_gc.rs"]

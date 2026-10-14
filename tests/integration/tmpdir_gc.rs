@@ -354,7 +354,6 @@ fn tmpdir_hooked_session_writes_tmp() {
 fn write_hooked_profile(dir: &std::path::Path, extra_mounts: &str) -> String {
     let text = format!(
         "image = 'localhost/cistella/opencode:example'\n\
-         credential-surface = 'none'\n\
          container-home = '/home/cistella'\n\
          command = ['sleep', 'infinity']\n\
          [[mounts]]\n\

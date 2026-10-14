@@ -49,7 +49,7 @@ fn opaque_reference_admits_minted_shape() {
         {"kind": "opaque-reference", "id": "abc123"},
     ]))
     .unwrap();
-    let admitted = admit_all(&handles, &test_owner()).unwrap();
+    let admitted = admit_all(&handles, &test_owner(), &[]).unwrap();
     assert_eq!(admitted.len(), 1);
     assert_eq!(admitted[0].kind, "opaque-reference");
     assert_eq!(admitted[0].locator_class, "opaque-id");
@@ -62,14 +62,14 @@ fn opaque_reference_refuses_user_chosen_strings() {
             {"kind": "opaque-reference", "id": id},
         ]))
         .unwrap();
-        admit_all(&handles, &test_owner()).unwrap_err();
+        admit_all(&handles, &test_owner(), &[]).unwrap_err();
     }
     let long = "a".repeat(2048);
     let handles = parse_wire(&json!([
         {"kind": "opaque-reference", "id": long},
     ]))
     .unwrap();
-    admit_all(&handles, &test_owner()).unwrap_err();
+    admit_all(&handles, &test_owner(), &[]).unwrap_err();
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn seat_socket_admits_bounded_prefix() {
         {"kind": "seat-socket", "path": "/run/cistella/seats/agent-7.sock"},
     ]))
     .unwrap();
-    let admitted = admit_all(&handles, &test_owner()).unwrap();
+    let admitted = admit_all(&handles, &test_owner(), &[]).unwrap();
     assert_eq!(admitted[0].kind, "seat-socket");
 }
 
@@ -97,7 +97,7 @@ fn seat_socket_refuses_escape_and_shape() {
             {"kind": "seat-socket", "path": path},
         ]))
         .unwrap();
-        admit_all(&handles, &test_owner()).unwrap_err();
+        admit_all(&handles, &test_owner(), &[]).unwrap_err();
     }
 }
 
@@ -129,7 +129,9 @@ fn diagnostics_name_kind_never_content() {
         {"kind": "seat-socket", "path": secret_path},
     ]))
     .unwrap();
-    let error = admit_all(&handles, &test_owner()).unwrap_err().to_string();
+    let error = admit_all(&handles, &test_owner(), &[])
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("seat-socket"));
     assert!(!error.contains(secret_path));
 }
@@ -224,4 +226,65 @@ fn prepare_bad_handle_fails_whole_transaction() {
     )
     .unwrap_err();
     peer.join().unwrap();
+}
+
+#[test]
+fn seat_socket_declared_locator_admits_by_equality() {
+    let owner = test_owner();
+    let authorized = vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
+    let handles = parse_wire(&json!([
+        {"kind": "seat-socket", "path": "/run/user/1000/agent.sock"},
+    ]))
+    .unwrap();
+    let admitted = admit_all(&handles, &owner, &authorized).unwrap();
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(admitted[0].kind, "seat-socket");
+}
+
+#[test]
+fn seat_socket_other_owner_refuses_despite_declared_path() {
+    // Same path, different instance: authorization is
+    // instance-bound, never path-bound — no borrowing.
+    let owner = test_owner();
+    let stranger = cistella::framework::contract::Provenance::Extension("other".to_string());
+    let authorized = vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
+    let handles = parse_wire(&json!([
+        {"kind": "seat-socket", "path": "/run/user/1000/agent.sock"},
+    ]))
+    .unwrap();
+    let error = admit_all(&handles, &stranger, &authorized)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("without declared locator"), "got: {error}");
+}
+
+#[test]
+fn seat_socket_undeclared_path_refuses_when_locators_exist() {
+    let owner = test_owner();
+    let authorized = vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
+    let handles = parse_wire(&json!([
+        {"kind": "seat-socket", "path": "/run/cistella/seats/agent.sock"},
+    ]))
+    .unwrap();
+    let error = admit_all(&handles, &owner, &authorized)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("without declared locator"), "got: {error}");
+}
+
+#[test]
+fn seat_socket_prefix_gate_survives_without_declarations() {
+    // No declared locators: the standing prefix gate applies
+    // unchanged — legacy vectors keep passing, outsiders refuse.
+    let owner = test_owner();
+    let inside = parse_wire(&json!([
+        {"kind": "seat-socket", "path": "/run/cistella/seats/agent.sock"},
+    ]))
+    .unwrap();
+    assert_eq!(admit_all(&inside, &owner, &[]).unwrap().len(), 1);
+    let outside = parse_wire(&json!([
+        {"kind": "seat-socket", "path": "/run/user/1000/agent.sock"},
+    ]))
+    .unwrap();
+    assert!(admit_all(&outside, &owner, &[]).is_err());
 }

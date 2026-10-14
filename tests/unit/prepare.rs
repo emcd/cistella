@@ -75,3 +75,50 @@ fn preparation_sources_cover_user_mounts_only() {
     assert!(got.contains(&"/srv/data".to_string()), "{got:?}");
     assert!(got.contains(&"/work".to_string()), "{got:?}");
 }
+
+#[test]
+fn ssh_expectation_builds_exact_tuple_from_argv() {
+    use cistella::framework::prepare::ssh_expectation;
+    let extra = vec![
+        "--socket=/run/seat.sock".to_string(),
+        "--socket-canonical=/run/user/1000/agent.sock".to_string(),
+    ];
+    let expected = ssh_expectation(&extra).expect("argv parses");
+    assert_eq!(
+        expected.owner,
+        cistella::framework::contract::Provenance::Extension("shipped:ssh".to_string())
+    );
+    assert_eq!(
+        expected.env,
+        vec![("SSH_AUTH_SOCK".to_string(), "/run/seat.sock".to_string())]
+    );
+    assert_eq!(
+        expected.mounts,
+        vec![(
+            "/run/user/1000/agent.sock".to_string(),
+            "/run/seat.sock".to_string()
+        )]
+    );
+    assert_eq!(
+        expected.permissions,
+        vec![(
+            "/run/seat.sock".to_string(),
+            cistella::framework::contract::Rights::Read
+        )]
+    );
+    assert_eq!(
+        expected.credentials,
+        vec![(
+            "seat-socket".to_string(),
+            "/run/user/1000/agent.sock".to_string()
+        )]
+    );
+}
+
+#[test]
+fn ssh_expectation_absent_without_both_argv() {
+    use cistella::framework::prepare::ssh_expectation;
+    assert!(ssh_expectation(&[]).is_none());
+    assert!(ssh_expectation(&["--socket=/run/seat.sock".to_string()]).is_none());
+    assert!(ssh_expectation(&["--socket-canonical=/run/x".to_string()]).is_none());
+}

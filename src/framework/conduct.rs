@@ -10,9 +10,10 @@
 //! `environment-acceptances` stay grandfathered against compiled
 //! defaults only; user rules take precedence over both.
 //!
-//! The seat-socket credential handle remains fixture-only:
-//! no seat runtime dir is provisioned, so `credential_surface` keeps
-//! its established path and is not admitted here.
+//! The seat-socket credential handle admits two ways: the
+//! standing seat-prefix gate, or equality against a host-declared
+//! authorized locator (today: the ssh instance's canonical socket
+//! under declared `ssh`).
 
 use crate::error::Result;
 use crate::framework::contract::Provenance;
