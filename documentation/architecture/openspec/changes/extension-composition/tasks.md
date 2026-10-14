@@ -21,5 +21,5 @@
 
 ## 4. Reviews and landing
 
-- [ ] 4.1 Fast green both umasks; clippy, fmt, `openspec validate --all --strict`; planning re-review RG concurrence + Advisor full re-review (tier-2 explicitly in scope per operator routing).
-- [ ] 4.2 Implementation review RG + Advisor, then QA live tier, then land.
+- [x] 4.1 Fast green both umasks; clippy, fmt, `openspec validate --all --strict`; planning re-review RG concurrence + Advisor full re-review (tier-2 explicitly in scope per operator routing).
+- [x] 4.2 Implementation review RG + Advisor, then QA live tier, then land.

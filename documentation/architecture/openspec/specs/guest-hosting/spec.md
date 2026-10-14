@@ -5,7 +5,7 @@ External guest hosting: shipped sibling-relative guests plus seat-registered thi
 ## Requirements
 ### Requirement: Profile-declared guest selection
 
-Conduct SHALL host exactly the isolator and extensions a profile declares (`[isolator]` table, `[[extensions]]` array of tables): the named isolator backend conducts the session, and each named extension answers prepare. Absent tables mean pure Podman behavior (2.x path — no extension guest spawned, no hooks staged; the Podman isolator guest itself is still hosted as in 2.x, and 0.1.x profiles run unchanged). Names SHALL resolve first as shipped guests (`podman`, `landlock`, `tmpdir`, sibling-relative discovery as today), then through the seat-scoped guest registry; names with neither a shipped implementation nor a registry entry, and duplicate extension entries, SHALL refuse pre-create with a typed error naming the declaration (registration is opt-in per guest — an unregistered name can never silently plain a meant-hooked session). At most landlock plus one other extension conducts in v1 (each answers prepare independently in declaration order; each raw plan gates against its own negotiated capabilities pre-concat, then the plans concatenate and the single central merge stays atomic under existing validators — collisions across plans refuse deterministically, hook order follows declaration order, lattice evaluation sees each contribution under its own provenance). General N-extension composition stays deferred; two non-landlock extensions refuse pre-create rather than merge unspecified.
+Conduct SHALL host exactly the isolator and extensions a profile declares (`[isolator]` table, `[[extensions]]` array of tables): the named isolator backend conducts the session, and each named extension answers prepare. Absent tables mean pure Podman behavior (2.x path — no extension guest spawned, no hooks staged; the Podman isolator guest itself is still hosted as in 2.x, and 0.1.x profiles run unchanged). Names SHALL resolve first as shipped guests (`podman`, `landlock`, `tmpdir`, sibling-relative discovery as today), then through the seat-scoped guest registry; names with neither a shipped implementation nor a registry entry, and duplicate extension entries, SHALL refuse pre-create with a typed error naming the declaration (registration is opt-in per guest — an unregistered name can never silently plain a meant-hooked session). Any number of declared extensions conducts (each answers prepare independently in declaration order; each raw plan gates against its own negotiated capabilities pre-concat, then the plans concatenate and the single central merge stays atomic under existing validators — collisions across plans refuse deterministically naming all claimants, hook order follows declaration order, lattice evaluation sees each contribution under its own provenance). At most one contributing plan carries guest hooks, and at most one hook request per contributing plan (admission refuses naming all claimants — the wrapper chain is the only true ceiling). Landlock keeps no merge privilege: shipped-vs-registered is resolution-only and merge treats every provenance uniformly.
 
 #### Scenario: Undeclared sessions run plain
 - **WHEN** a profile declares no extensions
@@ -31,13 +31,13 @@ Conduct SHALL host exactly the isolator and extensions a profile declares (`[iso
 - **WHEN** a profile declares the `tmpdir` extension with no registry entry
 - **THEN** conduct spawns the sibling `cistella-extension-tmpdir` binary with install-dir trust (no digest verification — same trust as the landlock sibling) and hosts its prepare like any extension
 
-#### Scenario: Landlock plus one composes
-- **WHEN** a profile declares `landlock` and one other extension (shipped or registered)
-- **THEN** both answer prepare in declaration order, their plans concatenate into one atomic central merge, and the session conducts with both contributions (hooks staged, mounts bound)
+#### Scenario: N extensions compose in declaration order
+- **WHEN** a profile declares `landlock` plus two other extensions (shipped or registered), at most one contributing guest hooks and at most one hook request per contribution
+- **THEN** all three answer prepare in declaration order, their plans concatenate into one atomic central merge, and the session conducts with all contributions (hooks staged, mounts bound, slices minted)
 
-#### Scenario: Two non-landlock extensions refuse
-- **WHEN** a profile declares two extensions neither of which is `landlock`
-- **THEN** conduct refuses pre-create with a typed error; general composition stays deferred
+#### Scenario: Duplicate extension entries refuse
+- **WHEN** a profile declares the same extension name twice
+- **THEN** conduct refuses pre-create with a typed error naming the declaration; the same guest is never hosted twice
 
 ### Requirement: Pinned guest binary discovery
 
