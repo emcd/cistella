@@ -65,6 +65,8 @@ mod protocol;
 mod registry;
 #[path = "unit/runtime.rs"]
 mod runtime;
+#[path = "unit/ssh_ambient.rs"]
+mod ssh_ambient;
 #[path = "unit/stream.rs"]
 mod stream;
 #[path = "unit/terminal.rs"]

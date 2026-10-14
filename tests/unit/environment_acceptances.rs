@@ -170,8 +170,10 @@ fn collision_home_fails() {
 fn collision_ssh_auth_sock_conditional_on_declaration() {
     // Owned-name rule: SSH_AUTH_SOCK in acceptances refuses under
     // declared `ssh` (the instance owns the name) and forwards
-    // verbatim without it (explicit operator override).
-    let _guard = EnvGuard::set(&[("SSH_AUTH_SOCK", "/run/fake.sock")]);
+    // verbatim without it (explicit operator override). Ambient
+    // is process-global: hold the seat-ambient lock so parallel
+    // ssh-selection tests cannot swap the value mid-assertion.
+    let _ambient = crate::ssh_ambient::AmbientGuard::set(std::ffi::OsStr::new("/run/fake.sock"));
     let declared = "image = \"localhost/cistella/opencode:example\"\nmounts = []\nenvironment-acceptances = [\"SSH_AUTH_SOCK\"]\n[[extensions]]\nname = \"ssh\"\n";
     let prof = Profile::from_toml(declared).unwrap();
     assert!(

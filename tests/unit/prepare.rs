@@ -150,29 +150,7 @@ fn ssh_selection_ambient_contract() {
     use std::os::unix::ffi::OsStringExt;
     use std::os::unix::net::UnixListener;
 
-    struct AmbientGuard {
-        prev: Option<String>,
-    }
-    impl AmbientGuard {
-        fn set(value: &std::ffi::OsStr) -> Self {
-            let prev = std::env::var("SSH_AUTH_SOCK").ok();
-            unsafe { std::env::set_var("SSH_AUTH_SOCK", value) };
-            Self { prev }
-        }
-        fn unset() -> Self {
-            let prev = std::env::var("SSH_AUTH_SOCK").ok();
-            unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
-            Self { prev }
-        }
-    }
-    impl Drop for AmbientGuard {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(value) => unsafe { std::env::set_var("SSH_AUTH_SOCK", value) },
-                None => unsafe { std::env::remove_var("SSH_AUTH_SOCK") },
-            }
-        }
-    }
+    use crate::ssh_ambient::AmbientGuard;
 
     let dir = tempfile::tempdir().expect("tmpdir");
     let sock = dir.path().join("agent.sock");
