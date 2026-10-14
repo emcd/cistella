@@ -11,6 +11,7 @@ use std::collections::HashSet;
 
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::CapabilitySet;
+use crate::framework::contract::PermissionContribution;
 use crate::framework::contract::Provenance;
 use crate::framework::contract::gate_capabilities;
 use crate::framework::contract::merge_transacted_as;
@@ -157,11 +158,13 @@ pub fn prepare_selected_extension(
             EvaluatedPlan {
                 merged: crate::framework::contract::MergedPlan {
                     environment: Vec::new(),
-                    mounts: Vec::new(),
+                    placements: Vec::new(),
+                    permissions: Vec::new(),
                     policy_claims: Vec::new(),
                     guest_hooks: Vec::new(),
                     cleanup: Vec::new(),
                 },
+                effective: crate::framework::contract::EffectivePermissions::default(),
                 diagnostics: Vec::new(),
                 credentials: Vec::new(),
             },
@@ -311,6 +314,7 @@ fn prepare_pair(
     let mut plan = PreparePlan {
         environment: Vec::new(),
         mounts: Vec::new(),
+        permissions: Vec::new(),
         policy_claims: Vec::new(),
         guest_hooks: Vec::new(),
         cleanup: Vec::new(),
@@ -349,6 +353,7 @@ fn prepare_pair(
                 }
                 plan.environment.extend(transacted.environment);
                 plan.mounts.extend(transacted.mounts);
+                plan.permissions.extend(transacted.permissions);
                 plan.policy_claims.extend(transacted.policy_claims);
                 plan.guest_hooks.extend(transacted.guest_hooks);
                 plan.cleanup.extend(transacted.cleanup);
@@ -365,7 +370,17 @@ fn prepare_pair(
     for name in DRIVER_ENV {
         reserved.insert(name.to_string());
     }
-    let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec());
+    let profile_permissions: Vec<PermissionContribution> = profile
+        .permissions
+        .iter()
+        .map(|entry| PermissionContribution {
+            target: entry.path.clone(),
+            rights: entry.rights,
+            provenance: Provenance::Profile,
+        })
+        .collect();
+    let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
+        .with_profile_permissions(profile_permissions);
     let acceptances = acceptance_set(&profile.environment_acceptances);
     // Per-name provenance: lattice evaluation sees the source
     // that contributed each name (unreachable fallback — merge

@@ -140,8 +140,12 @@ pub fn parse_supplement_arg(arg: &str) -> Result<(String, String)> {
 }
 
 /// Validates a supplement key: non-empty, never `cistella` nor beginning
-/// with `cistella.`, conservative ASCII (`[A-Za-z0-9_. -]+`) so
-/// diagnostics stay readable.
+/// with `cistella.`, never the reserved `permission`/`permissions`
+/// namespace (permission overrides travel only through
+/// `[[permissions]]` and mount-mode sugar — the closed namespace
+/// is recognized generically without backend-specific inference),
+/// conservative ASCII (`[A-Za-z0-9_. -]+`) so diagnostics stay
+/// readable.
 fn validate_supplement_key(key: &str) -> Result<()> {
     if key.is_empty() {
         return Err(CistellaError::Profile(
@@ -151,6 +155,15 @@ fn validate_supplement_key(key: &str) -> Result<()> {
     if key == "cistella" || key.starts_with("cistella.") {
         return Err(CistellaError::Profile(format!(
             "supplement key must not use the cistella namespace: {key}"
+        )));
+    }
+    if key == "permission"
+        || key == "permissions"
+        || key.starts_with("permission.")
+        || key.starts_with("permissions.")
+    {
+        return Err(CistellaError::Profile(format!(
+            "supplement key must not use the reserved permission namespace: {key}"
         )));
     }
     if !key

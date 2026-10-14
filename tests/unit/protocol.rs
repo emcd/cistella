@@ -807,3 +807,48 @@ fn spawn_presents_executable_path_as_argv0() {
     );
     host.shutdown().unwrap();
 }
+
+#[test]
+fn epoch2_refuses_legacy_v1_hello_as_version_error() {
+    // Epoch break pin (extension-composition 1.4): a legacy-v1
+    // hello (actual legacy values, not dummy numbers) meets an
+    // epoch-2 host. Refusal must name the VERSION — never a
+    // shape/serde error — and nothing further may cross: the
+    // peer asserts the host sends no prepare (or anything) after
+    // the refusal, proving no dispatch/mint/compile ran.
+    let (mut host, mut peer) = exchange();
+    let peer_thread = std::thread::spawn(move || {
+        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let envelope = parse_envelope(&request).unwrap();
+        assert_eq!(envelope.op, "hello");
+        let response = Envelope {
+            protocol: 1,
+            id: envelope.id.clone(),
+            op: "hello".to_string(),
+            payload: hello_response(1, None),
+        };
+        respond(&mut peer, &response, PRE_NEGOTIATION_MAX_FRAME);
+        // No further host traffic may follow the refusal: a
+        // short read must fail (closed or silent), proving the
+        // host dispatched nothing after the version gate.
+        let mut header = [0u8; 4];
+        use std::io::Read;
+        peer.set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("timeout");
+        assert!(
+            peer.read_exact(&mut header).is_err(),
+            "host must send nothing after a version refusal"
+        );
+    });
+    let error = host.hello(&[], FAST).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("unsupported guest version"),
+        "version refusal, got: {message}"
+    );
+    assert!(
+        !message.contains("shape") && !message.contains("serde"),
+        "must not surface as shape/serde error, got: {message}"
+    );
+    peer_thread.join().unwrap();
+}

@@ -320,7 +320,7 @@ fn spurious_after_terminal_recovers() {
         "expected correlation refusal or pipe-write error, got: {message}"
     );
     assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
-    assert_eq!(PROTOCOL_MAJOR, 1);
+    assert_eq!(PROTOCOL_MAJOR, 2);
 }
 
 #[test]
@@ -475,4 +475,54 @@ fn normal_echo_round_trip_succeeds() {
         "expected echoed=true in echo response: {value}"
     );
     assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
+}
+
+#[test]
+fn epoch2_landlock_guest_refuses_legacy_v1_host() {
+    // Epoch break pin, reverse direction (extension-composition
+    // 1.4): a scripted legacy-v1 host hello meets the REAL
+    // epoch-2 landlock guest binary. The guest must refuse
+    // before contributing: exit nonzero with no hello answer
+    // frame and no prepare response — silence, not a shape
+    // error, proving nothing was planned or minted.
+    use std::io::Write;
+    let my_path = std::env::current_exe().expect("current_exe");
+    let bin = my_path
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile> ancestors")
+        .join("cistella-extension-landlock");
+    let mut child = std::process::Command::new(&bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("landlock guest spawns");
+    let hello = serde_json::json!({
+        "protocol": 1,
+        "id": "hello",
+        "op": "hello",
+        "payload": {"version": 1, "capabilities": []},
+    });
+    let body = serde_json::to_vec(&hello).expect("hello serializes");
+    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&body);
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(&framed)
+        .expect("legacy hello writes");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("guest exits");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "legacy host hello must fail the guest pre-planning"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "refusing guest must answer nothing, got {} bytes",
+        output.stdout.len()
+    );
 }

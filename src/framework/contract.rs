@@ -18,8 +18,7 @@
 //! [`MergedPlan`] are plain data, and [`merge_prepare`] is a pure
 //! function. Nothing here touches units, mounts, files, or containers.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -27,10 +26,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CistellaError, Result};
 use crate::framework::credentials::AdmittedCredential;
 use crate::framework::policy::PolicySet;
-use crate::mount::validate_mounts;
-pub use crate::mount::{MountMode, MountTriple};
+use crate::framework::prepare::FULL_BASELINE_ROUTES;
+pub use crate::mount::{MountMode, MountTriple, Placement};
+use crate::mount::{canonicalize_container_target, validate_mounts};
 use crate::profile::validate_env_name;
-use crate::session::mint_session_id;
 
 /// Spine phases in execution order.
 ///
@@ -104,6 +103,8 @@ pub enum Capability {
     Environment,
     /// Mount contribution set.
     Mounts,
+    /// Permission contribution set.
+    Permissions,
     /// Policy claims.
     PolicyClaims,
     /// Guest-hook requests.
@@ -162,14 +163,21 @@ pub struct EnvContribution {
     pub provenance: Provenance,
 }
 
-/// One mount contribution: an allowlist triple plus provenance.
+/// One mount contribution: a modeless placement plus provenance.
+///
+/// Rights travel separately as permissions; placements never carry
+/// modes.
 #[derive(Debug, Clone)]
 pub struct MountContribution {
-    /// Mount triple validated by the existing mount rules.
-    pub triple: MountTriple,
+    /// Modeless placement validated by the existing mount rules.
+    pub placement: Placement,
     /// Contribution source for policy scoping.
     pub provenance: Provenance,
 }
+
+pub use crate::framework::permissions::{
+    EffectiveGrant, EffectivePermissions, PermissionContribution, Rights, render_placements,
+};
 
 /// Policy severity: acknowledgement-escapable or absolute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,8 +306,10 @@ pub const MAX_HOOK_ARGV: usize = 16;
 pub struct PreparePlan {
     /// Environment contributions.
     pub environment: Vec<EnvContribution>,
-    /// Mount contributions.
+    /// Mount contributions (modeless placements).
     pub mounts: Vec<MountContribution>,
+    /// Permission contributions (rights on guest-visible targets).
+    pub permissions: Vec<PermissionContribution>,
     /// Policy claims scoped to this transaction.
     pub policy_claims: Vec<PolicyClaim>,
     /// Guest-hook requests.
@@ -318,8 +328,10 @@ pub struct PreparePlan {
 pub struct MergedPlan {
     /// Merged `(name, value)` pairs in spine order.
     pub environment: Vec<(String, String)>,
-    /// Merged mount triples in plan order.
-    pub mounts: Vec<MountTriple>,
+    /// Merged placements in plan order.
+    pub placements: Vec<Placement>,
+    /// Joined effective permissions (canonical target order).
+    pub permissions: Vec<EffectiveGrant>,
     /// Shape-checked policy claims for lattice evaluation.
     pub policy_claims: Vec<PolicyClaim>,
     /// Guest hooks in composition order.
@@ -338,6 +350,9 @@ pub struct MergedPlan {
 pub struct EvaluatedPlan {
     /// Centrally merged, policy-admitted plan.
     pub merged: MergedPlan,
+    /// Post-merge effective permissions (driver feed plus joined
+    /// contributions): the single source of truth downstream reads.
+    pub effective: EffectivePermissions,
     /// Weakening-discard notes from claim partition.
     pub diagnostics: Vec<String>,
     /// Admitted credential handles (kinds + locator classes only).
@@ -361,6 +376,9 @@ pub struct MergeContext {
     pub reserved_env: HashSet<String>,
     /// Already-emitted mount triples (profile/CLI/session/...).
     pub occupied_mounts: Vec<MountTriple>,
+    /// Explicit profile `[[permissions]]` as contributions
+    /// (profile provenance); joined with guest contributions.
+    pub profile_permissions: Vec<PermissionContribution>,
 }
 
 impl MergeContext {
@@ -374,7 +392,15 @@ impl MergeContext {
             container_home: container_home.to_string(),
             reserved_env,
             occupied_mounts,
+            profile_permissions: Vec::new(),
         }
+    }
+
+    /// Attaches explicit profile `[[permissions]] contributions.
+    #[must_use]
+    pub fn with_profile_permissions(mut self, permissions: Vec<PermissionContribution>) -> Self {
+        self.profile_permissions = permissions;
+        self
     }
 
     /// Standalone merge with no baseline.
@@ -387,6 +413,7 @@ impl MergeContext {
             container_home: container_home.to_string(),
             reserved_env: HashSet::new(),
             occupied_mounts: Vec::new(),
+            profile_permissions: Vec::new(),
         }
     }
 }
@@ -415,19 +442,55 @@ pub fn merge_prepare(
 ) -> Result<MergedPlan> {
     gate_capabilities(&plan, advertised)?;
     let environment = merge_environment(&plan.environment, &context.reserved_env)?;
+    let placements: Vec<Placement> = plan
+        .mounts
+        .iter()
+        .map(|contribution| contribution.placement.clone())
+        .collect();
+    let contributed_targets: Vec<String> = placements
+        .iter()
+        .map(|placement| canonicalize_container_target(&placement.container_target))
+        .collect();
+    let baselines: Vec<String> = FULL_BASELINE_ROUTES
+        .iter()
+        .map(|route| route.to_string())
+        .collect();
+    let mut assembled_permissions = context.profile_permissions.clone();
+    assembled_permissions.extend(plan.permissions.iter().cloned());
+    let effective = EffectivePermissions::assemble(
+        &context.occupied_mounts,
+        &placements,
+        &assembled_permissions,
+        &baselines,
+    )?;
+    // Validation view: occupied driver triples plus contributed
+    // placements rendered with their joined rights (Read→Ro,
+    // else Rw). The identical-source RO+RO admission keys off
+    // declared rights exactly as before; coverage was proven in
+    // `assemble`, so every lookup hits.
     let mut triples: Vec<MountTriple> = context.occupied_mounts.clone();
-    triples.extend(
-        plan.mounts
-            .iter()
-            .map(|contribution| contribution.triple.clone()),
-    );
+    for placement in &placements {
+        let target = canonicalize_container_target(&placement.container_target);
+        let grant = effective
+            .get(&target)
+            .expect("assemble proves placement coverage");
+        triples.push(MountTriple {
+            host_source: placement.host_source.clone(),
+            container_target: placement.container_target.clone(),
+            mode: if grant.rights == Rights::Read {
+                MountMode::Ro
+            } else {
+                MountMode::Rw
+            },
+        });
+    }
     validate_mounts(&triples, &context.container_home).map_err(contract_error)?;
-    let contributed: Vec<MountTriple> = triples[context.occupied_mounts.len()..].to_vec();
     let policy_claims = check_claims(&plan.policy_claims)?;
     let guest_hooks = order_hooks(&plan.guest_hooks)?;
     Ok(MergedPlan {
         environment,
-        mounts: contributed,
+        placements,
+        permissions: effective.select_sorted(&contributed_targets),
         policy_claims,
         guest_hooks,
         cleanup: plan.cleanup,
@@ -446,6 +509,11 @@ pub(crate) fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) 
             "environment",
         ),
         (!plan.mounts.is_empty(), Capability::Mounts, "mounts"),
+        (
+            !plan.permissions.is_empty(),
+            Capability::Permissions,
+            "permissions",
+        ),
         (
             !plan.policy_claims.is_empty(),
             Capability::PolicyClaims,
@@ -609,211 +677,12 @@ fn is_sha256_hex(value: &str) -> bool {
 /// Lowercase wire spelling (`created|initiated|...`) matches the
 /// isolator-contract schema on both `state` and `inspect` paths —
 /// one form, never Debug-derived.
+pub use crate::framework::lifecycle::{
+    Assumption, BaselineBinding, CancelFlag, ExecutionHandle, ExtensionIdentity, LifecycleState,
+    ReconciliationKey, UnitHandle,
+};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum LifecycleState {
-    /// Created but not initiated.
-    Created,
-    /// Initiated/started but not executing.
-    Initiated,
-    /// Harness executing.
-    Executing,
-    /// Stopped but present (results replayable until remove).
-    Stopped,
-    /// Absent (teardown of absent succeeds).
-    Absent,
-}
-
-/// Opaque framework-issued unit handle.
-///
-/// Never a path, never guest-chosen; only the framework mints these
-/// (construction is crate-internal so guests cannot forge them).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct UnitHandle(String);
-
-impl UnitHandle {
-    /// Mints a framework-issued handle.
-    ///
-    /// Backends mint at `create` (and `adopt`); callers and guests
-    /// treat handles as opaque and never construct them to name a
-    /// unit they did not create.
-    pub fn mint() -> Self {
-        Self(mint_session_id())
-    }
-
-    /// Opaque identifier for wire envelopes.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Opaque framework-issued execution handle.
-///
-/// Redeemed by a later `await_result`; results stay replayable until
-/// `remove`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ExecutionHandle(String);
-
-impl ExecutionHandle {
-    /// Mints a framework-issued handle.
-    ///
-    /// Backends mint at `execute_launch`; callers treat handles as
-    /// opaque and never construct them to redeem an execution they
-    /// did not launch.
-    pub fn mint() -> Self {
-        Self(mint_session_id())
-    }
-
-    /// Opaque identifier for wire envelopes.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Client-supplied reconciliation key: durable resource identity.
-///
-/// Opaque string (format unconstrained); one key per resource
-/// attempt, reused across retries of the same attempt. A replacement
-/// peer presents the key to locate an uncertain resource independent
-/// of any returned handle. A request-correlation ID must never serve
-/// as a reconciliation key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReconciliationKey(String);
-
-impl ReconciliationKey {
-    /// Generates a fresh unique key for a new resource attempt.
-    #[must_use]
-    pub fn generate() -> Self {
-        Self(mint_session_id())
-    }
-
-    /// Reuses the caller-supplied key for a retry of the same attempt.
-    #[must_use]
-    pub fn reuse(key: &str) -> Self {
-        Self(key.to_string())
-    }
-
-    /// Key text for wire envelopes.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Pinned extension executable identity for baseline binding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExtensionIdentity {
-    /// Framework-resolved executable path (never PATH-searched).
-    pub executable: String,
-    /// Advertised version string.
-    pub version: String,
-    /// Digest of the opened/stable executable object.
-    pub digest: String,
-}
-
-/// One named resource assumption covered by the baseline binding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Assumption {
-    /// Assumption name (e.g. `profile`, `unit-image`, `mount-source`).
-    pub key: String,
-    /// Digest of the assumed state at plan time.
-    pub digest: String,
-}
-
-/// Baseline binding carried by every plan.
-///
-/// Covers at minimum the resolved profile/session digest, extension
-/// executable identities/versions, and relevant resource-state
-/// digests. After the resource gate is acquired and before apply,
-/// the framework revalidates assumptions against live state; drift
-/// fails the plan before mutation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BaselineBinding {
-    /// sha256 hex digest of the resolved profile/session input.
-    pub profile_digest: String,
-    /// Pinned extension identities.
-    pub extensions: Vec<ExtensionIdentity>,
-    /// Resource-state assumptions to revalidate at the gate.
-    pub assumptions: Vec<Assumption>,
-}
-
-impl BaselineBinding {
-    /// Revalidates assumptions against live `(key, digest)` state.
-    ///
-    /// Pure: compares digests only. First drifted assumption fails
-    /// with a typed error naming the key, never the state.
-    ///
-    /// # Errors
-    ///
-    /// Returns `CistellaError::Contract` naming the first drifted or
-    /// missing assumption.
-    pub fn revalidate(&self, live: &HashMap<String, String>) -> Result<()> {
-        for assumption in &self.assumptions {
-            match live.get(&assumption.key) {
-                Some(digest) if digest == &assumption.digest => {}
-                _ => {
-                    return Err(CistellaError::Contract(format!(
-                        "plan assumption drifted at gate: {}",
-                        assumption.key
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Framework-owned cancellation flag with signal provenance.
-///
-/// Conduct-level traps record the signal number here; `await_result`
-/// polls it instead of touching process globals, so fakes and tests
-/// drive cancellation without signals. `0` means not cancelled.
-#[derive(Debug, Default)]
-pub struct CancelFlag {
-    signum: AtomicI32,
-}
-
-impl CancelFlag {
-    /// Fresh uncancelled flag (const so process-wide statics can hold one).
-    ///
-    /// Public so external guest binaries (separate `--bin` targets in
-    /// this crate) can own cancellation state; in-process callers
-    /// keep using the shared conduct/static flags.
-    pub const fn new() -> Self {
-        Self {
-            signum: AtomicI32::new(0),
-        }
-    }
-
-    /// Cancels with the given signal number (e.g. `1`/`15`).
-    pub fn cancel_with(&self, signum: i32) {
-        self.signum.store(signum, Ordering::SeqCst);
-    }
-
-    /// True once cancelled.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.signum.load(Ordering::SeqCst) != 0
-    }
-
-    /// Pending signal number, if cancelled.
-    #[must_use]
-    pub fn signum(&self) -> Option<i32> {
-        match self.signum.load(Ordering::SeqCst) {
-            0 => None,
-            signum => Some(signum),
-        }
-    }
-}
-
-/// Framework-owned control-plane deadlines.
-///
-/// Every bound is framework-chosen: guests never select timeouts.
-/// Mechanism (process groups, pidfds, cgroups) and these default
-/// magnitudes are implementation choices; the ownership is contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadlines {
     /// Hello/negotiation window (short).
     pub hello: Duration,
@@ -882,6 +751,7 @@ pub fn parse_capability(name: &str) -> Option<Capability> {
     match name {
         "environment" => Some(Capability::Environment),
         "mounts" => Some(Capability::Mounts),
+        "permissions" => Some(Capability::Permissions),
         "policy-claims" => Some(Capability::PolicyClaims),
         "guest-hooks" => Some(Capability::GuestHooks),
         "cleanup" => Some(Capability::Cleanup),
@@ -965,8 +835,40 @@ pub(crate) fn merge_transacted_as(
     for (name, _) in &merged.environment {
         policy.evaluate(name, &provenance_of(name), acceptances, &claims)?;
     }
+    // Full effective map (driver feed plus joined contributions):
+    // merge_prepare already proved the identical checks on the
+    // same inputs, so this deterministic rebuild cannot refuse
+    // anything the merge admitted. Unreachable refusal would be
+    // an internal inconsistency, never operator input.
+    let baselines: Vec<String> = FULL_BASELINE_ROUTES
+        .iter()
+        .map(|route| route.to_string())
+        .collect();
+    // Rebuild from the merged outcome: contributed placements plus
+    // claimant entries re-enter as raw permissions (join is
+    // commutative, associative, and idempotent, so claimant order
+    // cannot change the result; the first pass already excluded
+    // exact duplicates).
+    let mut raw_permissions = Vec::new();
+    for grant in &merged.permissions {
+        for (provenance, rights) in &grant.claimants {
+            raw_permissions.push(PermissionContribution {
+                target: grant.target.clone(),
+                rights: *rights,
+                provenance: provenance.clone(),
+            });
+        }
+    }
+    let effective = EffectivePermissions::assemble(
+        &context.occupied_mounts,
+        &merged.placements,
+        &raw_permissions,
+        &baselines,
+    )
+    .expect("merge_prepare proves identical assembly checks");
     Ok(EvaluatedPlan {
         merged,
+        effective,
         diagnostics,
         credentials,
     })

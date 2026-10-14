@@ -112,6 +112,15 @@ pub struct Profile {
     pub image: String,
     /// Allowlist mount triples (required field, may be an empty list).
     pub mounts: Vec<MountTriple>,
+    /// Explicit policy entries (`[[permissions]]`, default none):
+    /// path plus rights under the framework-defined closed
+    /// vocabulary. Mount modes stay as syntactic sugar decomposing
+    /// into the same canonical entries early (ro→`Read` + RO
+    /// intent, rw→`Full` + writable intent); grants join across
+    /// sugar and explicit entries while binding floors resolve
+    /// most-restrictive.
+    #[serde(default)]
+    pub permissions: Vec<PermissionConfig>,
     /// Harness argv array (TOML array, never a shell string).
     #[serde(default)]
     pub command: Option<Vec<String>>,
@@ -162,6 +171,21 @@ pub struct Profile {
 pub struct IsolatorConfig {
     /// Isolator guest name (`podman`).
     pub name: String,
+}
+
+/// Explicit policy entry (`[[permissions]]`): path plus rights.
+///
+/// Guest-visible target path; rights deserialize from the closed
+/// vocabulary (`read`/`write`/`full`) — anything else refuses at
+/// profile load. Unmatched explicit targets (no placement, no
+/// driver target, no known baseline) fail typed at merge.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PermissionConfig {
+    /// Guest-visible target path.
+    pub path: String,
+    /// Declared rights (closed vocabulary).
+    pub rights: crate::framework::contract::Rights,
 }
 
 /// Extension participation entry (`[[extensions]]`): one

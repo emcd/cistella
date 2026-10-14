@@ -51,7 +51,7 @@ pub(crate) fn run(
         "prepare-mount-violation" => {
             // host_source contains `=` — `validate_mounts` refuses
             // with "host_source must not contain control/'='".
-            send_prepare_with_payload(
+            send_prepare_with_payload_and_caps(
                 stdin_lock,
                 stdout_lock,
                 json!({
@@ -59,13 +59,16 @@ pub(crate) fn run(
                     "mounts": [
                         {
                             "host_source": "/bad=source",
-                            "container_target": "/work",
-                            "mode": "rw"
+                            "container_target": "/work"
                         }
+                    ],
+                    "permissions": [
+                        {"target": "/work", "rights": "full"}
                     ],
                     "policy_claims": [],
                     "guest_hooks": []
                 }),
+                &["test-cap", "mounts", "permissions"],
             );
             ExitCode::SUCCESS
         }
@@ -192,9 +195,11 @@ pub(crate) fn run(
                     "mounts": [
                         {
                             "host_source": "/run/vector/agentmux-bus",
-                            "container_target": "/run/vector/agentmux-bus",
-                            "mode": "ro"
+                            "container_target": "/run/vector/agentmux-bus"
                         }
+                    ],
+                    "permissions": [
+                        {"target": "/run/vector/agentmux-bus", "rights": "read"}
                     ],
                     "policy_claims": [
                         {
@@ -269,14 +274,16 @@ pub(crate) fn run(
                     "mounts": [
                         {
                             "host_source": "/tmp",
-                            "container_target": "/vectmp",
-                            "mode": "rw"
+                            "container_target": "/vectmp"
                         }
+                    ],
+                    "permissions": [
+                        {"target": "/vectmp", "rights": "full"}
                     ],
                     "policy_claims": [],
                     "guest_hooks": []
                 }),
-                &["test-cap", "mounts"],
+                &["test-cap", "mounts", "permissions"],
             );
             ExitCode::SUCCESS
         }
@@ -331,9 +338,11 @@ pub(crate) fn run(
                     "mounts": [
                         {
                             "host_source": "/run/vector/agentmux-bus",
-                            "container_target": "/run/vector/agentmux-bus",
-                            "mode": "ro"
+                            "container_target": "/run/vector/agentmux-bus"
                         }
+                    ],
+                    "permissions": [
+                        {"target": "/run/vector/agentmux-bus", "rights": "read"}
                     ],
                     "policy_claims": [
                         {
@@ -344,7 +353,13 @@ pub(crate) fn run(
                     ],
                     "guest_hooks": []
                 }),
-                &["test-cap", "environment", "mounts", "policy-claims"],
+                &[
+                    "test-cap",
+                    "environment",
+                    "mounts",
+                    "permissions",
+                    "policy-claims",
+                ],
             );
             ExitCode::SUCCESS
         }
@@ -368,9 +383,11 @@ pub(crate) fn run(
                     "mounts": [
                         {
                             "host_source": "/run/cistella/seats/agent.sock",
-                            "container_target": "/run/cistella/seats/agent.sock",
-                            "mode": "ro"
+                            "container_target": "/run/cistella/seats/agent.sock"
                         }
+                    ],
+                    "permissions": [
+                        {"target": "/run/cistella/seats/agent.sock", "rights": "read"}
                     ],
                     "policy_claims": [],
                     "guest_hooks": [],

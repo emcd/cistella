@@ -245,7 +245,7 @@ fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::Guest {
     cistella::guest_registry::Guest {
         name: "fetched".to_string(),
         role: "fetched-role".to_string(),
-        protocol: 1,
+        protocol: 2,
         source: cistella::guest_registry::SourceLocation::Fetch {
             source_url: url.to_string(),
             digest,

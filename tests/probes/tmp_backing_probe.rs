@@ -82,7 +82,22 @@ fn main() {
             mode: MountMode::Ro,
         },
     ];
-    let sets = match hook_full_sets(std::slice::from_ref(&hook), &triples, &session) {
+    let placements: Vec<cistella::mount::Placement> = triples
+        .iter()
+        .map(|triple| cistella::mount::Placement {
+            host_source: triple.host_source.clone(),
+            container_target: triple.container_target.clone(),
+        })
+        .collect();
+    let effective =
+        cistella::framework::contract::EffectivePermissions::assemble(&triples, &[], &[], &[])
+            .expect("driver-only assembly");
+    let sets = match hook_full_sets(
+        std::slice::from_ref(&hook),
+        &placements,
+        &effective,
+        &session,
+    ) {
         Ok(sets) => sets,
         Err(error) => {
             println!("REFUSED:{error}");

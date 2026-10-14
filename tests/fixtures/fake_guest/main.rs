@@ -58,7 +58,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-const PROTOCOL_MAJOR: u32 = 1;
+const PROTOCOL_MAJOR: u32 = 2;
 
 mod modes_fault;
 mod modes_hello;

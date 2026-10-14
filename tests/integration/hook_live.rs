@@ -78,6 +78,25 @@ impl Drop for HookUnitGuard {
 /// it), staged wrapper RO.
 /// Declaration order is the unwind order (reversed): name guard
 /// older, client guard newer.
+/// Strips triples to modeless placements for the map-reading grant path.
+fn placements_of(triples: &[cistella::mount::MountTriple]) -> Vec<cistella::mount::Placement> {
+    triples
+        .iter()
+        .map(|triple| cistella::mount::Placement {
+            host_source: triple.host_source.clone(),
+            container_target: triple.container_target.clone(),
+        })
+        .collect()
+}
+
+/// Driver-feed effective map for fixture triples (modes imply policy).
+fn fixture_effective(
+    triples: &[cistella::mount::MountTriple],
+) -> cistella::framework::contract::EffectivePermissions {
+    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
+        .expect("driver-only assembly")
+}
+
 struct HookFixture {
     _rendezvous: TempDir,
     _tree: TempDir,
@@ -269,9 +288,17 @@ fn hook_fixture(image: &str) -> HookFixture {
     // conductor revises with): `/src` flips RW for
     // materialization while `/src/proj/ro-data` (FULL target)
     // and `/extra/secret` (FULL-backed source) retain RO.
-    let full_routes = full_grant_routes(&[fixture_hook()], &triples, tree.path(), &proj)
-        .expect("full routes derive");
-    let full_sources = cistella::mount::full_grant_sources(&triples, &proj);
+    let placements = placements_of(&triples);
+    let effective = fixture_effective(&triples);
+    let full_routes = full_grant_routes(
+        &[fixture_hook()],
+        &placements,
+        &effective,
+        tree.path(),
+        &proj,
+    )
+    .expect("full routes derive");
+    let full_sources = cistella::mount::full_grant_sources(&placements, &effective, &proj);
     let revised = cistella::mount::revise_ro_for_confinement(&triples, &full_routes, &full_sources);
     let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
@@ -402,7 +429,8 @@ fn hook_denial_matrix_confines() {
     // Both sibling routes translate through the validated
     // topology: the primary bind and the carveout-free
     // alternate bind.
-    let sib_routes = cistella::mount::guest_routes_for_host(&fixture.triples, &tree.join("sib"));
+    let sib_routes =
+        cistella::mount::guest_routes_for_host(&placements_of(&fixture.triples), &tree.join("sib"));
     assert_eq!(
         sib_routes,
         vec!["/alt/sib".to_string(), "/src/sib".to_string()]
@@ -629,11 +657,12 @@ fn hook_hooked_launch_attests_and_confines() {
     };
     let mut fixture = hook_fixture(&image);
     let ancestor = cistella::mount::guest_routes_for_host(
-        &fixture.triples,
+        &placements_of(&fixture.triples),
         fixture.proj.parent().expect("tree"),
     );
     assert_eq!(ancestor, vec!["/src".to_string()]);
-    let subtree = cistella::mount::guest_routes_for_host(&fixture.triples, &fixture.proj);
+    let subtree =
+        cistella::mount::guest_routes_for_host(&placements_of(&fixture.triples), &fixture.proj);
     assert_eq!(subtree, vec!["/src/proj".to_string()]);
     // Admitted harness: marker inside the subtree, argv through
     // the real derivation (baseline included).
@@ -811,9 +840,12 @@ fn fixture_hook() -> GuestHookRequest {
 /// (system baseline, ancestor, subtree, session mounts): the live
 /// test exercises the same argv the conductor builds.
 fn hooked_argv(fixture: &HookFixture, harness: &[String]) -> Vec<String> {
+    let placements = placements_of(&fixture.triples);
+    let effective = fixture_effective(&fixture.triples);
     compose_hook_argv(
         &[fixture_hook()],
-        &fixture.triples,
+        &placements,
+        &effective,
         fixture.proj.parent().expect("tree"),
         &fixture.proj,
         harness,

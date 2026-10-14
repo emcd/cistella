@@ -695,6 +695,18 @@ fn supplement_keys_face_charset_and_reservation() {
         "reserved prefix"
     );
     assert!(parse_supplement_arg("has/slash=x").is_err(), "charset");
+    assert!(
+        parse_supplement_arg("permission.x=y").is_err(),
+        "permission namespace fenced"
+    );
+    assert!(
+        parse_supplement_arg("permissions=y").is_err(),
+        "permissions namespace fenced"
+    );
+    assert!(
+        parse_supplement_arg("permissions./tmp=y").is_err(),
+        "permissions prefix fenced"
+    );
 }
 
 #[test]

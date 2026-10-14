@@ -469,6 +469,7 @@ fn conduct_session(
     // create. The guards live for the session; Drop owns cleanup
     // on every exit, and staging failure refuses pre-create.
     let mut _staged_guards = Vec::new();
+    let mut staged_triples = Vec::new();
     for hook in &evaluated.merged.guest_hooks {
         let (guard, triple) = cistella::framework::registry::stage_hook_artifact(
             exe_dir,
@@ -476,44 +477,18 @@ fn conduct_session(
             hook.order,
             &hook.artifact,
         )?;
-        triples.push(triple);
+        triples.push(triple.clone());
+        staged_triples.push(triple);
         _staged_guards.push(guard);
     }
-    triples.extend(evaluated.merged.mounts.clone());
-    // Revision: with hooks staged, directory RO triples reach
-    // Podman as RW so submounts materialize — except RO dirs at or under FULL-granted guest
-    // routes, which keep Podman read-only (tier-2 hardening:
-    // Landlock union cannot subtract the parent FULL grant, so
-    // the VFS binding carries that enforcement). The contradictory
-    // RO-with-RW-descendant topology refuses pre-create. The
-    // Landlock policy derives from the ORIGINAL modes (compose
-    // below reads `triples`). Without hooks the set passes
-    // through untouched — zero behavior change on plain
-    // sessions. Validation and rendering run on the revised set:
-    // they must reflect what Podman actually mounts.
-    let revised: Vec<MountTriple> = if evaluated.merged.guest_hooks.is_empty() {
-        triples.clone()
-    } else {
-        // Same-tree graft-alias refusal first: a read-write
-        // graft of ancestor-tree content outside the subtree
-        // would dentry-alias RO-covered content (Landlock is
-        // mount-agnostic) — contradictory declarations refuse
-        // before revision, validation, or unit.
-        cistella::framework::hooks::hook_graft_alias_preflight(&triples, &directory)?;
-        let sets = cistella::framework::hooks::hook_full_sets(
-            &evaluated.merged.guest_hooks,
-            &triples,
-            &directory,
-        )?;
-        // Baseline alias refusal second: the unconditional FULL
-        // on guest /tmp roots rights on its backing dentries,
-        // so an RO-elsewhere alias of that source (duplicate or
-        // ancestor-covered) would admit writes past its
-        // declaration — contradictory topologies refuse here.
-        cistella::mount_alias::baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources)?;
-        cistella::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
-        cistella::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
-    };
+    let (revised, placements, effective) = cistella::framework::hooks::prepare_conduct_topology(
+        triples,
+        &staged_triples,
+        &evaluated.merged.placements,
+        &evaluated.effective,
+        &evaluated.merged.guest_hooks,
+        &directory,
+    )?;
     // Final joint topology gate (validate, preflight, scoped
     // pre-create) — still pre-create, no residue.
     cistella::mount_init::gate_final_topology(&revised, prof.home(), &evaluated.merged.cleanup)?;
@@ -529,7 +504,8 @@ fn conduct_session(
     } else {
         Some(cistella::framework::hooks::plan_hook_argv(
             &evaluated.merged.guest_hooks,
-            &triples,
+            &placements,
+            &effective,
             &directory,
             &argv,
         )?)

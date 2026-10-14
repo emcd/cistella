@@ -62,6 +62,7 @@ fn acknowledged(names: &[&str]) -> (tempfile::TempDir, PolicySet) {
 const FULL_CAPS: &[&str] = &[
     "environment",
     "mounts",
+    "permissions",
     "policy-claims",
     "guest-hooks",
     "credentials",
@@ -139,11 +140,19 @@ fn vector_agentmux_prepare_merges() {
         ],
         "acceptance pair merges verbatim in spine order"
     );
-    assert_eq!(plan.merged.mounts.len(), 1, "one bus socket triple");
-    let triple = &plan.merged.mounts[0];
-    assert_eq!(triple.host_source, "/run/vector/agentmux-bus");
-    assert_eq!(triple.container_target, "/run/vector/agentmux-bus");
-    assert_eq!(triple.mode, cistella::framework::contract::MountMode::Ro);
+    assert_eq!(plan.merged.placements.len(), 1, "one bus socket placement");
+    let placement = &plan.merged.placements[0];
+    assert_eq!(placement.host_source, "/run/vector/agentmux-bus");
+    assert_eq!(placement.container_target, "/run/vector/agentmux-bus");
+    assert_eq!(
+        plan.merged
+            .permissions
+            .iter()
+            .map(|grant| grant.rights)
+            .collect::<Vec<_>>(),
+        vec![cistella::framework::contract::Rights::Read],
+        "socket placement carries Read"
+    );
     assert!(
         plan.diagnostics.is_empty(),
         "tightening claim upholds silently: {:?}",
@@ -204,11 +213,19 @@ fn vector_ssh_prepare_merges() {
         )],
         "socket pointer env merges verbatim"
     );
-    assert_eq!(plan.merged.mounts.len(), 1, "one socket triple");
-    let triple = &plan.merged.mounts[0];
-    assert_eq!(triple.host_source, "/run/cistella/seats/agent.sock");
-    assert_eq!(triple.container_target, "/run/cistella/seats/agent.sock");
-    assert_eq!(triple.mode, cistella::framework::contract::MountMode::Ro);
+    assert_eq!(plan.merged.placements.len(), 1, "one socket placement");
+    let placement = &plan.merged.placements[0];
+    assert_eq!(placement.host_source, "/run/cistella/seats/agent.sock");
+    assert_eq!(placement.container_target, "/run/cistella/seats/agent.sock");
+    assert_eq!(
+        plan.merged
+            .permissions
+            .iter()
+            .map(|grant| grant.rights)
+            .collect::<Vec<_>>(),
+        vec![cistella::framework::contract::Rights::Read],
+        "socket placement carries Read"
+    );
     assert_eq!(plan.credentials.len(), 1, "one admitted handle");
     assert_eq!(plan.credentials[0].kind, "seat-socket");
     assert_eq!(plan.credentials[0].locator_class, "seat-socket");

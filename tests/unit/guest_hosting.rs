@@ -85,7 +85,7 @@ fn peer_entry(
     let entry = Guest {
         name: "test-peer".to_string(),
         role: role.to_string(),
-        protocol: 1,
+        protocol: 2,
         source: SourceLocation::Path {
             source_path: path,
             digest,
@@ -241,7 +241,7 @@ fn registered_extension_prepare_converges_plain() {
     )
     .expect("registered prepare converges");
     assert!(plan.merged.environment.is_empty());
-    assert!(plan.merged.mounts.is_empty());
+    assert!(plan.merged.placements.is_empty());
     assert!(plan.merged.guest_hooks.is_empty());
 }
 
@@ -315,7 +315,7 @@ fn swap_after_resolve_executes_pinned_bytes() {
     let entry = Guest {
         name: "seat-copy".to_string(),
         role: "example".to_string(),
-        protocol: 1,
+        protocol: 2,
         source: SourceLocation::Path {
             source_path: seat_copy.clone(),
             digest,
@@ -395,9 +395,9 @@ fn registered_nonempty_contribution_merges() {
             ("AGENTMUX_SESSION".to_string(), "session-9c1e".to_string()),
         ]
     );
-    assert_eq!(plan.merged.mounts.len(), 1);
+    assert_eq!(plan.merged.placements.len(), 1);
     assert_eq!(
-        plan.merged.mounts[0].host_source,
+        plan.merged.placements[0].host_source,
         "/run/vector/agentmux-bus"
     );
     assert!(plan.merged.guest_hooks.is_empty());
@@ -470,11 +470,23 @@ fn extension_rw_mount_contribution_merges() {
         lease_base.path(),
     )
     .expect("RW contribution merges");
-    assert_eq!(plan.merged.mounts.len(), 1);
-    let triple = &plan.merged.mounts[0];
-    assert_eq!(triple.host_source, "/tmp");
-    assert_eq!(triple.container_target, "/vectmp");
-    assert_eq!(triple.mode, cistella::framework::contract::MountMode::Rw);
+    assert_eq!(plan.merged.placements.len(), 1);
+    let placement = &plan.merged.placements[0];
+    assert_eq!(placement.host_source, "/tmp");
+    assert_eq!(placement.container_target, "/vectmp");
+    assert_eq!(
+        plan.merged.permissions,
+        vec![cistella::framework::contract::EffectiveGrant {
+            target: "/vectmp".to_string(),
+            rights: cistella::framework::contract::Rights::Full,
+            claimants: vec![(
+                cistella::framework::contract::Provenance::Extension("test-peer".to_string()),
+                cistella::framework::contract::Rights::Full,
+            )],
+            binding_intent_ro: false,
+        }],
+        "rw placement joins Full with test provenance"
+    );
 }
 
 /// Stages the deterministic peer as the shipped landlock binary
@@ -538,9 +550,9 @@ fn landlock_plus_registered_compose_through_production_select() {
             ("AGENTMUX_SESSION".to_string(), "session-9c1e".to_string()),
         ]
     );
-    assert_eq!(plan.merged.mounts.len(), 1);
+    assert_eq!(plan.merged.placements.len(), 1);
     assert_eq!(
-        plan.merged.mounts[0].host_source,
+        plan.merged.placements[0].host_source,
         "/run/vector/agentmux-bus"
     );
     assert_eq!(plan.merged.guest_hooks.len(), 1);
@@ -606,22 +618,21 @@ fn tmpdir_extension_mints_contributes_declares() {
         lease_base.path(),
     )
     .expect("tmpdir prepare merges");
-    assert_eq!(plan.merged.mounts.len(), 1);
-    let triple = &plan.merged.mounts[0];
-    assert_eq!(triple.container_target, "/tmp");
-    assert_eq!(triple.mode, cistella::framework::contract::MountMode::Rw);
+    assert_eq!(plan.merged.placements.len(), 1);
+    let placement = &plan.merged.placements[0];
+    assert_eq!(placement.container_target, "/tmp");
     assert_eq!(plan.merged.cleanup.len(), 1);
-    assert_eq!(plan.merged.cleanup[0], triple.host_source);
+    assert_eq!(plan.merged.cleanup[0], placement.host_source);
     // Hardcoded host-/tmp parent (no environment selection):
     // fast tests mint real host-/tmp slices (session-unique,
     // gc-reaped — same discipline live tests accept).
     let prefix = "/tmp/cistella-tmp-test-session-tmp-1-";
     assert!(
-        triple.host_source.starts_with(prefix),
+        placement.host_source.starts_with(prefix),
         "slice attributed to the session under host /tmp, got: {}",
-        triple.host_source
+        placement.host_source
     );
-    let metadata = std::fs::symlink_metadata(&triple.host_source).expect("slice exists");
+    let metadata = std::fs::symlink_metadata(&placement.host_source).expect("slice exists");
     assert!(metadata.is_dir(), "slice is a directory");
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
@@ -632,7 +643,7 @@ fn tmpdir_extension_mints_contributes_declares() {
     assert!(plan.merged.guest_hooks.is_empty());
     // The test owns fixture litter (reap is 3.2's job, proven
     // separately — never leave /tmp dirty on success paths).
-    std::fs::remove_dir(&triple.host_source).expect("remove fixture slice");
+    std::fs::remove_dir(&placement.host_source).expect("remove fixture slice");
 }
 
 #[test]

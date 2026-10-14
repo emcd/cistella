@@ -524,11 +524,10 @@ fn nested_ro_missing_names_first_offender() {
 
 #[test]
 fn guest_routes_translate_subtree_through_topology() {
-    use cistella::mount::{MountMode, MountTriple, guest_routes_for_host};
-    let triples = vec![MountTriple {
+    use cistella::mount::{Placement, guest_routes_for_host};
+    let triples = vec![Placement {
         host_source: "/home/op/src".to_string(),
         container_target: "/src".to_string(),
-        mode: MountMode::Rw,
     }];
     let routes = guest_routes_for_host(&triples, std::path::Path::new("/home/op/src/proj"));
     assert_eq!(routes, vec!["/src/proj".to_string()]);
@@ -536,20 +535,18 @@ fn guest_routes_translate_subtree_through_topology() {
 
 #[test]
 fn guest_routes_cover_identity_and_second_binds() {
-    use cistella::mount::{MountMode, MountTriple, guest_routes_for_host};
+    use cistella::mount::{Placement, guest_routes_for_host};
     // Keep-id identity still translates (no shortcut): the mapping
     // is structural. A second bind of the same subtree yields a
     // second route; both stay visible for rule derivation.
     let triples = vec![
-        MountTriple {
+        Placement {
             host_source: "/home/op/src".to_string(),
             container_target: "/home/op/src".to_string(),
-            mode: MountMode::Rw,
         },
-        MountTriple {
+        Placement {
             host_source: "/home/op/src/proj".to_string(),
             container_target: "/second/proj".to_string(),
-            mode: MountMode::Ro,
         },
     ];
     let routes = guest_routes_for_host(&triples, std::path::Path::new("/home/op/src/proj"));
@@ -561,11 +558,10 @@ fn guest_routes_cover_identity_and_second_binds() {
 
 #[test]
 fn guest_routes_empty_without_cover() {
-    use cistella::mount::{MountMode, MountTriple, guest_routes_for_host};
-    let triples = vec![MountTriple {
+    use cistella::mount::{Placement, guest_routes_for_host};
+    let triples = vec![Placement {
         host_source: "/home/op/src".to_string(),
         container_target: "/src".to_string(),
-        mode: MountMode::Rw,
     }];
     let routes = guest_routes_for_host(&triples, std::path::Path::new("/elsewhere"));
     assert!(routes.is_empty(), "untranslatable paths yield no routes");
@@ -829,7 +825,10 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
 
 #[test]
 fn revise_retains_ro_under_full_backed_source() {
-    use cistella::mount::{MountMode, MountTriple, full_grant_sources, revise_ro_for_confinement};
+    use cistella::framework::contract::EffectivePermissions;
+    use cistella::mount::{
+        MountMode, MountTriple, Placement, full_grant_sources, revise_ro_for_confinement,
+    };
     let tree = tempfile::tempdir().expect("tree");
     std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
     std::fs::create_dir_all(tree.path().join("proj/private")).expect("private");
@@ -844,7 +843,16 @@ fn revise_retains_ro_under_full_backed_source() {
         container_target: "/extra/private".to_string(),
         mode: MountMode::Ro,
     }];
-    let sources = full_grant_sources(&triples, &subtree);
+    let placements: Vec<Placement> = triples
+        .iter()
+        .map(|triple| Placement {
+            host_source: triple.host_source.clone(),
+            container_target: triple.container_target.clone(),
+        })
+        .collect();
+    let effective =
+        EffectivePermissions::assemble(&triples, &[], &[], &[]).expect("driver-only assembly");
+    let sources = full_grant_sources(&placements, &effective, &subtree);
     assert_eq!(sources, vec![subtree.clone()]);
     let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()], &sources);
     assert_eq!(revised[0].mode, MountMode::Ro);
@@ -852,7 +860,8 @@ fn revise_retains_ro_under_full_backed_source() {
 
 #[test]
 fn full_grant_sources_cover_subtree_and_rw_dirs() {
-    use cistella::mount::{MountMode, MountTriple, full_grant_sources};
+    use cistella::framework::contract::EffectivePermissions;
+    use cistella::mount::{MountMode, MountTriple, Placement, full_grant_sources};
     let tree = tempfile::tempdir().expect("tree");
     std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
     std::fs::create_dir_all(tree.path().join("state")).expect("state");
@@ -876,7 +885,16 @@ fn full_grant_sources_cover_subtree_and_rw_dirs() {
             mode: MountMode::Rw,
         },
     ];
-    let sources = full_grant_sources(&triples, &subtree);
+    let placements: Vec<Placement> = triples
+        .iter()
+        .map(|triple| Placement {
+            host_source: triple.host_source.clone(),
+            container_target: triple.container_target.clone(),
+        })
+        .collect();
+    let effective =
+        EffectivePermissions::assemble(&triples, &[], &[], &[]).expect("driver-only assembly");
+    let sources = full_grant_sources(&placements, &effective, &subtree);
     assert!(sources.contains(&subtree), "{sources:?}");
     assert!(sources.contains(&tree.path().join("state")), "{sources:?}");
     assert_eq!(

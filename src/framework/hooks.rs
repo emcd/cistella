@@ -242,7 +242,8 @@ pub struct HookLaunchPlan {
 /// `CistellaError::Contract` on roots/compose refusal.
 pub fn plan_hook_argv(
     hooks: &[crate::framework::contract::GuestHookRequest],
-    triples: &[crate::mount::MountTriple],
+    placements: &[crate::mount::Placement],
+    effective: &crate::framework::contract::EffectivePermissions,
     directory: &str,
     harness_argv: &[String],
 ) -> Result<Vec<String>> {
@@ -250,7 +251,14 @@ pub fn plan_hook_argv(
     let home =
         std::env::var("HOME").map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
     let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
-    compose_hook_argv(hooks, triples, &ancestor_host, &subtree_host, harness_argv)
+    compose_hook_argv(
+        hooks,
+        placements,
+        effective,
+        &ancestor_host,
+        &subtree_host,
+        harness_argv,
+    )
 }
 
 /// FULL sets for the RO-retention revision (tier-2
@@ -281,7 +289,8 @@ pub struct HookFullSets {
 /// `CistellaError::Contract` on roots/grant refusal.
 pub fn hook_full_sets(
     hooks: &[crate::framework::contract::GuestHookRequest],
-    triples: &[crate::mount::MountTriple],
+    placements: &[crate::mount::Placement],
+    effective: &crate::framework::contract::EffectivePermissions,
     directory: &str,
 ) -> crate::error::Result<HookFullSets> {
     use crate::framework::prepare::{confinement_roots, full_grant_routes};
@@ -290,8 +299,8 @@ pub fn hook_full_sets(
         .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
     let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
     Ok(HookFullSets {
-        routes: full_grant_routes(hooks, triples, &ancestor_host, &subtree_host)?,
-        sources: full_grant_sources(triples, &subtree_host),
+        routes: full_grant_routes(hooks, placements, effective, &ancestor_host, &subtree_host)?,
+        sources: full_grant_sources(placements, effective, &subtree_host),
     })
 }
 
@@ -398,4 +407,62 @@ pub fn run_hooked_launch(
         .map(|(_, exec_failure)| (execution, exec_failure)),
         Err(error) => Err(error),
     }
+}
+
+/// Prepares the final mount topology for conduct: ingests
+/// staged-hook bindings into the effective map, renders
+/// contributed placements through the single chokepoint,
+/// derives the placement view, then revises for hooks (or
+/// passes through untouched without hooks — zero behavior
+/// change on plain sessions).
+///
+/// Revision (hooks staged): directory RO triples reach Podman
+/// as RW so submounts materialize — except RO dirs at or under
+/// FULL-granted guest routes, which keep Podman read-only
+/// (Landlock union cannot subtract the parent FULL grant, so
+/// the VFS binding carries that enforcement). Contradictory
+/// RO-with-RW-descendant topologies refuse pre-create; the
+/// Landlock policy derives from the ORIGINAL modes. Refusals
+/// leave no residue (pre-create, pre-unit).
+///
+/// # Errors
+///
+/// Returns `CistellaError` on alias, confinement, or revision
+/// refusal.
+pub fn prepare_conduct_topology(
+    mut triples: Vec<crate::mount::MountTriple>,
+    staged: &[crate::mount::MountTriple],
+    contributed: &[crate::mount::Placement],
+    base_effective: &crate::framework::contract::EffectivePermissions,
+    hooks: &[crate::framework::contract::GuestHookRequest],
+    directory: &str,
+) -> crate::error::Result<(
+    Vec<crate::mount::MountTriple>,
+    Vec<crate::mount::Placement>,
+    crate::framework::contract::EffectivePermissions,
+)> {
+    use crate::framework::contract::render_placements;
+    let mut effective = base_effective.clone();
+    effective.ingest_driver(staged);
+    triples.extend(render_placements(contributed, &effective));
+    // Placement view of the assembled triples for the
+    // map-reading grant path (modes stay on the triples for
+    // binding mechanics; rights come from the map).
+    let placements: Vec<crate::mount::Placement> = triples
+        .iter()
+        .map(|triple| crate::mount::Placement {
+            host_source: triple.host_source.clone(),
+            container_target: triple.container_target.clone(),
+        })
+        .collect();
+    let revised = if hooks.is_empty() {
+        triples.clone()
+    } else {
+        hook_graft_alias_preflight(&triples, directory)?;
+        let sets = hook_full_sets(hooks, &placements, &effective, directory)?;
+        crate::mount_alias::baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources)?;
+        crate::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
+        crate::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
+    };
+    Ok((revised, placements, effective))
 }

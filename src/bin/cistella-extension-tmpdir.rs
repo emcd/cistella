@@ -24,7 +24,8 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-const PROTOCOL_MAJOR: u32 = 1;
+use cistella::framework::protocol::PROTOCOL_MAJOR;
+
 const HEADER_LEN: usize = 4;
 
 fn read_role() -> String {
@@ -94,7 +95,7 @@ fn main() -> ExitCode {
         "op": "hello",
         "payload": {
             "version": PROTOCOL_MAJOR,
-            "capabilities": [role, "mounts", "cleanup"],
+            "capabilities": [role, "mounts", "permissions", "cleanup"],
             "max_frame": 1024u32
         }
     });
@@ -129,8 +130,13 @@ fn main() -> ExitCode {
             "mounts": [
                 {
                     "host_source": slice.to_string_lossy(),
-                    "container_target": "/tmp",
-                    "mode": "rw"
+                    "container_target": "/tmp"
+                }
+            ],
+            "permissions": [
+                {
+                    "target": "/tmp",
+                    "rights": "full"
                 }
             ],
             "policy_claims": [],

@@ -5,7 +5,6 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{CistellaError, Result};
-use crate::mount_alias::tmp_backing_source;
 
 /// Mount mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -52,6 +51,17 @@ pub struct MountTriple {
     pub container_target: String,
     /// Mode.
     pub mode: MountMode,
+}
+
+/// Modeless placement `(host-source, container-target)`: the
+/// composition half of a former triple. Rights travel separately
+/// as permissions; placements never carry modes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    /// Host path.
+    pub host_source: String,
+    /// Container path.
+    pub container_target: String,
 }
 
 /// Parses a CLI `--mount <host>:<target>:<mode>` item into a triple.
@@ -642,10 +652,10 @@ pub fn canonicalize_host_source(path: &str) -> PathBuf {
 /// visible); no covering triple yields no routes (the caller
 /// refuses untranslatable paths fail-closed).
 #[must_use]
-pub fn guest_routes_for_host(triples: &[MountTriple], host_path: &std::path::Path) -> Vec<String> {
+pub fn guest_routes_for_host(placements: &[Placement], host_path: &std::path::Path) -> Vec<String> {
     let host = canonicalize_host_source(&host_path.to_string_lossy());
     let mut routes = Vec::new();
-    for triple in triples {
+    for triple in placements {
         let source = canonicalize_host_source(&triple.host_source);
         if let Ok(remainder) = host.strip_prefix(&source) {
             let target = canonicalize_container_target(&triple.container_target);
@@ -813,22 +823,43 @@ pub fn revise_ro_for_confinement(
 /// binding read-only (the VFS binding carries the enforcement
 /// Landlock union cannot subtract). Pure over the triples.
 #[must_use]
-pub fn full_grant_sources(triples: &[MountTriple], subtree_host: &std::path::Path) -> Vec<PathBuf> {
+pub fn full_grant_sources(
+    placements: &[Placement],
+    effective: &crate::framework::contract::EffectivePermissions,
+    subtree_host: &std::path::Path,
+) -> Vec<PathBuf> {
+    use crate::framework::contract::Rights;
+    use crate::mount::canonicalize_container_target;
     let mut sources = vec![canonicalize_host_source(&subtree_host.to_string_lossy())];
-    for triple in triples {
-        if triple.mode == MountMode::Rw && std::path::Path::new(&triple.host_source).is_dir() {
-            let source = canonicalize_host_source(&triple.host_source);
+    for placement in placements {
+        // Actual granted rights from the map: a `Write` placement
+        // joins FULL accounting exactly like `Full` (normalized
+        // before every consumer), so no alias hole opens under a
+        // non-FULL label.
+        let target = canonicalize_container_target(&placement.container_target);
+        let full = effective
+            .get(&target)
+            .is_some_and(|grant| grant.rights == Rights::Full);
+        if full && std::path::Path::new(&placement.host_source).is_dir() {
+            let source = canonicalize_host_source(&placement.host_source);
             if !sources.contains(&source) {
                 sources.push(source);
             }
         }
     }
     // Baseline-backed /tmp: the FULL rule lands on the backing
-    // dentries whatever the declared mode, so the source joins
+    // dentries whatever the declared rights, so the source joins
     // FULL accounting (retention keeps every RO route to it
     // read-only at the VFS layer; the alias preflight below
     // refuses the routes retention cannot cover).
-    if let Some(backing) = tmp_backing_source(triples)
+    let backing = placements.iter().find_map(|placement| {
+        if canonicalize_container_target(&placement.container_target) == "/tmp" {
+            Some(canonicalize_host_source(&placement.host_source))
+        } else {
+            None
+        }
+    });
+    if let Some(backing) = backing
         && backing.is_dir()
         && !sources.contains(&backing)
     {

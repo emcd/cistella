@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-const PROTOCOL_MAJOR: u32 = 1;
+const PROTOCOL_MAJOR: u32 = 2;
 const HEADER_LEN: usize = 4;
 
 fn read_role() -> String {

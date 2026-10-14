@@ -9,8 +9,9 @@ use cistella::framework::contract::{
     Assumption, BaselineBinding, Capability, CapabilitySet, ControlDeadline, Deadlines,
     EnvContribution, GuestHookRequest, HOOK_ARTIFACT_KIND_BLOB, HOOK_ON_FAILURE_PRE_EXEC,
     HOOK_STAGING_ISOLATOR, HookArtifact, HookProbe, HookSource, MAX_HOOK_ARGV, MergeContext,
-    MountContribution, MountMode, MountTriple, Phase, PolicyClaim, PreparePlan, Provenance,
-    ReconciliationKey, Scope, Severity, merge_prepare,
+    MountContribution, MountMode, MountTriple, PermissionContribution, Phase, Placement,
+    PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Rights, Scope, Severity,
+    merge_prepare,
 };
 use cistella::framework::registry::{
     LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME,
@@ -21,6 +22,7 @@ fn full_capabilities() -> CapabilitySet {
     CapabilitySet::new(&[
         Capability::Environment,
         Capability::Mounts,
+        Capability::Permissions,
         Capability::PolicyClaims,
         Capability::GuestHooks,
     ])
@@ -40,11 +42,18 @@ fn mount(target: &str) -> MountContribution {
 
 fn mount_from(host: &str, target: &str) -> MountContribution {
     MountContribution {
-        triple: MountTriple {
+        placement: Placement {
             host_source: host.to_string(),
             container_target: target.to_string(),
-            mode: MountMode::Ro,
         },
+        provenance: Provenance::Extension("probe".to_string()),
+    }
+}
+
+fn perm(target: &str, rights: Rights) -> PermissionContribution {
+    PermissionContribution {
+        target: target.to_string(),
+        rights,
         provenance: Provenance::Extension("probe".to_string()),
     }
 }
@@ -87,7 +96,7 @@ fn empty_plan_merges_without_capabilities() {
     )
     .unwrap();
     assert!(merged.environment.is_empty());
-    assert!(merged.mounts.is_empty());
+    assert!(merged.placements.is_empty());
 }
 
 #[test]
@@ -175,6 +184,7 @@ fn bad_env_name_and_control_value_refuse() {
 fn mount_topology_still_applies_to_contributions() {
     let plan = PreparePlan {
         mounts: vec![mount("/etc")],
+        permissions: vec![perm("/etc", Rights::Full)],
         ..PreparePlan::default()
     };
     merge_prepare(
@@ -277,17 +287,19 @@ fn occupied_mount_targets_refuse_overlap() {
     // Exact-target overlap with the emitted set refuses.
     let plan = PreparePlan {
         mounts: vec![mount("/data")],
+        permissions: vec![perm("/data", Rights::Full)],
         ..PreparePlan::default()
     };
     merge_prepare(plan, &full_capabilities(), &context).unwrap_err();
     // Disjoint targets merge, and only contributed triples return.
     let plan = PreparePlan {
         mounts: vec![mount_from("/srv/other", "/other")],
+        permissions: vec![perm("/other", Rights::Full)],
         ..PreparePlan::default()
     };
     let merged = merge_prepare(plan, &full_capabilities(), &context).unwrap();
-    assert_eq!(merged.mounts.len(), 1);
-    assert_eq!(merged.mounts[0].container_target, "/other");
+    assert_eq!(merged.placements.len(), 1);
+    assert_eq!(merged.placements[0].container_target, "/other");
 }
 
 #[test]
@@ -295,6 +307,7 @@ fn merged_plan_keeps_spine_order() {
     let plan = PreparePlan {
         environment: vec![env("FIRST_VAR", "1"), env("SECOND_VAR", "2")],
         mounts: vec![mount("/data")],
+        permissions: vec![perm("/data", Rights::Full)],
         policy_claims: vec![claim("FIRST_VAR")],
         guest_hooks: vec![hook(2)],
         cleanup: Vec::new(),
@@ -311,7 +324,7 @@ fn merged_plan_keeps_spine_order() {
         .map(|(name, _)| name.as_str())
         .collect();
     assert_eq!(names, vec!["FIRST_VAR", "SECOND_VAR"]);
-    assert_eq!(merged.mounts.len(), 1);
+    assert_eq!(merged.placements.len(), 1);
     assert_eq!(merged.policy_claims.len(), 1);
     assert_eq!(merged.guest_hooks.len(), 1);
 }
@@ -499,6 +512,82 @@ fn hook_oversize_argv_refuses() {
     .unwrap_err();
     assert!(
         error.to_string().contains("exceeds composition bound"),
+        "got: {error}"
+    );
+}
+
+fn profile_perm(target: &str, rights: Rights) -> PermissionContribution {
+    PermissionContribution {
+        target: target.to_string(),
+        rights,
+        provenance: Provenance::Profile,
+    }
+}
+
+#[test]
+fn driver_modes_imply_policy_once() {
+    // Sugar single-emission: a driver ro triple feeds exactly one
+    // Read grant with RO intent — never a doubled entry.
+    let occupied = vec![MountTriple {
+        host_source: "/srv/data".to_string(),
+        container_target: "/data".to_string(),
+        mode: MountMode::Ro,
+    }];
+    let context = MergeContext::new("/home/cistella", HashSet::new(), occupied);
+    let plan = PreparePlan {
+        mounts: vec![mount_from("/srv/other", "/other")],
+        permissions: vec![perm("/other", Rights::Full)],
+        ..PreparePlan::default()
+    };
+    let merged = merge_prepare(plan, &full_capabilities(), &context).unwrap();
+    assert_eq!(merged.placements.len(), 1);
+    let grants = merged.permissions;
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].target, "/other");
+    assert_eq!(grants[0].rights, Rights::Full);
+}
+
+#[test]
+fn sugar_and_explicit_coexist_by_join_with_floor() {
+    // Driver ro sugar (Read + RO intent) joined with an explicit
+    // Full on the same target: grants join to Full while the
+    // read-only binding intent survives for retention.
+    let occupied = vec![MountTriple {
+        host_source: "/srv/data".to_string(),
+        container_target: "/data".to_string(),
+        mode: MountMode::Ro,
+    }];
+    let context = MergeContext::new("/home/cistella", HashSet::new(), occupied)
+        .with_profile_permissions(vec![profile_perm("/data", Rights::Full)]);
+    let merged = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap();
+    assert!(merged.placements.is_empty());
+    assert!(
+        merged.permissions.is_empty(),
+        "driver-only grants live in the map, not the plan"
+    );
+}
+
+#[test]
+fn explicit_permission_unmatched_target_refuses() {
+    let context = MergeContext::new("/home/cistella", HashSet::new(), Vec::new())
+        .with_profile_permissions(vec![profile_perm("/nowhere", Rights::Read)]);
+    let error = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap_err();
+    assert!(
+        error.to_string().contains("unknown grant target"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn duplicate_explicit_permission_refuses() {
+    let context = MergeContext::new("/home/cistella", HashSet::new(), Vec::new())
+        .with_profile_permissions(vec![
+            profile_perm("/tmp", Rights::Read),
+            profile_perm("/tmp", Rights::Read),
+        ]);
+    let error = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap_err();
+    assert!(
+        error.to_string().contains("duplicate permission"),
         "got: {error}"
     );
 }

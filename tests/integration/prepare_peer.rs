@@ -36,6 +36,7 @@ fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::
             &[
                 "environment".to_string(),
                 "mounts".to_string(),
+                "permissions".to_string(),
                 "policy-claims".to_string(),
                 "guest-hooks".to_string(),
                 "credentials".to_string(),
@@ -58,6 +59,7 @@ fn run_full_prepare(
         &[
             "environment".to_string(),
             "mounts".to_string(),
+            "permissions".to_string(),
             "policy-claims".to_string(),
             "guest-hooks".to_string(),
             "credentials".to_string(),

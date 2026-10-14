@@ -22,8 +22,9 @@ use serde::Deserialize;
 use crate::error::{CistellaError, Result};
 pub use crate::framework::contract::EvaluatedPlan;
 use crate::framework::contract::{
-    Deadlines, EnvContribution, GuestHookRequest, MergeContext, MountContribution, MountMode,
-    MountTriple, PolicyClaim, PreparePlan, Provenance, merge_transacted,
+    Deadlines, EffectivePermissions, EnvContribution, GuestHookRequest, MergeContext,
+    MountContribution, MountTriple, PermissionContribution, Placement, PolicyClaim, PreparePlan,
+    Provenance, Rights, merge_transacted,
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
 use crate::framework::guest::{host_external, host_registered};
@@ -45,7 +46,10 @@ struct EnvWire {
     value: String,
 }
 
-/// Wire form of one mount contribution.
+/// Wire form of one mount contribution: placement only, no mode.
+///
+/// Removing `mode` (with `deny_unknown_fields` retained) is the
+/// epoch-2 wire break: mode-bearing responses refuse on shape.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MountWire {
@@ -53,8 +57,16 @@ struct MountWire {
     host_source: String,
     /// Container path.
     container_target: String,
-    /// `ro` or `rw`.
-    mode: String,
+}
+
+/// Wire form of one permission contribution.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PermissionWire {
+    /// Guest-visible target path.
+    target: String,
+    /// `read`, `write`, or `full`.
+    rights: String,
 }
 
 /// Wire form of the single prepare response.
@@ -67,6 +79,9 @@ struct PrepareResponse {
     /// Mount contributions (default empty).
     #[serde(default)]
     mounts: Vec<MountWire>,
+    /// Permission contributions (default empty).
+    #[serde(default)]
+    permissions: Vec<PermissionWire>,
     /// Policy claims scoped to this transaction (default empty).
     #[serde(default)]
     policy_claims: Vec<PolicyClaim>,
@@ -186,9 +201,10 @@ const EXTENSION_HOOKS: &str = "guest-hooks";
 /// lattice evaluation). The offer only decides what the guest may
 /// advertise without tripping the closed-negotiation subset check;
 /// hooks stay optional (only the recorded role is required).
-const REGISTERED_OFFERED: [&str; 6] = [
+const REGISTERED_OFFERED: [&str; 7] = [
     "environment",
     "mounts",
+    "permissions",
     "policy-claims",
     "guest-hooks",
     "cleanup",
@@ -345,7 +361,17 @@ pub fn run_extension_prepare(
     for name in DRIVER_ENV {
         reserved.insert(name.to_string());
     }
-    let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec());
+    let profile_permissions: Vec<PermissionContribution> = profile
+        .permissions
+        .iter()
+        .map(|entry| PermissionContribution {
+            target: entry.path.clone(),
+            rights: entry.rights,
+            provenance: Provenance::Profile,
+        })
+        .collect();
+    let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
+        .with_profile_permissions(profile_permissions);
     let acceptances = acceptance_set(&profile.environment_acceptances);
     let outcome = run_prepare(
         guest.exchange_mut(),
@@ -412,12 +438,18 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
     let mut mounts = Vec::with_capacity(response.mounts.len());
     for wire in &response.mounts {
         mounts.push(MountContribution {
-            triple: MountTriple {
+            placement: Placement {
                 host_source: wire.host_source.clone(),
                 container_target: wire.container_target.clone(),
-                mode: MountMode::parse_flag(&wire.mode)
-                    .map_err(|e| CistellaError::Contract(format!("bad mount mode: {e}")))?,
             },
+            provenance: provenance.clone(),
+        });
+    }
+    let mut permissions = Vec::with_capacity(response.permissions.len());
+    for wire in &response.permissions {
+        permissions.push(PermissionContribution {
+            target: wire.target.clone(),
+            rights: Rights::parse_wire(&wire.rights)?,
             provenance: provenance.clone(),
         });
     }
@@ -429,6 +461,7 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
         }
     }
     Ok(PreparePlan {
+        permissions,
         environment: response
             .environment
             .iter()
@@ -739,7 +772,8 @@ struct GrantSet {
 /// or untranslatable roots.
 fn compute_grants(
     hooks: &[GuestHookRequest],
-    triples: &[MountTriple],
+    placements: &[crate::mount::Placement],
+    effective: &EffectivePermissions,
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
 ) -> Result<GrantSet> {
@@ -748,13 +782,13 @@ fn compute_grants(
             "hook launch supports exactly one hook".to_string(),
         ));
     }
-    let ancestor_routes = crate::mount::guest_routes_for_host(triples, ancestor_host);
+    let ancestor_routes = crate::mount::guest_routes_for_host(placements, ancestor_host);
     if ancestor_routes.is_empty() {
         return Err(CistellaError::Contract(
             "hook ancestor untranslatable through the mount topology".to_string(),
         ));
     }
-    let subtree_routes = crate::mount::guest_routes_for_host(triples, subtree_host);
+    let subtree_routes = crate::mount::guest_routes_for_host(placements, subtree_host);
     if subtree_routes.is_empty() {
         return Err(CistellaError::Contract(
             "hook subtree untranslatable through the mount topology".to_string(),
@@ -774,10 +808,10 @@ fn compute_grants(
     // mode (fail-closed: a wrong-kind materialization fails
     // loudly at apply, never silently unconfined).
     let mut carveouts = Vec::new();
-    for triple in triples {
+    for placement in placements {
         // Proven non-directories skip (see above); missing
-        // paths grant by mode (see above).
-        let source = crate::mount::canonicalize_host_source(&triple.host_source);
+        // paths grant by rights (see above).
+        let source = crate::mount::canonicalize_host_source(&placement.host_source);
         if source.exists() && !source.is_dir() {
             continue;
         }
@@ -786,12 +820,17 @@ fn compute_grants(
         // so a non-canonical declaration (`/x/../work/ro-data`,
         // duplicate slashes, dot segments) cannot dodge coverage
         // or mint a second rule spelling for one mount.
-        let target = crate::mount::canonicalize_container_target(&triple.container_target);
+        // Rights come from the effective map (actual granted
+        // rights), never from wire modes — the wire carries none.
+        let target = crate::mount::canonicalize_container_target(&placement.container_target);
+        let grant = effective.get(&target).ok_or_else(|| {
+            CistellaError::Contract(format!("no effective grant for granted placement {target}"))
+        })?;
         let covered = ancestor_routes
             .iter()
             .chain(subtree_routes.iter())
             .any(|route| target == *route || target.starts_with(&format!("{route}/")));
-        match triple.mode {
+        match grant.rights {
             // Read-write carveouts: EVERY declared read-write
             // directory grants full rights on its guest target,
             // wherever it sits — under-ancestor grafts, the
@@ -801,7 +840,7 @@ fn compute_grants(
             // are authoritative intent: a validated RW triple the
             // ruleset left read-only would fail writes the
             // operator declared admissible.
-            MountMode::Rw => {
+            crate::framework::contract::Rights::Full => {
                 carveouts.push((GrantKind::Full, target));
             }
             // Read-only readability: uncovered outside mounts,
@@ -809,7 +848,7 @@ fn compute_grants(
             // outside every route (declared content must stay
             // readable; default-deny would brick it). Targets
             // under routes stay covered by their route's rule.
-            MountMode::Ro if !covered => {
+            crate::framework::contract::Rights::Read if !covered => {
                 carveouts.push((GrantKind::Read, target));
             }
             _ => {}
@@ -835,7 +874,7 @@ fn compute_grants(
 /// see every FULL route, not just topology-derived ones. (`/`
 /// stays excluded: it grants read-execute, which union-safely
 /// denies writes.)
-const FULL_BASELINE_ROUTES: &[&str] = &["/dev", "/tmp"];
+pub(crate) const FULL_BASELINE_ROUTES: &[&str] = &["/dev", "/tmp"];
 
 /// Guest targets receiving FULL Landlock rights: the fixed
 /// baselines, the subtree routes, plus every read-write
@@ -851,11 +890,12 @@ const FULL_BASELINE_ROUTES: &[&str] = &["/dev", "/tmp"];
 /// or untranslatable roots.
 pub fn full_grant_routes(
     hooks: &[GuestHookRequest],
-    triples: &[MountTriple],
+    placements: &[crate::mount::Placement],
+    effective: &EffectivePermissions,
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
 ) -> Result<Vec<String>> {
-    let grants = compute_grants(hooks, triples, ancestor_host, subtree_host)?;
+    let grants = compute_grants(hooks, placements, effective, ancestor_host, subtree_host)?;
     let mut full: Vec<String> = FULL_BASELINE_ROUTES
         .iter()
         .map(|route| route.to_string())
@@ -871,12 +911,13 @@ pub fn full_grant_routes(
 
 pub fn compose_hook_argv(
     hooks: &[GuestHookRequest],
-    triples: &[MountTriple],
+    placements: &[crate::mount::Placement],
+    effective: &EffectivePermissions,
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
     harness_argv: &[String],
 ) -> Result<Vec<String>> {
-    let grants = compute_grants(hooks, triples, ancestor_host, subtree_host)?;
+    let grants = compute_grants(hooks, placements, effective, ancestor_host, subtree_host)?;
     let hook = &hooks[0];
     let mut argv = Vec::new();
     argv.extend(hook.argv_prefix.iter().cloned());

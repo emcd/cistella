@@ -33,7 +33,7 @@ use crate::framework::contract::CancelFlag;
 pub use crate::framework::guest::{GuestHost, StderrDrain};
 
 /// Protocol major version this host speaks.
-pub const PROTOCOL_MAJOR: u32 = 1;
+pub const PROTOCOL_MAJOR: u32 = 2;
 
 /// Pre-negotiation frame ceiling: applies to the first hello frame
 /// regardless of the negotiated maximum.
@@ -762,8 +762,18 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
         let deadline = Instant::now() + timeout;
         self.send(&request, deadline)?;
         let response = self.recv(deadline.saturating_duration_since(Instant::now()))?;
-        if response.protocol != PROTOCOL_MAJOR || response.id != "hello" {
+        if response.id != "hello" {
             return Err(protocol_error("hello correlation failed"));
+        }
+        if response.protocol != PROTOCOL_MAJOR {
+            // Epoch break: name the offered version so a legacy
+            // peer meets a version error, never an opaque
+            // correlation failure. Payload may be undecodable;
+            // the envelope protocol is authoritative here.
+            return Err(protocol_error(format!(
+                "unsupported guest version: envelope protocol {}",
+                response.protocol
+            )));
         }
         if response.op != "hello" {
             return Err(protocol_error("expected hello response"));
