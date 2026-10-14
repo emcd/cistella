@@ -16,6 +16,10 @@ Cistella is a CLI driver that launches and supervises one OCI container per agen
 - Mount model: allowlist-only schema with explicit host-source, container-target, and mode triples; driver exports matching environment variables in the container.
 - Change management: OpenSpec (OPSX) per `openspec/` and the project's `AGENTS.md`.
 
+## Principles
+
+- Framework generality: the framework SHALL have no specific knowledge of particular isolators, extensions, or combinations thereof. Domain logic (e.g. Landlock grant computation, RO→RW materialization revision) belongs to its owner behind generic machinery (frozen snapshots, validated outputs, floor enforcement) — never hardcoded in framework code. Adopted 2026-10-14; `revise_ro_for_confinement` is the known violation slated for relocation.
+
 ## Notes
 
 Design decisions live in OpenSpec specifications under `openspec/` and in source-tree READMEs under `src/**/README.md`.
