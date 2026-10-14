@@ -208,15 +208,28 @@ fn ssh_selection_ambient_contract() {
         assert!(prof.ssh_selection_argv(&resolutions).is_err());
     }
     // Non-UTF8 canonical refuses instead of retargeting: P is a
-    // UTF-8 symlink onto a raw-byte socket path, with a decoy
-    // socket bound at the U+FFFD-substituted string.
+    // UTF-8 symlink onto a raw-byte socket path, with a second
+    // socket bound at the U+FFFD-substituted string a lossy
+    // conversion would name. Selection must refuse — the
+    // authorized path must never resolve to the decoy.
     {
+        use std::os::unix::ffi::OsStrExt;
         let raw = dir
             .path()
             .join(std::ffi::OsString::from_vec(b"ag\xffnt.sock".to_vec()));
         UnixListener::bind(&raw).expect("raw-byte socket binds");
+        let lossy: String = raw.to_string_lossy().into_owned();
+        assert!(
+            lossy.contains('\u{FFFD}'),
+            "fixture needs a real substitution target"
+        );
+        UnixListener::bind(&lossy).expect("decoy socket binds");
         let link = dir.path().join("link.sock");
         std::os::unix::fs::symlink(&raw, &link).expect("symlink");
+        assert_eq!(
+            link.as_os_str().as_bytes(),
+            link.to_string_lossy().as_bytes()
+        );
         let _guard = AmbientGuard::set(link.as_os_str());
         let error = prof
             .ssh_selection_argv(&resolutions)

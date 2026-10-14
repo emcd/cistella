@@ -11,9 +11,10 @@ static AMBIENT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Holds the ambient lock and a saved `SSH_AUTH_SOCK` value.
 /// Restores on drop (before unlock — field drop order runs
-/// after [`Drop::drop`]).
+/// after [`Drop::drop`]). The saved value is the raw OS string:
+/// a non-Unicode ambient restores exactly, never lossy.
 pub struct AmbientGuard {
-    prev: Option<String>,
+    prev: Option<std::ffi::OsString>,
     _lock: MutexGuard<'static, ()>,
 }
 
@@ -21,7 +22,7 @@ impl AmbientGuard {
     /// Sets ambient to `value`, saving the prior state.
     pub fn set(value: &std::ffi::OsStr) -> Self {
         let lock = AMBIENT_LOCK.lock().expect("ambient lock");
-        let prev = std::env::var("SSH_AUTH_SOCK").ok();
+        let prev = std::env::var_os("SSH_AUTH_SOCK");
         unsafe { std::env::set_var("SSH_AUTH_SOCK", value) };
         Self { prev, _lock: lock }
     }
@@ -29,7 +30,7 @@ impl AmbientGuard {
     /// Clears ambient, saving the prior state.
     pub fn unset() -> Self {
         let lock = AMBIENT_LOCK.lock().expect("ambient lock");
-        let prev = std::env::var("SSH_AUTH_SOCK").ok();
+        let prev = std::env::var_os("SSH_AUTH_SOCK");
         unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
         Self { prev, _lock: lock }
     }
