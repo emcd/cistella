@@ -401,6 +401,135 @@ pub(crate) fn run(
             );
             ExitCode::SUCCESS
         }
+        "prepare-vector-ssh-advertised" => {
+            // Same SSH payload, but advertising every type it
+            // returns (including credentials): the sibling that
+            // covers credential advertisement for the pair.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [
+                        {
+                            "name": "SSH_AUTH_SOCK",
+                            "value": "/run/cistella/seats/agent.sock"
+                        }
+                    ],
+                    "mounts": [
+                        {
+                            "host_source": "/run/cistella/seats/agent.sock",
+                            "container_target": "/run/cistella/seats/agent.sock"
+                        }
+                    ],
+                    "permissions": [
+                        {"target": "/run/cistella/seats/agent.sock", "rights": "read"}
+                    ],
+                    "policy_claims": [],
+                    "guest_hooks": [],
+                    "credentials": [
+                        {
+                            "kind": "seat-socket",
+                            "path": "/run/cistella/seats/agent.sock"
+                        }
+                    ]
+                }),
+                &[
+                    "test-cap",
+                    "environment",
+                    "mounts",
+                    "permissions",
+                    "credentials",
+                ],
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-vector-ssh-almost" => {
+            // SSH payload advertising everything EXCEPT
+            // credentials while still returning a credential
+            // handle: isolates the credential-gate refusal (env,
+            // mounts, and permissions all pass their own gates).
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [
+                        {
+                            "name": "SSH_AUTH_SOCK",
+                            "value": "/run/cistella/seats/agent.sock"
+                        }
+                    ],
+                    "mounts": [
+                        {
+                            "host_source": "/run/cistella/seats/agent.sock",
+                            "container_target": "/run/cistella/seats/agent.sock"
+                        }
+                    ],
+                    "permissions": [
+                        {"target": "/run/cistella/seats/agent.sock", "rights": "read"}
+                    ],
+                    "policy_claims": [],
+                    "guest_hooks": [],
+                    "credentials": [
+                        {
+                            "kind": "seat-socket",
+                            "path": "/run/cistella/seats/agent.sock"
+                        }
+                    ]
+                }),
+                &["test-cap", "environment", "mounts", "permissions"],
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-perms-unadvertised" => {
+            // Returns permissions WITHOUT advertising the type:
+            // the per-plan gate must refuse even when a paired
+            // guest advertises permissions (no laundering through
+            // the sibling). Mounts stay advertised.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [
+                        {
+                            "host_source": "/tmp",
+                            "container_target": "/vectmp"
+                        }
+                    ],
+                    "permissions": [
+                        {"target": "/vectmp", "rights": "full"}
+                    ],
+                    "policy_claims": [],
+                    "guest_hooks": []
+                }),
+                &["test-cap", "mounts"],
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-claim-foreign" => {
+            // Claims a pattern matching only ANOTHER guest's name
+            // while contributing no names itself: guest-local
+            // claim scope must refuse before concat.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "permissions": [],
+                    "policy_claims": [
+                        {
+                            "pattern": "AGENTMUX_BUNDLE",
+                            "severity": "suppressible",
+                            "scope": "on-extensions"
+                        }
+                    ],
+                    "guest_hooks": []
+                }),
+                &["test-cap", "policy-claims"],
+            );
+            ExitCode::SUCCESS
+        }
         "prepare-vector-token" => {
             // Negative vector: a token-shaped env name contributed by
             // an extension. The compiled-default push-credential guard
@@ -445,6 +574,50 @@ pub(crate) fn run(
                     ],
                     "guest_hooks": []
                 }),
+            );
+            ExitCode::SUCCESS
+        }
+        "prepare-double-hook" => {
+            // One guest returning TWO valid-shape hooks (distinct
+            // orders, staged singleton prefix): admission must
+            // refuse the second request pre-merge, exactly like a
+            // second claimant.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [],
+                    "mounts": [],
+                    "permissions": [],
+                    "policy_claims": [],
+                    "guest_hooks": [
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-supervisor-landlock"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 0,
+                            "argv_prefix": ["/run/cistella/hooks/supervisor-landlock"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        },
+                        {
+                            "artifact": {
+                                "kind": "digest-pinned-blob",
+                                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                "source": {"registry": "shipped", "path": "cistella-supervisor-landlock"}
+                            },
+                            "staging": "isolator-staged",
+                            "order": 1,
+                            "argv_prefix": ["/run/cistella/hooks/supervisor-landlock"],
+                            "probe": {"op": "probe_capabilities", "timeout_ms": 10000},
+                            "on_failure": "fail-pre-exec"
+                        }
+                    ]
+                }),
+                &["test-cap", "guest-hooks"],
             );
             ExitCode::SUCCESS
         }

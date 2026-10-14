@@ -591,3 +591,69 @@ fn duplicate_explicit_permission_refuses() {
         "got: {error}"
     );
 }
+
+fn env_as(name: &str, value: &str, who: &str) -> EnvContribution {
+    EnvContribution {
+        name: name.to_string(),
+        value: value.to_string(),
+        provenance: Provenance::Extension(who.to_string()),
+    }
+}
+
+#[test]
+fn three_way_collision_names_all_claimants() {
+    let plan = PreparePlan {
+        environment: vec![
+            env_as("SHARED_VAR", "1", "alpha"),
+            env_as("SHARED_VAR", "2", "beta"),
+            env_as("SHARED_VAR", "3", "gamma"),
+        ],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("alpha"), "got: {message}");
+    assert!(message.contains("beta"), "got: {message}");
+    assert!(message.contains("gamma"), "got: {message}");
+}
+
+#[test]
+fn placement_without_permission_refuses() {
+    let plan = PreparePlan {
+        mounts: vec![mount("/data")],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("no matching permission"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn unknown_permission_target_refuses() {
+    let plan = PreparePlan {
+        permissions: vec![perm("/nowhere", Rights::Full)],
+        ..PreparePlan::default()
+    };
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &MergeContext::empty("/home/cistella"),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("unknown grant target"),
+        "got: {error}"
+    );
+}

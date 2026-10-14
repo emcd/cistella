@@ -15,7 +15,8 @@ use tempfile::TempDir;
 use cistella::framework::contract::{CancelFlag, LifecycleState, ReconciliationKey};
 use cistella::framework::contract::{GuestHookRequest, HookArtifact, HookProbe, HookSource};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
-use cistella::framework::prepare::{compose_hook_argv, full_grant_routes, parse_probe_report};
+use cistella::framework::landlock_compiler::full_grant_routes;
+use cistella::framework::prepare::{compose_hook_argv, parse_probe_report};
 use cistella::framework::registry::{
     STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME, digest_sibling, stage_hook_artifact,
 };
@@ -298,8 +299,13 @@ fn hook_fixture(image: &str) -> HookFixture {
         &proj,
     )
     .expect("full routes derive");
-    let full_sources = cistella::mount::full_grant_sources(&placements, &effective, &proj);
-    let revised = cistella::mount::revise_ro_for_confinement(&triples, &full_routes, &full_sources);
+    let full_sources =
+        cistella::framework::landlock_compiler::full_grant_sources(&placements, &effective, &proj);
+    let revised = cistella::framework::landlock_compiler::revise_ro_for_confinement(
+        &triples,
+        &full_routes,
+        &full_sources,
+    );
     let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
         session,

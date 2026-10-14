@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CistellaError, Result};
 use crate::framework::credentials::AdmittedCredential;
+use crate::framework::landlock_compiler::FULL_BASELINE_ROUTES;
 use crate::framework::policy::PolicySet;
-use crate::framework::prepare::FULL_BASELINE_ROUTES;
 pub use crate::mount::{MountMode, MountTriple, Placement};
 use crate::mount::{canonicalize_container_target, validate_mounts};
 use crate::profile::validate_env_name;
@@ -541,7 +541,7 @@ fn merge_environment(
 ) -> Result<Vec<(String, String)>> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut merged = Vec::with_capacity(contributions.len());
-    for contribution in contributions {
+    for (index, contribution) in contributions.iter().enumerate() {
         validate_env_name(&contribution.name, "contribution").map_err(contract_error)?;
         if contribution.value.contains('\n')
             || contribution.value.contains('\r')
@@ -559,9 +559,27 @@ fn merge_environment(
             )));
         }
         if !seen.insert(contribution.name.as_str()) {
+            // Name every claimant in plan order (first plus this
+            // plus any later same-name contributions): a collision
+            // refusal that names only two of three still hides an
+            // author.
+            let mut claimants: Vec<String> = contributions
+                .iter()
+                .take(index + 1)
+                .filter(|other| other.name == contribution.name)
+                .map(|other| format!("{:?}", other.provenance))
+                .collect();
+            for other in contributions.iter().skip(index + 1) {
+                if other.name == contribution.name
+                    && !claimants.contains(&format!("{:?}", other.provenance))
+                {
+                    claimants.push(format!("{:?}", other.provenance));
+                }
+            }
             return Err(CistellaError::Contract(format!(
-                "duplicate environment contribution: {}",
-                contribution.name
+                "duplicate environment contribution {} from {}",
+                contribution.name,
+                claimants.join(", ")
             )));
         }
         merged.push((contribution.name.clone(), contribution.value.clone()));

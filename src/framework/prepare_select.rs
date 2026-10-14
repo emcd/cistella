@@ -2,14 +2,15 @@
 //!
 //! Split from `prepare` at the file-size limit: the transaction
 //! mechanics (host, hello, merge, shutdown) stay there; choosing
-//! the spawns (none, one, or the landlock-plus-one pair) lives
-//! here. Resolution inputs and lease bases arrive explicitly — no
+//! the spawns (none, one, or many) lives here. Resolution inputs
+//! and lease bases arrive explicitly — no
 //! environment reads beyond the lazy registry cache lookup for
 //! registered entries.
 
 use std::collections::HashSet;
 
 use crate::error::{CistellaError, Result};
+use crate::framework::contract::Capability;
 use crate::framework::contract::CapabilitySet;
 use crate::framework::contract::PermissionContribution;
 use crate::framework::contract::Provenance;
@@ -108,15 +109,14 @@ fn abort_hosted(
     }
 }
 
-/// Prepares the selected extensions (none, one, or the
-/// landlock-plus-one pair): undeclared means the empty plan (pure
-/// Podman behavior — no extension guest spawned); a single guest
-/// runs through the generalized runner; the pair answers in
-/// declaration order, concatenates raw plans, and merges once
-/// centrally and atomically (collisions across plans refuse
-/// deterministically under the same validators; hook order
-/// follows declaration order). General N-extension composition
-/// stays deferred: two non-landlock extensions refuse.
+/// Prepares the selected extensions (none, one, or many):
+/// undeclared means the empty plan (pure Podman behavior — no
+/// extension guest spawned); a single guest runs through the
+/// generalized runner; any number answers in declaration order,
+/// concatenates raw plans, and merges once centrally and
+/// atomically (collisions across plans refuse deterministically
+/// under the same validators; hook order follows declaration
+/// order).
 ///
 /// `extra_args` carries one argv slice per extension in order
 /// (production passes empties; tests select peer modes per
@@ -144,15 +144,6 @@ pub fn prepare_selected_extension(
     lease_base: &std::path::Path,
     extra_args: &[Vec<String>],
 ) -> Result<(EvaluatedPlan, Option<PrepareLease>)> {
-    let non_landlock = extensions
-        .iter()
-        .filter(|entry| !matches!(entry, ExtensionResolution::Landlock))
-        .count();
-    if non_landlock > 1 {
-        return Err(CistellaError::Profile(
-            "at most one non-landlock extension per profile in v1".to_string(),
-        ));
-    }
     match extensions.len() {
         0 => Ok((
             EvaluatedPlan {
@@ -210,22 +201,21 @@ pub fn prepare_selected_extension(
                 None => unreachable!("length checked as 1"),
             }
         }
-        // The pair rule above guarantees exactly landlock plus one
-        // other here (duplicates refuse at profile resolution, so
-        // no third list reaches this arm).
-        _ => prepare_pair(
+        // Any arity composes here (duplicates refuse at profile
+        // resolution, so no list reaches this arm twice-named).
+        _ => prepare_many(
             extensions, exe_dir, profile, triples, policy, session_id, lease_base, extra_args,
         ),
     }
 }
 
-/// Hosts and transacts the landlock-plus-one pair: each guest
-/// answers in declaration order, raw plans concatenate, one
-/// central merge stays atomic. Provenance for lattice evaluation
-/// uses the first guest's identity (matching is variant-level —
-/// every contribution here is extension-provenance either way).
+/// Hosts and transacts N extensions: each guest answers in
+/// declaration order, raw plans concatenate, one central merge
+/// stays atomic. Provenance for lattice evaluation uses each
+/// guest's own identity (matching is variant-level — every
+/// contribution here is extension-provenance either way).
 #[allow(clippy::too_many_arguments)]
-fn prepare_pair(
+fn prepare_many(
     extensions: Vec<ExtensionResolution>,
     exe_dir: &std::path::Path,
     profile: &crate::profile::Profile,
@@ -310,6 +300,13 @@ fn prepare_pair(
             }
         }
     }
+    // Hook-set admission: at most one nonempty guest-hook set
+    // containing at most one request. One guest returning two
+    // hooks refuses exactly like two guests returning one each
+    // (counting nonempty plans alone would not enforce the
+    // compose singleton). Tracked incrementally; refusals name
+    // all claimants pre-merge.
+    let mut hook_claimant: Option<String> = None;
     // Transact each; concatenate raw plans in declaration order.
     let mut plan = PreparePlan {
         environment: Vec::new(),
@@ -321,9 +318,21 @@ fn prepare_pair(
     };
     let mut credentials = Vec::new();
     let mut capabilities: Vec<String> = Vec::new();
-    let mut provenances: std::collections::HashMap<String, Provenance> =
+    // Multimap through validation: every claimant recorded in
+    // declaration order. Merged names are unique (collisions
+    // refuse with all claimants named), so the lattice closure
+    // reads the sole entry; nothing is ever last-writer-wins.
+    let mut provenances: std::collections::HashMap<String, Vec<Provenance>> =
         std::collections::HashMap::new();
     for one in hosted.iter_mut() {
+        // Own negotiated set first: every gate below authorizes
+        // against it, so no guest borrows another's advertisement.
+        let own = CapabilitySet::new(
+            &one.negotiated
+                .iter()
+                .filter_map(|name| parse_capability(name))
+                .collect::<Vec<_>>(),
+        );
         let outcome = transact_prepare(
             one.guest.exchange_mut(),
             &one.guest_id,
@@ -339,17 +348,69 @@ fn prepare_pair(
                 // advertisement. The union gate at merge stays as
                 // a second layer (types nobody advertised still
                 // refuse).
-                let own = CapabilitySet::new(
-                    &one.negotiated
-                        .iter()
-                        .filter_map(|name| parse_capability(name))
-                        .collect::<Vec<_>>(),
-                );
                 if let Err(error) = gate_capabilities(&transacted, &own) {
                     return Err(abort_hosted(hosted, &mut lease, error));
                 }
+                // Credentials gate on the same own set: handles
+                // travel beside the plan, so an unadvertised
+                // credential type must refuse here, not at the
+                // later union gate where a sibling's advertisement
+                // would cover it.
+                if !creds.is_empty() && !own.allows(Capability::Credentials) {
+                    return Err(abort_hosted(
+                        hosted,
+                        &mut lease,
+                        CistellaError::Contract(
+                            "guest returned unadvertised contribution type: credentials"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                // Guest-local claim scope: each claim must match a
+                // name this same guest contributed in this same
+                // transaction. A claim reaching only another
+                // guest's names refuses here; the global partition
+                // at merge re-checks as the second layer.
+                let own_names: Vec<String> = transacted
+                    .environment
+                    .iter()
+                    .map(|contribution| contribution.name.clone())
+                    .collect();
+                if let Err(error) = policy.partition_claims(&transacted.policy_claims, &own_names) {
+                    return Err(abort_hosted(hosted, &mut lease, error));
+                }
+                // Single-set-single-request admission (messages
+                // bind before the abort moves the hosted guests).
+                if !transacted.guest_hooks.is_empty() {
+                    if transacted.guest_hooks.len() > 1 {
+                        let message = format!(
+                            "extension guest {} returned {} hook requests: at most one",
+                            one.guest_id,
+                            transacted.guest_hooks.len()
+                        );
+                        return Err(abort_hosted(
+                            hosted,
+                            &mut lease,
+                            CistellaError::Contract(message),
+                        ));
+                    }
+                    if let Some(prior) = hook_claimant.replace(one.guest_id.clone()) {
+                        let message = format!(
+                            "more than one guest-hook claimant: {prior} and {}",
+                            one.guest_id
+                        );
+                        return Err(abort_hosted(
+                            hosted,
+                            &mut lease,
+                            CistellaError::Contract(message),
+                        ));
+                    }
+                }
                 for contribution in &transacted.environment {
-                    provenances.insert(contribution.name.clone(), contribution.provenance.clone());
+                    provenances
+                        .entry(contribution.name.clone())
+                        .or_default()
+                        .push(contribution.provenance.clone());
                 }
                 plan.environment.extend(transacted.environment);
                 plan.mounts.extend(transacted.mounts);
@@ -361,6 +422,22 @@ fn prepare_pair(
                 capabilities.extend(one.negotiated.iter().cloned());
             }
             Err(error) => return Err(abort_hosted(hosted, &mut lease, error)),
+        }
+    }
+    // Attribution gate: no name enters the merge without a
+    // recorded contributor. A missing entry is a typed internal
+    // refusal, never a guessed identity (guessing would launder
+    // provenance through the lattice).
+    for contribution in &plan.environment {
+        if !provenances.contains_key(&contribution.name) {
+            return Err(abort_hosted(
+                hosted,
+                &mut lease,
+                CistellaError::Contract(format!(
+                    "internal: merged name {} has no recorded contributor",
+                    contribution.name
+                )),
+            ));
         }
     }
     let mut reserved: HashSet<String> = profile.environment_assignments.keys().cloned().collect();
@@ -391,8 +468,16 @@ fn prepare_pair(
         &|name: &str| {
             provenances
                 .get(name)
-                .cloned()
-                .unwrap_or(Provenance::Extension("pair-unknown".to_string()))
+                .and_then(|claimants| claimants.first().cloned())
+                .unwrap_or_else(|| {
+                    // Unreachable by construction (merge invents no
+                    // names; every contributed name records its guest
+                    // above and the pre-merge check below refuses any
+                    // gap typed) — but a guess would launder
+                    // provenance, so the fallback is impossible, not
+                    // defaulted.
+                    Provenance::Extension("impossible-missing-contributor".to_string())
+                })
         },
         &capabilities,
         &context,

@@ -307,7 +307,7 @@ fn compose_declared_mounts_grant_by_mode() {
 
 #[test]
 fn full_grant_routes_mirror_compose_carveouts() {
-    use cistella::framework::prepare::full_grant_routes;
+    use cistella::framework::landlock_compiler::full_grant_routes;
     use cistella::framework::registry::STAGED_WRAPPER_GUEST_PATH;
     use cistella::mount::{MountMode, MountTriple};
     use std::path::Path;
@@ -503,4 +503,142 @@ fn compose_skips_proven_nondirectories_but_grants_missing() {
             "granted route {granted} missing: {text}"
         );
     }
+}
+
+fn test_hook() -> cistella::framework::contract::GuestHookRequest {
+    singleton_hook(vec!["/run/cistella/hooks/supervisor-landlock".to_string()])
+}
+
+fn compile_inputs() -> (
+    Vec<cistella::mount::Placement>,
+    cistella::framework::contract::EffectivePermissions,
+) {
+    use cistella::framework::contract::{
+        EffectivePermissions, PermissionContribution, Provenance, Rights,
+    };
+    use cistella::mount::Placement;
+    let placements = vec![Placement {
+        host_source: "/home/op/src".to_string(),
+        container_target: "/src".to_string(),
+    }];
+    let permissions = vec![PermissionContribution {
+        target: "/src".to_string(),
+        rights: Rights::Read,
+        provenance: Provenance::Extension("probe".to_string()),
+    }];
+    let effective =
+        EffectivePermissions::assemble(&[], &placements, &permissions, &[]).expect("assembles");
+    (placements, effective)
+}
+
+#[test]
+fn freeze_snapshot_refuses_duplicate_ids() {
+    use cistella::framework::landlock_compiler::freeze_snapshot;
+    let (mut placements, effective) = compile_inputs();
+    placements.push(placements[0].clone());
+    let error = freeze_snapshot(
+        &placements,
+        &effective,
+        std::path::Path::new("/home/op/src"),
+        std::path::Path::new("/home/op/src/proj"),
+        &test_hook(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("duplicate placement target"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn freeze_snapshot_refuses_grant_gap() {
+    use cistella::framework::landlock_compiler::freeze_snapshot;
+    use cistella::mount::Placement;
+    let (placements, _) = compile_inputs();
+    let mut orphan = placements;
+    orphan.push(Placement {
+        host_source: "/srv/other".to_string(),
+        container_target: "/other".to_string(),
+    });
+    let (_, effective) = compile_inputs();
+    let error = freeze_snapshot(
+        &orphan,
+        &effective,
+        std::path::Path::new("/home/op/src"),
+        std::path::Path::new("/home/op/src/proj"),
+        &test_hook(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("no effective grant"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn compiled_binding_refuses_stale_fingerprint() {
+    use cistella::framework::hooks::verify_compiled_binding;
+    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    let (placements, effective) = compile_inputs();
+    let hook = test_hook();
+    let snapshot = freeze_snapshot(
+        &placements,
+        &effective,
+        std::path::Path::new("/home/op/src"),
+        std::path::Path::new("/home/op/src/proj"),
+        &hook,
+    )
+    .expect("freezes");
+    let mut compiled = compile_topology(&snapshot, &[], &effective, &hook).expect("compiles");
+    compiled.fingerprint = "stale".to_string();
+    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    assert!(
+        error.to_string().contains("escapes its snapshot binding"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn compiled_binding_refuses_foreign_supervisor() {
+    // CompilerA rendering paired with a SupervisorB policy: the
+    // hook digest binds output to its enforcement consumer.
+    use cistella::framework::hooks::verify_compiled_binding;
+    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    let (placements, effective) = compile_inputs();
+    let hook = test_hook();
+    let snapshot = freeze_snapshot(
+        &placements,
+        &effective,
+        std::path::Path::new("/home/op/src"),
+        std::path::Path::new("/home/op/src/proj"),
+        &hook,
+    )
+    .expect("freezes");
+    let compiled = compile_topology(&snapshot, &[], &effective, &hook).expect("compiles");
+    let mut other = test_hook();
+    other.artifact.sha256 = "f".repeat(64);
+    let error = verify_compiled_binding(&snapshot, &compiled, &other).unwrap_err();
+    assert!(
+        error.to_string().contains("escapes its snapshot binding"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn compile_phase_supports_exactly_one_hook() {
+    use cistella::framework::hooks::prepare_conduct_topology;
+    let (placements, effective) = compile_inputs();
+    let error = prepare_conduct_topology(
+        Vec::new(),
+        &[],
+        &placements,
+        &effective,
+        &[test_hook(), test_hook()],
+        "/work",
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("exactly one hook"),
+        "got: {error}"
+    );
 }

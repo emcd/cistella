@@ -28,6 +28,7 @@ use crate::framework::contract::{
 };
 use crate::framework::credentials::{AdmittedCredential, CredentialHandle, admit_all};
 use crate::framework::guest::{host_external, host_registered};
+use crate::framework::landlock_compiler::GrantKind;
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::protocol::Exchange;
 use crate::framework::registry::{
@@ -129,6 +130,16 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
     session_id: &str,
 ) -> Result<EvaluatedPlan> {
     let (plan, credentials) = transact_prepare(exchange, guest_id, timeout, session_id)?;
+    // Single-set-single-request admission (single-guest path):
+    // one guest returning two hook requests refuses here; the
+    // multi-claimant half lives in the N-guest runner. The merge
+    // below would order them, never admit them.
+    if plan.guest_hooks.len() > 1 {
+        return Err(CistellaError::Contract(format!(
+            "extension guest {guest_id} returned {} hook requests: at most one",
+            plan.guest_hooks.len()
+        )));
+    }
     merge_transacted(
         plan,
         credentials,
@@ -744,171 +755,6 @@ pub fn confinement_roots(
 ///
 /// Returns `CistellaError::Contract` on hook count, empty routes,
 /// or untranslatable roots.
-/// One decided Landlock grant: full rights or read-execute on a
-/// guest target, in triple order (rendering dedups first-wins).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GrantKind {
-    Full,
-    Read,
-}
-
-/// Decided grants over the mount topology: ancestor
-/// read-execute routes, subtree full-rights routes, and the
-/// per-triple carveout/readability decisions in triple order.
-/// Shared by argv composition and the RO-retention revision so
-/// the two cannot disagree on which guest targets receive FULL.
-struct GrantSet {
-    ancestor_routes: Vec<String>,
-    subtree_routes: Vec<String>,
-    carveouts: Vec<(GrantKind, String)>,
-}
-
-/// Computes the decided grants (pure; refuses exactly as
-/// composition does on hook count and untranslatable roots).
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on hook count, empty routes,
-/// or untranslatable roots.
-fn compute_grants(
-    hooks: &[GuestHookRequest],
-    placements: &[crate::mount::Placement],
-    effective: &EffectivePermissions,
-    ancestor_host: &std::path::Path,
-    subtree_host: &std::path::Path,
-) -> Result<GrantSet> {
-    if hooks.len() != 1 {
-        return Err(CistellaError::Contract(
-            "hook launch supports exactly one hook".to_string(),
-        ));
-    }
-    let ancestor_routes = crate::mount::guest_routes_for_host(placements, ancestor_host);
-    if ancestor_routes.is_empty() {
-        return Err(CistellaError::Contract(
-            "hook ancestor untranslatable through the mount topology".to_string(),
-        ));
-    }
-    let subtree_routes = crate::mount::guest_routes_for_host(placements, subtree_host);
-    if subtree_routes.is_empty() {
-        return Err(CistellaError::Contract(
-            "hook subtree untranslatable through the mount topology".to_string(),
-        ));
-    }
-    // Declared mounts, granted by declared mode (operator-owned
-    // intent; Landlock enforces, never second-guesses). Only
-    // proven non-directories skip: files, sockets, fifos, and
-    // their kind cannot root a `path_beneath` rule, and the
-    // wrapper opens every allow path O_DIRECTORY — feeding
-    // one fails apply with ENOTDIR (proven live: a
-    // credential-surface socket refused the whole session).
-    // Unix-socket connect needs no grant on this fleet
-    // (spike-proven: connect succeeds under R+X baseline
-    // with the socket itself unruled), so skipping loses no
-    // working shape. Not-yet-existing paths still grant by
-    // mode (fail-closed: a wrong-kind materialization fails
-    // loudly at apply, never silently unconfined).
-    let mut carveouts = Vec::new();
-    for placement in placements {
-        // Proven non-directories skip (see above); missing
-        // paths grant by rights (see above).
-        let source = crate::mount::canonicalize_host_source(&placement.host_source);
-        if source.exists() && !source.is_dir() {
-            continue;
-        }
-        // Grant computation runs on canonical target spellings —
-        // the same form rendering emits and routes derive in —
-        // so a non-canonical declaration (`/x/../work/ro-data`,
-        // duplicate slashes, dot segments) cannot dodge coverage
-        // or mint a second rule spelling for one mount.
-        // Rights come from the effective map (actual granted
-        // rights), never from wire modes — the wire carries none.
-        let target = crate::mount::canonicalize_container_target(&placement.container_target);
-        let grant = effective.get(&target).ok_or_else(|| {
-            CistellaError::Contract(format!("no effective grant for granted placement {target}"))
-        })?;
-        let covered = ancestor_routes
-            .iter()
-            .chain(subtree_routes.iter())
-            .any(|route| target == *route || target.starts_with(&format!("{route}/")));
-        match grant.rights {
-            // Read-write carveouts: EVERY declared read-write
-            // directory grants full rights on its guest target,
-            // wherever it sits — under-ancestor grafts, the
-            // read-write ancestor binding itself, outside mounts
-            // bound inside ancestor routes (`/opt/state` at
-            // `/src/state`) alike. Declarations
-            // are authoritative intent: a validated RW triple the
-            // ruleset left read-only would fail writes the
-            // operator declared admissible.
-            crate::framework::contract::Rights::Full => {
-                carveouts.push((GrantKind::Full, target));
-            }
-            // Read-only readability: uncovered outside mounts,
-            // plus under-ancestor mounts whose targets lie
-            // outside every route (declared content must stay
-            // readable; default-deny would brick it). Targets
-            // under routes stay covered by their route's rule.
-            crate::framework::contract::Rights::Read if !covered => {
-                carveouts.push((GrantKind::Read, target));
-            }
-            _ => {}
-        }
-    }
-    Ok(GrantSet {
-        ancestor_routes,
-        subtree_routes,
-        carveouts,
-    })
-}
-
-/// Fixed FULL baselines every hooked launch grants outside the
-/// mount topology (system composition) plus guest `/tmp`:
-/// `/dev` is container-private (no host aliases possible);
-/// `/tmp` is admitted by construction under hook (operator
-/// direction — whatever backs it), with baseline alias
-/// accounting (see `mount_alias::baseline_tmp_alias_preflight`)
-/// closing the host-source alias hole a blanket FULL would
-/// otherwise open. Guest targets receiving full rights
-/// unconditionally. Shared with the RO-retention revision so
-/// FULL accounting is complete — retention and preflight must
-/// see every FULL route, not just topology-derived ones. (`/`
-/// stays excluded: it grants read-execute, which union-safely
-/// denies writes.)
-pub(crate) const FULL_BASELINE_ROUTES: &[&str] = &["/dev", "/tmp"];
-
-/// Guest targets receiving FULL Landlock rights: the fixed
-/// baselines, the subtree routes, plus every read-write
-/// carveout target. The revision consumes this set to retain
-/// Podman read-only on RO mounts nested under FULL routes
-/// (Landlock union cannot subtract, so the VFS binding carries
-/// that enforcement). Pure; refuses exactly as composition
-/// does.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Contract` on hook count, empty routes,
-/// or untranslatable roots.
-pub fn full_grant_routes(
-    hooks: &[GuestHookRequest],
-    placements: &[crate::mount::Placement],
-    effective: &EffectivePermissions,
-    ancestor_host: &std::path::Path,
-    subtree_host: &std::path::Path,
-) -> Result<Vec<String>> {
-    let grants = compute_grants(hooks, placements, effective, ancestor_host, subtree_host)?;
-    let mut full: Vec<String> = FULL_BASELINE_ROUTES
-        .iter()
-        .map(|route| route.to_string())
-        .collect();
-    full.extend(grants.subtree_routes);
-    for (kind, target) in grants.carveouts {
-        if kind == GrantKind::Full && !full.contains(&target) {
-            full.push(target);
-        }
-    }
-    Ok(full)
-}
-
 pub fn compose_hook_argv(
     hooks: &[GuestHookRequest],
     placements: &[crate::mount::Placement],
@@ -917,7 +763,13 @@ pub fn compose_hook_argv(
     subtree_host: &std::path::Path,
     harness_argv: &[String],
 ) -> Result<Vec<String>> {
-    let grants = compute_grants(hooks, placements, effective, ancestor_host, subtree_host)?;
+    let grants = crate::framework::landlock_compiler::compute_grants(
+        hooks,
+        placements,
+        effective,
+        ancestor_host,
+        subtree_host,
+    )?;
     let hook = &hooks[0];
     let mut argv = Vec::new();
     argv.extend(hook.argv_prefix.iter().cloned());
@@ -926,7 +778,7 @@ pub fn compose_hook_argv(
     // fixed FULL baselines (rendered from the shared set the
     // revision accounts, so composition and retention agree).
     argv.push("--allow-ro=/".to_string());
-    for baseline in FULL_BASELINE_ROUTES {
+    for baseline in crate::framework::landlock_compiler::FULL_BASELINE_ROUTES {
         argv.push(format!("--allow-rw={baseline}"));
     }
     // Exact-duplicate flags collapse (first occurrence wins);

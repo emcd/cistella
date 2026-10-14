@@ -41,6 +41,8 @@ mod mount;
 mod mount_alias;
 #[path = "unit/mount_init.rs"]
 mod mount_init;
+#[path = "unit/mount_permissions.rs"]
+mod mount_permissions;
 #[path = "unit/policy_prepare.rs"]
 mod policy_prepare;
 #[path = "unit/prepare.rs"]

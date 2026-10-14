@@ -962,6 +962,11 @@ fn conduct_session(
         eprintln!("error: guest release: {error}");
         return Ok(1);
     }
+    // Finalize observations (records-only, post-convergence): the
+    // phase creates nothing — returned notes are diagnostics.
+    for note in cistella::framework::hooks::run_finalize_observations(&evaluated.merged) {
+        eprintln!("finalize: {note}");
+    }
     Ok(status.exit_code())
 }
 

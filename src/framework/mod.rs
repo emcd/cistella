@@ -12,6 +12,7 @@ pub mod fdpass;
 pub mod guest;
 pub mod hooks;
 pub mod isolator;
+pub mod landlock_compiler;
 pub mod lifecycle;
 pub mod permissions;
 pub mod policy;

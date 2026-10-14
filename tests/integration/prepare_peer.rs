@@ -174,9 +174,11 @@ fn prepare_malformed_policy_claim_refuses() {
 fn prepare_duplicate_hook_order_refuses() {
     let error = run_fault("prepare-duplicate-hook-order");
     let message = error.to_string();
+    // Admission fires before merge ordering: one guest returning
+    // two hook requests refuses on count regardless of order.
     assert!(
-        message.contains("duplicate guest hook order"),
-        "expected duplicate-hook-order error, got: {message}"
+        message.contains("at most one"),
+        "expected single-request admission error, got: {message}"
     );
 }
 

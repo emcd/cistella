@@ -293,8 +293,9 @@ pub fn hook_full_sets(
     effective: &crate::framework::contract::EffectivePermissions,
     directory: &str,
 ) -> crate::error::Result<HookFullSets> {
-    use crate::framework::prepare::{confinement_roots, full_grant_routes};
-    use crate::mount::full_grant_sources;
+    use crate::framework::landlock_compiler::full_grant_routes;
+    use crate::framework::landlock_compiler::full_grant_sources;
+    use crate::framework::prepare::confinement_roots;
     let home = std::env::var("HOME")
         .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
     let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
@@ -458,11 +459,73 @@ pub fn prepare_conduct_topology(
     let revised = if hooks.is_empty() {
         triples.clone()
     } else {
+        use crate::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+        use crate::framework::prepare::confinement_roots;
+        // Compiler claimant is the single admitted hook: two
+        // claimants never reach here (admission refuses), and a
+        // second one here would be an internal inconsistency.
+        if hooks.len() != 1 {
+            return Err(CistellaError::Contract(
+                "compile phase supports exactly one hook".to_string(),
+            ));
+        }
+        let hook = &hooks[0];
         hook_graft_alias_preflight(&triples, directory)?;
-        let sets = hook_full_sets(hooks, &placements, &effective, directory)?;
-        crate::mount_alias::baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources)?;
-        crate::mount::ro_confinement_preflight(&triples, &sets.routes, &sets.sources)?;
-        crate::mount::revise_ro_for_confinement(&triples, &sets.routes, &sets.sources)
+        let home = std::env::var("HOME")
+            .map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
+        let (ancestor_host, subtree_host) =
+            confinement_roots(std::path::Path::new(&home), directory)?;
+        let snapshot =
+            freeze_snapshot(&placements, &effective, &ancestor_host, &subtree_host, hook)?;
+        let compiled = compile_topology(&snapshot, &triples, &effective, hook)?;
+        verify_compiled_binding(&snapshot, &compiled, hook)?;
+        crate::mount_alias::baseline_tmp_alias_preflight(
+            &triples,
+            &compiled.routes,
+            &compiled.sources,
+        )?;
+        crate::framework::landlock_compiler::ro_confinement_preflight(
+            &triples,
+            &compiled.routes,
+            &compiled.sources,
+        )?;
+        compiled.revised
     };
     Ok((revised, placements, effective))
+}
+
+/// Runs finalize observations over the merged plan: records-only.
+///
+/// No observers exist yet, so this returns no notes — but the
+/// phase gate lives here in the sequence (after converged
+/// teardown), not inline in conduct. When observers arrive they
+/// may record already-admitted declarations and outcomes only:
+/// no new guests, no new paths, no new deletion authority, no
+/// live-guest spawning. The pin proves it creates nothing.
+#[must_use]
+pub fn run_finalize_observations(_merged: &crate::framework::contract::MergedPlan) -> Vec<String> {
+    Vec::new()
+}
+
+/// Verifies a compiled rendering against its snapshot and
+/// enforcement consumer: fingerprint and hook digest must both
+/// match. A CompilerA rendering paired with a SupervisorB
+/// policy — or any stale snapshot — refuses here, before
+/// create.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on any binding escape.
+pub fn verify_compiled_binding(
+    snapshot: &crate::framework::landlock_compiler::CompileSnapshot,
+    compiled: &crate::framework::landlock_compiler::CompiledTopology,
+    hook: &crate::framework::contract::GuestHookRequest,
+) -> crate::error::Result<()> {
+    if compiled.fingerprint != snapshot.fingerprint || compiled.hook_digest != hook.artifact.sha256
+    {
+        return Err(CistellaError::Contract(
+            "compile output escapes its snapshot binding".to_string(),
+        ));
+    }
+    Ok(())
 }
