@@ -104,7 +104,7 @@ fn main() {
             return;
         }
     };
-    match baseline_tmp_alias_preflight(&triples, &sets.routes, &sets.sources) {
+    match baseline_tmp_alias_preflight(&triples, &effective, &sets.routes, &sets.sources) {
         Ok(()) => println!("ALLOWED"),
         Err(error) => println!("REFUSED:{error}"),
     }

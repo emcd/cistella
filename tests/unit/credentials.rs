@@ -11,6 +11,10 @@ use serde_json::json;
 
 use cistella::framework::contract::MergeContext;
 use cistella::framework::credentials::{admit_all, parse_wire};
+
+fn test_owner() -> cistella::framework::contract::Provenance {
+    cistella::framework::contract::Provenance::Extension("test-guest".to_string())
+}
 use cistella::framework::policy::PolicySet;
 use cistella::framework::prepare::run_prepare;
 use cistella::framework::protocol::{
@@ -45,7 +49,7 @@ fn opaque_reference_admits_minted_shape() {
         {"kind": "opaque-reference", "id": "abc123"},
     ]))
     .unwrap();
-    let admitted = admit_all(&handles).unwrap();
+    let admitted = admit_all(&handles, &test_owner()).unwrap();
     assert_eq!(admitted.len(), 1);
     assert_eq!(admitted[0].kind, "opaque-reference");
     assert_eq!(admitted[0].locator_class, "opaque-id");
@@ -58,14 +62,14 @@ fn opaque_reference_refuses_user_chosen_strings() {
             {"kind": "opaque-reference", "id": id},
         ]))
         .unwrap();
-        admit_all(&handles).unwrap_err();
+        admit_all(&handles, &test_owner()).unwrap_err();
     }
     let long = "a".repeat(2048);
     let handles = parse_wire(&json!([
         {"kind": "opaque-reference", "id": long},
     ]))
     .unwrap();
-    admit_all(&handles).unwrap_err();
+    admit_all(&handles, &test_owner()).unwrap_err();
 }
 
 #[test]
@@ -74,7 +78,7 @@ fn seat_socket_admits_bounded_prefix() {
         {"kind": "seat-socket", "path": "/run/cistella/seats/agent-7.sock"},
     ]))
     .unwrap();
-    let admitted = admit_all(&handles).unwrap();
+    let admitted = admit_all(&handles, &test_owner()).unwrap();
     assert_eq!(admitted[0].kind, "seat-socket");
 }
 
@@ -93,7 +97,7 @@ fn seat_socket_refuses_escape_and_shape() {
             {"kind": "seat-socket", "path": path},
         ]))
         .unwrap();
-        admit_all(&handles).unwrap_err();
+        admit_all(&handles, &test_owner()).unwrap_err();
     }
 }
 
@@ -125,7 +129,7 @@ fn diagnostics_name_kind_never_content() {
         {"kind": "seat-socket", "path": secret_path},
     ]))
     .unwrap();
-    let error = admit_all(&handles).unwrap_err().to_string();
+    let error = admit_all(&handles, &test_owner()).unwrap_err().to_string();
     assert!(error.contains("seat-socket"));
     assert!(!error.contains(secret_path));
 }

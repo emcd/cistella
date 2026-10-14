@@ -217,6 +217,23 @@ pub enum IsolatorResolution {
     Registered(Guest),
 }
 
+impl Profile {
+    /// Explicit `[[permissions]]` as contributions (profile
+    /// provenance): the single conversion point for the merge
+    /// feed on every path (0/1/N extensions alike).
+    #[must_use]
+    pub fn explicit_permissions(&self) -> Vec<crate::framework::contract::PermissionContribution> {
+        self.permissions
+            .iter()
+            .map(|entry| crate::framework::contract::PermissionContribution {
+                target: entry.path.clone(),
+                rights: entry.rights,
+                provenance: crate::framework::contract::Provenance::Profile,
+            })
+            .collect()
+    }
+}
+
 /// Extension selection outcome per declared entry: the shipped
 /// guest or one registered entry. Table determines kind:
 /// `[[extensions]]` entries resolve only from `[[extensions]]` —

@@ -12,7 +12,6 @@ use std::collections::HashSet;
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::Capability;
 use crate::framework::contract::CapabilitySet;
-use crate::framework::contract::PermissionContribution;
 use crate::framework::contract::Provenance;
 use crate::framework::contract::gate_capabilities;
 use crate::framework::contract::merge_transacted_as;
@@ -145,22 +144,37 @@ pub fn prepare_selected_extension(
     extra_args: &[Vec<String>],
 ) -> Result<(EvaluatedPlan, Option<PrepareLease>)> {
     match extensions.len() {
-        0 => Ok((
-            EvaluatedPlan {
-                merged: crate::framework::contract::MergedPlan {
-                    environment: Vec::new(),
-                    placements: Vec::new(),
-                    permissions: Vec::new(),
-                    policy_claims: Vec::new(),
-                    guest_hooks: Vec::new(),
-                    cleanup: Vec::new(),
+        0 => {
+            // No guests — but explicit profile permissions still
+            // assemble and validate: an unknown explicit target
+            // refuses on plain sessions exactly as with guests
+            // (never silently passed).
+            let profile_permissions = profile.explicit_permissions();
+            // Known image-private baselines apply uniformly
+            // (match scope is hook-independent).
+            let effective = crate::framework::contract::EffectivePermissions::assemble(
+                triples,
+                &[],
+                &profile_permissions,
+                &crate::framework::landlock_compiler::baseline_routes(),
+            )?;
+            Ok((
+                EvaluatedPlan {
+                    merged: crate::framework::contract::MergedPlan {
+                        environment: Vec::new(),
+                        placements: Vec::new(),
+                        permissions: Vec::new(),
+                        policy_claims: Vec::new(),
+                        guest_hooks: Vec::new(),
+                        cleanup: Vec::new(),
+                    },
+                    effective,
+                    diagnostics: Vec::new(),
+                    credentials: Vec::new(),
                 },
-                effective: crate::framework::contract::EffectivePermissions::default(),
-                diagnostics: Vec::new(),
-                credentials: Vec::new(),
-            },
-            None,
-        )),
+                None,
+            ))
+        }
         1 => {
             let extra = extra_args.first().map(Vec::as_slice).unwrap_or(&[]);
             match extensions.into_iter().next() {
@@ -447,17 +461,13 @@ fn prepare_many(
     for name in DRIVER_ENV {
         reserved.insert(name.to_string());
     }
-    let profile_permissions: Vec<PermissionContribution> = profile
-        .permissions
-        .iter()
-        .map(|entry| PermissionContribution {
-            target: entry.path.clone(),
-            rights: entry.rights,
-            provenance: Provenance::Profile,
-        })
-        .collect();
+    let profile_permissions = profile.explicit_permissions();
+    // Owner-provided baselines filled explicitly: the
+    // landlock-owned compiler publishes the known
+    // image-private set; a future owner provides its own.
     let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
-        .with_profile_permissions(profile_permissions);
+        .with_profile_permissions(profile_permissions)
+        .with_baselines(crate::framework::landlock_compiler::baseline_routes());
     let acceptances = acceptance_set(&profile.environment_acceptances);
     // Per-name provenance: lattice evaluation sees the source
     // that contributed each name (unreachable fallback — merge

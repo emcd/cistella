@@ -39,9 +39,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{CistellaError, Result};
-use crate::mount::{
-    MountMode, MountTriple, canonicalize_container_target, canonicalize_host_source,
-};
+use crate::mount::{MountTriple, canonicalize_container_target, canonicalize_host_source};
 
 /// Dentry identity of one directory: owning device plus inode
 /// number. Equal pairs on one host are the same directory,
@@ -219,11 +217,15 @@ fn unescape_mountinfo_field(field: &str) -> String {
 /// the first aliased graft.
 pub fn refuse_dentry_aliased_grafts(
     triples: &[MountTriple],
+    effective: &crate::framework::contract::EffectivePermissions,
     ancestor_host: &Path,
     subtree_host: &Path,
 ) -> Result<()> {
     let candidates = triples.iter().any(|triple| {
-        triple.mode == MountMode::Rw && dentry_id(Path::new(&triple.host_source)).is_some()
+        effective
+            .rights_of(&triple.container_target)
+            .is_ok_and(|rights| rights.writes())
+            && dentry_id(Path::new(&triple.host_source)).is_some()
     });
     if !candidates {
         return Ok(());
@@ -231,6 +233,7 @@ pub fn refuse_dentry_aliased_grafts(
     let table = MountTable::read_host();
     refuse_dentry_aliases_with(
         triples,
+        effective,
         ancestor_host,
         subtree_host,
         table.as_ref(),
@@ -256,11 +259,22 @@ pub fn refuse_dentry_aliased_grafts(
 /// the first aliased or unverifiable graft.
 pub fn refuse_dentry_aliases_with(
     triples: &[MountTriple],
+    effective: &crate::framework::contract::EffectivePermissions,
     ancestor_host: &Path,
     subtree_host: &Path,
     table: Option<&MountTable>,
     stat: &dyn Fn(&Path) -> Option<DentryId>,
 ) -> Result<()> {
+    use crate::framework::contract::Rights;
+    // Actual granted rights per binding, computed once: every
+    // classification below reads these, never declared modes
+    // (a permission-only Full grant aliases exactly like a
+    // read-write declaration — Landlock is mount-agnostic).
+    let rights: Result<Vec<crate::framework::contract::Rights>> = triples
+        .iter()
+        .map(|triple| effective.rights_of(&triple.container_target))
+        .collect();
+    let rights = rights?;
     let ancestor_canon = canonicalize_host_source(&ancestor_host.to_string_lossy());
     let subtree_canon = canonicalize_host_source(&subtree_host.to_string_lossy());
     let ancestor_id = stat(&ancestor_canon);
@@ -269,9 +283,8 @@ pub fn refuse_dentry_aliases_with(
     // own FULL carveout (compose grants every RW directory),
     // so its content is FULL-backed, not sensitive. Union
     // semantics: FULL wins over the read-execute route.
-    let ancestor_full = triples.iter().any(|triple| {
-        triple.mode == MountMode::Rw
-            && canonicalize_host_source(&triple.host_source) == ancestor_canon
+    let ancestor_full = triples.iter().enumerate().any(|(index, triple)| {
+        rights[index].writes() && canonicalize_host_source(&triple.host_source) == ancestor_canon
     });
     // FULL-backed graft sources by dentry accounting (their
     // carveouts), keyed by triple so a candidate never
@@ -287,10 +300,10 @@ pub fn refuse_dentry_aliases_with(
     for (index, triple) in triples.iter().enumerate() {
         let source = canonicalize_host_source(&triple.host_source);
         let Some(id) = stat(&source) else { continue };
-        if triple.mode == MountMode::Rw {
+        if rights[index].writes() {
             graft_ids.insert(index, id);
             graft_sources.insert(index, source);
-        } else if triple.mode == MountMode::Ro
+        } else if rights[index] == Rights::Read
             && source != ancestor_canon
             && source != subtree_canon
         {
@@ -307,7 +320,7 @@ pub fn refuse_dentry_aliases_with(
         }
     }
     for (index, triple) in triples.iter().enumerate() {
-        if triple.mode != MountMode::Rw {
+        if !rights[index].writes() {
             continue;
         }
         let source = canonicalize_host_source(&triple.host_source);
@@ -544,11 +557,13 @@ pub fn tmp_backing_source(triples: &[MountTriple]) -> Option<PathBuf> {
 /// Returns `CistellaError::Mount` on the first contradictory alias.
 pub fn baseline_tmp_alias_preflight(
     triples: &[MountTriple],
+    effective: &crate::framework::contract::EffectivePermissions,
     full_routes: &[String],
     full_sources: &[PathBuf],
 ) -> Result<()> {
     baseline_tmp_alias_preflight_with(
         triples,
+        effective,
         full_routes,
         full_sources,
         crate::mount_alias::MountTable::read_host().as_ref(),
@@ -566,6 +581,7 @@ pub fn baseline_tmp_alias_preflight(
 /// (bind layouts need no privilege to script).
 pub fn baseline_tmp_alias_preflight_with(
     triples: &[MountTriple],
+    effective: &crate::framework::contract::EffectivePermissions,
     full_routes: &[String],
     full_sources: &[PathBuf],
     table: Option<&crate::mount_alias::MountTable>,
@@ -609,7 +625,11 @@ pub fn baseline_tmp_alias_preflight_with(
         {
             continue;
         }
-        if triple.mode == MountMode::Rw {
+        // Write-capable bindings (by actual grant) need no
+        // alias proof; effective-Read routes to FULL-backed
+        // dentries refuse unless FULL-covered, whatever their
+        // declared mode.
+        if effective.rights_of(&triple.container_target)?.writes() {
             continue;
         }
         if crate::mount::under_full_route(&target, full_routes)

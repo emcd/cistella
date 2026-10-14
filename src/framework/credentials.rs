@@ -97,6 +97,9 @@ pub struct AdmittedCredential {
     pub kind: &'static str,
     /// Locator class (never content): `opaque-id` or `seat-socket`.
     pub locator_class: &'static str,
+    /// Contributing guest (host-assigned at admission, never
+    /// wire-trusted).
+    pub owner: crate::framework::contract::Provenance,
 }
 
 impl CredentialHandle {
@@ -109,7 +112,10 @@ impl CredentialHandle {
     ///
     /// Returns `CistellaError::Contract` on grammar, bound, or
     /// locality violations.
-    pub fn admit(&self) -> Result<AdmittedCredential> {
+    pub fn admit(
+        &self,
+        owner: &crate::framework::contract::Provenance,
+    ) -> Result<AdmittedCredential> {
         match self {
             Self::OpaqueReference { id } => {
                 if id.len() > MAX_LOCATOR_LEN {
@@ -125,6 +131,7 @@ impl CredentialHandle {
                 Ok(AdmittedCredential {
                     kind: "opaque-reference",
                     locator_class: "opaque-id",
+                    owner: owner.clone(),
                 })
             }
             Self::SeatSocket { path } => {
@@ -158,6 +165,7 @@ impl CredentialHandle {
                 Ok(AdmittedCredential {
                     kind: "seat-socket",
                     locator_class: "seat-socket",
+                    owner: owner.clone(),
                 })
             }
         }
@@ -170,8 +178,11 @@ impl CredentialHandle {
 ///
 /// Returns `CistellaError::Contract` on the first refusing handle;
 /// atomic with the transaction (no partial admission).
-pub fn admit_all(handles: &[CredentialHandle]) -> Result<Vec<AdmittedCredential>> {
-    handles.iter().map(CredentialHandle::admit).collect()
+pub fn admit_all(
+    handles: &[CredentialHandle],
+    owner: &crate::framework::contract::Provenance,
+) -> Result<Vec<AdmittedCredential>> {
+    handles.iter().map(|handle| handle.admit(owner)).collect()
 }
 
 /// Parses credential handles from a wire value with unknown-field and

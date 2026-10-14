@@ -344,8 +344,8 @@ fn conduct_session(
     // conduct pre-create — including shipped-only ones — before
     // any session/runtime mutation. Shipped names resolve first;
     // registered names second; anything else refuses naming the
-    // declaration. Composition (landlock-plus-one pair, general
-    // N deferred) is gated inside prepare_selected_extension.
+    // declaration. Composition (any declaration-ordered set)
+    // is gated inside prepare_selected_extension.
     let registry = Registry::load()?;
     let isolator = prof.resolve_isolator(&registry)?;
     let extensions = prof.resolve_extensions(&registry)?;
@@ -427,8 +427,8 @@ fn conduct_session(
         }
         i += 2;
     }
-    // Extension prepare: none, one, or the landlock-plus-one
-    // pair (see `prepare_selected_extension` — undeclared means
+    // Extension prepare: none, one, or many
+    // (see `prepare_selected_extension` — undeclared means
     // the empty plan, pure Podman behavior; registered means the
     // recorded role required with hooks optional; shipped Landlock
     // keeps the declared-but-empty refusal below).

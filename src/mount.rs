@@ -730,13 +730,19 @@ pub fn nested_ro_preflight(triples: &[MountTriple]) -> Result<()> {
 /// Returns `CistellaError::Mount` on the first aliasing graft.
 pub fn graft_alias_preflight(
     triples: &[MountTriple],
+    effective: &crate::framework::contract::EffectivePermissions,
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
 ) -> Result<()> {
     let ancestor_canon = canonicalize_host_source(&ancestor_host.to_string_lossy());
     let subtree_canon = canonicalize_host_source(&subtree_host.to_string_lossy());
     for triple in triples {
-        if triple.mode != MountMode::Rw {
+        // Actual granted rights, not declared mode: a
+        // read-only-declared graft with effective write-capable
+        // rights (permission-only grant) aliases exactly like a
+        // read-write one — Landlock is mount-agnostic, so the
+        // spelling leg must see it.
+        if !effective.rights_of(&triple.container_target)?.writes() {
             continue;
         }
         if !std::path::Path::new(&triple.host_source).is_dir() {
@@ -752,7 +758,12 @@ pub fn graft_alias_preflight(
             )));
         }
     }
-    crate::mount_alias::refuse_dentry_aliased_grafts(triples, ancestor_host, subtree_host)
+    crate::mount_alias::refuse_dentry_aliased_grafts(
+        triples,
+        effective,
+        ancestor_host,
+        subtree_host,
+    )
 }
 
 /// Revises read-only directory mounts to read-write for the

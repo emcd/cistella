@@ -155,6 +155,18 @@ pub(crate) fn compute_grants(
 /// denies writes.)
 pub(crate) const FULL_BASELINE_ROUTES: &[&str] = &["/dev", "/tmp"];
 
+/// Owner-provided known image-private baselines (the fixed FULL
+/// set needing no placement). Production merge contexts fill
+/// this explicitly; the constant lives with its owning
+/// compiler, not smuggled into generic merge code.
+#[must_use]
+pub(crate) fn baseline_routes() -> Vec<String> {
+    FULL_BASELINE_ROUTES
+        .iter()
+        .map(|route| route.to_string())
+        .collect()
+}
+
 /// Guest targets receiving FULL Landlock rights: the fixed
 /// baselines, the subtree routes, plus every read-write
 /// carveout target. The revision consumes this set to retain
@@ -280,6 +292,12 @@ pub fn ro_confinement_preflight(
     full_sources: &[std::path::PathBuf],
 ) -> Result<()> {
     for ro in triples {
+        // Binding truth, not granted rights: assembled modes are
+        // intent-aware by construction (driver modes real,
+        // contributed modes rendered from intent), so a
+        // read-only BINDING with a read-write descendant beneath
+        // refuses regardless of what the union grants. Grant
+        // aliasing is the graft preflight's job, not this one's.
         if ro.mode != MountMode::Ro || !std::path::Path::new(&ro.host_source).is_dir() {
             continue;
         }
@@ -308,16 +326,52 @@ pub fn ro_confinement_preflight(
     Ok(())
 }
 
-/// Frozen admitted snapshot: the compiler's only input.
+/// Resolves the owning compiler for a claiming hook by its
+/// artifact identity: the shipped landlock supervisor artifact
+/// selects this compiler. Anything else refuses unsupported —
+/// a placement-less isolator or foreign supervisor declares
+/// its own renderer (or explicit refusal) rather than
+/// silently borrowing this one. Adding a backend is a new
+/// match arm plus its compiler module, never a framework
+/// special case.
 ///
-/// Placements, roots, claiming hook digest, and a fingerprint
-/// over the canonical contents. The fingerprint binds output to
+/// # Errors
+///
+/// Returns `CistellaError::Contract` when no compiler is
+/// registered for the artifact.
+pub(crate) fn compiler_owner_for(hook: &GuestHookRequest) -> Result<&'static str> {
+    use crate::framework::registry::{SHIPPED_REGISTRY_ID, WRAPPER_FILE_NAME};
+    if hook.artifact.source.registry == SHIPPED_REGISTRY_ID
+        && hook.artifact.source.path == WRAPPER_FILE_NAME
+    {
+        Ok("landlock")
+    } else {
+        Err(CistellaError::Contract(format!(
+            "no compiler registered for hook artifact {}:{}",
+            hook.artifact.source.registry, hook.artifact.source.path
+        )))
+    }
+}
+
+/// Frozen admitted snapshot: the compiler's complete input.
+///
+/// Placements, assembled triples, the full effective map, roots,
+/// claiming hook digest, and a fingerprint over the canonical
+/// representation of ALL of it. The fingerprint binds output to
 /// input: a rendering computed from any other snapshot refuses
-/// at application.
+/// at application. Snapshots with the same targets backed by
+/// different host sources fingerprint differently; provenance
+/// labels and non-placement grants are covered too.
 #[derive(Debug, Clone)]
 pub struct CompileSnapshot {
     /// Canonical placements under compilation.
     pub placements: Vec<Placement>,
+    /// Assembled binding triples (driver sugar plus rendered
+    /// contributions plus staged hooks).
+    pub triples: Vec<MountTriple>,
+    /// Complete effective map (driver, extension, and baseline
+    /// matched grants alike).
+    pub effective: EffectivePermissions,
     /// Confinement ancestor host path.
     pub ancestor_host: PathBuf,
     /// Confinement subtree host path.
@@ -326,6 +380,9 @@ pub struct CompileSnapshot {
     /// the enforcement consumer — no CompilerA rendering paired
     /// with a SupervisorB policy).
     pub hook_digest: String,
+    /// Owning compiler that must render this snapshot
+    /// (resolved from the claiming hook, echoed by output).
+    pub compiler_owner: String,
     /// SHA-256 over the canonical snapshot contents.
     pub fingerprint: String,
 }
@@ -345,10 +402,129 @@ pub struct CompiledTopology {
     pub fingerprint: String,
     /// Echo of the claiming hook digest (must match to apply).
     pub hook_digest: String,
+    /// Echo of the owning compiler (must match to apply).
+    pub compiler_owner: String,
 }
 
-/// Freezes the admitted snapshot: placements plus roots plus the
-/// claiming hook digest, fingerprinted over canonical contents.
+/// Canonical snapshot encoding for the fingerprint: sorted
+/// placements (target and source), sorted full-map grants
+/// (target, rights, intent, claimant labels), roots, hook.
+fn fingerprint_snapshot(
+    placements: &[Placement],
+    triples: &[MountTriple],
+    effective: &EffectivePermissions,
+    ancestor_host: &Path,
+    subtree_host: &Path,
+    hook_digest: &str,
+    compiler_owner: &str,
+) -> String {
+    // Structured JSON encoding, sorted for determinism:
+    // field boundaries are structural, never delimiter
+    // inference (a `|` inside a path cannot collide fields).
+    use serde::Serialize;
+    #[derive(Serialize)]
+    struct BoundPlacement<'a> {
+        target: &'a str,
+        source: &'a str,
+    }
+    #[derive(Serialize)]
+    struct BoundTriple<'a> {
+        target: &'a str,
+        source: &'a str,
+        mode: &'a str,
+    }
+    #[derive(Serialize)]
+    struct BoundGrant<'a> {
+        target: &'a str,
+        rights: &'a str,
+        intent_ro: bool,
+        claimants: Vec<String>,
+    }
+    #[derive(Serialize)]
+    struct SnapshotRecord<'a> {
+        placements: Vec<BoundPlacement<'a>>,
+        triples: Vec<BoundTriple<'a>>,
+        grants: Vec<BoundGrant<'a>>,
+        ancestor: &'a str,
+        subtree: &'a str,
+        hook_digest: &'a str,
+        compiler_owner: &'a str,
+    }
+    fn rights_name(rights: Rights) -> &'static str {
+        match rights {
+            Rights::Read => "read",
+            Rights::Write => "write",
+            Rights::Full => "full",
+        }
+    }
+    let mut placement_records: Vec<BoundPlacement<'_>> = placements
+        .iter()
+        .map(|placement| BoundPlacement {
+            target: &placement.container_target,
+            source: &placement.host_source,
+        })
+        .collect();
+    placement_records.sort_by(|a, b| (a.target, a.source).cmp(&(b.target, b.source)));
+    let mut triple_records: Vec<BoundTriple<'_>> = triples
+        .iter()
+        .map(|triple| BoundTriple {
+            target: &triple.container_target,
+            source: &triple.host_source,
+            mode: triple.mode.as_flag(),
+        })
+        .collect();
+    triple_records.sort_by(|a, b| (a.target, a.source, a.mode).cmp(&(b.target, b.source, b.mode)));
+    let mut grant_records: Vec<BoundGrant<'_>> = effective
+        .iter()
+        .map(|(target, grant)| {
+            let mut claimants: Vec<String> = grant
+                .claimants
+                .iter()
+                .map(|(provenance, rights)| format!("{provenance:?}:{rights:?}"))
+                .collect();
+            claimants.sort();
+            BoundGrant {
+                target,
+                rights: rights_name(grant.rights),
+                intent_ro: grant.binding_intent_ro,
+                claimants,
+            }
+        })
+        .collect();
+    grant_records.sort_by(|a, b| a.target.cmp(b.target));
+    let record = SnapshotRecord {
+        placements: placement_records,
+        triples: triple_records,
+        grants: grant_records,
+        ancestor: &ancestor_host.to_string_lossy(),
+        subtree: &subtree_host.to_string_lossy(),
+        hook_digest,
+        compiler_owner,
+    };
+    let bytes = serde_json::to_vec(&record).expect("snapshot record serializes");
+    hex::encode(Sha256::digest(&bytes))
+}
+
+/// Recomputes a snapshot's fingerprint from its CURRENT
+/// contents: snapshot-field mutation cannot reuse a stale
+/// fingerprint, because verification recomputes rather than
+/// trusting the stored string.
+pub(crate) fn recompute_fingerprint(snapshot: &CompileSnapshot) -> String {
+    fingerprint_snapshot(
+        &snapshot.placements,
+        &snapshot.triples,
+        &snapshot.effective,
+        &snapshot.ancestor_host,
+        &snapshot.subtree_host,
+        &snapshot.hook_digest,
+        &snapshot.compiler_owner,
+    )
+}
+
+/// Freezes the admitted snapshot: placements, assembled
+/// triples, the full effective map, roots, and the claiming
+/// hook digest, fingerprinted over the canonical
+/// representation.
 ///
 /// Refuses typed on duplicate canonical placement IDs and on a
 /// placement with no effective grant (both unreachable past
@@ -361,6 +537,7 @@ pub struct CompiledTopology {
 /// gap.
 pub fn freeze_snapshot(
     placements: &[Placement],
+    triples: &[MountTriple],
     effective: &EffectivePermissions,
     ancestor_host: &Path,
     subtree_host: &Path,
@@ -381,40 +558,39 @@ pub fn freeze_snapshot(
             )));
         }
     }
-    let mut digest = Sha256::new();
-    let mut targets: Vec<String> = seen.into_iter().collect();
-    targets.sort();
-    for target in &targets {
-        let grant = effective.get(target).expect("grant proven present above");
-        digest.update(target.as_bytes());
-        digest.update([grant.rights as u8]);
-        digest.update([u8::from(grant.binding_intent_ro)]);
-    }
-    digest.update(ancestor_host.to_string_lossy().as_bytes());
-    digest.update(subtree_host.to_string_lossy().as_bytes());
-    digest.update(hook.artifact.sha256.as_bytes());
+    let owner = compiler_owner_for(hook)?;
+    let fingerprint = fingerprint_snapshot(
+        placements,
+        triples,
+        effective,
+        ancestor_host,
+        subtree_host,
+        &hook.artifact.sha256,
+        owner,
+    );
     Ok(CompileSnapshot {
         placements: placements.to_vec(),
+        triples: triples.to_vec(),
+        effective: effective.clone(),
         ancestor_host: ancestor_host.to_path_buf(),
         subtree_host: subtree_host.to_path_buf(),
         hook_digest: hook.artifact.sha256.clone(),
-        fingerprint: hex::encode(digest.finalize()),
+        compiler_owner: owner.to_string(),
+        fingerprint,
     })
 }
 
-/// Compiles the frozen snapshot to rendered bindings: decided
-/// FULL routes and sources plus the safe RO→RW revision over the
-/// assembled triples. Binds the input fingerprint and hook
-/// digest into the output for framework verification.
+/// Compiles the frozen snapshot ALONE to rendered bindings:
+/// decided FULL routes and sources plus the safe RO→RW revision
+/// over the snapshot's assembled triples. Binds the input
+/// fingerprint and hook digest into the output for framework
+/// verification.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Contract` on grant derivation or
-/// revision refusal.
+/// Returns `CistellaError::Contract` on grant derivation.
 pub fn compile_topology(
     snapshot: &CompileSnapshot,
-    triples: &[MountTriple],
-    effective: &EffectivePermissions,
     hook: &GuestHookRequest,
 ) -> Result<CompiledTopology> {
     // Single-hook admission upstream guarantees exactly one
@@ -424,17 +600,22 @@ pub fn compile_topology(
     let routes = full_grant_routes(
         std::slice::from_ref(hook),
         &snapshot.placements,
-        effective,
+        &snapshot.effective,
         &snapshot.ancestor_host,
         &snapshot.subtree_host,
     )?;
-    let sources = full_grant_sources(&snapshot.placements, effective, &snapshot.subtree_host);
-    let revised = revise_ro_for_confinement(triples, &routes, &sources);
+    let sources = full_grant_sources(
+        &snapshot.placements,
+        &snapshot.effective,
+        &snapshot.subtree_host,
+    );
+    let revised = revise_ro_for_confinement(&snapshot.triples, &routes, &sources);
     Ok(CompiledTopology {
         revised,
         routes,
         sources,
         fingerprint: snapshot.fingerprint.clone(),
         hook_digest: snapshot.hook_digest.clone(),
+        compiler_owner: snapshot.compiler_owner.clone(),
     })
 }

@@ -213,6 +213,26 @@ impl EffectivePermissions {
         self.grants.get(canonical_target)
     }
 
+    /// Classifies a container target by actual granted rights
+    /// (Write normalizes to Full before every consumer, so no
+    /// alias guard ever classifies backend-FULL content under a
+    /// non-FULL label).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed internal error on a missing grant (all
+    /// production callers classify assembled triples whose
+    /// coverage merge proved).
+    pub fn rights_of(&self, container_target: &str) -> crate::error::Result<Rights> {
+        use crate::mount::canonicalize_container_target;
+        let target = canonicalize_container_target(container_target);
+        self.get(&target).map(|grant| grant.rights).ok_or_else(|| {
+            crate::error::CistellaError::Contract(format!(
+                "no effective grant for classified target {target}"
+            ))
+        })
+    }
+
     /// Iterates canonical targets with their grants.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &EffectiveGrant)> {
         self.grants.iter()
@@ -253,11 +273,16 @@ impl EffectivePermissions {
     }
 }
 
-/// Renders contributed placements to binding triples from joined
-/// rights (`Read`→ro, else rw): the SOLE post-merge source of
-/// contributed modes. Every binding-mechanics consumer downstream
-/// reads these rendered modes; grant classification reads the map
-/// directly. Render here, nowhere else.
+/// Renders contributed placements to binding triples: read-only
+/// when the surviving binding intent is read-only OR rights are
+/// `Read`; read-write only for write-capable grants with no
+/// read-only intent anywhere. The SOLE post-merge source of
+/// contributed modes: a `Read`+`Write` join grants `Full` at the
+/// Landlock layer while the binding stays read-only for
+/// retention to keep (or revision to flip with intent carried).
+/// Every binding-mechanics consumer downstream reads these
+/// rendered modes; grant classification reads the map directly.
+/// Render here, nowhere else.
 #[must_use]
 pub fn render_placements(
     placements: &[Placement],
@@ -268,8 +293,13 @@ pub fn render_placements(
         .iter()
         .map(|placement| {
             let target = canonicalize_container_target(&placement.container_target);
-            let mode = match effective.get(&target).map(|grant| grant.rights) {
-                Some(Rights::Read) | None => MountMode::Ro,
+            let mode = match effective.get(&target) {
+                // No grant is unreachable past merge validation;
+                // render read-only (fail-closed at the VFS layer).
+                None => MountMode::Ro,
+                Some(grant) if grant.rights == Rights::Read || grant.binding_intent_ro => {
+                    MountMode::Ro
+                }
                 _ => MountMode::Rw,
             };
             MountTriple {

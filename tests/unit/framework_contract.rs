@@ -84,6 +84,7 @@ fn claim(pattern: &str) -> PolicyClaim {
         pattern: pattern.to_string(),
         severity: Severity::Suppressible,
         scope: Scope::OnExtensions,
+        provenance: Provenance::Extension("probe".to_string()),
     }
 }
 
@@ -584,7 +585,8 @@ fn duplicate_explicit_permission_refuses() {
         .with_profile_permissions(vec![
             profile_perm("/tmp", Rights::Read),
             profile_perm("/tmp", Rights::Read),
-        ]);
+        ])
+        .with_baselines(vec!["/dev".to_string(), "/tmp".to_string()]);
     let error = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap_err();
     assert!(
         error.to_string().contains("duplicate permission"),

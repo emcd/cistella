@@ -13,7 +13,9 @@
 //! Slice names embed the prepare session id for attribution
 //! (`cistella-tmp-<session>-<pid>-<nanos>`, O_EXCL create, 0700).
 //! Mint failure fails the prepare loudly (fail-closed), never an
-//! undeclared session.
+//! undeclared session. Hello and prepare frames gate on epoch
+//! and identity before any answer or mint (a legacy host gets
+//! refusal and silence, never a slice).
 //!
 //! Shipped sibling binary (autobins): installed and discovered
 //! beside the driver like `cistella-extension-landlock`.
@@ -83,10 +85,21 @@ fn main() -> ExitCode {
     let mut stdin_lock = stdin.lock();
     let mut stdout_lock = stdout.lock();
 
-    // Hello: consume the host's hello, advertise the role plus
-    // the contribution types (the merge gate admits nonempty
-    // contribution types only when advertised).
-    if read_frame(&mut stdin_lock).is_err() {
+    // Hello: validate the host hello (epoch and op) BEFORE
+    // answering. A legacy or malformed hello refuses here with
+    // nothing emitted — version-first refusal, never minting or
+    // planning on a mismatched wire.
+    let hello_body = match read_frame(&mut stdin_lock) {
+        Ok(body) => body,
+        Err(_) => return ExitCode::from(2),
+    };
+    let hello_request: Value = serde_json::from_slice(&hello_body).unwrap_or(json!({}));
+    if hello_request
+        .get("protocol")
+        .and_then(|value| value.as_u64())
+        != Some(PROTOCOL_MAJOR as u64)
+        || hello_request.get("op").and_then(|value| value.as_str()) != Some("hello")
+    {
         return ExitCode::from(2);
     }
     let hello = json!({
@@ -111,12 +124,24 @@ fn main() -> ExitCode {
         Err(_) => return ExitCode::from(2),
     };
     let request: Value = serde_json::from_slice(&request).unwrap_or(json!({}));
+    // Prepare epoch and identity gate BEFORE minting: the
+    // envelope must speak this epoch with the prepare op, and
+    // the opaque session id must be present (minting keyed by a
+    // fallback identity would break attribution).
+    if request.get("protocol").and_then(|value| value.as_u64()) != Some(PROTOCOL_MAJOR as u64)
+        || request.get("op").and_then(|value| value.as_str()) != Some("prepare")
+    {
+        return ExitCode::from(2);
+    }
     let id = request.get("id").cloned().unwrap_or(json!("req-0"));
-    let session = request
+    let session = match request
         .get("payload")
         .and_then(|payload| payload.get("session_id"))
         .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    {
+        Some(session) => session,
+        None => return ExitCode::from(2),
+    };
     let slice = match mint_slice(session) {
         Ok(path) => path,
         Err(_) => return ExitCode::from(2),

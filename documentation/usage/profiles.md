@@ -121,7 +121,7 @@ format-version = 1
 [[isolators]]                                  # genera table: resolves only from [isolator]
 name = 'my-isolator'                           # exact name (nonempty, unique per table)
 role = 'isolator'                              # exact hello role string the guest must advertise
-protocol = 1                                   # wire major the guest speaks
+protocol = 2                                   # wire major the guest speaks
 source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
 source-path = '/opt/guests/my-isolator'      # absolute path source (canonicalized at resolve)
 arguments = ['--flag']                       # static arguments, passed verbatim (default [])
@@ -129,7 +129,7 @@ arguments = ['--flag']                       # static arguments, passed verbatim
 [[extensions]]                                 # genera table: resolves only from [[extensions]]
 name = 'my-extension'
 role = 'myext'
-protocol = 1
+protocol = 2
 source-digest = { algorithm = 'sha256', value = '<64 lowercase hex>' }
 source-url = 'https://example.invalid/my-extension'  # fetch source (http/https; hash is the trust anchor)
 ```

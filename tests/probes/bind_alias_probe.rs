@@ -51,7 +51,10 @@ fn main() {
             mode: MountMode::Rw,
         },
     ];
-    match hook_graft_alias_preflight(&triples, &session) {
+    let effective =
+        cistella::framework::contract::EffectivePermissions::assemble(&triples, &[], &[], &[])
+            .expect("driver-only assembly");
+    match hook_graft_alias_preflight(&triples, &effective, &session) {
         Ok(()) => println!("ALLOWED"),
         Err(error) => println!("REFUSED:{error}"),
     }

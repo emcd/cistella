@@ -70,6 +70,19 @@ struct PermissionWire {
     rights: String,
 }
 
+/// Wire form of one policy claim (no owner: the host assigns
+/// provenance at hosting, never trusting the wire).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyClaimWire {
+    /// Name or pattern the claim constrains.
+    pattern: String,
+    /// Claimed severity.
+    severity: crate::framework::contract::Severity,
+    /// Claimed scope.
+    scope: crate::framework::contract::Scope,
+}
+
 /// Wire form of the single prepare response.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +98,7 @@ struct PrepareResponse {
     permissions: Vec<PermissionWire>,
     /// Policy claims scoped to this transaction (default empty).
     #[serde(default)]
-    policy_claims: Vec<PolicyClaim>,
+    policy_claims: Vec<PolicyClaimWire>,
     /// Guest-hook requests (default empty).
     #[serde(default)]
     guest_hooks: Vec<GuestHookRequest>,
@@ -157,7 +170,7 @@ pub fn run_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
 /// opaque; old decoders tolerate the additive field), parses the
 /// single response with unknown-field refusal, and admits
 /// credential handles by shape. Merging, claims, and evaluation
-/// belong to [`merge_transacted`] so pair composition can
+/// belong to [`merge_transacted`] so N composition can
 /// concatenate raw plans and merge once centrally.
 ///
 /// # Errors
@@ -184,7 +197,7 @@ pub(crate) fn transact_prepare<R: Read + AsFd, W: std::io::Write + AsFd>(
         CistellaError::Contract("bad prepare response: shape violation".to_string())
     })?;
     let provenance = Provenance::Extension(guest_id.to_string());
-    let credentials = admit_all(&response.credentials)?;
+    let credentials = admit_all(&response.credentials, &provenance)?;
     let plan = build_plan(response, &provenance)?;
     Ok((plan, credentials))
 }
@@ -240,7 +253,7 @@ pub enum ExtensionSpawn {
 /// Invitation for one extension spawn: the provenance identity,
 /// the host-supported hello offer (closed negotiation ceiling),
 /// and the advertisements the runner requires before planning.
-/// Shared by the single-transaction runner and pair composition
+/// Shared by the single-transaction runner and N composition
 /// so both negotiate identically.
 pub(crate) fn spawn_invitation(spawn: &ExtensionSpawn) -> (String, Vec<String>, Vec<String>) {
     match spawn {
@@ -372,17 +385,13 @@ pub fn run_extension_prepare(
     for name in DRIVER_ENV {
         reserved.insert(name.to_string());
     }
-    let profile_permissions: Vec<PermissionContribution> = profile
-        .permissions
-        .iter()
-        .map(|entry| PermissionContribution {
-            target: entry.path.clone(),
-            rights: entry.rights,
-            provenance: Provenance::Profile,
-        })
-        .collect();
+    let profile_permissions = profile.explicit_permissions();
+    // Owner-provided baselines filled explicitly: the
+    // landlock-owned compiler publishes the known
+    // image-private set; a future owner provides its own.
     let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
-        .with_profile_permissions(profile_permissions);
+        .with_profile_permissions(profile_permissions)
+        .with_baselines(crate::framework::landlock_compiler::baseline_routes());
     let acceptances = acceptance_set(&profile.environment_acceptances);
     let outcome = run_prepare(
         guest.exchange_mut(),
@@ -483,7 +492,16 @@ fn build_plan(response: PrepareResponse, provenance: &Provenance) -> Result<Prep
             })
             .collect(),
         mounts,
-        policy_claims: response.policy_claims,
+        policy_claims: response
+            .policy_claims
+            .iter()
+            .map(|wire| PolicyClaim {
+                pattern: wire.pattern.clone(),
+                severity: wire.severity,
+                scope: wire.scope,
+                provenance: provenance.clone(),
+            })
+            .collect(),
         guest_hooks: response.guest_hooks,
         cleanup: response.cleanup,
     })

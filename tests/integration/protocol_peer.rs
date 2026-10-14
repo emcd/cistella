@@ -526,3 +526,107 @@ fn epoch2_landlock_guest_refuses_legacy_v1_host() {
         output.stdout.len()
     );
 }
+
+fn shipped_bin(name: &str) -> std::path::PathBuf {
+    // Real shipped sibling beside the driver (`cargo build`
+    // covers it in full runs).
+    std::env::current_exe()
+        .expect("current_exe")
+        .ancestors()
+        .nth(2)
+        .expect("target/<profile> ancestors")
+        .join(name)
+}
+
+fn framed(op: &str, protocol: u32, payload: serde_json::Value) -> Vec<u8> {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "protocol": protocol,
+        "id": "hello",
+        "op": op,
+        "payload": payload,
+    }))
+    .expect("frame serializes");
+    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&body);
+    framed
+}
+
+#[test]
+fn epoch2_tmpdir_guest_refuses_legacy_v1_host() {
+    // Reverse pin (extension-composition MEDIUM-5): a scripted
+    // legacy-v1 host hello meets the REAL epoch-2 tmpdir guest.
+    // Refusal before answering means refusal before minting —
+    // no slice can exist without a prepare that never arrives.
+    use std::io::Write;
+    let mut child = std::process::Command::new(shipped_bin("cistella-extension-tmpdir"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("tmpdir guest spawns");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(&framed(
+            "hello",
+            1,
+            serde_json::json!({"version": 1, "capabilities": []}),
+        ))
+        .expect("legacy hello writes");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("guest exits");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "legacy host hello must fail the guest pre-answer"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "refusing guest must answer nothing, got {} bytes",
+        output.stdout.len()
+    );
+}
+
+#[test]
+fn tmpdir_prepare_without_session_id_refuses_before_mint() {
+    // Missing opaque identity: the guest refuses instead of
+    // minting under a fallback name (attribution would break).
+    use std::io::{Read, Write};
+    let mut child = std::process::Command::new(shipped_bin("cistella-extension-tmpdir"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("tmpdir guest spawns");
+    let hello = framed(
+        "hello",
+        2,
+        serde_json::json!({"version": 2, "capabilities": []}),
+    );
+    let prepare = framed("prepare", 2, serde_json::json!({}));
+    let stdin = child.stdin.as_mut().expect("stdin");
+    stdin.write_all(&hello).expect("hello writes");
+    stdin.write_all(&prepare).expect("prepare writes");
+    drop(child.stdin.take());
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .as_mut()
+        .expect("stdout")
+        .read_to_end(&mut stdout)
+        .expect("stdout drains");
+    let output = child.wait().expect("guest exits");
+    assert_eq!(
+        output.code(),
+        Some(2),
+        "prepare without session id must fail pre-mint"
+    );
+    // Exactly one frame (the hello answer) may precede the
+    // refusal; no prepare answer follows it.
+    assert!(
+        stdout.len() < 2 * 1024,
+        "no prepare answer after refusal, got {} bytes",
+        stdout.len()
+    );
+}

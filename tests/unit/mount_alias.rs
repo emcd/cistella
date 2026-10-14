@@ -64,13 +64,20 @@ fn stat_of(pairs: &[(&str, DentryId)]) -> HashMap<PathBuf, DentryId> {
         .collect()
 }
 
+fn effective_for(triples: &[MountTriple]) -> cistella::framework::contract::EffectivePermissions {
+    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
+        .expect("driver-only assembly")
+}
+
 fn check(
     triples: &[MountTriple],
     table: Option<&MountTable>,
     stats: &HashMap<PathBuf, DentryId>,
 ) -> Result<(), cistella::error::CistellaError> {
+    let effective = effective_for(triples);
     refuse_dentry_aliases_with(
         triples,
+        &effective,
         Path::new("/tree"),
         Path::new("/tree/proj"),
         table,
@@ -444,6 +451,7 @@ fn live_wrapper_passes_disjoint_graft() {
     ];
     cistella::mount_alias::refuse_dentry_aliased_grafts(
         &triples,
+        &effective_for(&triples),
         tree.path(),
         &tree.path().join("proj"),
     )
@@ -469,7 +477,8 @@ fn baseline_tmp_alias_allows_fresh_slice() {
     let triples = [triple(&format!("{host}/slice"), "/tmp", MountMode::Rw)];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("slice")];
-    baseline_tmp_alias_preflight(&triples, &routes, &sources).expect("fresh slice passes");
+    baseline_tmp_alias_preflight(&triples, &effective_for(&triples), &routes, &sources)
+        .expect("fresh slice passes");
 }
 
 #[test]
@@ -488,7 +497,8 @@ fn baseline_tmp_alias_retains_ro_duplicate() {
     ];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("shared")];
-    baseline_tmp_alias_preflight(&triples, &routes, &sources).expect("retained duplicate passes");
+    baseline_tmp_alias_preflight(&triples, &effective_for(&triples), &routes, &sources)
+        .expect("retained duplicate passes");
 }
 
 #[test]
@@ -506,8 +516,8 @@ fn baseline_tmp_alias_refuses_ancestor_covered() {
     ];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("anc/sub")];
-    let error =
-        baseline_tmp_alias_preflight(&triples, &routes, &sources).expect_err("ancestor refuses");
+    let error = baseline_tmp_alias_preflight(&triples, &effective_for(&triples), &routes, &sources)
+        .expect_err("ancestor refuses");
     assert!(
         error.to_string().contains("/src"),
         "names ancestor, got: {error}"
@@ -528,12 +538,19 @@ fn baseline_tmp_alias_allows_consistent_shapes() {
     ];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("shared")];
-    baseline_tmp_alias_preflight(&rw_pair, &routes, &sources).expect("RW pair passes");
+    baseline_tmp_alias_preflight(&rw_pair, &effective_for(&rw_pair), &routes, &sources)
+        .expect("RW pair passes");
     let retained_ro = [
         triple(&format!("{host}/shared"), "/tmp", MountMode::Rw),
         triple(&format!("{host}/shared"), "/mirror", MountMode::Ro),
     ];
-    baseline_tmp_alias_preflight(&retained_ro, &routes, &sources).expect("retained RO passes");
+    baseline_tmp_alias_preflight(
+        &retained_ro,
+        &effective_for(&retained_ro),
+        &routes,
+        &sources,
+    )
+    .expect("retained RO passes");
 }
 
 /// Fixture mount table with a bind alias: `/tree/sib` exposed at
@@ -563,9 +580,15 @@ fn baseline_tmp_alias_refuses_bind_contained_ancestor() {
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![std::path::PathBuf::from("/B")];
     let table = bind_alias_table();
-    let error =
-        baseline_tmp_alias_preflight_with(&triples, &routes, &sources, Some(&table), is_dir)
-            .expect_err("bind-contained ancestor refuses");
+    let error = baseline_tmp_alias_preflight_with(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+        Some(&table),
+        is_dir,
+    )
+    .expect_err("bind-contained ancestor refuses");
     assert!(
         error.to_string().contains("/src"),
         "names ancestor, got: {error}"
@@ -592,9 +615,15 @@ fn baseline_tmp_alias_refuses_reverse_bind_descendant() {
          32 23 8:1 /tree/sub /B rw,relatime - ext4 /dev/sda1 rw\n",
     )
     .expect("fixture table parses");
-    let error =
-        baseline_tmp_alias_preflight_with(&triples, &routes, &sources, Some(&table), is_dir)
-            .expect_err("reverse bind descendant refuses");
+    let error = baseline_tmp_alias_preflight_with(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+        Some(&table),
+        is_dir,
+    )
+    .expect_err("reverse bind descendant refuses");
     assert!(
         error.to_string().contains("/mirror"),
         "names alias, got: {error}"
@@ -613,8 +642,15 @@ fn baseline_tmp_alias_disjoint_device_passes() {
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![std::path::PathBuf::from("/B")];
     let table = bind_alias_table();
-    baseline_tmp_alias_preflight_with(&triples, &routes, &sources, Some(&table), is_dir)
-        .expect("disjoint passes");
+    baseline_tmp_alias_preflight_with(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+        Some(&table),
+        is_dir,
+    )
+    .expect("disjoint passes");
 }
 
 #[test]
@@ -625,6 +661,13 @@ fn baseline_tmp_alias_missing_table_refuses() {
     let triples = [triple("/B", "/tmp", MountMode::Ro)];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![std::path::PathBuf::from("/B")];
-    baseline_tmp_alias_preflight_with(&triples, &routes, &sources, None, is_dir)
-        .expect_err("missing table refuses");
+    baseline_tmp_alias_preflight_with(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+        None,
+        is_dir,
+    )
+    .expect_err("missing table refuses");
 }

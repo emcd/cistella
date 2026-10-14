@@ -268,13 +268,17 @@ fn stage_digest_mismatch_leaves_no_dir() {
     use cistella::framework::registry::stage_hook_artifact;
     let exe = tempfile::tempdir().expect("exe dir");
     std::fs::write(exe.path().join(WRAPPER_FILE_NAME), b"actual").expect("wrapper bytes");
+    // Scoped to this test's own session infix: a global
+    // listing races sibling staging tests sharing /tmp under
+    // nextest parallelism (fixed sess-N names collide).
+    let ours = |path: &std::path::PathBuf| {
+        path.file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("cistella-stage-sess-2-"))
+    };
     let before: Vec<_> = std::fs::read_dir(std::env::temp_dir())
         .expect("temp list")
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("cistella-stage-"))
-        })
+        .filter(|path| ours(path))
         .collect();
     let error =
         stage_hook_artifact(exe.path(), "sess-2", 0, &test_artifact(&"0".repeat(64))).unwrap_err();
@@ -285,10 +289,7 @@ fn stage_digest_mismatch_leaves_no_dir() {
     let after: Vec<_> = std::fs::read_dir(std::env::temp_dir())
         .expect("temp list")
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("cistella-stage-"))
-        })
+        .filter(|path| ours(path))
         .collect();
     assert_eq!(before, after, "refused staging plants no directory");
 }

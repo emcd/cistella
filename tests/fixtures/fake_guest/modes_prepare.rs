@@ -506,6 +506,33 @@ pub(crate) fn run(
             );
             ExitCode::SUCCESS
         }
+        "prepare-claim-broad" => {
+            // Broad `.*` claim over the peer's OWN acknowledged
+            // name: owner-grouped evaluation must constrain only
+            // the owner's contributions, leaving a sibling's
+            // unacknowledged names alone.
+            send_prepare_with_payload_and_caps(
+                stdin_lock,
+                stdout_lock,
+                json!({
+                    "environment": [
+                        {"name": "MY_NAME", "value": "mine"}
+                    ],
+                    "mounts": [],
+                    "permissions": [],
+                    "policy_claims": [
+                        {
+                            "pattern": ".*",
+                            "severity": "suppressible",
+                            "scope": "on-extensions"
+                        }
+                    ],
+                    "guest_hooks": []
+                }),
+                &["test-cap", "environment", "policy-claims"],
+            );
+            ExitCode::SUCCESS
+        }
         "prepare-claim-foreign" => {
             // Claims a pattern matching only ANOTHER guest's name
             // while contributing no names itself: guest-local

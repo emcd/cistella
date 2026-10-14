@@ -9,6 +9,8 @@
 mod cleanup;
 #[path = "unit/cli_args.rs"]
 mod cli_args;
+#[path = "unit/compile_binding.rs"]
+mod compile_binding;
 #[path = "unit/conduct_eval.rs"]
 mod conduct_eval;
 #[path = "unit/credentials.rs"]
@@ -21,6 +23,8 @@ mod environment_acceptances;
 mod fdpass;
 #[path = "unit/framework_contract.rs"]
 mod framework_contract;
+#[path = "unit/guest_composition.rs"]
+mod guest_composition;
 #[path = "unit/guest_hosting.rs"]
 mod guest_hosting;
 #[path = "unit/guest_registry.rs"]

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CistellaError, Result};
 use crate::framework::credentials::AdmittedCredential;
-use crate::framework::landlock_compiler::FULL_BASELINE_ROUTES;
+
 use crate::framework::policy::PolicySet;
 pub use crate::mount::{MountMode, MountTriple, Placement};
 use crate::mount::{canonicalize_container_target, validate_mounts};
@@ -206,9 +206,10 @@ pub enum Scope {
 /// lattice evaluation against site/user/defaults is the prepare
 /// transaction's work, not the merge's. Claims are scoped
 /// to their own transaction and contributions: overreach refuses the
-/// whole transaction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// whole transaction. Provenance is host-assigned at hosting (the
+/// wire carries no owner); evaluation constrains only the owner's
+/// own contributed names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PolicyClaim {
     /// Name or pattern the claim constrains (regex compiled at
     /// evaluation; non-empty required at merge).
@@ -217,6 +218,8 @@ pub struct PolicyClaim {
     pub severity: Severity,
     /// Claimed scope.
     pub scope: Scope,
+    /// Contributing guest (host-assigned, never wire-trusted).
+    pub provenance: Provenance,
 }
 
 /// Hook artifact reference: digest-pinned executable blob.
@@ -379,6 +382,10 @@ pub struct MergeContext {
     /// Explicit profile `[[permissions]]` as contributions
     /// (profile provenance); joined with guest contributions.
     pub profile_permissions: Vec<PermissionContribution>,
+    /// Known image-private baselines for match scope
+    /// (owner-provided: production fills the owning compiler's
+    /// set explicitly; empty means no baselines known).
+    pub baselines: Vec<String>,
 }
 
 impl MergeContext {
@@ -393,6 +400,7 @@ impl MergeContext {
             reserved_env,
             occupied_mounts,
             profile_permissions: Vec::new(),
+            baselines: Vec::new(),
         }
     }
 
@@ -400,6 +408,13 @@ impl MergeContext {
     #[must_use]
     pub fn with_profile_permissions(mut self, permissions: Vec<PermissionContribution>) -> Self {
         self.profile_permissions = permissions;
+        self
+    }
+
+    /// Attaches owner-provided known baselines.
+    #[must_use]
+    pub fn with_baselines(mut self, baselines: Vec<String>) -> Self {
+        self.baselines = baselines;
         self
     }
 
@@ -414,6 +429,7 @@ impl MergeContext {
             reserved_env: HashSet::new(),
             occupied_mounts: Vec::new(),
             profile_permissions: Vec::new(),
+            baselines: Vec::new(),
         }
     }
 }
@@ -451,39 +467,22 @@ pub fn merge_prepare(
         .iter()
         .map(|placement| canonicalize_container_target(&placement.container_target))
         .collect();
-    let baselines: Vec<String> = FULL_BASELINE_ROUTES
-        .iter()
-        .map(|route| route.to_string())
-        .collect();
     let mut assembled_permissions = context.profile_permissions.clone();
     assembled_permissions.extend(plan.permissions.iter().cloned());
     let effective = EffectivePermissions::assemble(
         &context.occupied_mounts,
         &placements,
         &assembled_permissions,
-        &baselines,
+        &context.baselines,
     )?;
     // Validation view: occupied driver triples plus contributed
-    // placements rendered with their joined rights (Read→Ro,
-    // else Rw). The identical-source RO+RO admission keys off
-    // declared rights exactly as before; coverage was proven in
-    // `assemble`, so every lookup hits.
+    // placements through the SAME intent-aware rendering the
+    // isolator path uses (read-only on RO intent or Read
+    // rights). A rights-only synthesis here would reject safe
+    // topologies (e.g. a contributed Read beside a joined Write
+    // on one source) that the actual rendering admits as RO+RO.
     let mut triples: Vec<MountTriple> = context.occupied_mounts.clone();
-    for placement in &placements {
-        let target = canonicalize_container_target(&placement.container_target);
-        let grant = effective
-            .get(&target)
-            .expect("assemble proves placement coverage");
-        triples.push(MountTriple {
-            host_source: placement.host_source.clone(),
-            container_target: placement.container_target.clone(),
-            mode: if grant.rights == Rights::Read {
-                MountMode::Ro
-            } else {
-                MountMode::Rw
-            },
-        });
-    }
+    triples.extend(render_placements(&placements, &effective));
     validate_mounts(&triples, &context.container_home).map_err(contract_error)?;
     let policy_claims = check_claims(&plan.policy_claims)?;
     let guest_hooks = order_hooks(&plan.guest_hooks)?;
@@ -814,7 +813,7 @@ pub(crate) fn merge_transacted(
 
 /// Merges with per-name provenance: each contributed name
 /// evaluates under the provenance of the plan that contributed
-/// it (pair composition keeps per-source authorization instead
+/// it (N composition keeps per-source authorization instead
 /// of collapsing to the first guest). Names missing from the
 /// map fall back to `fallback` (unreachable when the map covers
 /// every raw plan — merge invents no names).
@@ -843,45 +842,66 @@ pub(crate) fn merge_transacted_as(
             "guest returned unadvertised contribution type: credentials".to_string(),
         ));
     }
+    // Raw inputs captured before the move: the full map
+    // rebuild below needs the COMPLETE permission set, not the
+    // contributed subset the merged plan carries.
+    let mut raw_permissions = context.profile_permissions.clone();
+    raw_permissions.extend(plan.permissions.iter().cloned());
+    let raw_placements: Vec<Placement> = plan
+        .mounts
+        .iter()
+        .map(|contribution| contribution.placement.clone())
+        .collect();
     let merged = merge_prepare(plan, &advertised, context)?;
-    let contributed: Vec<String> = merged
-        .environment
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect();
-    let (claims, diagnostics) = policy.partition_claims(&merged.policy_claims, &contributed)?;
-    for (name, _) in &merged.environment {
-        policy.evaluate(name, &provenance_of(name), acceptances, &claims)?;
-    }
-    // Full effective map (driver feed plus joined contributions):
-    // merge_prepare already proved the identical checks on the
-    // same inputs, so this deterministic rebuild cannot refuse
-    // anything the merge admitted. Unreachable refusal would be
-    // an internal inconsistency, never operator input.
-    let baselines: Vec<String> = FULL_BASELINE_ROUTES
-        .iter()
-        .map(|route| route.to_string())
-        .collect();
-    // Rebuild from the merged outcome: contributed placements plus
-    // claimant entries re-enter as raw permissions (join is
-    // commutative, associative, and idempotent, so claimant order
-    // cannot change the result; the first pass already excluded
-    // exact duplicates).
-    let mut raw_permissions = Vec::new();
-    for grant in &merged.permissions {
-        for (provenance, rights) in &grant.claimants {
-            raw_permissions.push(PermissionContribution {
-                target: grant.target.clone(),
-                rights: *rights,
-                provenance: provenance.clone(),
-            });
+    // Owner-grouped partition and evaluation: each guest's claims
+    // constrain only names carrying its own provenance. A claim
+    // matching another guest's names (but none of its owner's)
+    // already refused at the per-plan gate; the global pass must
+    // never flatten identity away — otherwise guest A's broad
+    // pattern would police guest B's unacknowledged names.
+    let mut owner_groups: Vec<(Provenance, Vec<PolicyClaim>, Vec<String>)> = Vec::new();
+    for claim in &merged.policy_claims {
+        match owner_groups
+            .iter_mut()
+            .find(|(owner, _, _)| *owner == claim.provenance)
+        {
+            Some((_, claims, _)) => claims.push(claim.clone()),
+            None => owner_groups.push((claim.provenance.clone(), vec![claim.clone()], Vec::new())),
         }
     }
+    for (name, _) in &merged.environment {
+        let owner = provenance_of(name);
+        match owner_groups
+            .iter_mut()
+            .find(|(group, _, _)| *group == owner)
+        {
+            Some((_, _, names)) => names.push(name.clone()),
+            None => owner_groups.push((owner, Vec::new(), vec![name.clone()])),
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (owner, claims, names) in &owner_groups {
+        let (upheld, mut diags) = policy.partition_claims(claims, names)?;
+        diagnostics.append(&mut diags);
+        for name in names {
+            policy.evaluate(name, owner, acceptances, &upheld)?;
+        }
+    }
+    // Full effective map, rebuilt from the RAW inputs — not
+    // from the contributed subset. Rebuilding from merged
+    // claimant entries would drop profile/guest permissions that
+    // target existing driver bindings or image baselines (their
+    // targets never enter the contributed view), silently
+    // falling back to driver rights. merge_prepare proved the
+    // identical checks on these same inputs, so this
+    // deterministic rebuild cannot refuse anything admitted.
+    // Unreachable refusal would be an internal inconsistency,
+    // never operator input.
     let effective = EffectivePermissions::assemble(
         &context.occupied_mounts,
-        &merged.placements,
+        &raw_placements,
         &raw_permissions,
-        &baselines,
+        &context.baselines,
     )
     .expect("merge_prepare proves identical assembly checks");
     Ok(EvaluatedPlan {

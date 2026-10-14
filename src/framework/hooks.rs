@@ -344,6 +344,7 @@ pub fn require_declared_hooks(
 /// `CistellaError::Mount` on an aliasing graft.
 pub fn hook_graft_alias_preflight(
     triples: &[crate::mount::MountTriple],
+    effective: &crate::framework::contract::EffectivePermissions,
     directory: &str,
 ) -> crate::error::Result<()> {
     use crate::framework::prepare::confinement_roots;
@@ -351,7 +352,7 @@ pub fn hook_graft_alias_preflight(
     let home = std::env::var("HOME")
         .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
     let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
-    graft_alias_preflight(triples, &ancestor_host, &subtree_host)
+    graft_alias_preflight(triples, effective, &ancestor_host, &subtree_host)
 }
 
 /// Creates the diagnostics pipe post-host (a pre-host pipe would
@@ -470,17 +471,24 @@ pub fn prepare_conduct_topology(
             ));
         }
         let hook = &hooks[0];
-        hook_graft_alias_preflight(&triples, directory)?;
+        hook_graft_alias_preflight(&triples, &effective, directory)?;
         let home = std::env::var("HOME")
             .map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
         let (ancestor_host, subtree_host) =
             confinement_roots(std::path::Path::new(&home), directory)?;
-        let snapshot =
-            freeze_snapshot(&placements, &effective, &ancestor_host, &subtree_host, hook)?;
-        let compiled = compile_topology(&snapshot, &triples, &effective, hook)?;
+        let snapshot = freeze_snapshot(
+            &placements,
+            &triples,
+            &effective,
+            &ancestor_host,
+            &subtree_host,
+            hook,
+        )?;
+        let compiled = compile_topology(&snapshot, hook)?;
         verify_compiled_binding(&snapshot, &compiled, hook)?;
         crate::mount_alias::baseline_tmp_alias_preflight(
             &triples,
+            &effective,
             &compiled.routes,
             &compiled.sources,
         )?;
@@ -508,10 +516,18 @@ pub fn run_finalize_observations(_merged: &crate::framework::contract::MergedPla
 }
 
 /// Verifies a compiled rendering against its snapshot and
-/// enforcement consumer: fingerprint and hook digest must both
-/// match. A CompilerA rendering paired with a SupervisorB
-/// policy — or any stale snapshot — refuses here, before
-/// create.
+/// enforcement consumer before create: the snapshot's stored
+/// fingerprint is recomputed from its current contents first
+/// (mutated snapshot fields cannot reuse a stale string), then
+/// the echoed fingerprint must match (covers every input, so
+/// changed sources, added, missing, or duplicate bindings
+/// refuse), the output digest must equal BOTH the snapshot's
+/// claimant and the current hook (no CompilerA rendering paired
+/// with a SupervisorB policy), and the revised source-target
+/// identity multiset must equal the snapshot's assembled
+/// triples (a changed source at a preserved target refuses
+/// even with matching strings; modes may change through
+/// authorized revision).
 ///
 /// # Errors
 ///
@@ -521,10 +537,56 @@ pub fn verify_compiled_binding(
     compiled: &crate::framework::landlock_compiler::CompiledTopology,
     hook: &crate::framework::contract::GuestHookRequest,
 ) -> crate::error::Result<()> {
-    if compiled.fingerprint != snapshot.fingerprint || compiled.hook_digest != hook.artifact.sha256
+    use crate::framework::landlock_compiler::recompute_fingerprint;
+    use crate::mount::{canonicalize_container_target, canonicalize_host_source};
+    // Recompute, never trust: a mutated snapshot field cannot
+    // reuse its stored fingerprint.
+    if recompute_fingerprint(snapshot) != snapshot.fingerprint {
+        return Err(CistellaError::Contract(
+            "compile snapshot fails self-consistency".to_string(),
+        ));
+    }
+    if compiled.fingerprint != snapshot.fingerprint
+        || compiled.hook_digest != snapshot.hook_digest
+        || compiled.hook_digest != hook.artifact.sha256
+        || compiled.compiler_owner != snapshot.compiler_owner
     {
         return Err(CistellaError::Contract(
             "compile output escapes its snapshot binding".to_string(),
+        ));
+    }
+    // Source AND target identity per binding (modes may change
+    // through authorized revision): a changed source at a
+    // preserved target refuses even with matching strings.
+    let mut wanted: Vec<(String, String)> = snapshot
+        .triples
+        .iter()
+        .map(|triple| {
+            (
+                canonicalize_container_target(&triple.container_target),
+                canonicalize_host_source(&triple.host_source)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        })
+        .collect();
+    let mut got: Vec<(String, String)> = compiled
+        .revised
+        .iter()
+        .map(|triple| {
+            (
+                canonicalize_container_target(&triple.container_target),
+                canonicalize_host_source(&triple.host_source)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        })
+        .collect();
+    wanted.sort();
+    got.sort();
+    if wanted != got {
+        return Err(CistellaError::Contract(
+            "compile output coverage escapes its snapshot binding".to_string(),
         ));
     }
     Ok(())

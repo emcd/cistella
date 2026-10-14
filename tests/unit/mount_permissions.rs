@@ -5,6 +5,11 @@
 
 use cistella::mount::{MountMode, MountTriple};
 
+fn effective_for(triples: &[MountTriple]) -> cistella::framework::contract::EffectivePermissions {
+    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
+        .expect("driver-only assembly")
+}
+
 #[test]
 fn revise_retains_ro_under_full_routes() {
     use cistella::framework::landlock_compiler::revise_ro_for_confinement;
@@ -54,11 +59,12 @@ fn ro_confinement_preflight_refuses_rw_descendant() {
     let full = vec!["/src/proj".to_string()];
     // Contradictory topology (RW graft under retained-RO dir)
     // refuses with both targets named; clean topologies pass.
-    let error = ro_confinement_preflight(&[ro.clone(), rw], &full, &[]).unwrap_err();
+    let error = ro_confinement_preflight(&[ro.clone(), rw.clone()], &full, &[]).unwrap_err();
     let text = error.to_string();
     assert!(text.contains("/src/proj/ro-data"), "got: {text}");
     assert!(text.contains("/src/proj/ro-data/work"), "got: {text}");
-    ro_confinement_preflight(&[ro], &full, &[]).expect("retained RO without RW descendant passes");
+    ro_confinement_preflight(std::slice::from_ref(&ro), &full, &[])
+        .expect("retained RO without RW descendant passes");
 }
 
 #[test]
@@ -116,7 +122,7 @@ fn ro_confinement_preflight_collides_alias_spellings() {
     };
     let full = vec!["/src/proj".to_string()];
     ro_confinement_preflight(std::slice::from_ref(&ro), &full, &[]).expect("clean passes");
-    let error = ro_confinement_preflight(&[ro, rw], &full, &[]).unwrap_err();
+    let error = ro_confinement_preflight(&[ro.clone(), rw.clone()], &full, &[]).unwrap_err();
     assert!(
         error.to_string().contains("read-write descendant"),
         "got: {error}"
@@ -150,7 +156,8 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
     // Same-tree RW graft outside the subtree: the graft FULL
     // would dentry-alias RO-covered content — refuse naming
     // the graft target.
-    let error = graft_alias_preflight(&aliasing, ancestor, subtree).unwrap_err();
+    let error =
+        graft_alias_preflight(&aliasing, &effective_for(&aliasing), ancestor, subtree).unwrap_err();
     assert!(error.to_string().contains("/src/graft"), "got: {error}");
     // Disjoint graft (outside the tree): disjoint dentries, no
     // alias — passes.
@@ -162,7 +169,8 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
             mode: MountMode::Rw,
         },
     ];
-    graft_alias_preflight(&disjoint, ancestor, subtree).expect("disjoint graft passes");
+    graft_alias_preflight(&disjoint, &effective_for(&disjoint), ancestor, subtree)
+        .expect("disjoint graft passes");
     // Subtree content RW (already FULL): no new writability —
     // passes. Ancestor RW itself (own FULL route): passes. RO
     // same-tree graft (union-safe): passes. Not-yet-existing
@@ -189,7 +197,8 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
             mode: MountMode::Rw,
         },
     ];
-    graft_alias_preflight(&benign, ancestor, subtree).expect("benign shapes pass");
+    graft_alias_preflight(&benign, &effective_for(&benign), ancestor, subtree)
+        .expect("benign shapes pass");
 }
 
 #[test]
@@ -296,8 +305,12 @@ fn ro_confinement_preflight_catches_source_retained_contradiction() {
     // beneath its target: same contradiction as target
     // retention — refuse.
     let sources = vec![subtree];
-    let error =
-        ro_confinement_preflight(&[ro, rw], &["/src/proj".to_string()], &sources).unwrap_err();
+    let error = ro_confinement_preflight(
+        &[ro.clone(), rw.clone()],
+        &["/src/proj".to_string()],
+        &sources,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("/extra/private"), "got: {error}");
 }
 
@@ -428,5 +441,61 @@ fn same_target_driver_ro_plus_extension_write_stays_vfs_ro() {
         revised[0].mode,
         MountMode::Ro,
         "retention keeps the RO binding under FULL"
+    );
+}
+
+#[test]
+fn permission_only_full_on_ro_sibling_refuses_graft() {
+    // The same-source-different-rights hole: driver binds
+    // A/sib read-only at /view while an explicit profile
+    // permission grants Full there. The spelling leg must
+    // classify ACTUAL granted rights (not declared mode): the
+    // effective-Full graft under the revised-RW ancestor
+    // refuses, since Landlock's dentry-based FULL rule would
+    // otherwise admit writes through the ancestor alias.
+    use cistella::framework::contract::{
+        EffectivePermissions, PermissionContribution, Provenance, Rights,
+    };
+    use cistella::mount::{MountMode, MountTriple, graft_alias_preflight};
+    let tree = tempfile::tempdir().expect("tree");
+    std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(tree.path().join("sib")).expect("sib");
+    let host = tree.path().to_string_lossy().to_string();
+    let ancestor = std::path::Path::new(&host);
+    let subtree = &tree.path().join("proj");
+    let triples = vec![
+        MountTriple {
+            host_source: host.clone(),
+            container_target: "/src".to_string(),
+            mode: MountMode::Ro,
+        },
+        MountTriple {
+            host_source: format!("{host}/proj"),
+            container_target: "/work".to_string(),
+            mode: MountMode::Rw,
+        },
+        MountTriple {
+            host_source: format!("{host}/sib"),
+            container_target: "/view".to_string(),
+            mode: MountMode::Ro,
+        },
+    ];
+    let permissions = vec![PermissionContribution {
+        target: "/view".to_string(),
+        rights: Rights::Full,
+        provenance: Provenance::Profile,
+    }];
+    let effective =
+        EffectivePermissions::assemble(&triples, &[], &permissions, &[]).expect("assembles");
+    let grant = effective.get("/view").expect("grant exists");
+    assert_eq!(
+        grant.rights,
+        Rights::Full,
+        "permission-only grant joins Full"
+    );
+    let error = graft_alias_preflight(&triples, &effective, ancestor, subtree).unwrap_err();
+    assert!(
+        error.to_string().contains("/view"),
+        "effective-Full RO-declared graft refuses, got: {error}"
     );
 }
