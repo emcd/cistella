@@ -16,7 +16,6 @@ under XDG, never the baked files.
 
 ```toml
 image = 'localhost/cistella/opencode:example'  # required: tag or digest
-credential-surface = 'none'                    # required; see below
 container-home = '{{environment:HOME}}'        # default /home/cistella
 command = ['opencode']                         # harness argv (array, never a shell string)
 environment-acceptances = [                    # exact invoker-env names forwarded verbatim
@@ -38,7 +37,7 @@ CARGO_HOME = '{{core:container-home}}/.cargo'
 name = 'podman'                                  # shipped podman, or a registry [[isolators]] name
 
 [[extensions]]                                 # declared guests (default none = pure Podman behavior)
-name = 'landlock'                              # shipped landlock, or a registry [[extensions]] name
+name = 'landlock'                              # shipped landlock/tmpdir/ssh, or a registry [[extensions]] name
 ```
 
 - `container-home` is canonicalized; sensitive roots (`/`, `/etc` and
@@ -51,8 +50,9 @@ name = 'landlock'                              # shipped landlock, or a registry
 - `environment-acceptances` names exact invoker-environment variables
   to forward verbatim into container env. Every entry is required:
   absent names fail conduct before any session/runtime mutation with a
-  name-only diagnostic. Collisions (assignment keys, `HOME`,
-  credential-surface-injected names) are conduct-time errors. No
+  name-only diagnostic. Collisions (assignment keys, `HOME`, and
+  `SSH_AUTH_SOCK` under declared `ssh` — the owned name) are
+  conduct-time errors. No
   template scanning applies to accepted values, acceptance grants no
   render permission (`{{environment:<name>}}` spans do not resolve),
   and no blacklist or credential-deny applies — an exactly-named
@@ -60,13 +60,21 @@ name = 'landlock'                              # shipped landlock, or a registry
   names (diagnostics display names only; values rest in unit
   `Environment=` lines, visible to principals able to read or inspect
   them — see the trust model).
-- `credential-surface`: `"none"` mounts nothing;
-   `{ ssh_agent = "/path" }` mounts a signing socket read-only so review
-   commits can be signed without private key material entering the
-   container. No authentication credential for code-hosting pushes
-   belongs inside the container by default — explicit
-   `environment-acceptances` are the operator override; host git
-   operations use the operator's ambient authority outside the seat.
+- Agent forwarding is a declared extension, not a profile slot: declare
+  `[[extensions]]` with `name = 'ssh'` and conduct forwards the seat's
+  invoker `SSH_AUTH_SOCK` (read-only bind plus the pointer env,
+  contributed by the shipped `cistella-extension-ssh` guest through
+  the central merge). Ambient alone never injects; declared `ssh`
+  with unset or non-socket ambient refuses pre-create. The `RO`
+  bind is mount hygiene, not a protocol constraint — review commits
+  can be signed without private key material entering the container,
+  while no authentication credential for code-hosting pushes belongs
+  inside by default. Explicit `environment-acceptances` naming
+  `SSH_AUTH_SOCK` without declared `ssh` still forward ambient
+  verbatim (operator override); host git operations use the
+  operator's ambient authority outside the seat. (Removed in 0.3:
+  the `credential-surface` slot — profiles naming it refuse at
+  parse; migration is to declared `ssh`.)
 - CLI additions (conduct only): `--mount <host>:<target>:<mode>`
   (repeatable; exact profile-target matches override, partial overlaps
   fail), `--project-name`, repeatable `--supplement k=v`
@@ -161,12 +169,15 @@ source-url = 'https://example.invalid/my-extension'  # fetch source (http/https;
 - Typo protection: unregistered names still refuse (registration
   is opt-in per guest, never a widening of the default). Names
   shadowing a shipped guest (`podman` in `[[isolators]]`,
-  `landlock` in `[[extensions]]`) refuse at parse; same-table
+  `landlock` or `ssh` in `[[extensions]]`) refuse at parse;
+  registry entry names must not contain `:` (owner identities are
+  namespaced `shipped:`/`registered:`); same-table
   duplicates refuse; a name registered in the other table refuses
   as a wrong-slot entry (the table determines the kind, then the
   hello role string compares pre-planning). At most one extension
   per profile in v1.
-- Shipped guests are implicit entries: `podman` and `landlock`
+- Shipped guests are implicit entries: `podman`, `landlock`,
+  `tmpdir`, and `ssh`
   resolve sibling-relative as today with no registry involvement.
   Builders' reference: `tests/fixtures/example_guest/` (minimal
   correct hello plus prepare ack) beside the shipped binaries.

@@ -463,14 +463,32 @@ impl Profile {
     /// argv. Positionally parallel to the resolutions vector (the
     /// runner indexes per guest). Ambient alone never injects —
     /// undeclared `ssh` builds nothing. Declared-but-unprovidable
-    /// (unset, empty, relative, unresolvable, non-socket) refuses
-    /// typed, never an agentless session on a declared agent. The
+    /// (unset, empty, relative, unresolvable, non-socket,
+    /// non-UTF8-canonical) refuses typed, never an agentless
+    /// session on a declared agent. A profile assignment naming
+    /// `SSH_AUTH_SOCK` under declared `ssh` refuses typed here —
+    /// the owned name has exactly one claimant (the instance),
+    /// so a second profile-side claimant fails before the merge
+    /// exemption could let last-append win. The
     /// guest re-checks kind on its side (untrusted argv).
     /// Diagnostics name the condition, never the path.
     pub fn ssh_selection_argv(
         &self,
         resolutions: &[ExtensionResolution],
     ) -> Result<Vec<Vec<String>>> {
+        let ssh_declared = resolutions
+            .iter()
+            .any(|entry| matches!(entry, ExtensionResolution::Ssh));
+        // Assignment conflict fails before any exemption: under
+        // declared `ssh` the instance owns the name, so a profile
+        // assignment of the same name refuses here (same value or
+        // not — two claimants, no silent winner).
+        if ssh_declared && self.environment_assignments.contains_key("SSH_AUTH_SOCK") {
+            return Err(CistellaError::Profile(
+                "environment-assignments must not name SSH_AUTH_SOCK; owned by declared ssh"
+                    .to_string(),
+            ));
+        }
         let mut extra_args: Vec<Vec<String>> = vec![Vec::new(); resolutions.len()];
         for (index, entry) in resolutions.iter().enumerate() {
             if !matches!(entry, ExtensionResolution::Ssh) {
@@ -491,7 +509,16 @@ impl Profile {
                     "declared ssh requires a resolvable invoker SSH_AUTH_SOCK".to_string(),
                 )
             })?;
-            let is_socket = std::fs::metadata(&canonical)
+            // Exact UTF-8 conversion, never lossy display: a
+            // non-UTF8 canonical path must refuse here rather
+            // than retarget through U+FFFD substitution (the
+            // wire is UTF-8; identity conversion is exact).
+            let canonical = canonical.to_str().ok_or_else(|| {
+                CistellaError::Profile(
+                    "declared ssh requires a UTF-8 invoker SSH_AUTH_SOCK".to_string(),
+                )
+            })?;
+            let is_socket = std::fs::metadata(canonical)
                 .map(|metadata| {
                     use std::os::unix::fs::FileTypeExt;
                     metadata.file_type().is_socket()
@@ -504,7 +531,7 @@ impl Profile {
             }
             extra_args[index] = vec![
                 format!("--socket={ambient}"),
-                format!("--socket-canonical={}", canonical.display()),
+                format!("--socket-canonical={canonical}"),
             ];
         }
         Ok(extra_args)

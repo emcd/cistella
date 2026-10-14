@@ -19,18 +19,25 @@ name = 'podman'          # default; only podman today
 name = 'landlock'        # default none = pure Podman behavior
 ```
 
-Profiles without these keys run unchanged (0.1.x behavior). Declaring
+Profiles without these keys run unchanged (0.1.x behavior, except
+profiles using the removed `credential-surface` slot, which refuse
+at parse — migration is to declared `ssh`). Declaring
 the `landlock` extension engages the hooked conduct path: a staged
 wrapper applies a Landlock ruleset inside the container before the
 harness execs, derived from the profile's declared mount modes — so
 broadly-mounted trees like `~/src` stay read-only where declared,
 with typed refusals (not silent passes) on any confinement shortfall.
+Declaring `tmpdir` mints a per-session writable `/tmp`; declaring
+`ssh` forwards the seat's agent socket (read-only bind plus
+`SSH_AUTH_SOCK`) from invoker ambient. Explicit `[[permissions]]`
+entries join the same lattice as mount modes; the landlock-owned
+compile hook turns the merged map into the enforced ruleset.
 Unknown isolator/extension names refuse at conduct (closed admission).
 
 ## Documentation
 
 - Profile setup: [documentation/usage/profiles.md](documentation/usage/profiles.md) —
-  format, resolution tiers, template namespaces, credential surface
+  format, resolution tiers, template namespaces, declared extensions
 - Trust model and limitations:
   [documentation/usage/trust-model.md](documentation/usage/trust-model.md) —
   ambient authority, known caveats, planned future work

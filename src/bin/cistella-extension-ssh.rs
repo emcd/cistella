@@ -116,7 +116,11 @@ fn main() -> ExitCode {
         "payload": {
             "version": PROTOCOL_MAJOR,
             "capabilities": [role, "environment", "mounts", "permissions", "credentials"],
-            "max_frame": 1024u32
+            // Honest bound: the host enforces the advertised
+            // maximum (clamped to its ceiling), so it must cover
+            // the largest serializable tuple — the write path
+            // below refuses past this same bound.
+            "max_frame": 65536u32
         }
     });
     let body = serde_json::to_vec(&hello).expect("hello serializes");

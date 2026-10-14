@@ -21,8 +21,8 @@ any agent, especially a lower-trust harness.
   trust contract is that the seat may touch what the operator may
   touch, not that secrets are sealed out.
 - **Credential absence is about push credentials, not mounted data.**
-  The `credential-surface` discipline (no code-hosting auth inside by
-  default; sign-only agent socket for commits) and the template
+  The declared-`ssh` discipline (no code-hosting auth inside by
+  default; sign-only agent socket forwarded for commits) and the template
   credential deny keep the driver from *adding* exfiltration paths,
   but they do not remove what whole-directory mounts already carry.
   Explicit `environment-acceptances` override this absence by
@@ -38,7 +38,7 @@ any agent, especially a lower-trust harness.
   Variables listed in `environment-acceptances` cross the conduct
   boundary verbatim because the operator named them exactly —
   including secret-shaped names, which is deliberate, supported use
-  and an explicit override to credential absence (credential-surface,
+  and an explicit override to credential absence (declared `ssh`,
   assignments, and templates still inject no push credentials by
   default). Diagnostics display names only; the values themselves are
   stored in the unit file's `Environment=` lines for the session

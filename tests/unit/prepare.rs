@@ -122,3 +122,161 @@ fn ssh_expectation_absent_without_both_argv() {
     assert!(ssh_expectation(&["--socket=/run/seat.sock".to_string()]).is_none());
     assert!(ssh_expectation(&["--socket-canonical=/run/x".to_string()]).is_none());
 }
+
+fn ssh_declared_profile(extra: &str) -> cistella::profile::Profile {
+    // One declared `ssh` extension plus optional extra TOML.
+    cistella::profile::Profile::from_toml(&format!(
+        "image = \"localhost/cistella/opencode:example\"\n\
+         mounts = []\n\
+         [[extensions]]\n\
+         name = \"ssh\"\n\
+         {extra}"
+    ))
+    .expect("profile parses")
+}
+
+fn ssh_resolutions(
+    prof: &cistella::profile::Profile,
+) -> Vec<cistella::profile::ExtensionResolution> {
+    prof.resolve_extensions(&cistella::guest_registry::Registry::default())
+        .expect("ssh resolves shipped")
+}
+
+/// Ambient selection contract, sequential in one test: process
+/// env is global to the runner, so cases swap it one at a time
+/// instead of racing parallel tests.
+#[test]
+fn ssh_selection_ambient_contract() {
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::net::UnixListener;
+
+    struct AmbientGuard {
+        prev: Option<String>,
+    }
+    impl AmbientGuard {
+        fn set(value: &std::ffi::OsStr) -> Self {
+            let prev = std::env::var("SSH_AUTH_SOCK").ok();
+            unsafe { std::env::set_var("SSH_AUTH_SOCK", value) };
+            Self { prev }
+        }
+        fn unset() -> Self {
+            let prev = std::env::var("SSH_AUTH_SOCK").ok();
+            unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
+            Self { prev }
+        }
+    }
+    impl Drop for AmbientGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => unsafe { std::env::set_var("SSH_AUTH_SOCK", value) },
+                None => unsafe { std::env::remove_var("SSH_AUTH_SOCK") },
+            }
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let sock = dir.path().join("agent.sock");
+    UnixListener::bind(&sock).expect("socket binds");
+    let prof = ssh_declared_profile("");
+    let resolutions = ssh_resolutions(&prof);
+
+    // Happy path: argv carries P and canonical C.
+    {
+        let _guard = AmbientGuard::set(sock.as_os_str());
+        let argv = prof
+            .ssh_selection_argv(&resolutions)
+            .expect("ambient feeds");
+        assert_eq!(argv.len(), 1);
+        assert_eq!(
+            argv[0],
+            vec![
+                format!("--socket={}", sock.display()),
+                format!("--socket-canonical={}", sock.display()),
+            ]
+        );
+    }
+    // Unset ambient refuses (declared-but-unprovidable).
+    {
+        let _guard = AmbientGuard::unset();
+        let error = prof
+            .ssh_selection_argv(&resolutions)
+            .expect_err("unset ambient refuses")
+            .to_string();
+        assert!(error.contains("SSH_AUTH_SOCK"), "name-only, got: {error}");
+        assert!(
+            !error.contains("/run"),
+            "no path content leaks, got: {error}"
+        );
+    }
+    // Empty and relative ambient refuse.
+    for value in ["", "relative/agent.sock"] {
+        let _guard = AmbientGuard::set(std::ffi::OsStr::new(value));
+        assert!(
+            prof.ssh_selection_argv(&resolutions).is_err(),
+            "empty/relative refuses: {value}"
+        );
+    }
+    // Missing path refuses.
+    {
+        let _guard =
+            AmbientGuard::set(std::ffi::OsStr::new("/nonexistent-cistella-ssh/agent.sock"));
+        assert!(prof.ssh_selection_argv(&resolutions).is_err());
+    }
+    // Regular file refuses the kind gate.
+    {
+        let regular = dir.path().join("not-a-socket");
+        std::fs::write(&regular, b"nope").expect("regular file writes");
+        let _guard = AmbientGuard::set(regular.as_os_str());
+        assert!(prof.ssh_selection_argv(&resolutions).is_err());
+    }
+    // Non-UTF8 canonical refuses instead of retargeting: P is a
+    // UTF-8 symlink onto a raw-byte socket path, with a decoy
+    // socket bound at the U+FFFD-substituted string.
+    {
+        let raw = dir
+            .path()
+            .join(std::ffi::OsString::from_vec(b"ag\xffnt.sock".to_vec()));
+        UnixListener::bind(&raw).expect("raw-byte socket binds");
+        let link = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&raw, &link).expect("symlink");
+        let _guard = AmbientGuard::set(link.as_os_str());
+        let error = prof
+            .ssh_selection_argv(&resolutions)
+            .expect_err("non-UTF8 canonical refuses, never retargets")
+            .to_string();
+        assert!(error.contains("UTF-8"), "name-only, got: {error}");
+    }
+    // Profile assignments naming the owned name refuse — same
+    // value and different value alike (no silent winner).
+    for assigned in [
+        sock.to_string_lossy().into_owned(),
+        "/other.sock".to_string(),
+    ] {
+        let conflicted = ssh_declared_profile(&format!(
+            "[environment-assignments]\nSSH_AUTH_SOCK = \"{assigned}\"\n"
+        ));
+        let resolutions = ssh_resolutions(&conflicted);
+        let _guard = AmbientGuard::set(sock.as_os_str());
+        let error = conflicted
+            .ssh_selection_argv(&resolutions)
+            .expect_err("assignment conflict refuses")
+            .to_string();
+        assert!(error.contains("SSH_AUTH_SOCK"), "got: {error}");
+    }
+    // Undeclared ssh builds nothing and refuses nothing:
+    // ambient alone never injects.
+    {
+        let plain = cistella::profile::Profile::from_toml(
+            "image = \"localhost/cistella/opencode:example\"\nmounts = []\n",
+        )
+        .expect("plain parses");
+        let resolutions = plain
+            .resolve_extensions(&cistella::guest_registry::Registry::default())
+            .expect("empty resolves");
+        let _guard = AmbientGuard::set(sock.as_os_str());
+        let argv = plain
+            .ssh_selection_argv(&resolutions)
+            .expect("no ssh, no argv");
+        assert!(argv.is_empty());
+    }
+}

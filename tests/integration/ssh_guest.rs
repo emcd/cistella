@@ -114,6 +114,14 @@ fn ssh_hello_advertises_role_and_contribution_types() {
         &serde_json::json!(["ssh", "environment", "mounts", "permissions", "credentials"]),
         "role plus the four returned types, nothing else"
     );
+    let max_frame = transcript.frames[0]
+        .pointer("/payload/max_frame")
+        .expect("hello carries max_frame");
+    assert_eq!(
+        max_frame,
+        &serde_json::json!(65536),
+        "advertised bound covers the largest serializable tuple"
+    );
 }
 
 #[test]
