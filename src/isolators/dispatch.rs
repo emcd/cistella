@@ -39,7 +39,7 @@ fn fail_pending(pending: &mut HashMap<String, Pending>, error: &str) {
 /// live, so no residue check may run beside it — and names the
 /// uncertainty while recording the proof failure for `close()` to
 /// report. Returns None on proven death, Some(uncertainty detail)
-/// otherwise. All four fatal arms route through here: one helper,
+/// otherwise. All fatal arms route through here: one helper,
 /// one fixup site, one pin.
 ///
 /// Public for the deterministic fatal-terminal pin (a shutdown
