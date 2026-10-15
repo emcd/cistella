@@ -382,12 +382,33 @@ pub(crate) fn serve(
                 }
             }
             // Expire bounded ops; uncapped awaits never expire.
+            // Discrimination first: a deadline expiring on an
+            // already-dead peer is shutdown-caused, not ambient
+            // timeout noise — the death trigger may still sit
+            // unprocessed (descheduled sender, starved slice)
+            // while the peer is long gone. Probe vitality
+            // non-blockingly (one syscall, only when something
+            // actually expired); a dead peer runs the fatal path
+            // now, so pending callers name the shutdown outcome
+            // instead of a timeout. A live peer keeps the genuine
+            // timeout — patience is still bounded.
             let now = Instant::now();
             let expired: Vec<String> = pending
                 .iter()
                 .filter(|(_, entry)| entry.deadline.is_some_and(|deadline| now >= deadline))
                 .map(|(id, _)| id.clone())
                 .collect();
+            if !expired.is_empty() && guest.peer_exited() {
+                let _ = fatal_terminal(
+                    &mut pending,
+                    &dead,
+                    &uncertain,
+                    &shutdown_report,
+                    "peer exited before response",
+                    guest.shutdown(),
+                );
+                break;
+            }
             for id in expired {
                 if let Some(entry) = pending.remove(&id) {
                     retired.insert(id.clone());

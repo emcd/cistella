@@ -852,3 +852,38 @@ fn epoch2_refuses_legacy_v1_hello_as_version_error() {
     );
     peer_thread.join().unwrap();
 }
+
+#[test]
+fn peer_exited_reports_true_after_child_exit() {
+    // Discrimination primitive for dispatcher expiry: an
+    // already-exited child must read true (poll briefly —
+    // exec-to-exit is fast but unscheduled).
+    let mut host = GuestHost::spawn(Path::new("/bin/true"), &[], Deadlines::default()).unwrap();
+    let mut exited = false;
+    for _ in 0..100 {
+        if host.peer_exited() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(exited, "exited child must report peer_exited");
+    // Reap-safe: the cached status keeps later shutdown
+    // accounting identical (clean kill, EOF pipes, group gone).
+    host.shutdown().expect("shutdown stays clean after probe");
+}
+
+#[test]
+fn peer_exited_reports_false_for_live_child() {
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sleep"),
+        &["300".to_string()],
+        Deadlines::default(),
+    )
+    .unwrap();
+    assert!(
+        !host.peer_exited(),
+        "live child must not report peer_exited"
+    );
+    host.shutdown().expect("shutdown kills the sleeper");
+}

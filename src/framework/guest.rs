@@ -226,6 +226,21 @@ impl GuestHost<ChildStdout, ChildStdin> {
         self.child.id()
     }
 
+    /// Non-blocking peer vitality probe: true once the direct
+    /// child has exited (reaped or not).
+    ///
+    /// Discrimination primitive for dispatcher expiry: a deadline
+    /// expiring on an already-dead peer is shutdown-caused, not
+    /// ambient timeout noise, so the dispatcher runs the fatal
+    /// path instead of emitting a timeout. Reap-safe: `try_wait`
+    /// caches the status, so a later `shutdown()` observes the
+    /// identical reaped state it would have reaped itself (no
+    /// accounting change, no `Drop` surprise). Errors (no child)
+    /// report not-exited — death is never invented.
+    pub fn peer_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
     /// sha256 hex of the opened executable object.
     ///
     /// Joins the plan baseline binding so gate revalidation detects
