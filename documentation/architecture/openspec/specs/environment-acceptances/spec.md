@@ -49,7 +49,7 @@ Every listed acceptance is required. Conduct SHALL snapshot all accepted values 
 
 ### Requirement: Destination-name collision errors
 
-An accepted name colliding with an `[environment-assignments]` key or with a driver-owned/implicit container name SHALL be a conduct-time error: `HOME` always, plus every name the active credential-surface injects (e.g. `SSH_AUTH_SOCK` when supplied). No silent shadowing occurs in either direction.
+An accepted name colliding with an `[environment-assignments]` key or with a driver-owned/implicit container name SHALL be a conduct-time error: `HOME` always, plus `SSH_AUTH_SOCK` under declared `ssh` (the owned name). No silent shadowing occurs in either direction.
 
 #### Scenario: Acceptance overlapping an assignment fails
 
@@ -61,15 +61,15 @@ An accepted name colliding with an `[environment-assignments]` key or with a dri
 - **WHEN** a profile lists `HOME` in `environment-acceptances`
 - **THEN** conduct fails with a typed collision error (`HOME` is driver-derived from `container-home`)
 
-#### Scenario: Acceptance of an injected credential-surface name fails
+#### Scenario: Acceptance of a declared-ssh owned name fails
 
-- **WHEN** a profile lists a name the active credential-surface injects into the container (e.g. `SSH_AUTH_SOCK`)
+- **WHEN** a profile lists `SSH_AUTH_SOCK` in `environment-acceptances` while declaring the `ssh` extension
 - **THEN** conduct fails with a typed collision error before any session/runtime mutation
 
-#### Scenario: Future credential-surface additions extend the implicit set
+#### Scenario: Acceptance without declared ssh forwards verbatim
 
-- **WHEN** a future credential-surface variant injects a new name into the unit's `Environment=` lines
-- **THEN** that name joins the implicit collision set as part of the credential-surface change, and accepting it fails like `SSH_AUTH_SOCK` today
+- **WHEN** a profile lists `SSH_AUTH_SOCK` in `environment-acceptances` without declaring `ssh`
+- **THEN** conduct forwards ambient verbatim (explicit operator override)
 
 ### Requirement: Verbatim values through the safety gate
 

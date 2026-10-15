@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Shipped `tmpdir` extension (`cistella-extension-tmpdir`): per-session
+  writable `/tmp` backed by an owner-only host slice, minted at
+  prepare and reaped at teardown (orphans reconciled by `gc`).
+- N-extension composition: any number of declared extensions answers
+  prepare in declaration order; raw plans gate against their own
+  negotiated capabilities pre-concat, then concatenate into one
+  atomic central merge (collisions refuse naming all claimants).
+  Three-phase guest hooks (`prepare`, `inject-supervisor`,
+  `finalize`) plus a post-prepare `compile` hook owned by the
+  Landlock backend, with fingerprinted snapshots and digest-bound
+  hook artifacts. `[[permissions]]` array plus mount-mode sugar to
+  a canonical rights lattice (`Read`/`Write`/`Full`) with an
+  effective-permissions map as the single enforcement source.
+- Shipped `ssh` extension (`cistella-extension-ssh`): seat
+  agent-socket forwarding as a declared-extension prepare
+  contribution (`SSH_AUTH_SOCK` pointer, read-only bind, `read`
+  permission, `seat-socket` credential), fed from invoker ambient
+  at selection. Guest owner identities are host-unique namespaced
+  instance IDs (`shipped:`/`registered:`); credential admission
+  supports host-declared locator equality alongside the standing
+  seat-prefix gate.
+- Dispatcher expiry discriminates shutdown-caused errors from
+  ambient timeout noise: a deadline expiring on an already-dead
+  peer runs the fatal path (non-blocking vitality probe) instead
+  of emitting a timeout.
+
+### Changed
+
+- Framework/isolator code carries no `/tmp`, extension, or
+  credential-surface knowledge (generality principle): Landlock
+  always confines full host `/tmp`, and host-state guests mint
+  under host `/tmp` when declared.
+- The fast suite is umask-indifferent by construction (green under
+  002 and 022); test fixtures normalize modes at creation.
+
+### Removed
+
+- **BREAKING** (pre-1.0): the profile `credential-surface` slot is
+  deleted entirely (field, machinery, acceptance exception).
+  Profiles naming it refuse at parse; agent forwarding is a
+  declared `[[extensions]]` `ssh` (or nothing). Fleet profiles
+  must migrate before 0.3.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added

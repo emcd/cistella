@@ -21,7 +21,7 @@ The driver SHALL manage one disposable container per session with labels `cistel
 - **THEN** preparation fails closed with a typed error before any mkdir/chown; no host-backed mount is mutated
 
 #### Scenario: Internal mounts seed no candidates
-- **WHEN** a session carries scratch and credential-surface volumes alongside user mounts
+- **WHEN** a session carries scratch and extension-contributed volumes alongside user mounts
 - **THEN** their ancestors (`/tmp`, `/run`) are never chowned; only user-mount chains are prepared
 
 #### Scenario: Descendant paths beneath bind mounts are excluded
