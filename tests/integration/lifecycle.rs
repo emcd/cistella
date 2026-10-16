@@ -211,32 +211,30 @@ fn conduct_lifecycle_terminate_while_attached() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let status = conduct.wait().expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
 
     assert!(!unit.exists(), "unit file removed by shared teardown");
-    let show = Command::new("systemctl")
-        .args([
-            "--user",
-            "show",
-            "-p",
-            "ActiveState",
-            "-p",
-            "LoadState",
-            &format!("{container}.service"),
-        ])
-        .output()
-        .unwrap();
+    let mut cmd = Command::new("systemctl");
+    cmd.args([
+        "--user",
+        "show",
+        "-p",
+        "ActiveState",
+        "-p",
+        "LoadState",
+        &format!("{container}.service"),
+    ]);
+    let show = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
     let show_txt = String::from_utf8_lossy(&show.stdout).to_string();
     assert!(
         show_txt.contains("ActiveState=inactive") || show_txt.contains("LoadState=not-found"),
         "service inactive/not-found: {show_txt}"
     );
-    let failed = Command::new("systemctl")
-        .args(["--user", "--failed", "--no-legend"])
-        .output()
-        .unwrap();
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["--user", "--failed", "--no-legend"]);
+    let failed = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
     let failed_txt = String::from_utf8_lossy(&failed.stdout).to_string();
     assert!(
         !failed_txt.contains(&container),
@@ -306,7 +304,7 @@ fn name_resolves_from_foreign_cwd_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
 }
 
@@ -345,7 +343,7 @@ fn configuration_directory_plumbing_live() {
     assert_eq!(unit_label(&home, &id, "cistella.profile"), "custom");
     let out = run_cistella(&home, &["terminate", &id]);
     assert!(out.status.success());
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
 }
 
@@ -500,10 +498,9 @@ fn terminate_stops_promptly_without_sigkill() {
     // issued here rather than via `terminate` so the service result can be
     // read machine-readable before teardown removes the unit.
     let start = Instant::now();
-    let stop = Command::new("systemctl")
-        .args(["--user", "stop", &service])
-        .output()
-        .expect("systemctl stop");
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["--user", "stop", &service]);
+    let stop = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("systemctl stop");
     let elapsed = start.elapsed();
     assert!(
         stop.status.success(),
@@ -514,22 +511,21 @@ fn terminate_stops_promptly_without_sigkill() {
         elapsed < Duration::from_secs(5),
         "stop took {elapsed:?}: SIGTERM was not forwarded (--init missing?)"
     );
-    let show = Command::new("systemctl")
-        .args([
-            "--user",
-            "show",
-            "-p",
-            "ActiveState",
-            "-p",
-            "Result",
-            "-p",
-            "ExecMainCode",
-            "-p",
-            "ExecMainStatus",
-            &service,
-        ])
-        .output()
-        .expect("systemctl show");
+    let mut cmd = Command::new("systemctl");
+    cmd.args([
+        "--user",
+        "show",
+        "-p",
+        "ActiveState",
+        "-p",
+        "Result",
+        "-p",
+        "ExecMainCode",
+        "-p",
+        "ExecMainStatus",
+        &service,
+    ]);
+    let show = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("systemctl show");
     let show_txt = String::from_utf8_lossy(&show.stdout).to_string();
     assert!(
         show_txt.contains("ActiveState=inactive"),
@@ -551,7 +547,7 @@ fn terminate_stops_promptly_without_sigkill() {
     // The harness exec ends with the stopped container, so the attached
     // conduct runs shared teardown itself: unit file converges
     // away with no separate terminate needed.
-    let status = conduct.wait().expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
@@ -596,10 +592,9 @@ fn template_env_and_labels_resolve_live() {
     let container = format!("cistella-{id}");
 
     // Harness-observed environment shows substituted values.
-    let env_out = Command::new("podman")
-        .args(["exec", &container, "sh", "-c", "echo $PROBE_ALL"])
-        .output()
-        .expect("podman exec env");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", &container, "sh", "-c", "echo $PROBE_ALL"]);
+    let env_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env");
     assert!(env_out.status.success(), "podman exec env");
     let observed = String::from_utf8_lossy(&env_out.stdout).trim().to_string();
     assert_eq!(
@@ -608,10 +603,9 @@ fn template_env_and_labels_resolve_live() {
         "env templates resolved in-container"
     );
     // No literal span text survives anywhere in the environment.
-    let all_out = Command::new("podman")
-        .args(["exec", &container, "sh", "-c", "env"])
-        .output()
-        .expect("podman exec env dump");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", &container, "sh", "-c", "env"]);
+    let all_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env dump");
     let all_txt = String::from_utf8_lossy(&all_out.stdout).to_string();
     assert!(
         !all_txt.contains("{{"),
@@ -631,7 +625,7 @@ fn template_env_and_labels_resolve_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
 }
@@ -677,10 +671,9 @@ fn environment_acceptances_forward_live() {
     // Accepted value visible byte-exact in container env. `printenv`
     // (not shell `echo`) proves exact transport: no rescan, `=`
     // preservation, and actual Quadlet/systemd delivery.
-    let env_out = Command::new("podman")
-        .args(["exec", &container, "printenv", "CISTELLA_LIVE_ACCEPT"])
-        .output()
-        .expect("podman exec printenv");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", &container, "printenv", "CISTELLA_LIVE_ACCEPT"]);
+    let env_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec printenv");
     assert!(env_out.status.success(), "podman exec printenv");
     assert_eq!(
         String::from_utf8_lossy(&env_out.stdout).to_string(),
@@ -694,7 +687,7 @@ fn environment_acceptances_forward_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     match prev {
         Some(v) => unsafe { std::env::set_var("CISTELLA_LIVE_ACCEPT", v) },
@@ -774,7 +767,7 @@ fn environment_acceptances_absent_refuses_residue_free() {
         }
         if Instant::now() > deadline {
             child.kill().ok();
-            let _ = child.wait();
+            let _ = reap_bounded(&mut child, CHILD_REAP_TIMEOUT);
             panic!(
                 "conduct reached the mutation gate (blocked on the creation lock): \
                  acceptance refusal must precede lock acquisition"
@@ -910,10 +903,9 @@ fn template_namespaces_resolve_live() {
     let container = format!("cistella-{id}");
 
     // Early-home showcase: container HOME equals host HOME.
-    let home_out = Command::new("podman")
-        .args(["exec", &container, "sh", "-c", "echo $HOME"])
-        .output()
-        .expect("podman exec home");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", &container, "sh", "-c", "echo $HOME"]);
+    let home_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec home");
     assert!(home_out.status.success(), "podman exec home");
     assert_eq!(
         String::from_utf8_lossy(&home_out.stdout).trim(),
@@ -921,10 +913,9 @@ fn template_namespaces_resolve_live() {
         "container-home from host HOME"
     );
     // Supplement and environment spans resolve in-container.
-    let env_out = Command::new("podman")
-        .args(["exec", &container, "sh", "-c", "echo $PROBE_NS"])
-        .output()
-        .expect("podman exec env");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", &container, "sh", "-c", "echo $PROBE_NS"]);
+    let env_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env");
     assert!(env_out.status.success(), "podman exec env");
     assert_eq!(
         String::from_utf8_lossy(&env_out.stdout).trim(),
@@ -932,16 +923,15 @@ fn template_namespaces_resolve_live() {
         "supplement/environment templates resolved in-container"
     );
     // Supplement-fed mount target and label round-trip.
-    let mount_out = Command::new("podman")
-        .args([
-            "exec",
-            &container,
-            "sh",
-            "-c",
-            "test -d /ns-livedata && echo yes",
-        ])
-        .output()
-        .expect("podman exec mount");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "exec",
+        &container,
+        "sh",
+        "-c",
+        "test -d /ns-livedata && echo yes",
+    ]);
+    let mount_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec mount");
     assert_eq!(
         String::from_utf8_lossy(&mount_out.stdout).trim(),
         "yes",
@@ -959,7 +949,7 @@ fn template_namespaces_resolve_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
 }

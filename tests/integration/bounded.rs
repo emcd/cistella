@@ -13,6 +13,12 @@ use std::time::{Duration, Instant};
 
 use super::helpers::{bin, valid_minted_id};
 
+/// Bound on test-body child reaps (post-kill or expected natural
+/// exit). The child is the test's own finite script or an already-
+/// killed process; the bound exists to fail loudly on a wedged
+/// child, never to hurry a healthy one.
+pub const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Bound on `run_cistella` CLI invocations (seat maxima + headroom;
 /// QA confirms on the live seat). Verbs are millisecond-scale; the
 /// bound exists to fail loudly on a wedged seat, never to hurry a
@@ -163,18 +169,18 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
         buf: Vec::new(),
         overflow: false,
     }));
-    let (out_done_tx, out_done_rx) = std::sync::mpsc::channel();
-    let (err_done_tx, err_done_rx) = std::sync::mpsc::channel();
-    let out_handle = drain_capped(
-        child.stdout.take().expect("piped stdout"),
-        Arc::clone(&out_slot),
-        out_done_tx,
-    );
-    let err_handle = drain_capped(
-        child.stderr.take().expect("piped stderr"),
-        Arc::clone(&err_slot),
-        err_done_tx,
-    );
+    // A stream the test did not pipe (null/inherit) has no
+    // capture: no reader, no wait — `wait_with_output` semantics
+    // for caller-chosen stdio, not a silent truncation (the test
+    // itself chose not to pipe that stream).
+    let out_wait = child.stdout.take().map(|pipe| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (drain_capped(pipe, Arc::clone(&out_slot), tx), rx)
+    });
+    let err_wait = child.stderr.take().map(|pipe| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (drain_capped(pipe, Arc::clone(&err_slot), tx), rx)
+    });
     // The main loop below checks the slots each iteration: a
     // capped reader stops consuming, so flag the kill promptly
     // instead of waiting out the full timeout against backpressure.
@@ -185,7 +191,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
             let err = err_slot.lock().expect("capture mutex");
             if out.overflow || err.overflow {
                 let _ = child.kill();
-                let reaped = reap_bounded(&mut child, Duration::from_secs(10));
+                let reaped = reap_bounded(&mut child, Duration::from_secs(10)).is_some();
                 debug_assert!(reaped, "overflow-killed child reaps");
                 let stream = if out.overflow { "stdout" } else { "stderr" };
                 return Err(BoundedRunError::Overflow { stream });
@@ -196,7 +202,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
             None => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
-                    let reaped = reap_bounded(&mut child, Duration::from_secs(10));
+                    let reaped = reap_bounded(&mut child, Duration::from_secs(10)).is_some();
                     let out = out_slot.lock().expect("capture mutex");
                     let err = err_slot.lock().expect("capture mutex");
                     return Err(BoundedRunError::Timeout {
@@ -223,14 +229,26 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
         }
         false
     };
-    let out_ok = drained(&out_done_rx);
-    let err_ok = drained(&err_done_rx);
-    if out_ok {
-        let _ = out_handle.join();
-    }
-    if err_ok {
-        let _ = err_handle.join();
-    }
+    let out_ok = match out_wait {
+        Some((handle, rx)) => {
+            let ok = drained(&rx);
+            if ok {
+                let _ = handle.join();
+            }
+            ok
+        }
+        None => true,
+    };
+    let err_ok = match err_wait {
+        Some((handle, rx)) => {
+            let ok = drained(&rx);
+            if ok {
+                let _ = handle.join();
+            }
+            ok
+        }
+        None => true,
+    };
     if !(out_ok && err_ok) {
         let out = out_slot.lock().expect("capture mutex");
         let err = err_slot.lock().expect("capture mutex");
@@ -354,20 +372,23 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
 }
 
 /// Bounded reap after a kill: `try_wait` loop against the bound.
-/// True = reaped. A SIGKILLed child that will not reap is wedged
-/// (D-state); the caller reports loudly — bounded, never hangs.
-pub fn reap_bounded(child: &mut Child, timeout: Duration) -> bool {
+/// `Some(status)` = reaped. A SIGKILLed child that will not reap is
+/// wedged (D-state); the caller reports loudly — bounded, never
+/// hangs. Returns the status (not just a bool) so test bodies
+/// migrate their bare `wait()` calls onto this bound without losing
+/// exit evidence.
+pub fn reap_bounded(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return true,
+            Ok(Some(status)) => return Some(status),
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    return false;
+                    return None;
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
-            Err(_) => return false,
+            Err(_) => return None,
         }
     }
 }

@@ -32,7 +32,7 @@ fn inspect_postmortem_and_gc_reap_orphan() {
 
     // SIGKILL conduct: no teardown runs, the orphan unit file remains.
     conduct.kill().expect("kill conduct");
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     std::thread::sleep(Duration::from_millis(500));
     assert!(unit_path(&home, &id).exists(), "orphan unit remains");
@@ -45,10 +45,9 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     // presence assertion into cross-test timing. gc blocks on the
     // lock; stop and the assertions never take it.
     let _creation_freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
-    let out = Command::new("systemctl")
-        .args(["--user", "stop", &format!("{container}.service")])
-        .output()
-        .unwrap();
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["--user", "stop", &format!("{container}.service")]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
     assert!(out.status.success());
     std::thread::sleep(Duration::from_millis(500));
     assert!(

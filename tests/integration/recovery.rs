@@ -72,10 +72,11 @@ impl Drop for LiveUnitGuard {
 /// a true crash — no cleanup, unknown applied state.
 fn kill_guest(rendezvous: &TempDir) {
     let pattern = rendezvous.path().to_string_lossy().to_string();
-    let killed = Command::new("pkill")
-        .args(["-9", "-f", &pattern])
-        .status()
+    let mut cmd = Command::new("pkill");
+    cmd.args(["-9", "-f", &pattern]);
+    let killed = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
         .expect("pkill runs")
+        .status
         .success();
     assert!(killed, "pkill must match the guest");
 }
@@ -88,10 +89,11 @@ fn kill_guest(rendezvous: &TempDir) {
 /// via `/proc/self/fd/N`, so its argv[0] never contains the binary
 /// name and a bin-name pattern can never match.
 fn kill_guest_child_of(parent_pid: u32) {
-    let killed = Command::new("pkill")
-        .args(["-9", "-P", &parent_pid.to_string(), "-f", "cistella-rdv-"])
-        .status()
+    let mut cmd = Command::new("pkill");
+    cmd.args(["-9", "-P", &parent_pid.to_string(), "-f", "cistella-rdv-"]);
+    let killed = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
         .expect("pkill runs")
+        .status
         .success();
     assert!(killed, "pkill must match the guest child");
 }
@@ -728,7 +730,7 @@ fn recovery_conduct_rehosts_through_guest_kill() {
         id: Some(id.clone()),
     };
     kill_guest_child_of(child.id());
-    let status = child.wait().expect("conduct reaped");
+    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     assert_eq!(status.code(), Some(0), "conduct recovers and exits 0");
     assert!(!upath.exists(), "adopted unit removed after recovery");
     guard.id = None;

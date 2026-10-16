@@ -37,7 +37,9 @@
 //! until operator authorization lands for the separate seat.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+
+use super::helpers::*;
 
 /// Resolves the helper path. Same logic as `peer_path` in
 /// `protocol_peer.rs`: target/profile/examples/ sorted by mtime
@@ -108,12 +110,7 @@ fn run_helper(allows: &[&str], wrapped_argv: &[&str]) -> (i32, String) {
     for arg in wrapped_argv {
         command.arg(arg);
     }
-    let output = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("landlock_helper must spawn");
+    let output = run_bounded(command, RUN_CISTELLA_TIMEOUT).expect("landlock_helper must spawn");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.code().unwrap_or(-1), stderr)
 }
@@ -231,19 +228,15 @@ fn unsupported_kernel_typed_refusal() {
     let wrapper = landlock_kill_wrapper_path();
     let helper = landlock_helper_path();
     let wrapped_code = format!("print('{MARKER}')");
-    let output = Command::new(&wrapper)
-        .arg("--")
-        .arg(&helper)
-        .args(["--allow=/tmp", "--allow=/proc/self/fd", "--allow=/etc"])
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg(&wrapped_code)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("landlock_kill_wrapper must spawn");
+    let mut cmd = Command::new(&wrapper);
+    cmd.arg("--");
+    cmd.arg(&helper);
+    cmd.args(["--allow=/tmp", "--allow=/proc/self/fd", "--allow=/etc"]);
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg(&wrapped_code);
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("landlock_kill_wrapper must spawn");
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

@@ -49,10 +49,10 @@ fn gc_inspect_failure_fails_closed() {
     let shim_dir =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".auxiliary/temporary/podman-shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
+    let mut cmd = Command::new("which");
+    cmd.arg("podman");
     let real_podman = String::from_utf8_lossy(
-        &Command::new("which")
-            .arg("podman")
-            .output()
+        &run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
             .expect("which podman")
             .stdout,
     )
@@ -87,13 +87,12 @@ fn gc_inspect_failure_fails_closed() {
         shim_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let out = Command::new(bin())
-        .arg("gc")
-        .env("HOME", &home)
-        .env("TERM", "xterm-ghostty")
-        .env("PATH", &shim_path)
-        .output()
-        .expect("spawn gc");
+    let mut cmd = Command::new(bin());
+    cmd.arg("gc");
+    cmd.env("HOME", &home);
+    cmd.env("TERM", "xterm-ghostty");
+    cmd.env("PATH", &shim_path);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("spawn gc");
     assert!(
         !out.status.success(),
         "gc must fail closed on inspect error"
@@ -107,7 +106,7 @@ fn gc_inspect_failure_fails_closed() {
     assert!(String::from_utf8_lossy(&out.stdout).contains(&container));
 
     terminate_with_diagnostics(&home, &id);
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
@@ -179,7 +178,7 @@ fn command_label_edge_round_trip_live() {
     }
 
     terminate_with_diagnostics(&home, &id);
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
@@ -224,7 +223,7 @@ fn spaced_directory_conduct() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 
@@ -249,7 +248,7 @@ fn spaced_directory_conduct() {
         String::from_utf8_lossy(&out.stderr)
     );
     terminate_with_diagnostics(&home, &id);
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
@@ -303,7 +302,7 @@ fn environment_values_verbatim() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }

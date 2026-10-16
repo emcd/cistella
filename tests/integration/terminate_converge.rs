@@ -21,16 +21,15 @@ use super::helpers::*;
 /// The command outcome is checked: only explicit valid state evidence
 /// counts — a failed query never proves absence.
 fn service_state(id: &str) -> String {
-    let out = std::process::Command::new("systemctl")
-        .args([
-            "--user",
-            "show",
-            "-p",
-            "ActiveState,LoadState",
-            &format!("cistella-{id}.service"),
-        ])
-        .output()
-        .expect("systemctl show");
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args([
+        "--user",
+        "show",
+        "-p",
+        "ActiveState,LoadState",
+        &format!("cistella-{id}.service"),
+    ]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("systemctl show");
     assert!(
         out.status.success(),
         "systemctl show must succeed to observe service state: {}",
@@ -44,10 +43,9 @@ fn service_state(id: &str) -> String {
 /// errors — 125 (or any other unexpected outcome) fails observation
 /// instead of proving cleanup.
 fn container_absent(container: &str) -> bool {
-    let out = std::process::Command::new("podman")
-        .args(["container", "exists", container])
-        .output()
-        .expect("podman container exists");
+    let mut cmd = std::process::Command::new("podman");
+    cmd.args(["container", "exists", container]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman container exists");
     match out.status.code() {
         Some(1) => true,
         Some(0) => false,
@@ -118,7 +116,7 @@ fn cli_terminate_converges_attached_conduct() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
         );
-        let _ = conduct.wait();
+        let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
         let tap = taps.finalize(std::time::Duration::from_secs(10));
         panic!(
             "cli terminate converges: status={} stdout={} stderr={} conduct_stderr={} drain={}",
@@ -139,7 +137,7 @@ fn cli_terminate_converges_attached_conduct() {
     // report names the observation with the raw client result.
     // Completion-attested tap: `child.wait` alone cannot guarantee
     // the drain consumed the final bytes.
-    let conduct_status = conduct.wait().expect("conduct exits");
+    let conduct_status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct exits");
     let tap = taps.finalize(std::time::Duration::from_secs(10));
     assert!(
         tap.drain_clean,

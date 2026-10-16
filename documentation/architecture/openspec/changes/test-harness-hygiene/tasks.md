@@ -4,6 +4,7 @@
 - [ ] 1.2 Bound `run_cistella` subprocess waits (per-call timeout, kill + drain on expiry + pin).
 - [ ] 1.3 Bound `wait_active`/`wait_harness` poll invocations + PTY read/waitpid windows (compose with remaining outer deadline, never fresh budgets; stuck-poll + flood/held-writer pins).
 - [ ] 1.4 Correct the `wait_harness` binding-inference comment to session-up smoke.
+- [ ] 1.5 Migrate test-body `.output()`/`.wait()` call sites onto `run_bounded`/`reap_bounded` (same-pattern mechanical sweep, own commit).
 
 ## 2. Interference-free fixtures
 

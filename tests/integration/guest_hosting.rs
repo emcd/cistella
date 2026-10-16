@@ -11,6 +11,7 @@ use std::time::Duration;
 use cistella::framework::contract::Deadlines;
 use cistella::framework::guest::host_external;
 
+use super::helpers::*;
 use super::protocol_peer::peer_path;
 
 fn tight_deadlines() -> Deadlines {
@@ -251,11 +252,10 @@ fn host_external_peer_death_is_typed_bounded_and_rehostable() {
     )
     .expect("hello must negotiate before the kill");
     let pid = host.pid();
-    let kill = std::process::Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .output()
-        .expect("kill must spawn");
+    let mut cmd = std::process::Command::new("kill");
+    cmd.arg("-9");
+    cmd.arg(pid.to_string());
+    let kill = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("kill must spawn");
     assert!(kill.status.success(), "SIGKILL must land");
     let start = std::time::Instant::now();
     let error = match host.exchange_mut().request(

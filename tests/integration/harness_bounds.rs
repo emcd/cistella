@@ -145,3 +145,25 @@ fn over_cap_flood_killed_loud_with_overflow() {
         "overflow trips on the cap, not the timeout: {elapsed:?}"
     );
 }
+
+/// Caller-chosen null stderr (no pipe — the protocol_peer guest
+/// shape): wait_bounded captures what IS piped and succeeds. The
+/// absent stream is the test's own stdio choice, not truncated
+/// evidence.
+#[test]
+fn unpiped_stream_needs_no_capture() {
+    let child = std::process::Command::new("sh")
+        .args(["-c", "echo hi"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn echo");
+    let out = wait_bounded(child, std::time::Duration::from_secs(10)).expect("echo reaped");
+    assert!(out.status.success(), "echo exited cleanly");
+    assert_eq!(out.stdout, b"hi\n", "piped stream captured");
+    assert!(
+        out.stderr.is_empty(),
+        "unpiped stream reads empty, not failed"
+    );
+}

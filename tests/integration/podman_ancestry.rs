@@ -28,16 +28,17 @@
 //! `transport.rs`.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+
+use super::helpers::*;
 
 /// The helper's mount point inside the probe container.
 const HELPER_MOUNT: &str = "/landlock_helper";
 
 fn podman_available() -> bool {
-    Command::new("podman")
-        .args(["info", "--format", "{{.Host.Security.Rootless}}"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    let mut cmd = Command::new("podman");
+    cmd.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
+    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success())
 }
 
 fn image_ref() -> String {
@@ -123,12 +124,7 @@ fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, Stri
     for arg in wrapped_argv {
         command.arg(arg);
     }
-    let output = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("podman run must spawn");
+    let output = run_bounded(command, RUN_CISTELLA_TIMEOUT).expect("podman run must spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.code().unwrap_or(-1), stdout, stderr)
@@ -145,10 +141,9 @@ fn probe_preconditions() -> bool {
         return false;
     }
     let image = image_ref();
-    let has_image = Command::new("podman")
-        .args(["image", "exists", &image])
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let mut cmd = Command::new("podman");
+    cmd.args(["image", "exists", &image]);
+    let has_image = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success());
     if !has_image {
         eprintln!("skip: image {image} not present (build via data/dockerfiles/validate.sh)");
         return false;

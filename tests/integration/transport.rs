@@ -5,19 +5,38 @@
 
 use std::process::Command;
 
+use super::helpers::*;
 use nix::pty::{ForkptyResult, forkpty};
 use nix::sys::wait::{self, WaitStatus};
 
 fn podman_available() -> bool {
-    Command::new("podman")
-        .args(["info", "--format", "{{.Host.Security.Rootless}}"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    let mut cmd = Command::new("podman");
+    cmd.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
+    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success())
 }
 
 fn image_ref() -> String {
     std::env::var("CISTELLA_TEST_IMAGE")
         .unwrap_or_else(|_| "localhost/cistella/opencode:example".to_string())
+}
+
+/// Bounded reap of a forkpty child: WNOHANG loop for a grace
+/// window, then SIGKILL + bounded pid reap. Never a blocking
+/// waitpid. A waitpid error (e.g. already reaped) ends the loop —
+/// there is nothing left to reap.
+fn reap_pty_child(child: nix::unistd::Pid) {
+    let start = std::time::Instant::now();
+    let grace = std::time::Duration::from_secs(5);
+    while wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
+        .is_ok_and(|s| s == WaitStatus::StillAlive)
+    {
+        if start.elapsed() > grace {
+            let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+            let _ = reap_bounded_pid(child, std::time::Duration::from_secs(10));
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -29,10 +48,9 @@ fn transport_harness() {
     }
     let image = image_ref();
     // Ensure image exists; try building example if missing.
-    let has_image = Command::new("podman")
-        .args(["image", "exists", &image])
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let mut probe = Command::new("podman");
+    probe.args(["image", "exists", &image]);
+    let has_image = run_bounded(probe, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success());
     if !has_image {
         eprintln!("skip: image {image} not present (build via data/dockerfiles/validate.sh)");
         return;
@@ -64,22 +82,21 @@ fn transport_harness() {
     }
     // Rebuild with proper args order: podman run -d ... -e TERM -- image sleep
     // Do fresh:
-    let out = Command::new("podman")
-        .args([
-            "run",
-            "--detach",
-            "--rm",
-            "--userns=keep-id",
-            "--name",
-            &cname,
-            "-e",
-            &format!("TERM={term}"),
-            &image,
-            "sleep",
-            "300",
-        ])
-        .output()
-        .expect("podman run");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "run",
+        "--detach",
+        "--rm",
+        "--userns=keep-id",
+        "--name",
+        &cname,
+        "-e",
+        &format!("TERM={term}"),
+        &image,
+        "sleep",
+        "300",
+    ]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman run");
     assert!(
         out.status.success(),
         "podman run failed: {}",
@@ -95,9 +112,9 @@ fn transport_harness() {
     ok &= check_large_payload(&cname);
     ok &= check_terminfo(&cname);
 
-    let _ = Command::new("podman")
-        .args(["stop", "--time", "2", &cname])
-        .output();
+    let mut stop = Command::new("podman");
+    stop.args(["stop", "--time", "2", &cname]);
+    let _ = run_bounded(stop, RUN_CISTELLA_TIMEOUT);
 
     assert!(ok, "transport harness failed; see output above");
 }
@@ -113,16 +130,15 @@ fn rand_suffix() -> String {
 
 fn check_isatty(cname: &str) -> bool {
     // Piped exec should be isatty:false / 0 0; forkpty exec -i -t should be true
-    let piped = Command::new("podman")
-        .args([
-            "exec",
-            cname,
-            "sh",
-            "-c",
-            "if [ -t 1 ]; then echo true; else echo false; fi; stty size 2>&1 || echo 0 0",
-        ])
-        .output()
-        .expect("exec");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "exec",
+        cname,
+        "sh",
+        "-c",
+        "if [ -t 1 ]; then echo true; else echo false; fi; stty size 2>&1 || echo 0 0",
+    ]);
+    let piped = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("exec");
     let txt = String::from_utf8_lossy(&piped.stdout);
     assert!(
         txt.contains("false"),
@@ -183,26 +199,24 @@ fn check_isatty(cname: &str) -> bool {
 }
 
 fn check_exit42(cname: &str) -> bool {
-    let out = Command::new("podman")
-        .args(["exec", cname, "sh", "-c", "exit 42"])
-        .output()
-        .expect("exit42");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", cname, "sh", "-c", "exit 42"]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("exit42");
     let code = out.status.code().unwrap_or(-1);
     eprintln!("exit42 code {code}");
     code == 42
 }
 
 fn check_terminfo(cname: &str) -> bool {
-    let out = Command::new("podman")
-        .args([
-            "exec",
-            cname,
-            "sh",
-            "-c",
-            "infocmp xterm-ghostty >/dev/null && [ \"$(tput colors)\" = \"256\" ] && echo ok",
-        ])
-        .output()
-        .expect("terminfo");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "exec",
+        cname,
+        "sh",
+        "-c",
+        "infocmp xterm-ghostty >/dev/null && [ \"$(tput colors)\" = \"256\" ] && echo ok",
+    ]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("terminfo");
     let txt = String::from_utf8_lossy(&out.stdout);
     eprintln!("terminfo: {txt} {:?}", out.status);
     out.status.success() && txt.contains("ok")
@@ -212,7 +226,23 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
     match unsafe { forkpty(None, None) } {
         Ok(ForkptyResult::Parent { child, master }) => {
             use std::io::{Read, Write};
+            use std::os::unix::io::AsRawFd;
             let mut f = std::fs::File::from(master);
+            // Nonblocking master: the WouldBlock arm below only
+            // bounds the window if the fd is actually nonblocking
+            // (forkpty hands back a blocking master).
+            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+                let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
+                oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                {
+                    eprintln!("DA1 pty: O_NONBLOCK setup refused");
+                    return false;
+                }
+            } else {
+                eprintln!("DA1 pty: F_GETFL refused");
+                return false;
+            }
             let mut buf = vec![0u8; 4096];
             let mut acc = Vec::new();
             let start = std::time::Instant::now();
@@ -245,17 +275,20 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
             } else {
                 eprintln!("DA1 no query seen len {}", acc.len());
             }
-            let _ = wait::waitpid(child, None);
-            let check = Command::new("podman")
-                .args(["exec", cname, "cat", "/tmp/da1_harness"])
-                .output();
+            // Bounded reap of the forkpty child (DONE seen; it is
+            // exiting): WNOHANG loop, SIGKILL past the bound, never
+            // a blocking waitpid.
+            reap_pty_child(child);
+            let mut cat = Command::new("podman");
+            cat.args(["exec", cname, "cat", "/tmp/da1_harness"]);
+            let check = run_bounded(cat, RUN_CISTELLA_TIMEOUT);
             let txt = check
                 .as_ref()
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
-            let _ = Command::new("podman")
-                .args(["exec", cname, "rm", "-f", "/tmp/da1_harness"])
-                .output();
+            let mut rm = Command::new("podman");
+            rm.args(["exec", cname, "rm", "-f", "/tmp/da1_harness"]);
+            let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
             eprintln!("DA1 container reply {txt:?} saw {saw}");
             saw && (txt.contains("?6") || txt.contains("6c"))
         }
@@ -281,7 +314,22 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
     match unsafe { forkpty(None, None) } {
         Ok(ForkptyResult::Parent { child, master }) => {
             use std::io::{Read, Write};
+            use std::os::unix::io::AsRawFd;
             let mut f = std::fs::File::from(master);
+            // Nonblocking master: without this the `read` below can
+            // sit past the READY window on a silent child.
+            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+                let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
+                oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                {
+                    eprintln!("sigint pty: O_NONBLOCK setup refused");
+                    return false;
+                }
+            } else {
+                eprintln!("sigint pty: F_GETFL refused");
+                return false;
+            }
             let mut buf = vec![0u8; 4096];
             let mut acc = Vec::new();
             let start = std::time::Instant::now();
@@ -294,28 +342,32 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
                         }
                     }
                     Ok(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
                     Err(_) => break,
                 }
             }
             let _ = f.write_all(&[0x03]);
             let _ = f.flush();
             eprintln!("SIGINT wrote 0x03");
-            let _ = wait::waitpid(child, None);
+            // Bounded reap: the INT-trapped child exits promptly;
+            // SIGKILL past the bound, never a blocking waitpid.
+            reap_pty_child(child);
             std::thread::sleep(std::time::Duration::from_millis(400));
-            let out = Command::new("podman")
-                .args([
-                    "exec",
-                    cname,
-                    "sh",
-                    "-c",
-                    "test -f /tmp/sigint_harness && echo present || echo absent",
-                ])
-                .output()
-                .expect("check sigint");
+            let mut cmd = Command::new("podman");
+            cmd.args([
+                "exec",
+                cname,
+                "sh",
+                "-c",
+                "test -f /tmp/sigint_harness && echo present || echo absent",
+            ]);
+            let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("check sigint");
             let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let _ = Command::new("podman")
-                .args(["exec", cname, "rm", "-f", "/tmp/sigint_harness"])
-                .output();
+            let mut rm = Command::new("podman");
+            rm.args(["exec", cname, "rm", "-f", "/tmp/sigint_harness"]);
+            let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
             eprintln!("sigint marker {txt}");
             txt == "present"
         }
@@ -338,31 +390,29 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
 }
 
 fn check_large_payload(cname: &str) -> bool {
-    let out = Command::new("podman")
-        .args([
-            "exec",
-            cname,
-            "sh",
-            "-c",
-            "head -c 1048576 /dev/zero | tr '\\0' 'A' | sha256sum",
-        ])
-        .output()
-        .expect("inside sha");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "exec",
+        cname,
+        "sh",
+        "-c",
+        "head -c 1048576 /dev/zero | tr '\\0' 'A' | sha256sum",
+    ]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("inside sha");
     let inside = String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .next()
         .unwrap_or("")
         .to_string();
-    let stream = Command::new("podman")
-        .args([
-            "exec",
-            cname,
-            "sh",
-            "-c",
-            "head -c 1048576 /dev/zero | tr '\\0' 'A'",
-        ])
-        .output()
-        .expect("stream");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "exec",
+        cname,
+        "sh",
+        "-c",
+        "head -c 1048576 /dev/zero | tr '\\0' 'A'",
+    ]);
+    let stream = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("stream");
     if stream.stdout.len() != 1_048_576 {
         eprintln!("stream len {}", stream.stdout.len());
         return false;
@@ -379,7 +429,7 @@ fn check_large_payload(cname: &str) -> bool {
             let _ = stdin.write_all(&stream.stdout);
         }
     }
-    let out = child.wait_with_output().expect("wait");
+    let out = wait_bounded(child, CHILD_REAP_TIMEOUT).expect("wait");
     let host = String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .next()

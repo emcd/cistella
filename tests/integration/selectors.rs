@@ -86,7 +86,7 @@ fn selectors_ambiguous_and_exclusive() {
         "terminate by label: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = child_a.wait();
+    let _ = reap_bounded(&mut child_a, CHILD_REAP_TIMEOUT);
     guard_a.id = None;
 
     let out = run_cistella(&home, &["survey", "--directory", &worktree_str]);
@@ -98,6 +98,6 @@ fn selectors_ambiguous_and_exclusive() {
 
     let out = run_cistella(&home, &["terminate", &id_b]);
     assert!(out.status.success());
-    let _ = child_b.wait();
+    let _ = reap_bounded(&mut child_b, CHILD_REAP_TIMEOUT);
     guard_b.id = None;
 }

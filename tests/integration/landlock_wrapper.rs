@@ -9,7 +9,9 @@
 //! 3.4 live tier on the operator-authorized seat.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+
+use super::helpers::*;
 
 /// Resolves the wrapper binary: `target/<profile>/` sorted by
 /// mtime descending (same selection as the peer helpers; the
@@ -52,19 +54,15 @@ fn wrapper_path() -> PathBuf {
 /// rest_stdout, stderr)`. The harness is python3; `/usr` is the
 /// read-execute route, `allowed` the read-write route.
 fn run_wrapped(allowed: &std::path::Path, python: &str) -> (i32, String, String, String) {
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg(python)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg(python);
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.splitn(2, '\n');
     let attestation = lines.next().unwrap_or("").to_string();
@@ -89,13 +87,9 @@ fn fixture_tree() -> (tempfile::TempDir, PathBuf) {
 
 #[test]
 fn probe_reports_usable_abi_and_full_mask() {
-    let output = Command::new(wrapper_path())
-        .arg("--probe")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("probe must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--probe");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("probe must spawn");
     assert_eq!(output.status.code(), Some(0), "probe must exit 0");
     let payload: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("probe prints JSON");
@@ -122,13 +116,9 @@ fn usage_errors_exit_3_without_applying() {
             "--allow-rw=/tmp".to_string(),
         ],
     ] {
-        let output = Command::new(wrapper_path())
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .expect("wrapper must spawn");
+        let mut cmd = Command::new(wrapper_path());
+        cmd.args(&args);
+        let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
         assert_eq!(
             output.status.code(),
             Some(3),
@@ -230,19 +220,15 @@ fn allowed_truncate_succeeds() {
 fn bad_allow_path_fails_before_exec() {
     // Nonexistent allow route: apply fails, the harness never runs
     // (no marker), exit is the apply class.
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg("--allow-rw=/nonexistent-route-xyz")
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg("open('/tmp/should-never-exist-xyz', 'w')")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg("--allow-rw=/nonexistent-route-xyz");
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg("open('/tmp/should-never-exist-xyz', 'w')");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -266,19 +252,15 @@ fn injection_path_stays_framed_json() {
     // with no exec (marker absent).
     let (_dir, _allowed) = fixture_tree();
     let evil = "/nonexistent-\"}\n,\"x\":\"y";
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={evil}"))
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg("open('/tmp/landlock-injection-escaped-xyz', 'w')")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={evil}"));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg("open('/tmp/landlock-injection-escaped-xyz', 'w')");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(1), "bad allow is apply-class");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let payload: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
@@ -297,19 +279,15 @@ fn broken_diagnostics_exits_without_execing() {
     // execing (marker absent). Exit is the post-apply class.
     let (_dir, allowed) = fixture_tree();
     let marker = allowed.join("noexec-marker");
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=99")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg(format!("open({:?}, 'w')", marker))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=99");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg(format!("open({:?}, 'w')", marker));
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -328,17 +306,13 @@ fn exec_failure_reports_wrapper_error() {
     // a harness outcome). The transitioned vocabulary (not
     // applied:false) classifies post-attestation failures.
     let (_dir, allowed) = fixture_tree();
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/nonexistent-harness-xyz")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/nonexistent-harness-xyz");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -372,19 +346,15 @@ fn success_emits_transitioned_true() {
     // supervisor's transitioned:true, then EOF. The host gate
     // requires all three.
     let (_dir, allowed) = fixture_tree();
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg("pass")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg("pass");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
@@ -412,20 +382,16 @@ fn fault_kill_after_attest_dies_by_signal_without_execing() {
     // fabricated harness outcome.
     let (_dir, allowed) = fixture_tree();
     let marker = allowed.join("fault-marker");
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/python3")
-        .arg("-c")
-        .arg(format!("open({:?}, 'w')", marker))
-        .env("CISTELLA_QA_WRAPPER_FAULT", "kill-after-attest")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/python3");
+    cmd.arg("-c");
+    cmd.arg(format!("open({:?}, 'w')", marker));
+    cmd.env("CISTELLA_QA_WRAPPER_FAULT", "kill-after-attest");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         None,
@@ -453,17 +419,13 @@ fn fast_harness_exit_relays_disposition() {
     // code), never misattribute as wrapper-death. /bin/true exits
     // in microseconds — fast enough to win the race.
     let (_dir, allowed) = fixture_tree();
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/true")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/true");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(0), "fast exit relays clean");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
@@ -494,19 +456,15 @@ fn signalled_harness_relays_signal() {
     // the supervisor has observed the transition long before
     // the harness dies by its own hand.
     let (_dir, allowed) = fixture_tree();
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/dash")
-        .arg("-c")
-        .arg("sleep 0.2; kill -TERM $$")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/dash");
+    cmd.arg("-c");
+    cmd.arg("sleep 0.2; kill -TERM $$");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(
         output.status.signal(),
@@ -542,19 +500,15 @@ fn harness_exit_126_relays_as_harness_outcome() {
     // harness exiting 126 relays as the harness outcome with a
     // clean transition (report failure self-signals instead).
     let (_dir, allowed) = fixture_tree();
-    let output = Command::new(wrapper_path())
-        .arg("--diagnostics-fd=1")
-        .arg("--allow-ro=/usr")
-        .arg(format!("--allow-rw={}", allowed.display()))
-        .arg("--")
-        .arg("/usr/bin/dash")
-        .arg("-c")
-        .arg("exit 126")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("wrapper must spawn");
+    let mut cmd = Command::new(wrapper_path());
+    cmd.arg("--diagnostics-fd=1");
+    cmd.arg("--allow-ro=/usr");
+    cmd.arg(format!("--allow-rw={}", allowed.display()));
+    cmd.arg("--");
+    cmd.arg("/usr/bin/dash");
+    cmd.arg("-c");
+    cmd.arg("exit 126");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(126));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();

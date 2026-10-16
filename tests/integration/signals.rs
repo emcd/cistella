@@ -57,11 +57,10 @@ fn signal_during_startup_tears_down() {
     };
 
     let pid = child.id();
-    Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .output()
-        .unwrap();
-    let status = child.wait().expect("conduct reaped");
+    let mut cmd = Command::new("kill");
+    cmd.args(["-TERM", &pid.to_string()]);
+    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
+    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     assert_eq!(status.code(), Some(143), "128+SIGTERM, got {status:?}");
     guard.id = None;
     assert!(!upath.exists(), "installed unit removed by startup abort");
@@ -125,7 +124,7 @@ fn terminate_races_creation_waits() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let output = conduct.wait_with_output().expect("conduct reaped");
+    let output = wait_bounded(conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     guard.id = None;
     // The harness actually ran (killed with its container), conduct did not
     // die in start on a reaped unit.
@@ -154,12 +153,11 @@ fn sighup_conduct_tears_down() {
         spawn_conduct(&home, &worktree_str, &["--identity", "alice"]);
     wait_active(&id);
     let pid = conduct.id();
-    let out = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .output()
-        .unwrap();
+    let mut cmd = Command::new("kill");
+    cmd.args(["-TERM", &pid.to_string()]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
     assert!(out.status.success());
-    let status = conduct.wait().expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     assert_eq!(status.code(), Some(143), "128+SIGTERM, got {status:?}");
     guard.id = None;
     assert!(
@@ -207,7 +205,7 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
         "gc blocks on the lock with a half-created session present"
     );
     gc.kill().ok();
-    let _ = gc.wait();
+    let _ = reap_bounded(&mut gc, CHILD_REAP_TIMEOUT);
 
     let res = cistella::runtime::gc_exited_locked().expect("locked gc");
     assert!(
@@ -245,7 +243,7 @@ fn gc_creation_window_reaps_nothing() {
         "gc blocks on the lock"
     );
     drop(guard);
-    let out = gc.wait_with_output().expect("gc output");
+    let out = wait_bounded(gc, CHILD_REAP_TIMEOUT).expect("gc output");
     assert!(
         out.status.success(),
         "gc: {}",

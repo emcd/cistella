@@ -27,6 +27,8 @@ use std::time::Duration;
 use cistella::framework::contract::Deadlines;
 use cistella::framework::protocol::{GuestHost, PROTOCOL_MAJOR};
 
+use super::helpers::*;
+
 /// Resolves the peer path. The peer is a declared `[[example]]`
 /// (`tests/fixtures/fake_guest/`); it lands at
 /// `target/<profile>/examples/fake_guest` (plus a hashed sibling
@@ -514,7 +516,7 @@ fn epoch2_landlock_guest_refuses_legacy_v1_host() {
         .write_all(&framed)
         .expect("legacy hello writes");
     drop(child.stdin.take());
-    let output = child.wait_with_output().expect("guest exits");
+    let output = wait_bounded(child, CHILD_REAP_TIMEOUT).expect("guest exits");
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -575,7 +577,7 @@ fn epoch2_tmpdir_guest_refuses_legacy_v1_host() {
         ))
         .expect("legacy hello writes");
     drop(child.stdin.take());
-    let output = child.wait_with_output().expect("guest exits");
+    let output = wait_bounded(child, CHILD_REAP_TIMEOUT).expect("guest exits");
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -616,7 +618,7 @@ fn tmpdir_prepare_without_session_id_refuses_before_mint() {
         .expect("stdout")
         .read_to_end(&mut stdout)
         .expect("stdout drains");
-    let output = child.wait().expect("guest exits");
+    let output = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
     assert_eq!(
         output.code(),
         Some(2),

@@ -289,23 +289,22 @@ fn mountpoint_prepare_timeout_fails_closed() {
         ),
     )
     .unwrap();
-    let out = Command::new(bin())
-        .args([
-            "conduct",
-            "--profile",
-            &profile.to_string_lossy(),
-            "--session-directory",
-            &worktree_str,
-            "--identity",
-            "alice",
-            "--",
-            "true",
-        ])
-        .env("HOME", &home)
-        .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_PREPARE_EXEC_TIMEOUT_MS", "1")
-        .output()
-        .expect("spawn cistella");
+    let mut cmd = Command::new(bin());
+    cmd.args([
+        "conduct",
+        "--profile",
+        &profile.to_string_lossy(),
+        "--session-directory",
+        &worktree_str,
+        "--identity",
+        "alice",
+        "--",
+        "true",
+    ]);
+    cmd.env("HOME", &home);
+    cmd.env("TERM", "xterm-ghostty");
+    cmd.env("CISTELLA_PREPARE_EXEC_TIMEOUT_MS", "1");
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("spawn cistella");
     assert!(
         !out.status.success(),
         "forced preparation timeout must fail conduct"
@@ -780,10 +779,10 @@ fn hooked_conduct_confines_declared_session() {
 #[ignore = "live: requires bind-mount capability (podman unshare)"]
 #[test]
 fn bind_alias_graft_refuses_precreate() {
-    let unshare = Command::new("podman")
-        .arg("unshare")
-        .arg("true")
-        .output()
+    let mut unshare_cmd = Command::new("podman");
+    unshare_cmd.arg("unshare");
+    unshare_cmd.arg("true");
+    let unshare = run_bounded(unshare_cmd, RUN_CISTELLA_TIMEOUT)
         .map(|out| out.status.success())
         .unwrap_or(false);
     if !unshare {
@@ -833,15 +832,14 @@ fn bind_alias_graft_refuses_precreate() {
          echo -n 'case-exact:'; '{probe_str}' '{home_str}' '{proj_str}' '{tree_bind_str}' /src/graft; \
          echo -n 'case-control:'; '{probe_str}' '{home_str}' '{proj_str}' '{control_str}' /src/graft"
     );
-    let out = Command::new("podman")
-        .arg("unshare")
-        .arg("env")
-        .arg(format!("HOME={home_str}"))
-        .arg("sh")
-        .arg("-c")
-        .arg(&script)
-        .output()
-        .expect("podman unshare must spawn");
+    let mut cmd = Command::new("podman");
+    cmd.arg("unshare");
+    cmd.arg("env");
+    cmd.arg(format!("HOME={home_str}"));
+    cmd.arg("sh");
+    cmd.arg("-c");
+    cmd.arg(&script);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman unshare must spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "unshare script must run: {stderr}");

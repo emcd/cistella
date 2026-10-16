@@ -21,10 +21,10 @@ use super::helpers::*;
 #[ignore = "live: requires bind-mount capability (podman unshare)"]
 #[test]
 fn bind_alias_tmp_backing_refuses_precreate() {
-    let unshare = Command::new("podman")
-        .arg("unshare")
-        .arg("true")
-        .output()
+    let mut unshare_cmd = Command::new("podman");
+    unshare_cmd.arg("unshare");
+    unshare_cmd.arg("true");
+    let unshare = run_bounded(unshare_cmd, RUN_CISTELLA_TIMEOUT)
         .map(|out| out.status.success())
         .unwrap_or(false);
     if !unshare {
@@ -84,15 +84,14 @@ fn bind_alias_tmp_backing_refuses_precreate() {
          echo -n 'case-exact:'; '{probe_str}' '{home_str}' '{proj_str}' '{boutside_str}' '{boutside2_str}' /mirror; \
          echo -n 'case-control:'; '{probe_str}' '{home_str}' '{proj_str}' '{control_str}' '{control_str}' /mirror"
     );
-    let out = Command::new("podman")
-        .arg("unshare")
-        .arg("env")
-        .arg(format!("HOME={home_str}"))
-        .arg("sh")
-        .arg("-c")
-        .arg(&script)
-        .output()
-        .expect("podman unshare must spawn");
+    let mut cmd = Command::new("podman");
+    cmd.arg("unshare");
+    cmd.arg("env");
+    cmd.arg(format!("HOME={home_str}"));
+    cmd.arg("sh");
+    cmd.arg("-c");
+    cmd.arg(&script);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman unshare must spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "unshare script must run: {stderr}");

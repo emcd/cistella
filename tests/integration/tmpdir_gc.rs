@@ -149,7 +149,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     // SIGKILL the driver while the guest hangs: uncertainty is
     // preserved (guest group alive) — no reap.
     kill_wait(driver_a_pid);
-    let _ = driver_a.wait();
+    let _ = reap_bounded(&mut driver_a, CHILD_REAP_TIMEOUT);
     assert!(signal_dead(driver_a_pid), "driver reaped");
     let out = run_cistella(&home, &["gc"]);
     assert!(
@@ -170,7 +170,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     // zombie that still answers kill(-pgid, 0), so the poll would
     // never read dead.)
     kill_wait(guest_pid);
-    let _ = hanging.wait();
+    let _ = reap_bounded(&mut hanging, CHILD_REAP_TIMEOUT);
     wait_group_dead(guest_pgid);
     let out = run_cistella(&home, &["gc"]);
     assert!(
@@ -231,7 +231,7 @@ fn tmpdir_conduct_reaps_slice_on_teardown() {
         String::from_utf8_lossy(&out.stderr)
     );
     guard.id = None;
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     assert!(
         !root.join(&slices[0]).exists(),
         "teardown reaps the declared slice"
@@ -276,7 +276,7 @@ fn tmpdir_natural_exit_reaps_slice() {
         std::thread::sleep(Duration::from_millis(100));
     };
     assert_eq!(slices.len(), 1, "one session slice, got: {slices:?}");
-    let status = conduct.wait().expect("conduct completes");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(status.success(), "natural exit 0, got: {status:?}");
     guard.id = None;
     // Natural completion reaps the declared slice (same promise
@@ -337,7 +337,7 @@ fn tmpdir_hooked_session_writes_tmp() {
         String::from_utf8_lossy(&out.stderr)
     );
     guard.id = None;
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     // The slice is gone with the session (reaped, not litter).
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .expect("read seat root")
@@ -393,7 +393,7 @@ fn hooked_tmp_admits_through_wrapped_harness() {
         &["sh", "-c", "echo admitted > /tmp/admit-probe && sleep 5"],
         &[],
     );
-    let status = conduct.wait().expect("conduct completes");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(
         status.success(),
         "wrapped /tmp write admits, got: {status:?}"
@@ -442,7 +442,7 @@ fn hooked_ro_mirror_denies_through_wrapped_harness() {
         ],
         &[],
     );
-    let status = conduct.wait().expect("conduct completes");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(
         status.success(),
         "wrapped read-ok plus write-denied must exit 0, got: {status:?}"
@@ -535,10 +535,9 @@ fn tmpdir_nested_user_bind_reaps_with_slice() {
     wait_active(&id);
     let container = format!("cistella-{id}");
     wait_harness(&container, "sleep 300");
-    let out = Command::new("podman")
-        .args(["exec", &container, "touch", "/tmp/cache/nested-probe"])
-        .output()
-        .expect("podman exec");
+    let mut cmd = Command::new("podman");
+    cmd.args(["exec", &container, "touch", "/tmp/cache/nested-probe"]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec");
     assert!(
         out.status.success(),
         "nested user bind writes admit: {}",
@@ -551,7 +550,7 @@ fn tmpdir_nested_user_bind_reaps_with_slice() {
         String::from_utf8_lossy(&out.stderr)
     );
     guard.id = None;
-    let _ = conduct.wait();
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     let root = seat_root();
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .expect("read seat root")

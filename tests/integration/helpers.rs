@@ -2,6 +2,7 @@
 
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -406,7 +407,7 @@ pub fn spawn_conduct_tapped(
         Ok(found) => found,
         Err(why) => {
             let _ = child.kill();
-            let reaped = reap_bounded(&mut child, Duration::from_secs(10));
+            let reaped = reap_bounded(&mut child, Duration::from_secs(10)).is_some();
             panic!(
                 "conduct id line unreadable ({why}; child reaped: {reaped}); conduct stderr: {}",
                 drain_stderr(stderr)
@@ -493,56 +494,84 @@ pub fn drain_stderr(stderr: std::process::ChildStderr) -> String {
     drain_pipe(stderr)
 }
 
+/// Per-poll subprocess budget: each poll invocation composes with
+/// the REMAINING outer deadline (never a fresh full budget), capped
+/// here so one wedged `systemctl`/`podman` cannot eat the whole
+/// wait. A poll that errors (spawn failure, timeout) contributes no
+/// observation — the loop continues until the outer deadline, which
+/// alone decides failure.
+pub const POLL_SUBPROCESS_BUDGET: Duration = Duration::from_secs(10);
+
+/// Remaining outer-deadline-composed budget for one poll invocation.
+fn poll_budget(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .min(POLL_SUBPROCESS_BUDGET)
+}
+
 pub fn wait_active(id: &str) {
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last: String;
     loop {
-        let out = Command::new("systemctl")
-            .args([
-                "--user",
-                "show",
-                "-p",
-                "ActiveState",
-                &format!("cistella-{id}.service"),
-            ])
-            .output()
-            .expect("systemctl show");
-        let txt = String::from_utf8_lossy(&out.stdout).to_string();
-        if txt.contains("ActiveState=active") {
-            return;
+        let mut cmd = Command::new("systemctl");
+        cmd.args([
+            "--user",
+            "show",
+            "-p",
+            "ActiveState",
+            &format!("cistella-{id}.service"),
+        ]);
+        match run_bounded(cmd, poll_budget(deadline)) {
+            Ok(out) => {
+                last = String::from_utf8_lossy(&out.stdout).to_string();
+                if last.contains("ActiveState=active") {
+                    return;
+                }
+            }
+            Err(why) => {
+                last = format!("poll failed: {why}");
+            }
         }
         if Instant::now() > deadline {
-            panic!("service cistella-{id} never active: {txt}");
+            panic!("service cistella-{id} never active: {last}");
         }
         std::thread::sleep(Duration::from_millis(500));
     }
 }
 
-/// Waits until the harness process is running inside the session
-/// container (not just service-active). Killing conduct earlier
-/// races the guest-side execution binding: pre-execution the unit
-/// has no live execution and the guest's disconnect sweep
-/// legitimately converges it (spec: sweep-only-without-live-
-/// executions), so an orphan assertion would fail for want of an
-/// orphan, not for want of code. The binding insert follows the
-/// backend spawn by microseconds, so a visible harness means the
-/// binding is present deterministically. Matches the harness ARGV
-/// (`podman top` shows full command lines): counting processes is
-/// insufficient because container PID1 may itself be a sleeper
-/// (`podman-init -- sleep infinity` plus a `sleep infinity`
-/// child already read as header + two lines pre-harness).
+/// Session-up smoke: waits until the harness process is running
+/// inside the session container (not just service-active) —
+/// `podman top` shows the expected harness ARGV. This attests the
+/// container is up and executing the session command; it does NOT
+/// itself prove guest-side execution-binding state. The disconnect
+/// sweep preserves only bound live executions, so callers that need
+/// a bound execution (like the orphan test) state that ordering
+/// need themselves — the guest binds the execution on launch, and
+/// a visible harness is smoke for a launched session, not a proof
+/// of registry state. Matches the harness ARGV (`podman top` shows
+/// full command lines): counting processes is insufficient because
+/// container PID1 may itself be a sleeper (`podman-init -- sleep
+/// infinity` plus a `sleep infinity` child already read as header +
+/// two lines pre-harness).
 pub fn wait_harness(container: &str, argv: &str) {
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last: String;
     loop {
-        let out = Command::new("podman")
-            .args(["top", container])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        if out.contains(argv) {
-            return;
+        let mut cmd = Command::new("podman");
+        cmd.args(["top", container]);
+        match run_bounded(cmd, poll_budget(deadline)) {
+            Ok(out) => {
+                last = String::from_utf8_lossy(&out.stdout).to_string();
+                if last.contains(argv) {
+                    return;
+                }
+            }
+            Err(why) => {
+                last = format!("poll failed: {why}");
+            }
         }
         if Instant::now() > deadline {
-            panic!("harness {argv} never visible in {container}");
+            panic!("harness {argv} never visible in {container}: {last}");
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -570,17 +599,17 @@ pub fn unit_directory_label(path: &PathBuf) -> String {
         .unwrap_or_default()
 }
 
-/// Reads one podman label from the running container.
+/// Reads one podman label from the running container (single-shot
+/// bounded query — a wedged `podman inspect` fails loudly, never hangs).
 pub fn podman_label(container: &str, key: &str) -> String {
-    let out = Command::new("podman")
-        .args([
-            "inspect",
-            "--format",
-            &format!("{{{{index .Config.Labels \"{key}\"}}}}"),
-            container,
-        ])
-        .output()
-        .expect("podman inspect");
+    let mut cmd = Command::new("podman");
+    cmd.args([
+        "inspect",
+        "--format",
+        &format!("{{{{index .Config.Labels \"{key}\"}}}}"),
+        container,
+    ]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman inspect");
     assert!(out.status.success(), "inspect {container}");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -615,6 +644,27 @@ pub fn wait_for_unit_file(
     }
 }
 
+/// Bounded reap of a forkpty child by pid: WNOHANG loop against
+/// the bound after SIGKILL. True = reaped. A pid that will not reap
+/// is wedged; the caller reports loudly — bounded, never hangs.
+/// Public so forkpty-based tests share the one bounded reap.
+pub fn reap_bounded_pid(child: nix::unistd::Pid, timeout: Duration) -> bool {
+    use nix::sys::wait::{WaitPidFlag, WaitStatus};
+    let start = Instant::now();
+    loop {
+        match nix::sys::wait::waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) => {
+                if start.elapsed() > timeout {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(_) => return true,
+            Err(_) => return false,
+        }
+    }
+}
+
 pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
     use nix::pty::{ForkptyResult, Winsize, forkpty};
     use nix::sys::wait::{self, WaitStatus};
@@ -627,7 +677,24 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
     };
     match unsafe { forkpty(Some(&winsize), None) } {
         Ok(ForkptyResult::Parent { child, master }) => {
-            let mut f = std::fs::File::from(master);
+            let f = std::fs::File::from(master);
+            // Nonblocking master: the 30s window below must bound
+            // controller progress, and a blocking `read` would sit
+            // past it on a silent child. Setup failure surfaces
+            // (false + diagnostic), never degrades silently.
+            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+                let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
+                oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                {
+                    eprintln!("enter pty: O_NONBLOCK setup refused");
+                    return false;
+                }
+            } else {
+                eprintln!("enter pty: F_GETFL refused");
+                return false;
+            }
+            let mut f = f;
             let mut buf = [0u8; 4096];
             let mut acc = Vec::new();
             let start = Instant::now();
@@ -651,10 +718,27 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                     break;
                 }
             }
-            let _ = wait::waitpid(child, None);
+            // Bounded final reap against the REMAINING window (never
+            // a fresh wait): a child that outlives the session is
+            // killed, and the run reports unattested, never hangs.
+            let deadline = start + Duration::from_secs(30);
+            let reaped = loop {
+                match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::StillAlive) => {
+                        if Instant::now() > deadline {
+                            let _ =
+                                nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+                            break reap_bounded_pid(child, Duration::from_secs(10));
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(_) => break true,
+                    Err(_) => break false,
+                }
+            };
             let txt = String::from_utf8_lossy(&acc).to_string();
             eprintln!("enter pty acc: {txt}");
-            txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0"))
+            reaped && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))
         }
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;

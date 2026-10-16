@@ -15,6 +15,8 @@ use cistella::framework::protocol::{
     parse_envelope, read_frame, write_frame,
 };
 
+use super::helpers::*;
+
 /// Resolves the built guest binary next to the test executable
 /// (`target/<profile>/cistella-isolator-podman`).
 fn guest_bin() -> std::path::PathBuf {
@@ -75,7 +77,7 @@ fn hello_exchange(offered: &[&str]) -> Vec<String> {
     // before any op must reap exit 0.
     drop(stdin);
     drop(stdout);
-    let status = child.wait().expect("reap guest");
+    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("reap guest");
     assert!(
         status.success(),
         "guest exits quietly after hello: {status:?}"

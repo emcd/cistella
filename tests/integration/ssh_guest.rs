@@ -6,6 +6,8 @@
 
 use std::io::{Read, Write};
 
+use super::helpers::*;
+
 fn shipped_bin(name: &str) -> std::path::PathBuf {
     std::env::current_exe()
         .expect("current_exe")
@@ -66,7 +68,7 @@ fn run_guest(args: &[&str], writes: Vec<Vec<u8>>) -> Transcript {
         .expect("stdout")
         .read_to_end(&mut stdout)
         .expect("stdout drains");
-    let output = child.wait().expect("guest exits");
+    let output = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
     Transcript {
         code: output.code(),
         frames: read_frames(&stdout),

@@ -7,7 +7,6 @@
 //! manager, podman, crun runtime, fixture image).
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -379,15 +378,11 @@ impl Drop for HookFixture {
 
 /// Runs `podman exec <container> <argv...>` with piped stdio.
 fn podman_exec(container: &str, argv: &[&str]) -> std::process::Output {
-    std::process::Command::new("podman")
-        .arg("exec")
-        .arg(container)
-        .args(argv)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("podman exec must spawn")
+    let mut cmd = std::process::Command::new("podman");
+    cmd.arg("exec");
+    cmd.arg(container);
+    cmd.args(argv);
+    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec must spawn")
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
