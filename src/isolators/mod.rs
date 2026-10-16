@@ -5,6 +5,7 @@
 //! fault-injecting test-double, never a lifecycle prover.
 
 pub mod client;
+pub mod client_verdicts;
 pub mod close;
 pub mod corroboration;
 pub mod dispatch;

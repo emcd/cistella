@@ -41,124 +41,31 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::error::{CistellaError, Result};
-use crate::framework::contract::{
-    CancelFlag, Deadlines, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
-};
+use crate::framework::contract::{Deadlines, ExecutionHandle, ReconciliationKey, UnitHandle};
 use crate::framework::fdpass::{
     BundleHeader, accept_authenticated, bind_rendezvous, send_bundle, send_diagnostics_bundle,
 };
 use crate::framework::guest::{
     host_external, host_registered, isolator_host_offer, isolator_host_offer_role,
 };
-use crate::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
-    StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
-};
+use crate::framework::isolator::{Isolator, StdioBinding};
 use crate::guest_source::ResolvedGuest;
-use crate::isolators::close::{complete_close, parse_await_outcome, wire_error};
-use crate::isolators::dispatch::{Command, DISPATCH_SLICE, serve};
+use crate::isolators::close::{complete_close, wire_error};
+use crate::isolators::dispatch::{Command, serve};
 use crate::isolators::podman::PodmanIsolator;
+
+#[path = "client_isolator.rs"]
+mod client_isolator;
+
+pub use super::client_verdicts::{
+    abort_exit_code, pre_exec_recovery_verdict, rehost_failure_verdict, select_teardown_error,
+};
 
 /// Guest binary name resolved sibling-relative to the driver.
 pub const ISOLATOR_BIN: &str = "cistella-isolator-podman";
 
 /// Extra argv carrying the fd-rendezvous path to the guest.
 const FD_SOCKET_ARG: &str = "--fd-socket";
-
-/// Selects the reported error after a failed phase with teardown
-/// attempted: the teardown error dominates when residue remains OR
-/// shutdown is uncertain (unverified quiescence never collapses to
-/// the original error even when the snapshot is clean); otherwise
-/// the original phase error stands. Conduct's prepare arm routes
-/// through here; other arms reach the same table by shape.
-///
-/// Precondition note: Ok+uncertain returns the original error.
-/// That state is unreachable through `teardown_unit` (the uncertain
-/// branch never returns clean), so the selector stays conservative
-/// there by construction rather than by check.
-///
-/// Public for the deterministic selection pin (the branch decision
-/// pins directly instead of through a live guest).
-pub fn select_teardown_error(
-    teardown: Result<()>,
-    original: CistellaError,
-    residue_ok: bool,
-    uncertain: bool,
-) -> CistellaError {
-    match teardown {
-        Err(teardown_err) if !residue_ok || uncertain => teardown_err,
-        _ => original,
-    }
-}
-
-/// Exit code for a startup abort: residue left behind fails (1);
-/// shutdown uncertainty fails (1) even when the snapshot is clean
-/// — unverified quiescence must never masquerade as a clean signal
-/// exit; a FAILED release also fails (1) — the guest may have
-/// entered a fatal path during release itself, so a pre-release
-/// uncertainty snapshot alone is stale by construction. Otherwise
-/// the signal disposition rules (128+signum). Conduct's abort path
-/// routes through here; the decision pins directly instead of
-/// through a live signal.
-#[must_use]
-pub fn abort_exit_code(
-    residue_left: bool,
-    uncertain_before: bool,
-    release_failed: bool,
-    signum: i32,
-) -> i32 {
-    if residue_left || uncertain_before || release_failed {
-        1
-    } else {
-        128 + signum
-    }
-}
-
-/// Recovery verdict for a failed pre-exec op: exactly one
-/// bounded replacement on proven guest death (`guest_dead`
-/// without `shutdown_uncertain`); a used replacement, uncertain
-/// shutdown, or live-guest failure never re-execs. Conduct probes
-/// this BEFORE `death_checked` — on the recovery path a located
-/// unit is the expected adoptable survivor, not residue.
-///
-/// Public for the deterministic verdict pin (the branch decision
-/// pins directly instead of through a live guest).
-#[must_use]
-pub fn pre_exec_recovery_verdict(
-    replacement_used: bool,
-    guest_dead: bool,
-    shutdown_uncertain: bool,
-) -> bool {
-    !replacement_used && guest_dead && !shutdown_uncertain
-}
-
-/// Re-host failure verdict for the pre-exec recovery path: the
-/// teardown verdict stands on a clean snapshot, while residue
-/// overrides on a dirty one. A failed converge reports its
-/// concrete error regardless of the snapshot (its reason is the
-/// most actionable signal); a nominally successful teardown with
-/// remaining residue synthesizes the residue class with the
-/// re-host fault rendered in (partial cleanup or a concurrently
-/// recreated path must never hide behind it). Only teardown-Ok
-/// plus a clean snapshot keeps the re-host error. Deliberately
-/// distinct from [`select_teardown_error`], whose Ok+dirty-keeps
-/// shape serves the wire-teardown arms.
-///
-/// Public for the deterministic pin (Ok+dirty must name residue).
-#[must_use]
-pub fn rehost_failure_verdict(
-    teardown: Result<()>,
-    residue_ok: bool,
-    rehost_error: CistellaError,
-) -> CistellaError {
-    match (teardown, residue_ok) {
-        (Err(teardown_error), _) => teardown_error,
-        (Ok(()), false) => {
-            CistellaError::Contract(format!("re-host failure left residue: {rehost_error}"))
-        }
-        (Ok(()), true) => rehost_error,
-    }
-}
 
 /// External isolator client: guest process plus fd rendezvous.
 pub struct WireClient {
@@ -758,220 +665,5 @@ impl WireClient {
             Some(recorded) => Err(CistellaError::Protocol(recorded)),
             None => outcome,
         }
-    }
-}
-
-impl Isolator for WireClient {
-    fn capabilities(&self) -> IsolatorCapabilities {
-        // Parity with the in-process Podman backend: the wire
-        // client realizes exactly what its guest does.
-        PodmanIsolator::new().capabilities()
-    }
-
-    fn create(&self, spec: &CreateSpec, key: &ReconciliationKey) -> Result<UnitHandle> {
-        self.record_key(key);
-        let unit = UnitHandle::mint();
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_CREATE,
-            serde_json::json!({
-                "unit_handle": unit.as_str(),
-                "spec": serde_json::to_value(spec).expect("spec serializes"),
-                "reconciliation_key": key.as_str(),
-            }),
-            self.deadlines.apply,
-        )?;
-        let echoed = payload
-            .get("unit_handle")
-            .and_then(|handle| handle.as_str())
-            .ok_or_else(|| CistellaError::Contract("bad create response: shape".to_string()))?;
-        if echoed != unit.as_str() {
-            return Err(CistellaError::Contract(
-                "create echoed a different handle".to_string(),
-            ));
-        }
-        Ok(unit)
-    }
-
-    fn initiate(&self, handle: &UnitHandle, key: &ReconciliationKey) -> Result<StartedAttestation> {
-        self.record_key(key);
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_INITIATE,
-            serde_json::json!({
-                "unit_handle": handle.as_str(),
-                "reconciliation_key": key.as_str(),
-            }),
-            self.deadlines.apply,
-        )?;
-        let attestation = payload
-            .get("started_attestation")
-            .cloned()
-            .ok_or_else(|| CistellaError::Contract("bad initiate response: shape".to_string()))?;
-        Self::parse_typed("initiate", attestation)
-    }
-
-    fn execute_launch(
-        &self,
-        handle: &UnitHandle,
-        argv: &[String],
-        workdir: Option<&str>,
-        stdio: StdioBinding,
-        key: &ReconciliationKey,
-    ) -> Result<ExecutionHandle> {
-        self.launch_inner(handle, argv, workdir, stdio, key, None)
-    }
-
-    fn await_result(
-        &self,
-        execution: &ExecutionHandle,
-        cancel: &CancelFlag,
-    ) -> Result<ExecutionOutcome> {
-        // Uncapped wait with caller-side cancel polling: the
-        // dispatcher demultiplexes by id while this thread watches
-        // the flag between reply slices. On cancel this thread
-        // drops interest and returns detached; the dispatcher's
-        // late-terminal send then fails harmlessly and the entry
-        // clears. Nothing is killed, nothing fabricated.
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.commands
-            .send(Command::Op {
-                op: crate::framework::protocol::AWAIT_RESULT_OP.to_string(),
-                payload: serde_json::json!({"execution_handle": execution.as_str()}),
-                timeout: None,
-                reply: reply_tx,
-            })
-            .map_err(|_| CistellaError::Protocol("dispatcher gone".to_string()))?;
-        // Last-sent request id is dispatcher-internal; detach by
-        // execution handle is not addressable — instead the caller
-        // drops interest by disconnecting the reply channel: the
-        // dispatcher treats a failed send as detach. Cancel then
-        // returns detached immediately.
-        loop {
-            match reply_rx.recv_timeout(DISPATCH_SLICE) {
-                Ok(response) => {
-                    // Terminal responses carry the tagged envelope
-                    // (`{"ok": ...}` / `{"error": ...}`), exactly
-                    // like every other op: redeem strictly, then
-                    // parse the nested outcome. A bare
-                    // `exit_status` at top level is not the schema.
-                    let outcome = Self::redeem("await_result", response?)?;
-                    let guest_offers = self.guest_capabilities.iter().any(|capability| {
-                        capability == crate::framework::protocol::AWAIT_INTERRUPTED_V1
-                    });
-                    return parse_await_outcome(&outcome, guest_offers);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if cancel.is_cancelled() {
-                        // Retire the entry explicitly so it clears
-                        // now instead of lingering to harness exit;
-                        // the late terminal (if any) drops on the
-                        // missing entry. Nothing is killed.
-                        let _ = self.commands.send(Command::DetachByExec {
-                            exec: execution.as_str().to_string(),
-                        });
-                        return Err(CistellaError::Detached(
-                            "await detached by cancellation".to_string(),
-                        ));
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(CistellaError::Protocol(
-                        "dispatcher dropped the call".to_string(),
-                    ));
-                }
-            }
-        }
-    }
-
-    fn inspect(&self, handle: &UnitHandle) -> Result<UnitSnapshot> {
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_INSPECT,
-            serde_json::json!({"unit_handle": handle.as_str()}),
-            self.deadlines.plan,
-        )?;
-        Self::parse_typed("inspect", payload)
-    }
-
-    fn state(&self, handle: &UnitHandle) -> Result<LifecycleState> {
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_STATE,
-            serde_json::json!({"unit_handle": handle.as_str()}),
-            self.deadlines.plan,
-        )?;
-        let lifecycle = payload
-            .get("lifecycle")
-            .and_then(|lifecycle| lifecycle.as_str())
-            .ok_or_else(|| CistellaError::Contract("bad state response: shape".to_string()))?;
-        serde_json::from_value(serde_json::Value::String(lifecycle.to_string())).map_err(|_| {
-            CistellaError::Contract("bad state response: unknown lifecycle".to_string())
-        })
-    }
-
-    fn terminate(
-        &self,
-        handle: &UnitHandle,
-        grace: Duration,
-        key: &ReconciliationKey,
-    ) -> Result<StoppedAttestation> {
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_TERMINATE,
-            serde_json::json!({
-                "unit_handle": handle.as_str(),
-                "grace_ms": grace.as_millis() as u64,
-                "reconciliation_key": key.as_str(),
-            }),
-            self.deadlines.apply,
-        )?;
-        let attestation = payload
-            .get("stopped_attestation")
-            .cloned()
-            .ok_or_else(|| CistellaError::Contract("bad terminate response: shape".to_string()))?;
-        Self::parse_typed("terminate", attestation)
-    }
-
-    fn remove(&self, handle: &UnitHandle, key: &ReconciliationKey) -> Result<RemovedAttestation> {
-        let payload = self.roundtrip(
-            crate::isolators::wire::OP_REMOVE,
-            serde_json::json!({
-                "unit_handle": handle.as_str(),
-                "reconciliation_key": key.as_str(),
-            }),
-            self.deadlines.apply,
-        )?;
-        let attestation = payload
-            .get("removed_attestation")
-            .cloned()
-            .ok_or_else(|| CistellaError::Contract("bad remove response: shape".to_string()))?;
-        Self::parse_typed("remove", attestation)
-    }
-
-    fn converge_clean(
-        &self,
-        handle: &UnitHandle,
-        grace: Duration,
-        key: &ReconciliationKey,
-    ) -> Result<()> {
-        // Mirrors the reference override (never trust `state`
-        // alone): an `Absent` unit with a surviving unit file is
-        // residue, not convergence. `remove` is idempotent through
-        // removal tombstones and owns the unit file, so it closes
-        // every state including absent-with-residue.
-        match self.state(handle) {
-            Ok(LifecycleState::Absent) => {
-                self.remove(handle, key)?;
-                Ok(())
-            }
-            Ok(_) => {
-                self.terminate(handle, grace, key)?;
-                self.remove(handle, key)?;
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
-        // Local inspector query: needs no living guest, which is
-        // exactly what post-exit residue checks require.
-        self.inspector.locate(key)
     }
 }
