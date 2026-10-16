@@ -47,7 +47,9 @@ use crate::framework::contract::{
 use crate::framework::fdpass::{
     BundleHeader, accept_authenticated, bind_rendezvous, send_bundle, send_diagnostics_bundle,
 };
-use crate::framework::guest::{host_external, host_registered};
+use crate::framework::guest::{
+    host_external, host_registered, isolator_host_offer, isolator_host_offer_role,
+};
 use crate::framework::isolator::{
     CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
     StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
@@ -322,24 +324,6 @@ impl WireClient {
         Self::host_as(exe_dir, ISOLATOR_BIN, &[], rendezvous_dir, deadlines)
     }
 
-    /// Host hello offer for shipped isolator guests: the role plus
-    /// the await-interrupted capability (typed `Unobservable` may
-    /// then arrive; without the offer the guest downgrades).
-    fn host_offer() -> Vec<String> {
-        vec![
-            "isolator".to_string(),
-            crate::framework::protocol::AWAIT_INTERRUPTED_V1.to_string(),
-        ]
-    }
-
-    /// Host hello offer for registered isolator guests: the recorded
-    /// role plus the await-interrupted capability.
-    fn host_offer_role(role: &[String]) -> Vec<String> {
-        let mut offered = role.to_vec();
-        offered.push(crate::framework::protocol::AWAIT_INTERRUPTED_V1.to_string());
-        offered
-    }
-
     /// Hosts a named guest binary with extra argv (conformance uses
     /// the scripted peer; production uses [`ISOLATOR_BIN`]).
     ///
@@ -361,7 +345,7 @@ impl WireClient {
         ];
         args.extend(extra_args.iter().cloned());
         let (guest, negotiated) =
-            host_external(exe_dir, name, &args, &Self::host_offer(), deadlines).inspect_err(
+            host_external(exe_dir, name, &args, &isolator_host_offer(), deadlines).inspect_err(
                 |_| {
                     let _ = std::fs::remove_file(&path);
                 },
@@ -392,7 +376,7 @@ impl WireClient {
             path.to_string_lossy().to_string(),
         ];
         let (guest, negotiated) =
-            host_registered(resolved, &args, &Self::host_offer_role(&role), deadlines)
+            host_registered(resolved, &args, &isolator_host_offer_role(&role), deadlines)
                 .inspect_err(|_| {
                     let _ = std::fs::remove_file(&path);
                 })?;
@@ -620,6 +604,23 @@ impl WireClient {
     #[must_use]
     pub fn shutdown_uncertain(&self) -> bool {
         self.uncertain.load(Ordering::SeqCst)
+    }
+
+    /// Re-proves backend absence for one container (unit, service,
+    /// container re-queried now): the final proof behind
+    /// `cleanup=converged` claims. Key queries need no living guest
+    /// (read-only state), so this runs post-release as well as
+    /// pre-release. Backend-owned rule; the caller renders the bit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the observation error on any query failure (never
+    /// silent convergence).
+    pub fn confirm_absence(
+        &self,
+        container_name: &str,
+    ) -> Result<crate::isolators::corroboration::AbsenceProof> {
+        crate::isolators::corroboration::prove_absence(container_name)
     }
 
     /// Conduct's death gate for one wire outcome: passes successes

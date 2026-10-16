@@ -10,5 +10,6 @@ pub mod corroboration;
 pub mod dispatch;
 pub mod hook;
 pub mod podman;
+pub(crate) mod podman_await;
 pub mod quadlet;
 pub mod wire;

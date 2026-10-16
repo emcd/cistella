@@ -231,7 +231,6 @@ pub enum ExecutionOutcome {
     /// result; never a harness disposition, never proven cause).
     Unobservable(UnobservableOutcome),
 }
-
 impl ExecutionOutcome {
     /// Process exit code for this outcome.
     ///
@@ -245,80 +244,6 @@ impl ExecutionOutcome {
             Self::Signaled(signum) => 128 + signum,
             Self::Unobservable(_) => 1,
         }
-    }
-}
-
-/// Read-only lifecycle facts corroboration needs. All fields are
-/// snapshot values recorded in query order (container, service,
-/// unit); co-occurrence only, never proven cause.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CorroborationFacts {
-    /// `podman container exists` exit code (0 present, 1 absent).
-    pub container_exists_code: i32,
-    /// Systemd `ActiveState` at query time.
-    pub service_active_state: String,
-    /// Systemd `LoadState` at query time.
-    pub service_load_state: String,
-    /// Unit file present at query time.
-    pub unit_file_present: bool,
-}
-
-/// Classifies one completed foreground exec-client wait.
-///
-/// `conduct_signal` carries the driver's own signals (cancel flag,
-/// HUP/TERM) and wins before any status reading (unchanged legacy).
-/// A zero status reports `Exited(0)` with no queries. Otherwise the
-/// caller supplies read-only corroboration facts when obtainable.
-/// Container ABSENT (code 1) is a hard fact: no container means no
-/// observable harness, so the outcome is `Unobservable` regardless
-/// of service readings. Container present but service NOT active
-/// (stop/interruption in flight — mere existence covers
-/// stopped-but-present containers, so existence alone cannot gate)
-/// is likewise `Unobservable`, with the recorded states as the
-/// observation. Service active with container present, query
-/// failure, or unresolvable names (`facts` None) keep the legacy
-/// status mapping byte-for-byte by explicit compatibility policy
-/// (receipt unproven, never upgraded) — two outcome branches, no
-/// third unknown-variant.
-#[must_use]
-pub fn classify_completion(
-    conduct_signal: Option<i32>,
-    status: &std::process::ExitStatus,
-    facts: Option<&CorroborationFacts>,
-) -> ExecutionOutcome {
-    use std::os::unix::process::ExitStatusExt;
-    if let Some(signum) = conduct_signal {
-        return ExecutionOutcome::Signaled(signum);
-    }
-    if status.code() == Some(0) {
-        return ExecutionOutcome::Exited(0);
-    }
-    let raw = match status.signal() {
-        Some(signum) => RawClientResult::Signaled(signum),
-        None => RawClientResult::Exited(status.code().unwrap_or(1)),
-    };
-    let unobservable = |facts: &CorroborationFacts| {
-        ExecutionOutcome::Unobservable(UnobservableOutcome {
-            observation: AbsenceObservation {
-                container_exists_code: facts.container_exists_code,
-                service_active_state: facts.service_active_state.clone(),
-                service_load_state: facts.service_load_state.clone(),
-                unit_file_present: facts.unit_file_present,
-            },
-            raw,
-        })
-    };
-    match facts {
-        Some(facts) if facts.container_exists_code == 1 => unobservable(facts),
-        Some(facts)
-            if !facts.service_active_state.is_empty() && facts.service_active_state != "active" =>
-        {
-            unobservable(facts)
-        }
-        _ => match raw {
-            RawClientResult::Exited(code) => ExecutionOutcome::Exited(code),
-            RawClientResult::Signaled(signum) => ExecutionOutcome::Signaled(signum),
-        },
     }
 }
 

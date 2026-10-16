@@ -24,11 +24,13 @@ fn report_field(value: &str) -> String {
 }
 
 /// Renders the finalized unobservable-outcome report: one stable
-/// human line with explicit fields. Raw client status renders as
-/// `exited(code)` or `signaled(n)`, never coerced; observation
-/// fields are JSON-encoded; `cleanup` prints `converged` ONLY when
-/// the caller proved final absence (the renderer trusts its flag —
-/// proof happens at the call site, never here).
+/// human line with explicit fields. The container fact renders from
+/// the ACTUAL recorded code (`absent` only for exit 1, `present`
+/// otherwise — never a fixed claim), service/unit fields render as
+/// observed, raw client status renders as `exited(code)` or
+/// `signaled(n)` without coercion, and `cleanup` prints `converged`
+/// ONLY when the caller proved final absence (the renderer trusts
+/// its flag — proof happens at the call site, never here).
 #[must_use]
 pub fn format_unobservable_report(
     observation: &AbsenceObservation,
@@ -39,8 +41,17 @@ pub fn format_unobservable_report(
         RawClientResult::Exited(code) => format!("exited({code})"),
         RawClientResult::Signaled(signum) => format!("signaled({signum})"),
     };
+    let container_rendered = if observation.container_exists_code == 1 {
+        "absent"
+    } else {
+        // Only 0/1 reach the record (strict constructors and parse
+        // bounds); anything else is a defect elsewhere, and presence
+        // is the safe reading (never claim absence unproven).
+        "present"
+    };
     format!(
-        "error: execution outcome unobservable (container absent at query, service {}/{} unit {}): harness outcome unobservable; raw client {}; cleanup={}",
+        "error: execution outcome unobservable (container {} at query, service {}/{} unit {}): harness outcome unobservable; raw client {}; cleanup={}",
+        container_rendered,
         report_field(&observation.service_active_state),
         report_field(&observation.service_load_state),
         if observation.unit_file_present {

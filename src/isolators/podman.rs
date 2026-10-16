@@ -27,7 +27,6 @@ use crate::framework::isolator::{
     CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
     StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
 };
-use crate::framework::signals;
 use crate::isolators::quadlet::{
     container_exists, generate_quadlet_unit, install_quadlet, quadlet_dir, query_unit_props,
     remove_unit_file, start_quadlet, stop_settle,
@@ -37,13 +36,13 @@ use crate::session::{LABEL_ID, LABEL_RECONCILIATION_KEY};
 
 /// Unit record tracked per issued handle.
 #[derive(Debug, Clone)]
-struct UnitRecord {
+pub(crate) struct UnitRecord {
     /// Container name (unit identity).
-    container_name: String,
+    pub(crate) container_name: String,
     /// Session id.
-    session_id: String,
+    pub(crate) session_id: String,
     /// Quadlet unit file name.
-    unit_name: String,
+    pub(crate) unit_name: String,
 }
 
 /// Handle-table entry: a live record plus, after successful
@@ -52,7 +51,7 @@ struct UnitRecord {
 /// identity so identical convergent retries report absent
 /// attestations and absent-with-unit still converges by handle.
 #[derive(Debug, Clone)]
-enum UnitEntry {
+pub(crate) enum UnitEntry {
     /// Live backend unit.
     Live(UnitRecord),
     /// Removal tombstone: live binding evicted, absence recorded.
@@ -73,24 +72,24 @@ enum UnitEntry {
 /// on the same handle re-attaches or replays. The table retains
 /// identity only — the caller owns the reconciliation key for any
 /// cross-call operation (terminate/remove take it as a parameter).
-struct PendingExec {
+pub(crate) struct PendingExec {
     /// Unit this execution belongs to (cleared with the unit).
-    unit: UnitHandle,
+    pub(crate) unit: UnitHandle,
     /// Running harness child (None once reaped).
-    child: Option<Child>,
+    pub(crate) child: Option<Child>,
     /// Collected outcome for replay until `remove`.
-    outcome: Option<ExecutionOutcome>,
+    pub(crate) outcome: Option<ExecutionOutcome>,
 }
 
 /// Podman isolator backend (`podman` + Quadlet + systemd user manager).
 pub struct PodmanIsolator {
     /// Issued handles to unit entries (live records plus removal
     /// tombstones).
-    units: Mutex<HashMap<UnitHandle, UnitEntry>>,
+    pub(crate) units: Mutex<HashMap<UnitHandle, UnitEntry>>,
     /// Reconciliation keys to handles (replacement-peer recovery).
-    keys: Mutex<HashMap<ReconciliationKey, UnitHandle>>,
+    pub(crate) keys: Mutex<HashMap<ReconciliationKey, UnitHandle>>,
     /// Launched executions awaiting result collection.
-    executions: Mutex<HashMap<ExecutionHandle, PendingExec>>,
+    pub(crate) executions: Mutex<HashMap<ExecutionHandle, PendingExec>>,
 }
 
 impl PodmanIsolator {
@@ -152,6 +151,34 @@ impl PodmanIsolator {
             }
             UnitEntry::Removed { .. } => None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_execution(
+        &self,
+        unit: UnitHandle,
+        execution: ExecutionHandle,
+        child: std::process::Child,
+        container_name: &str,
+        session_id: &str,
+    ) {
+        let record = UnitRecord {
+            container_name: container_name.to_string(),
+            session_id: session_id.to_string(),
+            unit_name: format!("{container_name}.container"),
+        };
+        self.units
+            .lock()
+            .expect("unit table lock")
+            .insert(unit.clone(), UnitEntry::Live(record));
+        self.executions.lock().expect("exec table lock").insert(
+            execution,
+            PendingExec {
+                unit,
+                child: Some(child),
+                outcome: None,
+            },
+        );
     }
 
     /// Looks up the live record for a handle: tombstones refuse as
@@ -665,64 +692,7 @@ impl Isolator for PodmanIsolator {
         execution: &ExecutionHandle,
         cancel: &CancelFlag,
     ) -> Result<ExecutionOutcome> {
-        // Never hold the table lock across a wait: try_wait is
-        // nonblocking, so each iteration borrows briefly. Records
-        // (and collected outcomes) live until `remove`: cancelling
-        // detaches without killing, and a later await re-attaches or
-        // replays. Explicit `terminate` owns the kill.
-        loop {
-            let completed = {
-                let mut table = self.executions.lock().expect("exec table lock");
-                let pending = table.get_mut(execution).ok_or_else(|| {
-                    CistellaError::Contract(format!(
-                        "unknown execution handle: {}",
-                        execution.as_str()
-                    ))
-                })?;
-                if let Some(outcome) = pending.outcome.clone() {
-                    return Ok(outcome);
-                }
-                let child = pending.child.as_mut().ok_or_else(|| {
-                    CistellaError::Contract(format!(
-                        "execution already reaped: {}",
-                        execution.as_str()
-                    ))
-                })?;
-                match child.try_wait() {
-                    Ok(Some(status)) => Some(status),
-                    Ok(None) => None,
-                    Err(_) => {
-                        // Reaped elsewhere; fall back to a blocking wait.
-                        let status = child
-                            .wait()
-                            .map_err(|e| CistellaError::Runtime(format!("wait: {e}")))?;
-                        Some(status)
-                    }
-                }
-            };
-            if let Some(status) = completed {
-                let outcome = crate::isolators::corroboration::corroborated_outcome(
-                    self, execution, &status, cancel,
-                );
-                if let Some(pending) = self
-                    .executions
-                    .lock()
-                    .expect("exec table lock")
-                    .get_mut(execution)
-                {
-                    pending.outcome = Some(outcome.clone());
-                    pending.child = None;
-                }
-                return Ok(outcome);
-            }
-            if cancel.is_cancelled() || cancel_signum(cancel).is_some() {
-                return Err(CistellaError::Detached(format!(
-                    "await detached; execution {} stays redeemable until remove",
-                    execution.as_str()
-                )));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        super::podman_await::await_result(self, execution, cancel)
     }
 
     fn inspect(&self, handle: &UnitHandle) -> Result<UnitSnapshot> {
@@ -896,19 +866,6 @@ impl Isolator for PodmanIsolator {
             Err(e) => Err(e),
         }
     }
-}
-
-/// Converts a waited child status, preferring a pending cancellation
-/// disposition over the raw exit code (conduct-level signals dominate).
-/// Pending cancellation signal, if any.
-fn cancel_signum(cancel: &CancelFlag) -> Option<i32> {
-    if signals::got_hup() {
-        return Some(1);
-    }
-    if signals::got_term() {
-        return Some(15);
-    }
-    cancel.signum()
 }
 
 /// Kills a harness child: SIGTERM, brief grace, SIGKILL on survival.

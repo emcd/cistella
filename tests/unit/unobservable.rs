@@ -7,9 +7,9 @@
 use std::process::Command;
 
 use cistella::framework::isolator::{
-    AbsenceObservation, CorroborationFacts, ExecutionOutcome as Outcome, RawClientResult,
-    UnobservableOutcome, classify_completion,
+    AbsenceObservation, ExecutionOutcome as Outcome, RawClientResult, UnobservableOutcome,
 };
+use cistella::isolators::corroboration::{CorroborationFacts, classify_completion};
 
 fn exited(code: i32) -> std::process::ExitStatus {
     Command::new("sh")
@@ -264,4 +264,41 @@ fn renderer_goldens_pin_shape_and_escaping() {
         rendered.contains("unit present"),
         "unit presence renders verbatim: {rendered:?}"
     );
+}
+
+#[test]
+fn renderer_reports_present_container_truthfully() {
+    // The Mode B shape: container present (exit 0) with a
+    // deactivating service must NOT print a fixed 'absent' claim —
+    // the container fact renders from the recorded code.
+    use cistella::runtime::format_unobservable_report;
+    let observation = AbsenceObservation {
+        container_exists_code: 0,
+        service_active_state: "deactivating".to_string(),
+        service_load_state: "loaded".to_string(),
+        unit_file_present: true,
+    };
+    assert_eq!(
+        format_unobservable_report(&observation, &RawClientResult::Exited(137), true),
+        "error: execution outcome unobservable (container present at query, service \"deactivating\"/\"loaded\" unit present): harness outcome unobservable; raw client exited(137); cleanup=converged",
+    );
+}
+
+#[test]
+fn absence_proof_converged_rule_pins() {
+    use cistella::isolators::corroboration::AbsenceProof;
+    // Converged: strictly absent container + non-active service +
+    // absent unit file.
+    assert!(AbsenceProof::new(1, "inactive".to_string(), "not-found".to_string(), true).converged);
+    // Stopped-but-present container never converges (residue).
+    assert!(!AbsenceProof::new(0, "inactive".to_string(), "loaded".to_string(), true).converged);
+    // Active service never converges, even with absent container.
+    assert!(!AbsenceProof::new(1, "active".to_string(), "loaded".to_string(), true).converged);
+    // Present unit file never converges.
+    assert!(
+        !AbsenceProof::new(1, "inactive".to_string(), "not-found".to_string(), false).converged
+    );
+    // Empty service strings pass that clause (query unavailable);
+    // container-absent + unit-absent carry the proof.
+    assert!(AbsenceProof::new(1, String::new(), String::new(), true).converged);
 }

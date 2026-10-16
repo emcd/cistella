@@ -6,17 +6,21 @@
 and report the finalized typed outcome as a driver-level report
 (typed one-line stderr rendering, exit 1 — the existing class for
 paths that cannot report a harness disposition), never as a harness
-disposition (never exit 128+N, never exit 0). The rendering SHALL
-name the observation (never a proven cause), state that the harness
-outcome is unobservable, render the raw client result as
-`exited(code)` or `signaled(n)` without coercion, and print
-`cleanup=converged` only after actual final proof — otherwise the
-dominant residue, observation-error, or shutdown-uncertain outcome
-reports instead. Final absence facts (unit file, explicit service
+disposition (never exit 128+N, never exit 0). Proof dominance SHALL
+hold: any teardown error dominates (death/uncertainty keep recorded
+text), then release failure, then backend absence re-proof —
+observation errors and unconverged proofs dominate with their own
+reports, and `cleanup=converged` prints only on the backend's
+converged bit. A preexisting hooked exec/transition failure SHALL
+keep its disposition precedence over the unobservable arm. The
+rendering SHALL name the observation (container fact from the
+recorded code, never fixed), state that the harness outcome is
+unobservable, render the raw client result as `exited(code)` or
+`signaled(n)` without coercion, and carry no product stderr tail
+(none exists). Final absence facts (unit file, explicit service
 state with checked query, container-exists exit 1) SHALL hold
-exactly as in the converged path. No product stderr tail is
-rendered (none exists); test-side tap tails appear in test failure
-output only.
+exactly as in the converged path. Test-side tap tails appear in
+test failure output only.
 
 #### Scenario: Unobservable conduct reports typed, exits 1
 - **WHEN** conduct's await observes container-absent-at-query and

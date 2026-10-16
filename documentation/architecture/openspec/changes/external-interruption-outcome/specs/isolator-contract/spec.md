@@ -18,7 +18,9 @@ later cleanup confirmation SHALL NOT upgrade the causal
 hypothesis. The guarantee applies if AND only if the
 `await-interrupted-v1` capability is negotiated both ways;
 otherwise legacy mapping holds (documented current behavior), and
-an unsolicited variant without negotiation refuses. Client failure
+an unsolicited variant without negotiation refuses. The guest
+advertises the capability ONLY when the host offered it (an old
+host admits exactly the offered set). Client failure
 with the container present AND the service active, and any
 unobtainable facts, SHALL keep ordinary outcome mapping.
 Ordinary harness `Exited(137)`, `Exited(143)`, `Exited(255)` with no
@@ -57,3 +59,15 @@ allow-list of raw statuses SHALL NOT satisfy this requirement.
   external teardown
 - **THEN** current dispositions hold exactly; no unobservable
   variant appears
+
+#### Scenario: Schema closure refuses mixed and unsolicited shapes
+- **WHEN** an await payload carries mixed top-level tags,
+  unknown fields, a typed raw `exited(0)`, or an `unobservable`
+  variant without negotiated capability
+- **THEN** decoding refuses with a typed contract error; no
+  outcome is fabricated from the shape
+
+#### Scenario: Concurrent awaiters replay one frozen outcome
+- **WHEN** two awaiters race one completed execution
+- **THEN** exactly one corroborates and caches; the other replays
+  the frozen outcome identically (bounded, cancel-aware)

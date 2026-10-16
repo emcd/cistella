@@ -52,6 +52,19 @@ test-side.
   finalizes post-proof or yields to dominant residue /
   observation-error / shutdown-uncertain. `cleanup converged`
   prints only after actual final proof.
+- Proof dominance, no fallthrough: ANY teardown error dominates
+  (death/uncertainty keep recorded text inside the report);
+  release failure dominates next; backend absence is then
+  re-proven by a backend-owned `prove_absence` (container, service,
+  unit re-queried — never inferred from earlier snapshots), whose
+  converged bit (strict exit-1 + non-active service + absent unit)
+  alone gates `cleanup=converged`. Observation errors and
+  unconverged proofs dominate with their own reports.
+- Generality split: the framework owns taxonomy types only;
+  Podman-domain interpretation (exists codes, ActiveState rule,
+  absence-proof rule) lives in `isolators::corroboration`, the
+  completion freeze in `isolators::podman_await`; the framework
+  routes outcomes and renders bits, never backend states.
 - No condition enum with causal names: the observation record
   carries the corroborated snapshot (container-exists code,
   service states, unit presence, query ordering) instead of
@@ -81,14 +94,22 @@ test-side.
   The outcome carries raw status only; tails live in test-side taps
   (boundary evidence), never promised in product. If a future
   owned capture path appears, it gets its own proposal.
+- Completion freeze: exactly one corroboration per execution —
+  the first awaiter observing completion claims the child and
+  owns caching; losers replay the frozen cache (bounded,
+  cancel-aware), never re-corroborate. Pinned by a
+  barrier-synchronized two-awaiter race plus cache-replay
+  assertion (inline: tables are crate-private by design).
 - Wire compat by capability, exact outcomes per pair shape.
   Wire sessions (hello negotiated): capability negotiated both
   ways → typed variant; any of the other three wire combos (new
   host/old guest, new/new WITHOUT the negotiated capability,
   old/old) → legacy mapping on both sides (documented current
   behavior); the old-host/new-guest combo is safe by guest-side
-  obligation (the guest MUST NOT emit without negotiation).
-  Negative path (not a normal combo): guest emits the
+  obligation (the guest MUST NOT emit without negotiation, AND
+  advertises the capability ONLY when offered — an unsolicited
+  advertisement would refuse old-host admission before downgrade
+  matters). Negative path (not a normal combo): guest emits the
   variant without negotiation → host refuses. In-process reference
   backend has no hello: it implements the typed shape natively
   (nothing to negotiate locally); conformance pairs it with wire
@@ -99,8 +120,17 @@ test-side.
 - CLI rendering (one line, pinned goldens): `error: execution
   outcome unobservable (<observation>): raw client
   <exited(code)|signaled(n)>; cleanup=<converged|dominant-error>`.
-  Exit 1, driver-report class. No tail field in product rendering
-  (none available); test failures render tap tails separately.
+  Exit 1, driver-report class. The container fact renders from the
+  recorded code (absent only for exit 1); no tail field in product
+  rendering (none available); test failures render tap tails
+  separately.
+- Schema closure: exactly one known top-level variant, closed
+  record (mixed tags and extra fields refuse); typed raw
+  `exited(0)` refuses (success never classifies unobservable).
+- Transition precedence: preexisting hooked
+  exec-failure/transition dispositions run BEFORE the
+  unobservable arm (a failed transition owns its report even
+  when completion is also ambiguous).
 
 ## Risks / Trade-offs
 

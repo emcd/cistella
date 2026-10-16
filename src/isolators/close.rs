@@ -52,15 +52,31 @@ pub fn complete_close(
 /// backend. `guest_offers` carries whether the guest negotiated
 /// `await-interrupted-v1`: an `unobservable` variant arriving
 /// without negotiation refuses as unsolicited (it is never decoded
-/// on suspicion). Field bounds: observation strings are capped,
-/// raw codes are i32-ranged, unknown fields/tags refuse.
+/// on suspicion). Exactly ONE known top-level variant must be
+/// present and the record is otherwise closed: mixed tags
+/// (`exit_status` + `unobservable`), extra unknown fields, and
+/// out-of-bounds values all refuse. Field bounds: observation
+/// strings are capped, raw codes are i32-ranged, and a typed raw
+/// `exited(0)` refuses (success never classifies unobservable).
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Contract` on shapes outside the
-/// `exit_status`/`signal`/`unobservable` schema, on unsolicited
-/// variants, or on out-of-bounds fields.
+/// Returns `CistellaError::Contract` on shapes outside the exact
+/// schema, on unsolicited variants, or on out-of-bounds fields.
 pub fn parse_await_outcome(value: &Value, guest_offers: bool) -> Result<ExecutionOutcome> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| CistellaError::Contract("bad await response: shape".to_string()))?;
+    let known = ["exit_status", "signal", "unobservable"];
+    let present = known
+        .iter()
+        .filter(|key| object.contains_key(**key))
+        .count();
+    if present != 1 || object.len() != 1 {
+        return Err(CistellaError::Contract(
+            "bad await response: exactly one outcome variant".to_string(),
+        ));
+    }
     if let Some(code) = value.get("exit_status").and_then(|code| code.as_i64()) {
         let code = i32::try_from(code)
             .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
@@ -137,6 +153,7 @@ fn parse_unobservable(value: &Value) -> Result<ExecutionOutcome> {
             .get("exited")
             .and_then(|code| code.as_i64())
             .and_then(|code| i32::try_from(code).ok())
+            .filter(|code| *code != 0)
         {
             RawClientResult::Exited(code)
         } else if let Some(signum) = raw_object

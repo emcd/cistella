@@ -264,16 +264,21 @@ fn main() -> ExitCode {
     // The host offers wire capabilities in the hello payload; the
     // typed `Unobservable` await variant emits ONLY when offered
     // (legacy raw mapping otherwise). The guest advertises the
-    // capability it implements, so the host can refuse unsolicited
-    // variants.
+    // capability ONLY when offered: an old host admits exactly the
+    // offered set, so an unsolicited advertisement would refuse
+    // hello before legacy downgrade matters.
     let await_interrupted = offered_capability(&hello.payload, AWAIT_INTERRUPTED_V1);
+    let mut capabilities = vec![ROLE_CAPABILITY.to_string()];
+    if await_interrupted {
+        capabilities.push(AWAIT_INTERRUPTED_V1.to_string());
+    }
     let response = cistella::framework::protocol::Envelope {
         protocol: PROTOCOL_MAJOR,
         id: hello.id.clone(),
         op: "hello".to_string(),
         payload: serde_json::json!({
             "version": PROTOCOL_MAJOR,
-            "capabilities": [ROLE_CAPABILITY, AWAIT_INTERRUPTED_V1],
+            "capabilities": capabilities,
             "max_frame": HOST_MAX_FRAME as u32,
         }),
     };

@@ -888,12 +888,33 @@ fn conduct_session(
                 return Err(error);
             }
         };
+    // Transition failure: exec failed with cause, or the
+    // boundary stayed ambiguous (signal in the race window —
+    // operator-approved scope: exact fidelity holds only
+    // post-transition). A harness outcome may exist but cannot
+    // be attributed safely, so report the detail verbatim (it
+    // names itself: exec failure vs ambiguity) instead of a
+    // harness disposition, converging like a launch failure.
+    // This arm precedes the unobservable arm on purpose: a hooked
+    // failed transition owns its specific disposition even when
+    // the completion is also ambiguous.
+    if let Some(detail) = exec_failure {
+        if let Err(teardown_err) =
+            client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+        {
+            report_release(release_client(client, &rendezvous_dir));
+            eprintln!("error: teardown after transition failure: {teardown_err}");
+            return Ok(1);
+        }
+        report_release(release_client(client, &rendezvous_dir));
+        return Err(CistellaError::Runtime(detail));
+    }
     // Outcome-unobservable completion: the harness disposition is
     // unknowable, so teardown converges first and the typed
     // observation reports — never a fabricated harness signal, never
     // exit 128+N or 0. Finalization lives in framework conduct
-    // (same ownership shape as `abort_startup`); residue, death, and
-    // uncertainty dominate inside.
+    // (same ownership shape as `abort_startup`); proof dominance
+    // (any teardown/release failure, unproven absence) inside.
     if let ExecutionOutcome::Unobservable(unobservable) = &status {
         let coords = cistella::framework::conduct::TeardownCoords {
             unit: &unit,
@@ -908,24 +929,6 @@ fn conduct_session(
             &coords,
             unobservable,
         ));
-    }
-    // Transition failure: exec failed with cause, or the
-    // boundary stayed ambiguous (signal in the race window —
-    // operator-approved scope: exact fidelity holds only
-    // post-transition). A harness outcome may exist but cannot
-    // be attributed safely, so report the detail verbatim (it
-    // names itself: exec failure vs ambiguity) instead of a
-    // harness disposition, converging like a launch failure.
-    if let Some(detail) = exec_failure {
-        if let Err(teardown_err) =
-            client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-        {
-            report_release(release_client(client, &rendezvous_dir));
-            eprintln!("error: teardown after transition failure: {teardown_err}");
-            return Ok(1);
-        }
-        report_release(release_client(client, &rendezvous_dir));
-        return Err(CistellaError::Runtime(detail));
     }
     // Shared teardown converges with `terminate` from another pane: the
     // unit may already be gone, which idempotent terminate/remove

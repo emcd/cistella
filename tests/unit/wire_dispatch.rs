@@ -719,6 +719,32 @@ fn await_unobservable_pins() {
     let mut both_raw = payload.clone();
     both_raw["unobservable"]["raw"] = serde_json::json!({"exited": 1, "signaled": 9});
     assert!(parse_await_outcome(&both_raw, true).is_err());
+    // Mixed top-level tags refuse, even negotiated: exactly one
+    // known variant, closed record.
+    let mut mixed = payload.clone();
+    mixed["exit_status"] = serde_json::json!(0);
+    assert!(
+        parse_await_outcome(&mixed, true).is_err(),
+        "exit_status + unobservable refuses"
+    );
+    let mixed_signal = serde_json::json!({"exit_status": 0, "signal": 9});
+    assert!(
+        parse_await_outcome(&mixed_signal, true).is_err(),
+        "exit_status + signal refuses"
+    );
+    let extra_top = serde_json::json!({"exit_status": 0, "extra": 1});
+    assert!(
+        parse_await_outcome(&extra_top, true).is_err(),
+        "unknown top-level field refuses"
+    );
+    // Typed raw success-zero refuses: success never classifies
+    // unobservable.
+    let mut success_raw = payload.clone();
+    success_raw["unobservable"]["raw"] = serde_json::json!({"exited": 0});
+    assert!(
+        parse_await_outcome(&success_raw, true).is_err(),
+        "unobservable raw exited(0) refuses"
+    );
 }
 
 #[test]

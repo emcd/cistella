@@ -6,6 +6,8 @@ mod conduct_taps;
 mod conformance;
 #[path = "integration/design_vectors.rs"]
 mod design_vectors;
+#[path = "integration/guest_hello.rs"]
+mod guest_hello;
 #[path = "integration/guest_hosting.rs"]
 mod guest_hosting;
 #[path = "integration/helpers.rs"]

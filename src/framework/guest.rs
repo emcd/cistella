@@ -412,6 +412,26 @@ fn drain_stderr(mut stderr: ChildStderr) -> StderrDrain {
     }
 }
 
+/// Host hello offer for shipped isolator guests: the role plus
+/// the await-interrupted capability (typed `Unobservable` may
+/// then arrive; without the offer the guest downgrades).
+#[must_use]
+pub fn isolator_host_offer() -> Vec<String> {
+    vec![
+        "isolator".to_string(),
+        crate::framework::protocol::AWAIT_INTERRUPTED_V1.to_string(),
+    ]
+}
+
+/// Host hello offer for registered isolator guests: the recorded
+/// role plus the await-interrupted capability.
+#[must_use]
+pub fn isolator_host_offer_role(role: &[String]) -> Vec<String> {
+    let mut offered = role.to_vec();
+    offered.push(crate::framework::protocol::AWAIT_INTERRUPTED_V1.to_string());
+    offered
+}
+
 /// Discovers, spawns, and negotiates hello with an external guest:
 /// the production hosting path.
 ///

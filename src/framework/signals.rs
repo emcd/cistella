@@ -74,3 +74,21 @@ pub fn got_hup() -> bool {
 pub fn got_term() -> bool {
     GOT_TERM.load(Ordering::SeqCst)
 }
+
+/// Driver's own signal for one await: the explicit cancel flag
+/// first, then process HUP/TERM. Wins before any harness-status
+/// reading (unchanged legacy order): these belong to conduct,
+/// never to the harness.
+#[must_use]
+pub(crate) fn conduct_signal(cancel: &CancelFlag) -> Option<i32> {
+    if let Some(signum) = cancel.signum() {
+        return Some(signum);
+    }
+    if got_hup() {
+        return Some(1);
+    }
+    if got_term() {
+        return Some(15);
+    }
+    None
+}

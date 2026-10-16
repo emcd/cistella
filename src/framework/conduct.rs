@@ -186,14 +186,16 @@ pub struct TeardownCoords<'a> {
 
 /// Finalizes an outcome-unobservable await: converges teardown first,
 /// then reports the typed observation — never a fabricated harness
-/// disposition, never exit 128+N or 0. Residue, death, and
-/// uncertainty dominate the report exactly like every other
-/// teardown-after-failure path; `cleanup=converged` prints only on
-/// proven residue absence (the driver's own convergence definition:
-/// shared teardown Ok plus no residue — wider service/container
-/// facts hold as live-proven invariants, asserted by the boundary
-/// test). Takes the wire client by value so the guest shuts down
-/// orderly on every path instead of orphaning.
+/// disposition, never exit 128+N or 0. Takes the wire client by value
+/// so the guest shuts down orderly on every path instead of
+/// orphaning.
+///
+/// Proof dominance (every failure suppresses the converged claim):
+/// ANY teardown error dominates (death/uncertainty keep their
+/// recorded error text inside the report); release failure
+/// dominates next; then backend absence is re-proven — observation
+/// errors and unconverged proofs dominate with their own reports.
+/// `cleanup=converged` prints ONLY on the backend's converged bit.
 pub fn finalize_unobservable(
     client: WireClient,
     rendezvous_dir: &std::path::Path,
@@ -209,31 +211,46 @@ pub fn finalize_unobservable(
         false,
     ) {
         Ok(()) => {}
-        Err(teardown_err) if !crate::runtime::residue_gone(coords.container_name) => {
+        Err(teardown_err) => {
+            // Every teardown failure dominates: death and
+            // uncertainty keep their specific reports through the
+            // recorded error text; anything else reports the
+            // teardown error. No fallthrough may reference a
+            // converged claim.
             report_release(release_client(client, rendezvous_dir));
             eprintln!("error: teardown after unobservable outcome: {teardown_err}");
             return 1;
         }
-        Err(death_err) if client.guest_dead() => {
-            report_release(release_client(client, rendezvous_dir));
-            eprintln!("error: {death_err}");
-            return 1;
-        }
-        Err(uncertain_err) if client.shutdown_uncertain() => {
-            report_release(release_client(client, rendezvous_dir));
-            eprintln!("error: {uncertain_err}");
-            return 1;
-        }
-        Err(_) => {}
     }
-    let converged = crate::runtime::residue_gone(coords.container_name);
-    report_release(release_client(client, rendezvous_dir));
+    let proof = match client.confirm_absence(coords.container_name) {
+        Ok(proof) => proof,
+        Err(error) => {
+            report_release(release_client(client, rendezvous_dir));
+            eprintln!("error: absence proof failed after unobservable outcome: {error}");
+            return 1;
+        }
+    };
+    if let Err(error) = release_client(client, rendezvous_dir) {
+        report_release(Err(error));
+        eprintln!("error: guest release dominates unobservable report");
+        return 1;
+    }
+    if !proof.converged {
+        eprintln!(
+            "error: cleanup unproven after unobservable outcome: container-exists={} service={}/{} unit-absent={}",
+            proof.container_exists_code,
+            proof.service_active_state,
+            proof.service_load_state,
+            proof.unit_absent,
+        );
+        return 1;
+    }
     eprintln!(
         "{}",
         crate::runtime::format_unobservable_report(
             &unobservable.observation,
             &unobservable.raw,
-            converged
+            true
         )
     );
     1
