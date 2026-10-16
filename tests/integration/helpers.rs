@@ -1,10 +1,12 @@
 //! Shared helpers for lifecycle integration tests.
 
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+pub use super::bounded::*;
 
 use cistella::isolators::client::WireClient;
 
@@ -101,12 +103,7 @@ pub fn home_dir() -> String {
 }
 
 pub fn run_cistella(home: &str, args: &[&str]) -> Output {
-    Command::new(bin())
-        .args(args)
-        .env("HOME", home)
-        .env("TERM", "xterm-ghostty")
-        .output()
-        .expect("spawn cistella")
+    run_bounded(spawn_cistella_cmd(home, args), RUN_CISTELLA_TIMEOUT).expect("bounded cistella run")
 }
 
 pub fn valid_minted_id(id: &str) -> bool {
@@ -405,32 +402,15 @@ pub fn spawn_conduct_tapped(
         .expect("spawn conduct");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let id = loop {
-        if Instant::now() > deadline {
+    let (id, stdout_rest, leftover) = match read_conduct_id(stdout, CONDUCT_ID_TIMEOUT) {
+        Ok(found) => found,
+        Err(why) => {
             let _ = child.kill();
-            let _ = child.wait();
+            let reaped = reap_bounded(&mut child, Duration::from_secs(10));
             panic!(
-                "timed out waiting for conduct id line; conduct stderr: {}",
+                "conduct id line unreadable ({why}; child reaped: {reaped}); conduct stderr: {}",
                 drain_stderr(stderr)
             );
-        }
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Ok(_) => {
-                let line = line.trim().to_string();
-                if let Some(id) = line.strip_prefix("conduct ") {
-                    assert!(valid_minted_id(id), "minted id shape: {id}");
-                    break id.to_string();
-                }
-            }
-            Err(_) => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
         }
     };
     // Drain for conduct lifetime: dropping the readers closes the
@@ -452,7 +432,11 @@ pub fn spawn_conduct_tapped(
     };
     let tap_writer = std::sync::Arc::clone(&taps.stderr_tail);
     std::thread::spawn(move || {
-        let mut drain = reader;
+        // Leftover bytes (read past the id-line newline) head the
+        // stream so the lifetime drain loses nothing vs the old
+        // nonblocking-reader handoff.
+        let head: &[u8] = &leftover;
+        let mut drain = head.chain(stdout_rest);
         let _ = std::io::copy(&mut drain, &mut std::io::sink());
     });
     // Single drain implementation shared with deterministic pins

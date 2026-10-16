@@ -1,5 +1,7 @@
 //! Integration tests entry point.
 
+#[path = "integration/bounded.rs"]
+mod bounded;
 #[path = "integration/conduct_taps.rs"]
 mod conduct_taps;
 #[path = "integration/conformance.rs"]
@@ -10,6 +12,8 @@ mod design_vectors;
 mod guest_hello;
 #[path = "integration/guest_hosting.rs"]
 mod guest_hosting;
+#[path = "integration/harness_bounds.rs"]
+mod harness_bounds;
 #[path = "integration/helpers.rs"]
 mod helpers;
 #[path = "integration/hook_live.rs"]
