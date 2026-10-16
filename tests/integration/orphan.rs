@@ -12,7 +12,7 @@ use super::helpers::*;
 #[test]
 fn inspect_postmortem_and_gc_reap_orphan() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -51,7 +51,11 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     let mut cmd = Command::new("systemctl");
     cmd.args(["--user", "stop", &format!("{container}.service")]);
     let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "stop {container}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     std::thread::sleep(Duration::from_millis(500));
     assert!(
         unit_path(&home, &id).exists(),

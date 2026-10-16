@@ -50,13 +50,13 @@ impl Drop for Fixture {
 /// Resolves the fixture image or skips when the host lacks it.
 fn fixture_image() -> Option<String> {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return None;
     }
     match resolve_image_digest(FIXTURE_IMAGE) {
         Ok(image) => Some(image),
         Err(error) => {
-            eprintln!("skip: fixture image unavailable: {error}");
+            skip(format!("fixture image unavailable: {error}"));
             None
         }
     }

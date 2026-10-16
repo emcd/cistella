@@ -61,7 +61,7 @@ fn container_absent(container: &str) -> bool {
 #[test]
 fn cli_terminate_converges_attached_conduct() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();

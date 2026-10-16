@@ -42,7 +42,7 @@ fn gc_inspect_failure_fails_closed() {
     // A present-but-uninspectable container is an invocation failure, not
     // Quadlet `--rm` absence: gc must error and reap nothing.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let home = home_dir();
@@ -117,7 +117,7 @@ fn command_label_edge_round_trip_live() {
     // Spaces, quotes, and `=` must survive Quadlet file -> podman label ->
     // JSON argv, and the harness must execute verbatim.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -188,7 +188,7 @@ fn command_label_edge_round_trip_live() {
 fn spaced_directory_conduct() {
     // Host paths with spaces must survive Volume= quoting and directory labels.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -259,7 +259,7 @@ fn environment_values_verbatim() {
     // Env values with spaces, quotes, `=`, and `%` must arrive verbatim
     // through the quoted `Environment=` directives (no systemd corruption).
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();

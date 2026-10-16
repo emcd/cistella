@@ -28,7 +28,7 @@ fn bind_alias_tmp_backing_refuses_precreate() {
         .map(|out| out.status.success())
         .unwrap_or(false);
     if !unshare {
-        eprintln!("skip: podman unshare unavailable");
+        skip("podman unshare unavailable");
         return;
     }
     // Fake HOME confinement tree: ancestor $HOME/src with a

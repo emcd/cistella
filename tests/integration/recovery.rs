@@ -136,13 +136,13 @@ fn plan_session(image: &str, worktree: &TempDir) -> (Session, Vec<String>) {
 
 fn fixture_image() -> Option<String> {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return None;
     }
     match cistella::isolators::quadlet::resolve_image_digest(FIXTURE_IMAGE) {
         Ok(image) => Some(image),
         Err(error) => {
-            eprintln!("skip: fixture image unavailable: {error}");
+            skip(format!("fixture image unavailable: {error}"));
             None
         }
     }
@@ -686,7 +686,7 @@ fn recovery_conduct_rehosts_through_guest_kill() {
     // conduct's pre-exec episode to retire, re-host, adopt by key,
     // and complete — exit 0 with the harness outcome, residue free.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = TempDir::new().unwrap();

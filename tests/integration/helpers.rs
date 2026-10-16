@@ -93,10 +93,20 @@ pub fn bin() -> &'static str {
 }
 
 pub fn systemd_available() -> bool {
-    Command::new("systemctl")
-        .args(["--user", "show-environment"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["--user", "show-environment"]);
+    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success())
+}
+
+/// Uniform soft-skip log for environment gates: every seat-
+/// capability skip speaks this marker (`skip: ...`) so skip rosters
+/// grep cleanly from captured output. A skip records APPLICABILITY,
+/// never execution — the body does not run, and this line is its
+/// only trace. Capability tags (the `#[ignore]` reason) live beside
+/// the gate check that enforces them; this marker is the shared
+/// spelling that keeps them from rotting apart.
+pub fn skip(reason: impl std::fmt::Display) {
+    eprintln!("skip: {reason}");
 }
 
 pub fn home_dir() -> String {

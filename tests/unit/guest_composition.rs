@@ -4,6 +4,39 @@
 //! at the file-size limit). Single-guest prepare stays in
 //! guest_hosting.
 
+/// `/tmp` slice snapshot for one fixture session (prefix
+/// `cistella-tmp-<session>-`).
+fn session_slice_snapshot(session: &str) -> Vec<std::path::PathBuf> {
+    let prefix = format!("cistella-tmp-{session}-");
+    std::fs::read_dir("/tmp")
+        .expect("/tmp readable")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        })
+        .collect()
+}
+
+/// Sweep rule (todos/51): a fixture that orphans its session slice
+/// proves attribution first — exactly the slices minted since its
+/// own snapshot (pre-existing seat litter excluded, concurrent-run
+/// interference fails loudly) — then sweeps ONLY that delta.
+/// Assert-before-sweep, so a failure never reaps a foreign slice.
+fn sweep_minted_slices(before: &[std::path::PathBuf], session: &str) {
+    let after = session_slice_snapshot(session);
+    let minted: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+    assert_eq!(
+        minted.len(),
+        1,
+        "exactly the fixture slice orphans attributed to {session}: {minted:?}"
+    );
+    for slice in minted {
+        std::fs::remove_dir_all(slice).expect("sweep fixture slice");
+    }
+}
+
 fn example_binary(name: &str) -> std::path::PathBuf {
     use std::os::unix::fs::MetadataExt;
     let my_path = std::env::current_exe().expect("current_exe");
@@ -485,6 +518,7 @@ fn later_guest_gating_refuses_with_clean_shutdown() {
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
+    let slice_before = session_slice_snapshot("test-session-late-gate");
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,
@@ -506,6 +540,10 @@ fn later_guest_gating_refuses_with_clean_shutdown() {
             .contains("unadvertised contribution type: guest-hooks"),
         "gate refusal, got: {error}"
     );
+    // The clean shutdown drops the lease but orphans the minted
+    // slice (session-attributed, like the collide-slice case):
+    // prove attribution, then sweep — no run-over-run litter.
+    sweep_minted_slices(&slice_before, "test-session-late-gate");
 }
 
 #[test]
@@ -568,6 +606,7 @@ fn mid_prepare_failure_preserves_original_error() {
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = "test-session-prepare-fail";
+    let slice_before = session_slice_snapshot(session);
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,
@@ -592,6 +631,9 @@ fn mid_prepare_failure_preserves_original_error() {
         !path.exists(),
         "clean shutdowns prove quiescence: lease drops"
     );
+    // The dropped lease still orphans the minted slice: prove
+    // attribution, then sweep — no run-over-run litter.
+    sweep_minted_slices(&slice_before, session);
 }
 
 #[test]

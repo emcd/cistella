@@ -13,7 +13,7 @@ fn signal_during_startup_tears_down() {
     // the start-delay hook) must tear down the installed unit
     // and exit 128+SIGTERM instead of dying by default action.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -73,7 +73,7 @@ fn terminate_races_creation_waits() {
     // creation lock, then tear down the fully installed session — never reap
     // a half-created unit out from under the start.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -142,7 +142,7 @@ fn terminate_races_creation_waits() {
 #[test]
 fn sighup_conduct_tears_down() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -158,7 +158,11 @@ fn sighup_conduct_tears_down() {
     let mut cmd = Command::new("kill");
     cmd.args(["-HUP", &pid.to_string()]);
     let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "kill -HUP {pid}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     assert_eq!(status.code(), Some(129), "128+SIGHUP, got {status:?}");
     guard.id = None;
@@ -176,7 +180,7 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
     // prove a concurrent gc blocks, then reap in-process via the lock-held
     // gc entry point and verify the unit is gone.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let home = home_dir();

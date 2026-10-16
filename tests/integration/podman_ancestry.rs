@@ -137,7 +137,7 @@ fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, Stri
 /// a skip.
 fn probe_preconditions() -> bool {
     if !podman_available() {
-        eprintln!("skip: podman not available");
+        skip("podman not available");
         return false;
     }
     let image = image_ref();
@@ -145,7 +145,9 @@ fn probe_preconditions() -> bool {
     cmd.args(["image", "exists", &image]);
     let has_image = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success());
     if !has_image {
-        eprintln!("skip: image {image} not present (build via data/dockerfiles/validate.sh)");
+        skip(format!(
+            "image {image} not present (build via data/dockerfiles/validate.sh)"
+        ));
         return false;
     }
     true

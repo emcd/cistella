@@ -11,7 +11,7 @@ use super::helpers::*;
 #[test]
 fn conduct_exit_passthrough_and_mint() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -140,7 +140,7 @@ fn conduct_exit_passthrough_and_mint() {
 #[test]
 fn conduct_lifecycle_terminate_while_attached() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -188,7 +188,11 @@ fn conduct_lifecycle_terminate_while_attached() {
         vec!["survey", "--label", &format!("agentmux.session={corr}")],
     ] {
         let out = run_cistella(&home, &args);
-        assert!(out.status.success());
+        assert!(
+            out.status.success(),
+            "survey {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let txt = String::from_utf8_lossy(&out.stdout).to_string();
         assert!(
             txt.contains(&container),
@@ -248,7 +252,7 @@ fn name_resolves_from_foreign_cwd_live() {
     // A profile name resolves without a source checkout: the child runs
     // from a directory containing no `data/profiles`.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let foreign = TempDir::new().unwrap();
@@ -314,7 +318,7 @@ fn configuration_directory_plumbing_live() {
     // `--configuration-directory` reaches resolution: a name found only in
     // the supplied dir conducts with that profile.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let config = TempDir::new().unwrap();
@@ -342,7 +346,11 @@ fn configuration_directory_plumbing_live() {
     wait_active(&id);
     assert_eq!(unit_label(&home, &id, "cistella.profile"), "custom");
     let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "terminate {id}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     guard.id = None;
 }
@@ -353,7 +361,7 @@ fn harness_runs_in_worktree_target_live() {
     // The session directory is a working directory, not just a mount:
     // the harness starts with cwd at the container target.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -395,7 +403,7 @@ fn project_name_template_live() {
     // Templates resolve end to end: explicit flag and directory-basename
     // default both land the mount at the expanded target.
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let config = TempDir::new().unwrap();
@@ -482,7 +490,7 @@ fn project_name_template_live() {
 #[test]
 fn terminate_stops_promptly_without_sigkill() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -557,7 +565,7 @@ fn terminate_stops_promptly_without_sigkill() {
 #[test]
 fn template_env_and_labels_resolve_live() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -634,7 +642,7 @@ fn template_env_and_labels_resolve_live() {
 #[test]
 fn environment_acceptances_forward_live() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -700,7 +708,7 @@ fn environment_acceptances_forward_live() {
 #[test]
 fn environment_acceptances_absent_refuses_residue_free() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -858,7 +866,7 @@ fn environment_acceptances_absent_refuses_residue_free() {
 #[test]
 fn template_namespaces_resolve_live() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();

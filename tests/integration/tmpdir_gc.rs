@@ -202,7 +202,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
 #[test]
 fn tmpdir_conduct_reaps_slice_on_teardown() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -242,7 +242,7 @@ fn tmpdir_conduct_reaps_slice_on_teardown() {
 #[test]
 fn tmpdir_natural_exit_reaps_slice() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -296,7 +296,7 @@ fn tmpdir_natural_exit_reaps_slice() {
 #[test]
 fn tmpdir_hooked_session_writes_tmp() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -373,7 +373,7 @@ fn write_hooked_profile(dir: &std::path::Path, extra_mounts: &str) -> String {
 #[test]
 fn hooked_tmp_admits_through_wrapped_harness() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     // Unconditional baseline proof through the WRAPPED harness
@@ -405,7 +405,7 @@ fn hooked_tmp_admits_through_wrapped_harness() {
 #[test]
 fn hooked_ro_mirror_denies_through_wrapped_harness() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     // Retention proof: a static source bound RO at /tmp (the
@@ -462,7 +462,7 @@ fn hooked_ro_mirror_denies_through_wrapped_harness() {
 #[test]
 fn hooked_ancestor_alias_refuses_precreate() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     // Ancestor-covered baseline alias: a sibling source bound RO
@@ -511,7 +511,7 @@ fn hooked_ancestor_alias_refuses_precreate() {
 #[test]
 fn tmpdir_nested_user_bind_reaps_with_slice() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     // Generic pre-create live: a user bind nested under the

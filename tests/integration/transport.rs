@@ -43,7 +43,7 @@ fn reap_pty_child(child: nix::unistd::Pid) {
 #[test]
 fn transport_harness() {
     if !podman_available() {
-        eprintln!("skip: podman not available");
+        skip("podman not available");
         return;
     }
     let image = image_ref();
@@ -52,7 +52,9 @@ fn transport_harness() {
     probe.args(["image", "exists", &image]);
     let has_image = run_bounded(probe, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success());
     if !has_image {
-        eprintln!("skip: image {image} not present (build via data/dockerfiles/validate.sh)");
+        skip(format!(
+            "image {image} not present (build via data/dockerfiles/validate.sh)"
+        ));
         return;
     }
 

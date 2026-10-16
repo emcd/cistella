@@ -389,7 +389,7 @@ fn podman_exec(container: &str, argv: &[&str]) -> std::process::Output {
 #[test]
 fn hook_probe_reports_matrix_in_container() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let Some(image) = fixture_image_opt() else {
@@ -419,7 +419,7 @@ fn hook_probe_reports_matrix_in_container() {
 #[test]
 fn hook_denial_matrix_confines() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let Some(image) = fixture_image_opt() else {
@@ -612,7 +612,7 @@ fn hook_denial_matrix_confines() {
 #[test]
 fn hook_long_lived_harness_outlives_drain() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let Some(image) = fixture_image_opt() else {
@@ -650,7 +650,7 @@ fn hook_long_lived_harness_outlives_drain() {
 #[test]
 fn hook_hooked_launch_attests_and_confines() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let Some(image) = fixture_image_opt() else {
@@ -899,7 +899,7 @@ fn fixture_image_opt() -> Option<String> {
     match resolve_image_digest(FIXTURE_IMAGE) {
         Ok(image) => Some(image),
         Err(error) => {
-            eprintln!("skip: fixture image unavailable: {error}");
+            skip(format!("fixture image unavailable: {error}"));
             None
         }
     }

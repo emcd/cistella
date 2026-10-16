@@ -6,7 +6,7 @@ use super::helpers::*;
 #[test]
 fn selectors_ambiguous_and_exclusive() {
     if !systemd_available() {
-        eprintln!("skip: systemd user manager not available");
+        skip("systemd user manager not available");
         return;
     }
     let worktree = src_worktree();
@@ -97,7 +97,11 @@ fn selectors_ambiguous_and_exclusive() {
     );
 
     let out = run_cistella(&home, &["terminate", &id_b]);
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "terminate {id_b}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = reap_bounded(&mut child_b, CHILD_REAP_TIMEOUT);
     guard_b.id = None;
 }
