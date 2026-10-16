@@ -187,5 +187,10 @@ fn cli_terminate_converges_attached_conduct() {
         container_absent(&container),
         "container absent after converged teardown: {container}"
     );
+    // Per-run mode proof: passing runs print the typed observation
+    // line (with the raw client result) so receipts distinguish
+    // Mode A (exec-removed) from Mode B (stop-path) without
+    // re-running. Stable single line for log aggregation.
+    eprintln!("boundary converged: {}", tap.stderr.trim());
     guard.id = None;
 }
