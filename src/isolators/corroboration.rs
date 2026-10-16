@@ -1,13 +1,4 @@
 //! Await-outcome corroboration: read-only lifecycle queries backing
-//! the observational `Unobservable` outcome.
-//!
-//! Split from the Podman backend (line-count doctrine): table-name
-//! resolution stays on the backend
-//! ([`crate::isolators::podman::PodmanIsolator::corroboration_names`]);
-//! everything here is backend-agnostic orchestration over those
-//! names plus the pure [`classify_completion`] decision.
-
-//! Await-outcome corroboration: read-only lifecycle queries backing
 //! the observational `Unobservable` outcome, plus the backend-domain
 //! completion decision.
 //!
@@ -25,8 +16,10 @@ use crate::framework::isolator::{
     AbsenceObservation, ExecutionOutcome, RawClientResult, UnobservableOutcome,
 };
 use crate::framework::signals::conduct_signal;
-use crate::isolators::podman::{PodmanIsolator, unit_file_present};
-use crate::isolators::quadlet::{container_exists_code, query_unit_props};
+use crate::isolators::podman::PodmanIsolator;
+use crate::isolators::quadlet::{
+    container_exists_code, query_unit_props, query_unit_props_checked, unit_file_absent_checked,
+};
 
 /// Read-only lifecycle facts corroboration needs. Backend-domain
 /// shape (Podman container-exists codes, systemd state names): all
@@ -140,18 +133,21 @@ fn corroboration_facts(
     }
     let service = format!("{container_name}.service");
     let props = query_unit_props(&service);
+    // Checked absence: metadata errors degrade to no-facts
+    // (legacy mapping) rather than false absence.
+    let unit_absent = unit_file_absent_checked(&unit_name).ok()?;
     Some(CorroborationFacts {
         container_exists_code: code,
         service_active_state: props.get("ActiveState").cloned().unwrap_or_default(),
         service_load_state: props.get("LoadState").cloned().unwrap_or_default(),
-        unit_file_present: unit_file_present(&unit_name),
+        unit_file_present: !unit_absent,
     })
 }
 
 /// Final absence proof: re-queried AFTER teardown and guest
 /// release, never inferred from earlier snapshots. The backend
-/// convergence rule lives in [`AbsenceProof::converged_facts`] beside
-/// the queries — the framework renders the bit, never the states.
+/// convergence rule lives in [`AbsenceProof::new`] beside the
+/// queries — the framework renders the bit, never the states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbsenceProof {
     /// `podman container exists` exit code (0 present, 1 absent).
@@ -168,10 +164,12 @@ pub struct AbsenceProof {
 
 impl AbsenceProof {
     /// Backend convergence rule: container strictly absent (exit 1
-    /// only) AND service not active AND unit file absent. Empty
-    /// service strings (query unavailable) pass that clause — the
-    /// load-bearing facts are container-absent + unit-absent — but
-    /// are recorded as-is for the report. A stopped-but-present
+    /// only) AND an explicit terminal service state (`LoadState`
+    /// `not-found` or `ActiveState` `inactive`) AND unit file
+    /// absent. Every other service shape — `active`, `activating`,
+    /// `deactivating`, `failed`, reloading, maintenance, or empty
+    /// (query unavailable) — fails convergence: only the two
+    /// terminal states attest quiescence, and a stopped-but-present
     /// container never converges (residue until reaped).
     /// Public so the rule pins directly against fabricated facts;
     /// `prove_absence` below is the querying constructor.
@@ -182,8 +180,9 @@ impl AbsenceProof {
         service_load_state: String,
         unit_absent: bool,
     ) -> Self {
-        let converged =
-            container_exists_code == 1 && service_active_state != "active" && unit_absent;
+        let converged = container_exists_code == 1
+            && (service_load_state == "not-found" || service_active_state == "inactive")
+            && unit_absent;
         Self {
             container_exists_code,
             service_active_state,
@@ -195,23 +194,27 @@ impl AbsenceProof {
 }
 
 /// Re-proves absence after teardown and release: container, service,
-/// unit queried in that order. The unit name derives from the
-/// container by the backend's own convention (`{container}.container`,
-/// as minted in `adopt`). Any query failure is an observation
-/// error (returned as `Err`), never silent convergence.
+/// unit queried in that order with checked queries. The unit name
+/// derives from the container by the backend's own convention
+/// (`{container}.container`, as minted in `adopt`). Manager
+/// failure, unexpected shapes, and metadata errors are observation
+/// errors (returned as `Err`), never silent convergence. Proof
+/// requires a systemd user manager; without one the service query
+/// fails and the caller dominates explicitly.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Runtime` on spawn failure or any
-/// non-0/1 container-exists code.
+/// Returns `CistellaError::Runtime` on spawn failure, non-0/1
+/// container-exists codes, failed/unexpected service queries, or
+/// non-NotFound metadata errors.
 pub(crate) fn prove_absence(container_name: &str) -> crate::error::Result<AbsenceProof> {
     // Strict codes flow from `container_exists_code`: 1 is absent,
     // anything else errors (an observation error, never convergence).
     let code = container_exists_code(container_name)?;
     let service = format!("{container_name}.service");
-    let props = query_unit_props(&service);
+    let props = query_unit_props_checked(&service)?;
     let unit_name = format!("{container_name}.container");
-    let unit_absent = !unit_file_present(&unit_name);
+    let unit_absent = unit_file_absent_checked(&unit_name)?;
     Ok(AbsenceProof::new(
         code,
         props.get("ActiveState").cloned().unwrap_or_default(),

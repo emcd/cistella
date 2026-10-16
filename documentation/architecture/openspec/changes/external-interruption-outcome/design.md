@@ -53,13 +53,18 @@ test-side.
   observation-error / shutdown-uncertain. `cleanup converged`
   prints only after actual final proof.
 - Proof dominance, no fallthrough: ANY teardown error dominates
-  (death/uncertainty keep recorded text inside the report);
-  release failure dominates next; backend absence is then
-  re-proven by a backend-owned `prove_absence` (container, service,
-  unit re-queried — never inferred from earlier snapshots), whose
-  converged bit (strict exit-1 + non-active service + absent unit)
-  alone gates `cleanup=converged`. Observation errors and
-  unconverged proofs dominate with their own reports.
+  (death/uncertainty keep recorded error text inside the report);
+  release failure dominates next (proof attests post-release
+  state, so release precedes it); backend absence is then
+  re-proven by a backend-owned `prove_absence` with CHECKED
+  queries — manager failure, unexpected shapes, and non-NotFound
+  metadata errors are observation errors — whose converged bit
+  (strict exit-1 + explicit terminal service state
+  `not-found`/`inactive` + absent unit; every other service shape
+  including empty fails) alone gates `cleanup=converged`.
+  Proof attests native backends only; registered (foreign) guests
+  refuse explicitly, since local queries prove nothing about
+  their resources.
 - Generality split: the framework owns taxonomy types only;
   Podman-domain interpretation (exists codes, ActiveState rule,
   absence-proof rule) lives in `isolators::corroboration`, the

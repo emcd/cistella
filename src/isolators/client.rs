@@ -606,23 +606,6 @@ impl WireClient {
         self.uncertain.load(Ordering::SeqCst)
     }
 
-    /// Re-proves backend absence for one container (unit, service,
-    /// container re-queried now): the final proof behind
-    /// `cleanup=converged` claims. Key queries need no living guest
-    /// (read-only state), so this runs post-release as well as
-    /// pre-release. Backend-owned rule; the caller renders the bit.
-    ///
-    /// # Errors
-    ///
-    /// Returns the observation error on any query failure (never
-    /// silent convergence).
-    pub fn confirm_absence(
-        &self,
-        container_name: &str,
-    ) -> Result<crate::isolators::corroboration::AbsenceProof> {
-        crate::isolators::corroboration::prove_absence(container_name)
-    }
-
     /// Conduct's death gate for one wire outcome: passes successes
     /// through, and passes failures through while the guest lives.
     /// Proven death runs the residue check first — located residue

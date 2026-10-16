@@ -201,8 +201,13 @@ pub fn finalize_unobservable(
     rendezvous_dir: &std::path::Path,
     coords: &TeardownCoords<'_>,
     unobservable: &crate::framework::isolator::UnobservableOutcome,
+    backend_native: bool,
 ) -> i32 {
-    match client.teardown_unit(
+    // Phase order is load-bearing: teardown, then guest release
+    // (quiescence — the last possible guest mutation), then a FRESH
+    // backend proof, then render. Proof taken earlier would attest
+    // pre-release state, not the final state the report claims.
+    if let Err(teardown_err) = client.teardown_unit(
         coords.unit,
         coords.grace,
         coords.key,
@@ -210,31 +215,37 @@ pub fn finalize_unobservable(
         coords.session_id,
         false,
     ) {
-        Ok(()) => {}
-        Err(teardown_err) => {
-            // Every teardown failure dominates: death and
-            // uncertainty keep their specific reports through the
-            // recorded error text; anything else reports the
-            // teardown error. No fallthrough may reference a
-            // converged claim.
-            report_release(release_client(client, rendezvous_dir));
-            eprintln!("error: teardown after unobservable outcome: {teardown_err}");
-            return 1;
-        }
+        // Every teardown failure dominates: death and uncertainty
+        // keep their specific reports through the recorded error
+        // text; anything else reports the teardown error. No
+        // fallthrough may reference a converged claim.
+        report_release(release_client(client, rendezvous_dir));
+        eprintln!("error: teardown after unobservable outcome: {teardown_err}");
+        return 1;
     }
-    let proof = match client.confirm_absence(coords.container_name) {
-        Ok(proof) => proof,
-        Err(error) => {
-            report_release(release_client(client, rendezvous_dir));
-            eprintln!("error: absence proof failed after unobservable outcome: {error}");
-            return 1;
-        }
-    };
     if let Err(error) = release_client(client, rendezvous_dir) {
         report_release(Err(error));
         eprintln!("error: guest release dominates unobservable report");
         return 1;
     }
+    // Local queries prove nothing about foreign backends: a
+    // registered (non-native) guest's resources are not attested by
+    // local Podman absence. Explicit refusal, never silent
+    // narrowing — a future per-backend proof contract can relax
+    // this arm.
+    if !backend_native {
+        eprintln!(
+            "error: absence proof unsupported for non-native backend after unobservable outcome"
+        );
+        return 1;
+    }
+    let proof = match crate::isolators::corroboration::prove_absence(coords.container_name) {
+        Ok(proof) => proof,
+        Err(error) => {
+            eprintln!("error: absence proof failed after unobservable outcome: {error}");
+            return 1;
+        }
+    };
     if !proof.converged {
         eprintln!(
             "error: cleanup unproven after unobservable outcome: container-exists={} service={}/{} unit-absent={}",

@@ -439,6 +439,67 @@ pub(crate) fn query_unit_props(service: &str) -> HashMap<String, String> {
     map
 }
 
+/// Checked service-state query: manager failure and unexpected
+/// shapes are observation errors, never silent absence. Unlike
+/// [`query_unit_props`] (best-effort for hot paths), this refuses
+/// when systemctl itself fails or omits `LoadState` — absence proof
+/// must rest on explicit terminal states, never on swallowed
+/// failures.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on spawn failure, nonzero
+/// systemctl exit, or a response missing `LoadState`.
+pub(crate) fn query_unit_props_checked(service: &str) -> Result<HashMap<String, String>> {
+    let out = systemctl_user()
+        .args(["show", "-p", "LoadState", "-p", "ActiveState", service])
+        .output()
+        .map_err(|e| CistellaError::Runtime(format!("systemctl show {service}: {e}")))?;
+    if !out.status.success() {
+        return Err(CistellaError::Runtime(format!(
+            "systemctl show {service} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    let mut map = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.to_string(), v.to_string());
+        }
+    }
+    if !map.contains_key("LoadState") {
+        return Err(CistellaError::Runtime(format!(
+            "systemctl show {service}: unexpected shape (no LoadState)"
+        )));
+    }
+    Ok(map)
+}
+
+/// Checked unit-file absence: distinguishes absent (`NotFound`)
+/// from unreadable (permissions, IO faults), which is an
+/// observation error. [`unit_file_present`] stays for hot paths;
+/// absence proof uses this.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` when the quadlet dir is
+/// unavailable or metadata fails for any reason other than
+/// `NotFound`.
+pub(crate) fn unit_file_absent_checked(unit_name: &str) -> Result<bool> {
+    let Some(dir) = quadlet_dir() else {
+        return Err(CistellaError::Runtime(
+            "quadlet dir unavailable for absence proof".to_string(),
+        ));
+    };
+    match std::fs::symlink_metadata(dir.join(unit_name)) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(CistellaError::Runtime(format!(
+            "unit metadata {unit_name}: {error}"
+        ))),
+    }
+}
+
 /// Stops a unit and settles it (stop + wait for inactive/failed).
 ///
 /// Under systemd this is `systemctl stop` plus the settle loop; without

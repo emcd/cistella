@@ -7,12 +7,23 @@ and report the finalized typed outcome as a driver-level report
 (typed one-line stderr rendering, exit 1 — the existing class for
 paths that cannot report a harness disposition), never as a harness
 disposition (never exit 128+N, never exit 0). Proof dominance SHALL
-hold: any teardown error dominates (death/uncertainty keep recorded
-text), then release failure, then backend absence re-proof —
+hold in phase order — teardown, then guest release (quiescence),
+then fresh backend proof, then render: any teardown error
+dominates, then release failure, then backend absence re-proof —
 observation errors and unconverged proofs dominate with their own
 reports, and `cleanup=converged` prints only on the backend's
-converged bit. A preexisting hooked exec/transition failure SHALL
-keep its disposition precedence over the unobservable arm. The
+converged bit. The absence proof SHALL re-query container, service,
+and unit with checked queries (manager failure, unexpected
+shapes, and non-NotFound metadata errors are observation errors);
+convergence requires container-exists exit 1 AND an explicit
+terminal service state (`LoadState` `not-found` or `ActiveState`
+`inactive`) AND absent unit file — every other service shape
+(active, activating, deactivating, failed, empty) fails
+convergence, and a stopped-but-present container never converges.
+Proof attests native backends only: registered (foreign) guests
+refuse explicitly, since local queries prove nothing about their
+resources. A preexisting hooked exec/transition failure SHALL keep
+its disposition precedence over the unobservable arm. The
 rendering SHALL name the observation (container fact from the
 recorded code, never fixed), state that the harness outcome is
 unobservable, render the raw client result as `exited(code)` or

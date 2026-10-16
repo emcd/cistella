@@ -287,18 +287,36 @@ fn renderer_reports_present_container_truthfully() {
 #[test]
 fn absence_proof_converged_rule_pins() {
     use cistella::isolators::corroboration::AbsenceProof;
-    // Converged: strictly absent container + non-active service +
-    // absent unit file.
+    // Converged: strictly absent container + terminal service state
+    // (LoadState not-found here) + absent unit file.
     assert!(AbsenceProof::new(1, "inactive".to_string(), "not-found".to_string(), true).converged);
+    // Converged via the other terminal state (inactive ActiveState).
+    assert!(AbsenceProof::new(1, "inactive".to_string(), "loaded".to_string(), true).converged);
     // Stopped-but-present container never converges (residue).
     assert!(!AbsenceProof::new(0, "inactive".to_string(), "loaded".to_string(), true).converged);
     // Active service never converges, even with absent container.
     assert!(!AbsenceProof::new(1, "active".to_string(), "loaded".to_string(), true).converged);
+    // Non-terminal service states never converge: activating,
+    // deactivating, failed, reloading.
+    for state in [
+        "activating",
+        "deactivating",
+        "failed",
+        "reloading",
+        "maintenance",
+    ] {
+        assert!(
+            !AbsenceProof::new(1, state.to_string(), "loaded".to_string(), true).converged,
+            "non-terminal service state must not converge: {state}"
+        );
+    }
     // Present unit file never converges.
     assert!(
         !AbsenceProof::new(1, "inactive".to_string(), "not-found".to_string(), false).converged
     );
-    // Empty service strings pass that clause (query unavailable);
-    // container-absent + unit-absent carry the proof.
-    assert!(AbsenceProof::new(1, String::new(), String::new(), true).converged);
+    // Empty service strings (manager failure / query unavailable)
+    // never converge: only explicit terminal states attest.
+    assert!(!AbsenceProof::new(1, String::new(), String::new(), true).converged);
+    // Non-0/1 container codes never converge.
+    assert!(!AbsenceProof::new(125, "inactive".to_string(), "loaded".to_string(), true).converged);
 }

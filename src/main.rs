@@ -923,11 +923,16 @@ fn conduct_session(
             container_name: container_name.as_str(),
             session_id: id.as_str(),
         };
+        // Local absence proof attests only native-backend cleanup:
+        // a registered guest's resources are invisible to local
+        // queries, so its report refuses explicitly inside.
+        let backend_native = matches!(isolator, cistella::profile::IsolatorResolution::Podman);
         return Ok(finalize_unobservable(
             client,
             &rendezvous_dir,
             &coords,
             unobservable,
+            backend_native,
         ));
     }
     // Shared teardown converges with `terminate` from another pane: the
