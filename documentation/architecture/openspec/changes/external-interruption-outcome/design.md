@@ -60,13 +60,18 @@ test-side.
   WAS absent at query; the outcome IS unobservable) — honesty by
   construction, since nothing causal was claimed.
 - Negative controls: ordinary Exited 137/143/255 with container
-  present (exact dispositions); spoofed-text-255 present
-  (Exited(255)); signaled-with-container-present keeps legacy
+  present AND service active (exact dispositions);
+  spoofed-text-255 present-and-active (Exited(255));
+  signaled-with-container-present-and-active keeps legacy
   `Signaled` mapping by explicit compatibility policy (the client
   faithfully reported its completion; harness receipt of any
   signal is unproven and unclaimed — preserved byte-for-byte, not
   upgraded, so implementation has exactly two branches and invents
-  no third unknown-variant);
+  no third unknown-variant); service-inactive (stop in flight)
+  with EITHER container code reports observably — mere existence
+  covers stopped-but-present containers, so existence alone never
+  gates (QA Mode B: Exited-137 with present container but
+  deactivating service);
   normal-nonzero followed by post-completion removal (observational
   report, explicitly NOT a proven-interruption claim);
   unrelated-signal during concurrent stop (no causal upgrade).

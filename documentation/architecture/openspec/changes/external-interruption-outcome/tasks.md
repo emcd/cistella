@@ -10,10 +10,11 @@
   boundary (container-exists strict codes, service state, unit
   presence, query ordering recorded); never string-match client
   stderr; container-present failures keep ordinary mapping.
-- [x] 1.3 Negative-control pins (`tests/unit/unobservable.rs`, deterministic): ordinary Exited 137/143/255,
-  spoofed-text-255-present, signaled-with-container-present keeps
-  legacy Signaled mapping (explicit compatibility policy, receipt
-  unproven), normal-nonzero-then-post-completion-removal
+- [x] 1.3 Negative-control pins (`tests/unit/unobservable.rs`, deterministic): ordinary Exited 137/143/255
+  present-and-active, spoofed-text-255-present-and-active,
+  signaled-present-and-active (compatibility policy),
+  deactivating-service-present-container (observational, Mode B),
+  empty-service (legacy), normal-nonzero-then-post-completion-removal
   (observational, no causal upgrade),
   unrelated-signal-during-concurrent-stop.
 - [x] 1.4 EXACT hello outcomes pinned (`offered_capability` + encode gate + unsolicited-refusal decode; reference native): negotiated-both-ways → typed;
@@ -41,5 +42,5 @@
 
 ## 3. Review and sync
 
-- [ ] 3.1 Tier-1 review → Tier-2 review.
+- [x] 3.1 Tier-1 review → Tier-2 review. (Packet Tier-1 APPROVE ×3 + Tier-2 observational approval; implementation Tier-1 APPROVE; committed `ed1c800`, local, unpushed.)
 - [ ] 3.2 Sync both spec deltas to main specs + changelog.

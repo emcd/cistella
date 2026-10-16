@@ -268,12 +268,17 @@ pub struct CorroborationFacts {
 /// `conduct_signal` carries the driver's own signals (cancel flag,
 /// HUP/TERM) and wins before any status reading (unchanged legacy).
 /// A zero status reports `Exited(0)` with no queries. Otherwise the
-/// caller supplies read-only corroboration facts when obtainable:
-/// container absent (code 1) with a nonzero/signaled client yields
-/// `Unobservable` (facts + uncoerced raw); container present, query
+/// caller supplies read-only corroboration facts when obtainable.
+/// Container ABSENT (code 1) is a hard fact: no container means no
+/// observable harness, so the outcome is `Unobservable` regardless
+/// of service readings. Container present but service NOT active
+/// (stop/interruption in flight — mere existence covers
+/// stopped-but-present containers, so existence alone cannot gate)
+/// is likewise `Unobservable`, with the recorded states as the
+/// observation. Service active with container present, query
 /// failure, or unresolvable names (`facts` None) keep the legacy
 /// status mapping byte-for-byte by explicit compatibility policy
-/// (receipt unproven, never upgraded) — exactly two branches, no
+/// (receipt unproven, never upgraded) — two outcome branches, no
 /// third unknown-variant.
 #[must_use]
 pub fn classify_completion(
@@ -292,17 +297,23 @@ pub fn classify_completion(
         Some(signum) => RawClientResult::Signaled(signum),
         None => RawClientResult::Exited(status.code().unwrap_or(1)),
     };
+    let unobservable = |facts: &CorroborationFacts| {
+        ExecutionOutcome::Unobservable(UnobservableOutcome {
+            observation: AbsenceObservation {
+                container_exists_code: facts.container_exists_code,
+                service_active_state: facts.service_active_state.clone(),
+                service_load_state: facts.service_load_state.clone(),
+                unit_file_present: facts.unit_file_present,
+            },
+            raw,
+        })
+    };
     match facts {
-        Some(facts) if facts.container_exists_code == 1 => {
-            ExecutionOutcome::Unobservable(UnobservableOutcome {
-                observation: AbsenceObservation {
-                    container_exists_code: facts.container_exists_code,
-                    service_active_state: facts.service_active_state.clone(),
-                    service_load_state: facts.service_load_state.clone(),
-                    unit_file_present: facts.unit_file_present,
-                },
-                raw,
-            })
+        Some(facts) if facts.container_exists_code == 1 => unobservable(facts),
+        Some(facts)
+            if !facts.service_active_state.is_empty() && facts.service_active_state != "active" =>
+        {
+            unobservable(facts)
         }
         _ => match raw {
             RawClientResult::Exited(code) => ExecutionOutcome::Exited(code),

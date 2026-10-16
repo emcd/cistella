@@ -92,7 +92,8 @@ fn absent_container_with_failed_client_reports_unobservable() {
 #[test]
 fn present_container_keeps_legacy_mapping() {
     // Spoof control: removal-like failure with the container present
-    // is ordinary business, never an interruption claim.
+    // AND the service active is ordinary business, never an
+    // interruption claim.
     assert_eq!(
         classify_completion(None, &exited(255), Some(&present_facts())),
         Outcome::Exited(255)
@@ -106,6 +107,49 @@ fn present_container_keeps_legacy_mapping() {
         classify_completion(None, &exited(137), Some(&present_facts())),
         Outcome::Exited(137),
         "ordinary nonzero exits unaffected"
+    );
+}
+
+#[test]
+fn deactivating_service_with_present_container_reports_unobservable() {
+    // The Mode B shape: `container exists` is true for
+    // stopped-but-present containers, so existence alone cannot
+    // gate — a non-active service with a failed client is
+    // observationally ambiguous (stop in flight) and reports
+    // unobservable with the recorded states.
+    let stopping = CorroborationFacts {
+        container_exists_code: 0,
+        service_active_state: "deactivating".to_string(),
+        service_load_state: "loaded".to_string(),
+        unit_file_present: true,
+    };
+    assert_eq!(
+        classify_completion(None, &exited(137), Some(&stopping)),
+        Outcome::Unobservable(UnobservableOutcome {
+            observation: AbsenceObservation {
+                container_exists_code: 0,
+                service_active_state: "deactivating".to_string(),
+                service_load_state: "loaded".to_string(),
+                unit_file_present: true,
+            },
+            raw: RawClientResult::Exited(137),
+        })
+    );
+}
+
+#[test]
+fn unavailable_service_state_keeps_legacy_mapping() {
+    // Empty service strings (query unavailable, non-systemd seats):
+    // absence unproven, never claimed.
+    let unknown_service = CorroborationFacts {
+        container_exists_code: 0,
+        service_active_state: String::new(),
+        service_load_state: String::new(),
+        unit_file_present: true,
+    };
+    assert_eq!(
+        classify_completion(None, &exited(255), Some(&unknown_service)),
+        Outcome::Exited(255)
     );
 }
 
