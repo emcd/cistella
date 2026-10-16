@@ -173,10 +173,15 @@ impl Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        // Owned teardown ONLY: terminate our own session id. Never a
+        // global `gc` — reaping is a coordinated act (creation
+        // lock), and a Guard drop running suite-wide gc reaps
+        // sibling fixtures sitting in their unlocked windows. A
+        // panic path that strands an orphaned unit surfaces it in
+        // residue-diff tests instead of sweeping it silently.
         if let Some(id) = self.id.take() {
             let home = home_dir();
             let _ = run_cistella(&home, &["terminate", &id]);
-            let _ = run_cistella(&home, &["gc"]);
         }
     }
 }

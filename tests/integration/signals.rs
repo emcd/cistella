@@ -153,12 +153,14 @@ fn sighup_conduct_tears_down() {
         spawn_conduct(&home, &worktree_str, &["--identity", "alice"]);
     wait_active(&id);
     let pid = conduct.id();
+    // SIGHUP (not SIGTERM — startup-abort already pins the TERM
+    // path): the conduct-level HUP trap tears down, exit 128+1.
     let mut cmd = Command::new("kill");
-    cmd.args(["-TERM", &pid.to_string()]);
+    cmd.args(["-HUP", &pid.to_string()]);
     let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
     assert!(out.status.success());
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
-    assert_eq!(status.code(), Some(143), "128+SIGTERM, got {status:?}");
+    assert_eq!(status.code(), Some(129), "128+SIGHUP, got {status:?}");
     guard.id = None;
     assert!(
         !unit_path(&home, &id).exists(),

@@ -38,12 +38,15 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     assert!(unit_path(&home, &id).exists(), "orphan unit remains");
 
     // External stop simulating a crash: container gone (--rm), unit orphaned.
-    // Hold the creation lock across stop-then-assert: a sibling
-    // test's gc run in this window would legitimately reap our
-    // freshly-stopped unit (gc classifies absent-container +
-    // unit-file + inactive-service as orphan), turning the
-    // presence assertion into cross-test timing. gc blocks on the
-    // lock; stop and the assertions never take it.
+    // Hold the creation lock across stop-then-assert-then-inspect: a
+    // sibling test's gc run in these windows would legitimately reap
+    // our freshly-stopped unit (gc classifies absent-container +
+    // unit-file + inactive-service as orphan), turning the presence
+    // assertion — or the post-mortem inspect — into cross-test
+    // timing. gc blocks on the lock; stop and the assertions never
+    // take it. The freeze MUST drop before the final gc below: gc
+    // acquires the same lock, and holding it across our own gc
+    // would self-deadlock (separate process, same flock).
     let _creation_freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
     let mut cmd = Command::new("systemctl");
     cmd.args(["--user", "stop", &format!("{container}.service")]);
@@ -54,7 +57,6 @@ fn inspect_postmortem_and_gc_reap_orphan() {
         unit_path(&home, &id).exists(),
         "unit file outlives external stop"
     );
-    drop(_creation_freeze);
 
     // inspect reads labels plus journald post-mortem from the orphan unit.
     let out = run_cistella(&home, &["inspect", &id]);
@@ -65,6 +67,7 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     );
     let txt = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(txt.contains(&container), "inspect names session: {txt}");
+    drop(_creation_freeze);
 
     // gc reaps the orphaned unit without manual pre-cleanup.
     let out = run_cistella(&home, &["gc"]);
