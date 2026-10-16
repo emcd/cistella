@@ -16,5 +16,5 @@
 
 ## 4. Review and sync
 
-- [ ] 4.1 Tier-1 review → Tier-2 review of repair + tests.
+- [x] 4.1 Tier-1 review → Tier-2 review of repair + tests. (Tier-1 final APPROVE + Tier-2 code-scope APPROVE; committed `a00c882` + principle `e1e8431`, local, unpushed.)
 - [ ] 4.2 Sync `isolator-contract` delta to main spec + changelog; keep `stop_settle` settle-loop gap as separate follow-up.

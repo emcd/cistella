@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Concurrent unit-file removers converge: a filesystem `NotFound`
+  on unlink (the losing remover racing CLI `terminate` against an
+  attached `conduct` teardown) is converged absence, never an error.
+  All other unlink IO failures and `daemon-reload` failures still
+  propagate. Deterministic interleave pins plus a live
+  CLI-vs-attached convergence boundary guard the behavior.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
