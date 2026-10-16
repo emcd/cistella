@@ -19,6 +19,7 @@ Cistella is a CLI driver that launches and supervises one OCI container per agen
 ## Principles
 
 - Framework generality: the framework SHALL have no specific knowledge of particular isolators, extensions, or combinations thereof. Domain logic (e.g. Landlock grant computation, RO→RW materialization revision) belongs to its owner behind generic machinery (frozen snapshots, validated outputs, floor enforcement) — never hardcoded in framework code. Adopted 2026-10-14; `revise_ro_for_confinement` is the known violation slated for relocation.
+- No wait-and-pray testing: tests SHALL NOT assert state via fixed sleeps or timing-sensitive polls ("long enough" waits). Every state a test needs SHALL be observable through a status surface (readiness handshake, state query, event/attempt signal) with bounded waits as backstops only. Where no such surface exists, adding it is product work in scope — not test scaffolding to work around. Adopted 2026-10-16; 0.4 cycle to add missing status-polling surfaces and convert sleep-based tests (signals start-delay/lock-attempt, wire_death FD-holder, tmpdir natural-exit observation, unbounded helper drains).
 
 ## Notes
 
