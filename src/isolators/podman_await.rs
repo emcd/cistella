@@ -167,14 +167,16 @@ mod replay_tests {
     use std::sync::{Arc, Barrier, mpsc};
 
     use crate::framework::contract::{CancelFlag, ExecutionHandle, UnitHandle};
-    use crate::framework::isolator::{ExecutionOutcome, Isolator};
+    use crate::framework::isolator::Isolator;
 
     use crate::isolators::podman::PodmanIsolator;
 
     /// Plants one execution holding an already-exited `exit 3`
     /// child. Entries live until `remove`, which this test never
-    /// calls; no podman exists on test seats, so corroboration
-    /// queries fail deterministically into legacy mapping.
+    /// calls. Corroboration runs for real against the phantom
+    /// container name: no-podman seats fail queries into legacy
+    /// mapping, live seats read absence — either way both awaiters
+    /// must freeze the SAME outcome (that identity is the pin).
     fn plant_completed(backend: &PodmanIsolator) -> ExecutionHandle {
         let mut child = std::process::Command::new("sh")
             .args(["-c", "exit 3"])
@@ -195,13 +197,15 @@ mod replay_tests {
 
     /// Competing awaiters observe identical outcomes: the claim-once
     /// rule (`child.take()` decides the single corroborator; losers
-    /// replay the cache) freezes completion per execution.
+    /// replay the cache) freezes completion per execution. The pinned
+    /// property is IDENTITY across awaiters — not any specific
+    /// outcome: on seats without podman the queries fail into legacy
+    /// `Exited(3)`, while on live seats the phantom plant container
+    /// reads absent and both awaiters freeze the same
+    /// `Unobservable`. Shape pins live in `tests/unit/unobservable`.
     /// Barrier-synced starts keep the claim window honest across 20
     /// iterations; bounded collection fails loudly instead of
-    /// hanging; a third await proves cache replay. This pins the
-    /// freeze property and termination; divergence-sensitivity rides
-    /// on the single-claim structure (one corroboration per
-    /// execution by construction).
+    /// hanging; a third await proves cache replay.
     #[test]
     fn competing_awaiters_replay_identically() {
         for _ in 0..20 {
@@ -218,9 +222,7 @@ mod replay_tests {
                     barrier.wait();
                     let cancel = CancelFlag::new();
                     let outcome = backend.await_result(&execution, &cancel);
-                    let _ = tx.send(
-                        outcome.map(|outcome| matches!(outcome, ExecutionOutcome::Exited(3))),
-                    );
+                    let _ = tx.send(outcome);
                 });
             }
             barrier.wait();
@@ -234,14 +236,12 @@ mod replay_tests {
             }
             assert_eq!(results.len(), 2, "both awaiters answered");
             assert!(
-                results
-                    .iter()
-                    .all(|result| result.as_ref().is_ok_and(|same| *same)),
+                matches!((&results[0], &results[1]), (Ok(first), Ok(second)) if first == second),
                 "identical replay under concurrency: {results:?}"
             );
             let cancel = CancelFlag::new();
             match backend.await_result(&execution, &cancel) {
-                Ok(ExecutionOutcome::Exited(3)) => {}
+                Ok(replayed) if results[0].as_ref().is_ok_and(|first| first == &replayed) => {}
                 other => panic!("post-race await replays the frozen outcome: {other:?}"),
             }
         }
