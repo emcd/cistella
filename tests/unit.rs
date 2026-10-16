@@ -61,6 +61,8 @@ mod prepare_permissions;
 mod profile_resolution;
 #[path = "unit/protocol.rs"]
 mod protocol;
+#[path = "unit/quadlet_remove.rs"]
+mod quadlet_remove;
 #[path = "unit/registry.rs"]
 mod registry;
 #[path = "unit/runtime.rs"]

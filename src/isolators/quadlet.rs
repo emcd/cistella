@@ -502,11 +502,15 @@ pub(crate) fn stop_settle(container_name: &str, grace: Duration) -> Result<()> {
 /// Removes the unit file, reloads, and resets failure state (systemd path).
 ///
 /// Absent files succeed without reloading: removing an absent unit is
-/// the converged state, never an error.
+/// the converged state, never an error. Concurrent removers converge:
+/// a `NotFound` on unlink means the peer already unlinked, so this
+/// caller made no filesystem change and the unlink winner owns
+/// reload/error reporting.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Runtime` on removal or reload failure.
+/// `NotFound` on unlink is converged absence, never an error.
 pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<()> {
     if !systemd_user_available() {
         return Ok(());
@@ -514,9 +518,7 @@ pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<
     let service = format!("{container_name}.service");
     if let Some(dir) = quadlet_dir() {
         let path = dir.join(unit_name);
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| CistellaError::Runtime(format!("remove {path:?}: {e}")))?;
+        if unlink_unit_file(&path)? {
             let out = systemctl_user()
                 .args(["daemon-reload"])
                 .output()
@@ -531,6 +533,30 @@ pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<
     }
     let _ = systemctl_user().args(["reset-failed", &service]).output();
     Ok(())
+}
+
+/// Unlinks one unit file without any pre-check.
+///
+/// Returns `Ok(true)` when this call unlinked the file (the caller
+/// owns `daemon-reload`), `Ok(false)` when the file was already
+/// absent — the converged state, never an error. Calling `remove_file`
+/// directly (instead of guarding with `exists()`) removes the
+/// check/remove race and surfaces stat/permission errors instead of
+/// misreading them as absence.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on any unlink failure other than
+/// `NotFound` (permissions, IO faults).
+pub fn unlink_unit_file(path: &std::path::Path) -> Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CistellaError::Runtime(format!(
+            "remove {}: {error}",
+            path.display()
+        ))),
+    }
 }
 
 /// Shared teardown: stops the unit, waits for it to settle, removes the

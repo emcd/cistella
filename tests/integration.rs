@@ -1,5 +1,7 @@
 //! Integration tests entry point.
 
+#[path = "integration/conduct_taps.rs"]
+mod conduct_taps;
 #[path = "integration/conformance.rs"]
 mod conformance;
 #[path = "integration/design_vectors.rs"]
@@ -36,6 +38,8 @@ mod selectors;
 mod signals;
 #[path = "integration/ssh_guest.rs"]
 mod ssh_guest;
+#[path = "integration/terminate_converge.rs"]
+mod terminate_converge;
 #[path = "integration/tmp_alias.rs"]
 mod tmp_alias;
 #[path = "integration/tmpdir_gc.rs"]

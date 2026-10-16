@@ -5,6 +5,37 @@ use std::process::Command;
 
 use super::helpers::*;
 
+/// Terminates a session, preserving diagnostics on failure.
+///
+/// The terminate status/stdout/stderr is emitted (via `eprintln!`)
+/// and carried in the panic, so the one stderr that discriminates
+/// failure modes (e.g. unlink ENOENT vs concurrent removal) is never
+/// discarded by a bare `assert!(status.success())`. No optional
+/// post-mortem is attempted here: `inspect` is backend/unit/journal
+/// evidence, never conduct's own stderr, and a sound bounded
+/// post-mortem runner does not exist yet — building a general
+/// subprocess supervisor is out of scope for this diagnostics helper.
+/// Conduct-side evidence comes from the bounded retained taps on the
+/// drain path where the boundary under test needs it.
+fn terminate_with_diagnostics(home: &str, id: &str) {
+    let out = run_cistella(home, &["terminate", id]);
+    if out.status.success() {
+        return;
+    }
+    eprintln!(
+        "terminate {id} failed: status={} stdout={} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    panic!(
+        "terminate {id} failed: status={} stdout={} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn gc_inspect_failure_fails_closed() {
@@ -75,8 +106,7 @@ fn gc_inspect_failure_fails_closed() {
     let out = run_cistella(&home, &["survey"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains(&container));
 
-    let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    terminate_with_diagnostics(&home, &id);
     let _ = conduct.wait();
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
@@ -148,8 +178,7 @@ fn command_label_edge_round_trip_live() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    terminate_with_diagnostics(&home, &id);
     let _ = conduct.wait();
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
@@ -219,8 +248,7 @@ fn spaced_directory_conduct() {
         "work mount with percent: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let out = run_cistella(&home, &["terminate", &id]);
-    assert!(out.status.success());
+    terminate_with_diagnostics(&home, &id);
     let _ = conduct.wait();
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");

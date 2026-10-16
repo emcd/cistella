@@ -207,6 +207,180 @@ pub fn spawn_conduct_full(
     argv: &[&str],
     envs: &[(&str, &str)],
 ) -> (Child, String, Guard) {
+    let (child, id, guard, _) = spawn_conduct_tapped(home, profile, worktree, extra, argv, envs);
+    (child, id, guard)
+}
+
+/// Bounded tail-retained stderr tap for one conduct child.
+///
+/// The drain thread feeds this instead of the sink, so a boundary test
+/// can read conduct's OWN stderr after exit (an `inspect` post-mortem
+/// is backend/unit/journal evidence, never conduct stderr). The cap
+/// keeps memory bounded and retains the tail — the most
+/// diagnostic-relevant bytes; the pipe stays open either way, so
+/// SIGPIPE hygiene is unchanged.
+///
+/// Reads before completion see a prefix of the tail, never garbage;
+/// use `finalize` after the child exits for the complete,
+/// completion-attested evidence.
+pub struct ConductTaps {
+    stderr_tail: std::sync::Arc<std::sync::Mutex<TailBuffer>>,
+    drain_done: std::sync::mpsc::Receiver<DrainOutcome>,
+    drain_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// How the stderr drain thread finished. `pub` only because
+/// `run_tap_drain` (shared with deterministic pins) names it;
+/// constructed by the worker alone.
+#[derive(Debug)]
+pub struct DrainOutcome {
+    /// First read error text, if any (None = clean EOF).
+    pub error: Option<String>,
+}
+
+/// Completion-attested retained evidence.
+pub struct FinalizedTap {
+    /// Retained stderr tail (complete iff `drain_clean`).
+    pub stderr: String,
+    /// True only when the drain thread observed EOF with no read error.
+    pub drain_clean: bool,
+    /// Human-readable drain disposition (clean, error text, or timeout).
+    pub drain_note: String,
+}
+
+/// Bytes of retained conduct stderr to keep (tail).
+const CONDUCT_TAP_CAP: usize = 32 * 1024;
+
+/// Bounded tail buffer shared by the drain worker and tap readers.
+/// `pub` only because `run_tap_drain` (shared with deterministic pins)
+/// names it; construction and writes stay module-private.
+pub struct TailBuffer {
+    buf: Vec<u8>,
+}
+
+impl TailBuffer {
+    fn push(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+        let excess = self.buf.len().saturating_sub(CONDUCT_TAP_CAP);
+        self.buf.drain(..excess);
+    }
+}
+
+impl ConductTaps {
+    /// Reads the retained stderr tail (lossy). Call after the child
+    /// exits and the drain thread has observed EOF; concurrent reads
+    /// mid-flight see a prefix of the tail, never garbage.
+    /// Prefer `finalize` for completion-attested evidence.
+    pub fn stderr_tail(&self) -> String {
+        let guard = self.stderr_tail.lock().expect("tap mutex");
+        String::from_utf8_lossy(&guard.buf).to_string()
+    }
+
+    /// Waits (bounded) for the drain thread to observe EOF, reaps it,
+    /// and returns the completion-attested tail.
+    ///
+    /// `child.wait()` alone does not guarantee the drain consumed the
+    /// final bytes — grandchildren can hold the pipe, and scheduling
+    /// can lag. A timeout (or drain error) surfaces honestly in the
+    /// returned note instead of passing on partial evidence silently.
+    /// The reaping join runs ONLY after the drain reported completion:
+    /// joining unconditionally after a timeout would block until EOF,
+    /// making the timeout branch unreachable precisely when it
+    /// matters (descendant-held pipe). On timeout the handle stays
+    /// parked (detached with the test) and the partial tail is
+    /// labeled unproven.
+    pub fn finalize(&mut self, timeout: Duration) -> FinalizedTap {
+        let outcome = self.drain_done.recv_timeout(timeout);
+        let stderr = self.stderr_tail();
+        match outcome {
+            Ok(DrainOutcome { error: None }) => {
+                if let Some(handle) = self.drain_handle.take() {
+                    let _ = handle.join();
+                }
+                FinalizedTap {
+                    stderr,
+                    drain_clean: true,
+                    drain_note: "drain clean EOF".to_string(),
+                }
+            }
+            Ok(DrainOutcome { error: Some(error) }) => {
+                if let Some(handle) = self.drain_handle.take() {
+                    let _ = handle.join();
+                }
+                FinalizedTap {
+                    stderr,
+                    drain_clean: false,
+                    drain_note: format!("drain read error: {error}"),
+                }
+            }
+            Err(_) => FinalizedTap {
+                stderr,
+                drain_clean: false,
+                drain_note: format!(
+                    "drain not complete within {}ms (partial tail, unproven)",
+                    timeout.as_millis()
+                ),
+            },
+        }
+    }
+}
+
+/// Spawns the stderr drain worker over any reader: feeds the bounded
+/// tail buffer until EOF/error, then reports completion. Shared by
+/// `spawn_conduct_tapped` and deterministic tap pins (held-open pipes
+/// need no systemd), so the timeout-without-join behavior is itself
+/// pinned, not merely reviewed.
+pub fn run_tap_drain(
+    reader: impl std::io::Read + Send + 'static,
+    tail: std::sync::Arc<std::sync::Mutex<TailBuffer>>,
+    done: std::sync::mpsc::Sender<DrainOutcome>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = reader;
+        let mut buf = [0u8; 4096];
+        let outcome = loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break DrainOutcome { error: None },
+                Ok(n) => tail.lock().expect("tap mutex").push(&buf[..n]),
+                Err(error) => {
+                    break DrainOutcome {
+                        error: Some(error.to_string()),
+                    };
+                }
+            }
+        };
+        let _ = done.send(outcome);
+    })
+}
+
+impl ConductTaps {
+    /// Builds taps over an arbitrary reader (deterministic pins; the
+    /// live path uses `spawn_conduct_tapped`, which shares
+    /// `run_tap_drain`, so pins exercise the production worker).
+    pub fn for_reader(reader: impl std::io::Read + Send + 'static) -> Self {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(TailBuffer { buf: Vec::new() }));
+        let handle = run_tap_drain(reader, std::sync::Arc::clone(&tail), done_tx);
+        Self {
+            stderr_tail: tail,
+            drain_done: done_rx,
+            drain_handle: Some(handle),
+        }
+    }
+}
+
+/// Like `spawn_conduct_full`, but conduct's stderr drains into a
+/// bounded retained buffer instead of the sink. Stdout still drains to
+/// the sink (the minted-id line is consumed at spawn); all other
+/// conduct-lifetime semantics are identical.
+pub fn spawn_conduct_tapped(
+    home: &str,
+    profile: &str,
+    worktree: &str,
+    extra: &[&str],
+    argv: &[&str],
+    envs: &[(&str, &str)],
+) -> (Child, String, Guard, ConductTaps) {
     let mut cmd = Command::new(bin());
     cmd.args([
         "conduct",
@@ -266,35 +440,49 @@ pub fn spawn_conduct_full(
     // drop on loaded seats). Detached drain threads hold the
     // pipes open until EOF at conduct exit; product behavior is
     // untouched (SigDfl hygiene stays).
+    //
+    // Stderr drains into the bounded retained tap (not the sink) so
+    // boundary tests can read conduct's own stderr post-exit; stdout
+    // still drains to the sink.
+    let (drain_tx, drain_rx) = std::sync::mpsc::channel();
+    let mut taps = ConductTaps {
+        stderr_tail: std::sync::Arc::new(std::sync::Mutex::new(TailBuffer { buf: Vec::new() })),
+        drain_done: drain_rx,
+        drain_handle: None,
+    };
+    let tap_writer = std::sync::Arc::clone(&taps.stderr_tail);
     std::thread::spawn(move || {
         let mut drain = reader;
         let _ = std::io::copy(&mut drain, &mut std::io::sink());
     });
-    std::thread::spawn(move || {
-        let mut stderr = stderr;
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-    });
-    (child, id.clone(), Guard { id: Some(id) })
+    // Single drain implementation shared with deterministic pins
+    // (`run_tap_drain`): the worker below is the production path the
+    // pins exercise.
+    let drain_handle = run_tap_drain(stderr, tap_writer, drain_tx);
+    taps.drain_handle = Some(drain_handle);
+    (child, id.clone(), Guard { id: Some(id) }, taps)
 }
 
-/// Best-effort drain of a dead child's stderr for timeout diagnostics.
+/// Best-effort drain of a dead child's pipe for failure diagnostics.
 /// Nonblocking via `fcntl` (pipes inherited by grandchildren must never
-/// block the panic path). Output is capped; partial reads are fine.
-fn drain_stderr(stderr: std::process::ChildStderr) -> String {
-    use std::io::Read as _;
-    use std::os::unix::io::AsRawFd as _;
+/// block the panic path). Output is capped as it is read (the cap is a
+/// memory bound, not a post-collection truncation); partial reads are
+/// fine. Time-bounded by the caller's patience: each empty poll sleeps
+/// 50ms against a 2s wall, so a descendant-held fd delays — never
+/// hangs — the panic path.
+pub fn drain_pipe<R: std::io::Read + std::os::unix::io::AsRawFd>(pipe: R) -> String {
     let mut collected = Vec::new();
     let mut buf = [0u8; 4096];
-    let mut stderr = stderr;
+    let mut pipe = pipe;
     // Best effort only: ignore setup failure and read what is there.
-    if let Ok(flags) = nix::fcntl::fcntl(stderr.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+    if let Ok(flags) = nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
         let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
         oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-        let _ = nix::fcntl::fcntl(stderr.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags));
+        let _ = nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags));
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match stderr.read(&mut buf) {
+        match std::io::Read::read(&mut pipe, &mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 collected.extend_from_slice(&buf[..n]);
@@ -311,6 +499,14 @@ fn drain_stderr(stderr: std::process::ChildStderr) -> String {
         }
     }
     String::from_utf8_lossy(&collected).trim().to_string()
+}
+
+/// Best-effort drain of a dead child's stderr for timeout diagnostics.
+/// Shared bounded implementation; see `drain_pipe`. Public so
+/// failure-path diagnostics (e.g. labels terminate capture) share one
+/// bounded drain instead of inventing their own.
+pub fn drain_stderr(stderr: std::process::ChildStderr) -> String {
+    drain_pipe(stderr)
 }
 
 pub fn wait_active(id: &str) {
