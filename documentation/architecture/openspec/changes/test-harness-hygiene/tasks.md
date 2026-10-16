@@ -21,8 +21,8 @@
 
 ## 4. Slimming splits (moves only)
 
-- [ ] 4.1 Split `main.rs` along verb seams, green per split.
-- [ ] 4.2 Split `client.rs`, `protocol.rs`, `podman.rs` past warn-zone margins, green per split.
+- [x] 4.1 Split `main.rs` along verb seams, green per split.
+- [x] 4.2 Split `client.rs`, `protocol.rs`, `podman.rs` past warn-zone margins, green per split.
 
 ## 5. Review and sync
 
