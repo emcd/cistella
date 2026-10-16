@@ -179,23 +179,135 @@ pub struct StartedAttestation {
     pub ready: bool,
 }
 
-/// Execution outcome: exit code or 128+signal disposition.
+/// Foreground-client result: the exec client's own completion,
+/// rendered without coercion. This is transport evidence, never a
+/// harness disposition on its own. Lowercase wire spelling matches
+/// the house `exit_status`/`signal` shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RawClientResult {
+    /// Client exited with a status code.
+    Exited(i32),
+    /// Client ended by signal.
+    Signaled(i32),
+}
+
+/// Corroborated absence observation: snapshot facts recorded at
+/// query time. Co-occurrence only — never proven external cause.
+/// Field order is the query order (container, service, unit).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbsenceObservation {
+    /// `podman container exists` exit code (0 present, 1 absent;
+    /// any other code is an observation error, never recorded).
+    pub container_exists_code: i32,
+    /// Systemd `ActiveState` at query time.
+    pub service_active_state: String,
+    /// Systemd `LoadState` at query time.
+    pub service_load_state: String,
+    /// Unit file present at query time.
+    pub unit_file_present: bool,
+}
+
+/// Outcome-unobservable record: the harness outcome cannot be known,
+/// with the observation facts and raw client result retained as
+/// qualified evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnobservableOutcome {
+    /// Corroborated absence observation (facts, not cause).
+    pub observation: AbsenceObservation,
+    /// Foreground-client result (uncoerced transport evidence).
+    pub raw: RawClientResult,
+}
+
+/// Execution outcome: exit code, 128+signal disposition, or an
+/// outcome-unobservable record for externally-ambiguous completion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionOutcome {
     /// Harness exited with a status code.
     Exited(i32),
     /// Harness ended by signal (`128 + signum`).
     Signaled(i32),
+    /// Harness outcome unobservable (observation record + raw client
+    /// result; never a harness disposition, never proven cause).
+    Unobservable(UnobservableOutcome),
 }
 
 impl ExecutionOutcome {
     /// Process exit code for this outcome.
+    ///
+    /// `Unobservable` reports the driver-report class (1): conduct
+    /// matches it explicitly and prints the typed report, so this
+    /// value is never mistaken for a harness disposition.
     #[must_use]
     pub fn exit_code(self) -> i32 {
         match self {
             Self::Exited(code) => code,
             Self::Signaled(signum) => 128 + signum,
+            Self::Unobservable(_) => 1,
         }
+    }
+}
+
+/// Read-only lifecycle facts corroboration needs. All fields are
+/// snapshot values recorded in query order (container, service,
+/// unit); co-occurrence only, never proven cause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorroborationFacts {
+    /// `podman container exists` exit code (0 present, 1 absent).
+    pub container_exists_code: i32,
+    /// Systemd `ActiveState` at query time.
+    pub service_active_state: String,
+    /// Systemd `LoadState` at query time.
+    pub service_load_state: String,
+    /// Unit file present at query time.
+    pub unit_file_present: bool,
+}
+
+/// Classifies one completed foreground exec-client wait.
+///
+/// `conduct_signal` carries the driver's own signals (cancel flag,
+/// HUP/TERM) and wins before any status reading (unchanged legacy).
+/// A zero status reports `Exited(0)` with no queries. Otherwise the
+/// caller supplies read-only corroboration facts when obtainable:
+/// container absent (code 1) with a nonzero/signaled client yields
+/// `Unobservable` (facts + uncoerced raw); container present, query
+/// failure, or unresolvable names (`facts` None) keep the legacy
+/// status mapping byte-for-byte by explicit compatibility policy
+/// (receipt unproven, never upgraded) — exactly two branches, no
+/// third unknown-variant.
+#[must_use]
+pub fn classify_completion(
+    conduct_signal: Option<i32>,
+    status: &std::process::ExitStatus,
+    facts: Option<&CorroborationFacts>,
+) -> ExecutionOutcome {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signum) = conduct_signal {
+        return ExecutionOutcome::Signaled(signum);
+    }
+    if status.code() == Some(0) {
+        return ExecutionOutcome::Exited(0);
+    }
+    let raw = match status.signal() {
+        Some(signum) => RawClientResult::Signaled(signum),
+        None => RawClientResult::Exited(status.code().unwrap_or(1)),
+    };
+    match facts {
+        Some(facts) if facts.container_exists_code == 1 => {
+            ExecutionOutcome::Unobservable(UnobservableOutcome {
+                observation: AbsenceObservation {
+                    container_exists_code: facts.container_exists_code,
+                    service_active_state: facts.service_active_state.clone(),
+                    service_load_state: facts.service_load_state.clone(),
+                    unit_file_present: facts.unit_file_present,
+                },
+                raw,
+            })
+        }
+        _ => match raw {
+            RawClientResult::Exited(code) => ExecutionOutcome::Exited(code),
+            RawClientResult::Signaled(signum) => ExecutionOutcome::Signaled(signum),
+        },
     }
 }
 

@@ -39,9 +39,38 @@ use crate::framework::contract::{
     CancelFlag, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
 };
 use crate::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, StdioBinding, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, RawClientResult, StdioBinding, UnitSnapshot,
 };
 use crate::isolators::podman::PodmanIsolator;
+
+/// Encodes one await outcome for the wire: schema shapes
+/// (`exit_status`/`signal`/`unobservable`), not the enum's derived
+/// spelling.
+///
+/// The typed `Unobservable` variant emits ONLY when the
+/// `await-interrupted-v1` capability negotiated; otherwise the
+/// backend outcome downgrades to the legacy raw-client mapping
+/// (exactly current behavior: raw status as harness disposition).
+/// Pure so the negotiation gate pins directly against fixtures.
+#[must_use]
+pub fn encode_await_outcome(outcome: &ExecutionOutcome, negotiated: bool) -> serde_json::Value {
+    match outcome {
+        ExecutionOutcome::Exited(code) => serde_json::json!({"exit_status": code}),
+        ExecutionOutcome::Signaled(signum) => serde_json::json!({"signal": signum}),
+        ExecutionOutcome::Unobservable(unobservable) => {
+            if !negotiated {
+                return match unobservable.raw {
+                    RawClientResult::Exited(code) => serde_json::json!({"exit_status": code}),
+                    RawClientResult::Signaled(signum) => serde_json::json!({"signal": signum}),
+                };
+            }
+            serde_json::json!({"unobservable": {
+                "observation": unobservable.observation,
+                "raw": unobservable.raw,
+            }})
+        }
+    }
+}
 
 /// Wire op names (mirror the isolator-contract schemas).
 pub const OP_CREATE: &str = "isolator.create";
@@ -195,6 +224,11 @@ pub struct IsolatorGuest<B = PodmanIsolator> {
     /// `parent != 1` check but is not conduct, so equality — not
     /// non-init — authenticates the foreground pgid source.
     host_pid: u32,
+    /// Whether the host negotiated `await-interrupted-v1` at hello.
+    /// The typed `Unobservable` await variant emits ONLY when
+    /// negotiated; otherwise the backend outcome downgrades to the
+    /// legacy raw mapping (exactly current behavior).
+    await_interrupted: bool,
 }
 
 /// Live backend unit plus the attempt identity that created it.
@@ -271,6 +305,7 @@ impl IsolatorGuest<PodmanIsolator> {
             tables: std::sync::Mutex::new(Tables::default()),
             fd_channel: None,
             host_pid: std::os::unix::process::parent_id(),
+            await_interrupted: false,
         }
     }
 }
@@ -284,6 +319,7 @@ impl<B: Isolator> IsolatorGuest<B> {
             tables: std::sync::Mutex::new(Tables::default()),
             fd_channel: None,
             host_pid: std::os::unix::process::parent_id(),
+            await_interrupted: false,
         }
     }
 
@@ -309,6 +345,16 @@ impl<B: Isolator> IsolatorGuest<B> {
     #[must_use]
     pub fn with_fd_channel(mut self, channel: std::os::fd::OwnedFd) -> Self {
         self.fd_channel = Some(channel);
+        self
+    }
+
+    /// Records whether the host negotiated `await-interrupted-v1`
+    /// at hello (production guest reads the host offer from the
+    /// hello payload; unit pins set it directly). The typed
+    /// `Unobservable` await variant emits ONLY when negotiated.
+    #[must_use]
+    pub fn with_await_interrupted(mut self, negotiated: bool) -> Self {
+        self.await_interrupted = negotiated;
         self
     }
 
@@ -712,12 +758,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                 let local = self.resolve_execution(&req.execution_handle)?;
                 let cancel = CancelFlag::new();
                 let outcome: ExecutionOutcome = self.backend.await_result(&local, &cancel)?;
-                // Schema shapes (`exit_status`/`signal`), not the
-                // enum's derived spelling.
-                match outcome {
-                    ExecutionOutcome::Exited(code) => Ok(serde_json::json!({"exit_status": code})),
-                    ExecutionOutcome::Signaled(signum) => Ok(serde_json::json!({"signal": signum})),
-                }
+                Ok(encode_await_outcome(&outcome, self.await_interrupted))
             }
             OP_INSPECT => {
                 let req: InspectWire = parse(op, payload)?;

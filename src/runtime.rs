@@ -13,3 +13,46 @@ pub use crate::isolators::quadlet::{
     resolve_image_digest, start_quadlet, systemd_user_available, teardown, teardown_inner,
     unquote_systemd,
 };
+
+use crate::framework::isolator::{AbsenceObservation, RawClientResult};
+
+/// JSON-encodes one free-text field for the interruption report:
+/// quotes included, control bytes/newlines escaped — no terminal
+/// injection through observed state strings.
+fn report_field(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"<unencodable>\"".to_string())
+}
+
+/// Renders the finalized unobservable-outcome report: one stable
+/// human line with explicit fields. Raw client status renders as
+/// `exited(code)` or `signaled(n)`, never coerced; observation
+/// fields are JSON-encoded; `cleanup` prints `converged` ONLY when
+/// the caller proved final absence (the renderer trusts its flag —
+/// proof happens at the call site, never here).
+#[must_use]
+pub fn format_unobservable_report(
+    observation: &AbsenceObservation,
+    raw: &RawClientResult,
+    cleanup_converged: bool,
+) -> String {
+    let raw_rendered = match raw {
+        RawClientResult::Exited(code) => format!("exited({code})"),
+        RawClientResult::Signaled(signum) => format!("signaled({signum})"),
+    };
+    format!(
+        "error: execution outcome unobservable (container absent at query, service {}/{} unit {}): harness outcome unobservable; raw client {}; cleanup={}",
+        report_field(&observation.service_active_state),
+        report_field(&observation.service_load_state),
+        if observation.unit_file_present {
+            "present"
+        } else {
+            "absent"
+        },
+        raw_rendered,
+        if cleanup_converged {
+            "converged"
+        } else {
+            "unproven"
+        },
+    )
+}

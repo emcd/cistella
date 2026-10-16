@@ -167,3 +167,74 @@ pub fn abort_startup(
         signum,
     )
 }
+
+/// Teardown coordinates for outcome finalization: the unit, grace,
+/// key, container, and session that `teardown_unit` needs. Grouped
+/// so finalizers stay within the argument-count lint.
+pub struct TeardownCoords<'a> {
+    /// Framework unit handle under teardown.
+    pub unit: &'a UnitHandle,
+    /// Stop-settle grace for the non-systemd fallback.
+    pub grace: std::time::Duration,
+    /// Reconciliation key of the attempt.
+    pub key: &'a ReconciliationKey,
+    /// Container name (residue scope).
+    pub container_name: &'a str,
+    /// Session id (cleanup scope).
+    pub session_id: &'a str,
+}
+
+/// Finalizes an outcome-unobservable await: converges teardown first,
+/// then reports the typed observation — never a fabricated harness
+/// disposition, never exit 128+N or 0. Residue, death, and
+/// uncertainty dominate the report exactly like every other
+/// teardown-after-failure path; `cleanup=converged` prints only on
+/// proven residue absence (the driver's own convergence definition:
+/// shared teardown Ok plus no residue — wider service/container
+/// facts hold as live-proven invariants, asserted by the boundary
+/// test). Takes the wire client by value so the guest shuts down
+/// orderly on every path instead of orphaning.
+pub fn finalize_unobservable(
+    client: WireClient,
+    rendezvous_dir: &std::path::Path,
+    coords: &TeardownCoords<'_>,
+    unobservable: &crate::framework::isolator::UnobservableOutcome,
+) -> i32 {
+    match client.teardown_unit(
+        coords.unit,
+        coords.grace,
+        coords.key,
+        coords.container_name,
+        coords.session_id,
+        false,
+    ) {
+        Ok(()) => {}
+        Err(teardown_err) if !crate::runtime::residue_gone(coords.container_name) => {
+            report_release(release_client(client, rendezvous_dir));
+            eprintln!("error: teardown after unobservable outcome: {teardown_err}");
+            return 1;
+        }
+        Err(death_err) if client.guest_dead() => {
+            report_release(release_client(client, rendezvous_dir));
+            eprintln!("error: {death_err}");
+            return 1;
+        }
+        Err(uncertain_err) if client.shutdown_uncertain() => {
+            report_release(release_client(client, rendezvous_dir));
+            eprintln!("error: {uncertain_err}");
+            return 1;
+        }
+        Err(_) => {}
+    }
+    let converged = crate::runtime::residue_gone(coords.container_name);
+    report_release(release_client(client, rendezvous_dir));
+    eprintln!(
+        "{}",
+        crate::runtime::format_unobservable_report(
+            &unobservable.observation,
+            &unobservable.raw,
+            converged
+        )
+    );
+    1
+}

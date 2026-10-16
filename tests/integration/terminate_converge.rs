@@ -1,17 +1,19 @@
 //! CLI-terminate vs attached-conduct convergence boundary.
 //!
-//! Live proof for `quadlet-remove-notfound-tolerant`: an external CLI
+//! Live proof for outcome-unobservable reporting: an external CLI
 //! `terminate` (creation-lock held) races the attached conduct's own
-//! unlocked teardown over the same unit file. Both actors must
-//! converge — CLI reports `terminate`, conduct reports the harness
-//! disposition — with no residue, regardless of which remover wins the
-//! unlink. The exact loser-interleave (ENOENT) is pinned
-//! deterministically in `tests/unit/quadlet_remove.rs`; this test
-//! proves the two-actor convergence and final absence under real
-//! systemd/Podman semantics. No new sleeps: readiness is state
-//! predicates with the existing bounded backstops, and the creation
-//! lock is never held across the concurrent window (holding it would
-//! exclude the race under test).
+//! unlocked teardown over the same unit file. Conduct MUST NOT report
+//! a harness disposition for the race it lost observability of (the
+//! withdrawn fixed-143 premise); it reports the typed observation
+//! with driver-report exit 1, with cleanup proven converged.
+//! Cleanup convergence itself (unit/service/container absence) is
+//! asserted as facts before cleanup does any work. The exact
+//! loser-interleave (ENOENT) stays pinned deterministically in
+//! `tests/unit/quadlet_remove.rs`; raw dispositions stay pinned per
+//! interleave in `tests/unit/unobservable.rs`. No new sleeps:
+//! readiness is state predicates with the existing bounded
+//! backstops, and the creation lock is never held across the
+//! concurrent window (holding it would exclude the race under test).
 
 use super::helpers::*;
 
@@ -128,11 +130,13 @@ fn cli_terminate_converges_attached_conduct() {
         );
     }
 
-    // Conduct's disposition comes from the OBSERVED exit status: the
-    // harness died to SIGTERM from the service stop, so conduct must
-    // report 128+15 after converging its own teardown — the
-    // documented shared-teardown outcome policy, with the retained
-    // tap proving no teardown error hid behind the disposition.
+    // Conduct's report comes from the OBSERVED outcome set, never
+    // a guessed harness disposition (the fixed-143 premise is
+    // withdrawn): the container vanished mid-await, so conduct
+    // reports outcome-unobservable with driver-report exit 1 after
+    // converging its own teardown. The completion-attested tap
+    // proves no teardown error hid behind the report, and the
+    // report names the observation with the raw client result.
     // Completion-attested tap: `child.wait` alone cannot guarantee
     // the drain consumed the final bytes.
     let conduct_status = conduct.wait().expect("conduct exits");
@@ -144,10 +148,20 @@ fn cli_terminate_converges_attached_conduct() {
     );
     assert_eq!(
         conduct_status.code(),
-        Some(143),
-        "conduct reports observed harness SIGTERM disposition (128+15): status={conduct_status:?} conduct_stderr={} drain={}",
+        Some(1),
+        "conduct reports the typed observation as a driver-level report: status={conduct_status:?} conduct_stderr={} drain={}",
         tap.stderr,
         tap.drain_note,
+    );
+    assert!(
+        tap.stderr.contains("execution outcome unobservable"),
+        "typed observation report names itself: {}",
+        tap.stderr,
+    );
+    assert!(
+        tap.stderr.contains("cleanup=converged"),
+        "cleanup claim proven before printing: {}",
+        tap.stderr,
     );
     assert!(
         !tap.stderr.contains("error: teardown"),

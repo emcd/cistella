@@ -102,7 +102,7 @@ impl Isolator for MemIsolator {
         // completed outcome replays even when cancelled.
         let mut outcomes = self.outcomes.lock().unwrap();
         if let Some(outcome) = outcomes.get(execution.as_str()) {
-            return Ok(*outcome);
+            return Ok(outcome.clone());
         }
         if cancel.is_cancelled() {
             return Err(cistella::error::CistellaError::Detached(format!(

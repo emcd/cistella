@@ -650,21 +650,75 @@ fn await_outcome_shapes_pin() {
     use cistella::framework::isolator::ExecutionOutcome as Outcome;
     use cistella::isolators::close::parse_await_outcome;
     assert_eq!(
-        parse_await_outcome(&serde_json::json!({"exit_status": 0})).expect("exit"),
+        parse_await_outcome(&serde_json::json!({"exit_status": 0}), false).expect("exit"),
         Outcome::Exited(0)
     );
     assert_eq!(
-        parse_await_outcome(&serde_json::json!({"signal": 9})).expect("signal"),
+        parse_await_outcome(&serde_json::json!({"signal": 9}), false).expect("signal"),
         Outcome::Signaled(9)
     );
     assert!(
-        parse_await_outcome(&serde_json::json!({"Exited": 0})).is_err(),
+        parse_await_outcome(&serde_json::json!({"Exited": 0}), false).is_err(),
         "derived enum spelling is not the wire shape"
     );
     assert!(
-        parse_await_outcome(&serde_json::json!({"ok": true})).is_err(),
+        parse_await_outcome(&serde_json::json!({"ok": true}), false).is_err(),
         "unrelated shape refuses"
     );
+}
+
+#[test]
+fn await_unobservable_pins() {
+    use cistella::framework::isolator::{
+        AbsenceObservation, ExecutionOutcome as Outcome, RawClientResult, UnobservableOutcome,
+    };
+    use cistella::isolators::close::parse_await_outcome;
+    let observation = AbsenceObservation {
+        container_exists_code: 1,
+        service_active_state: "inactive".to_string(),
+        service_load_state: "not-found".to_string(),
+        unit_file_present: false,
+    };
+    let expected = Outcome::Unobservable(UnobservableOutcome {
+        observation: observation.clone(),
+        raw: RawClientResult::Exited(255),
+    });
+    let payload = serde_json::json!({"unobservable": {
+        "observation": {
+            "container_exists_code": 1,
+            "service_active_state": "inactive",
+            "service_load_state": "not-found",
+            "unit_file_present": false,
+        },
+        "raw": {"exited": 255},
+    }});
+    // Negotiated: decodes with bounds honored.
+    assert_eq!(
+        parse_await_outcome(&payload, true).expect("negotiated"),
+        expected,
+    );
+    // Unsolicited: same bytes refuse without negotiation.
+    assert!(
+        parse_await_outcome(&payload, false).is_err(),
+        "unsolicited variant refuses"
+    );
+    // Bounds: bad code, long state, extra field, wrong raw all refuse.
+    let mut bad_code = payload.clone();
+    bad_code["unobservable"]["observation"]["container_exists_code"] = serde_json::json!(125);
+    assert!(parse_await_outcome(&bad_code, true).is_err());
+    let mut long_state = payload.clone();
+    long_state["unobservable"]["observation"]["service_active_state"] =
+        serde_json::json!("x".repeat(300));
+    assert!(parse_await_outcome(&long_state, true).is_err());
+    let mut extra = payload.clone();
+    extra["unobservable"]["extra"] = serde_json::json!(1);
+    assert!(parse_await_outcome(&extra, true).is_err());
+    let mut bad_raw = payload.clone();
+    bad_raw["unobservable"]["raw"] = serde_json::json!({"exited": "255"});
+    assert!(parse_await_outcome(&bad_raw, true).is_err());
+    let mut both_raw = payload.clone();
+    both_raw["unobservable"]["raw"] = serde_json::json!({"exited": 1, "signaled": 9});
+    assert!(parse_await_outcome(&both_raw, true).is_err());
 }
 
 #[test]

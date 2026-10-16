@@ -1,7 +1,9 @@
 //! Cistella CLI entry point.
 
 use cistella::cli::{Cli, Command};
-use cistella::framework::conduct::{abort_startup, host_isolator, release_client, report_release};
+use cistella::framework::conduct::{
+    abort_startup, finalize_unobservable, host_isolator, release_client, report_release,
+};
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
 use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
 use cistella::framework::prepare_select::prepare_selected_extension;
@@ -886,6 +888,27 @@ fn conduct_session(
                 return Err(error);
             }
         };
+    // Outcome-unobservable completion: the harness disposition is
+    // unknowable, so teardown converges first and the typed
+    // observation reports — never a fabricated harness signal, never
+    // exit 128+N or 0. Finalization lives in framework conduct
+    // (same ownership shape as `abort_startup`); residue, death, and
+    // uncertainty dominate inside.
+    if let ExecutionOutcome::Unobservable(unobservable) = &status {
+        let coords = cistella::framework::conduct::TeardownCoords {
+            unit: &unit,
+            grace,
+            key: &key,
+            container_name: container_name.as_str(),
+            session_id: id.as_str(),
+        };
+        return Ok(finalize_unobservable(
+            client,
+            &rendezvous_dir,
+            &coords,
+            unobservable,
+        ));
+    }
     // Transition failure: exec failed with cause, or the
     // boundary stayed ambiguous (signal in the race window —
     // operator-approved scope: exact fidelity holds only
@@ -920,6 +943,10 @@ fn conduct_session(
             let harness_note = match &status {
                 ExecutionOutcome::Signaled(signum) => format!("harness signaled 128+{signum}"),
                 ExecutionOutcome::Exited(code) => format!("harness exited {code}"),
+                // Unreachable: unobservable outcomes return above
+                // after their own teardown. Covered for exhaustiveness
+                // without claiming a harness disposition.
+                ExecutionOutcome::Unobservable(_) => "harness outcome unobservable".to_string(),
             };
             eprintln!("error: teardown after {harness_note}: {teardown_err}");
             report_release(release_client(client, &rendezvous_dir));

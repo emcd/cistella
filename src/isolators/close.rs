@@ -48,13 +48,19 @@ pub fn complete_close(
 /// Parses an await terminal payload into its outcome.
 ///
 /// Public so the schema mapping pins directly against fixtures
-/// (exit, signal, guest error, malformed) with no backend.
+/// (exit, signal, unobservable, guest error, malformed) with no
+/// backend. `guest_offers` carries whether the guest negotiated
+/// `await-interrupted-v1`: an `unobservable` variant arriving
+/// without negotiation refuses as unsolicited (it is never decoded
+/// on suspicion). Field bounds: observation strings are capped,
+/// raw codes are i32-ranged, unknown fields/tags refuse.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Contract` on shapes outside the
-/// `exit_status`/`signal` schema.
-pub fn parse_await_outcome(value: &Value) -> Result<ExecutionOutcome> {
+/// `exit_status`/`signal`/`unobservable` schema, on unsolicited
+/// variants, or on out-of-bounds fields.
+pub fn parse_await_outcome(value: &Value, guest_offers: bool) -> Result<ExecutionOutcome> {
     if let Some(code) = value.get("exit_status").and_then(|code| code.as_i64()) {
         let code = i32::try_from(code)
             .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
@@ -65,9 +71,95 @@ pub fn parse_await_outcome(value: &Value) -> Result<ExecutionOutcome> {
             .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
         return Ok(ExecutionOutcome::Signaled(signum));
     }
+    if let Some(unobservable) = value.get("unobservable") {
+        if !guest_offers {
+            return Err(CistellaError::Contract(
+                "bad await response: unsolicited unobservable variant".to_string(),
+            ));
+        }
+        return parse_unobservable(unobservable);
+    }
     Err(CistellaError::Contract(
         "bad await response: shape".to_string(),
     ))
+}
+
+/// Observation string cap: systemd state names are short; anything
+/// beyond this is malformed, never truncated-into-validity.
+const OBSERVATION_STRING_CAP: usize = 256;
+
+/// Parses the `unobservable` await payload with field bounds.
+/// Unknown fields/tags and out-of-bounds values refuse; the harness
+/// outcome stays unobservable on every accepted shape.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Contract` on malformed payloads.
+fn parse_unobservable(value: &Value) -> Result<ExecutionOutcome> {
+    use crate::framework::isolator::{AbsenceObservation, RawClientResult, UnobservableOutcome};
+    let shape_err = || CistellaError::Contract("bad await response: unobservable".to_string());
+    let object = value.as_object().ok_or_else(shape_err)?;
+    if object.len() != 2 || !object.contains_key("observation") || !object.contains_key("raw") {
+        return Err(shape_err());
+    }
+    let observation_value = &object["observation"];
+    let observation_object = observation_value.as_object().ok_or_else(shape_err)?;
+    if observation_object.len() != 4
+        || !observation_object.contains_key("container_exists_code")
+        || !observation_object.contains_key("service_active_state")
+        || !observation_object.contains_key("service_load_state")
+        || !observation_object.contains_key("unit_file_present")
+    {
+        return Err(shape_err());
+    }
+    let container_exists_code = observation_object["container_exists_code"]
+        .as_i64()
+        .and_then(|code| i32::try_from(code).ok())
+        .filter(|code| *code == 0 || *code == 1)
+        .ok_or_else(shape_err)?;
+    let service_active_state = observation_object["service_active_state"]
+        .as_str()
+        .filter(|state| state.len() <= OBSERVATION_STRING_CAP)
+        .ok_or_else(shape_err)?
+        .to_string();
+    let service_load_state = observation_object["service_load_state"]
+        .as_str()
+        .filter(|state| state.len() <= OBSERVATION_STRING_CAP)
+        .ok_or_else(shape_err)?
+        .to_string();
+    let unit_file_present = observation_object["unit_file_present"]
+        .as_bool()
+        .ok_or_else(shape_err)?;
+    let raw_value = &object["raw"];
+    let raw_object = raw_value.as_object().ok_or_else(shape_err)?;
+    let raw = if raw_object.len() == 1 {
+        if let Some(code) = raw_object
+            .get("exited")
+            .and_then(|code| code.as_i64())
+            .and_then(|code| i32::try_from(code).ok())
+        {
+            RawClientResult::Exited(code)
+        } else if let Some(signum) = raw_object
+            .get("signaled")
+            .and_then(|signum| signum.as_i64())
+            .and_then(|signum| i32::try_from(signum).ok())
+        {
+            RawClientResult::Signaled(signum)
+        } else {
+            return Err(shape_err());
+        }
+    } else {
+        return Err(shape_err());
+    };
+    Ok(ExecutionOutcome::Unobservable(UnobservableOutcome {
+        observation: AbsenceObservation {
+            container_exists_code,
+            service_active_state,
+            service_load_state,
+            unit_file_present,
+        },
+        raw,
+    }))
 }
 
 /// Reconstructs a typed error from a wire error envelope.

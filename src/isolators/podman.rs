@@ -135,6 +135,25 @@ impl PodmanIsolator {
             })
     }
 
+    /// Resolves one execution to its live container/unit names for
+    /// read-only corroboration. Returns `None` for unknown
+    /// executions and tombstoned units (see
+    /// `crate::isolators::corroboration`).
+    pub(crate) fn corroboration_names(
+        &self,
+        execution: &ExecutionHandle,
+    ) -> Option<(String, String)> {
+        let executions = self.executions.lock().expect("exec table lock");
+        let units = self.units.lock().expect("unit table lock");
+        let pending = executions.get(execution)?;
+        match units.get(&pending.unit)? {
+            UnitEntry::Live(record) => {
+                Some((record.container_name.clone(), record.unit_name.clone()))
+            }
+            UnitEntry::Removed { .. } => None,
+        }
+    }
+
     /// Looks up the live record for a handle: tombstones refuse as
     /// removed (convergent tombstone arms answer without a record;
     /// live attempts on removed handles never re-enter the backend).
@@ -660,7 +679,7 @@ impl Isolator for PodmanIsolator {
                         execution.as_str()
                     ))
                 })?;
-                if let Some(outcome) = pending.outcome {
+                if let Some(outcome) = pending.outcome.clone() {
                     return Ok(outcome);
                 }
                 let child = pending.child.as_mut().ok_or_else(|| {
@@ -682,14 +701,16 @@ impl Isolator for PodmanIsolator {
                 }
             };
             if let Some(status) = completed {
-                let outcome = status_outcome(status, cancel);
+                let outcome = crate::isolators::corroboration::corroborated_outcome(
+                    self, execution, &status, cancel,
+                );
                 if let Some(pending) = self
                     .executions
                     .lock()
                     .expect("exec table lock")
                     .get_mut(execution)
                 {
-                    pending.outcome = Some(outcome);
+                    pending.outcome = Some(outcome.clone());
                     pending.child = None;
                 }
                 return Ok(outcome);
@@ -879,24 +900,6 @@ impl Isolator for PodmanIsolator {
 
 /// Converts a waited child status, preferring a pending cancellation
 /// disposition over the raw exit code (conduct-level signals dominate).
-fn status_outcome(status: std::process::ExitStatus, cancel: &CancelFlag) -> ExecutionOutcome {
-    use std::os::unix::process::ExitStatusExt;
-    if let Some(signum) = cancel.signum() {
-        return ExecutionOutcome::Signaled(signum);
-    }
-    if signals::got_hup() {
-        return ExecutionOutcome::Signaled(1);
-    }
-    if signals::got_term() {
-        return ExecutionOutcome::Signaled(15);
-    }
-    if let Some(signal) = status.signal() {
-        ExecutionOutcome::Signaled(signal)
-    } else {
-        ExecutionOutcome::Exited(status.code().unwrap_or(1))
-    }
-}
-
 /// Pending cancellation signal, if any.
 fn cancel_signum(cancel: &CancelFlag) -> Option<i32> {
     if signals::got_hup() {
@@ -978,7 +981,7 @@ fn inspect_container(name: &str) -> Result<(Option<String>, String, String)> {
 }
 
 /// Reports Quadlet unit-file presence.
-fn unit_file_present(unit_name: &str) -> bool {
+pub(crate) fn unit_file_present(unit_name: &str) -> bool {
     quadlet_dir()
         .map(|dir| dir.join(unit_name).exists())
         .unwrap_or(false)

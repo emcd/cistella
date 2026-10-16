@@ -658,25 +658,41 @@ pub fn logs_container(name: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Reports container presence: exit 0 present, exit 1 absent.
+/// Whether the container exists (exit 0 present, exit 1 absent).
 ///
 /// The absence primitive for GC and inspect: any other exit is a typed
 /// error that reaps nothing (a failed query never reads as absence).
+/// Strict codes flow through [`container_exists_code`].
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on spawn failure or any exit
+/// code other than 0/1.
 pub(crate) fn container_exists(name: &str) -> Result<bool> {
+    Ok(container_exists_code(name)? == 0)
+}
+
+/// `podman container exists` exit code (0 present, 1 absent).
+/// Strict: any other code is an observation error, never absence —
+/// callers needing absence proof must accept ONLY 1.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` on spawn failure or any exit
+/// code other than 0/1 (command/storage errors must fail
+/// observation, not prove cleanup).
+pub(crate) fn container_exists_code(name: &str) -> Result<i32> {
     let exists = Command::new("podman")
         .args(["container", "exists", name])
         .output()
         .map_err(|e| CistellaError::Runtime(format!("podman container exists: {e}")))?;
-    if exists.status.success() {
-        return Ok(true);
+    match exists.status.code() {
+        Some(code @ (0 | 1)) => Ok(code),
+        _ => Err(CistellaError::Runtime(format!(
+            "podman container exists {name}: {}",
+            String::from_utf8_lossy(&exists.stderr)
+        ))),
     }
-    if exists.status.code() == Some(1) {
-        return Ok(false);
-    }
-    Err(CistellaError::Runtime(format!(
-        "podman container exists {name}: {}",
-        String::from_utf8_lossy(&exists.stderr)
-    )))
 }
 
 /// GC result.

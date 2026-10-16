@@ -73,6 +73,8 @@ mod ssh_ambient;
 mod stream;
 #[path = "unit/terminal.rs"]
 mod terminal;
+#[path = "unit/unobservable.rs"]
+mod unobservable;
 #[path = "unit/version.rs"]
 mod version;
 #[path = "unit/wire_dispatch.rs"]

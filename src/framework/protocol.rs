@@ -35,6 +35,26 @@ pub use crate::framework::guest::{GuestHost, StderrDrain};
 /// Protocol major version this host speaks.
 pub const PROTOCOL_MAJOR: u32 = 2;
 
+/// Hello capability gating the typed `Unobservable` await variant.
+/// The guest emits it ONLY when the host offered it at hello;
+/// otherwise the backend outcome downgrades to the legacy raw
+/// mapping. Emission without negotiation refuses host-side.
+pub const AWAIT_INTERRUPTED_V1: &str = "await-interrupted-v1";
+
+/// True when a hello payload's capability list names `capability.
+/// Pure so guest hello handling and unit pins share the check.
+#[must_use]
+pub fn offered_capability(payload: &serde_json::Value, capability: &str) -> bool {
+    payload
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.as_array())
+        .is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|name| name.as_str() == Some(capability))
+        })
+}
+
 /// Pre-negotiation frame ceiling: applies to the first hello frame
 /// regardless of the negotiated maximum.
 pub const PRE_NEGOTIATION_MAX_FRAME: usize = 64 * 1024;

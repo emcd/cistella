@@ -23,8 +23,9 @@ use std::time::Duration;
 
 use cistella::error::CistellaError;
 use cistella::framework::protocol::{
-    AWAIT_RESULT_OP, DEFAULT_MAX_FRAME, HOST_MAX_FRAME, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR,
-    envelope_bytes, parse_envelope, read_frame, write_frame,
+    AWAIT_INTERRUPTED_V1, AWAIT_RESULT_OP, DEFAULT_MAX_FRAME, HOST_MAX_FRAME,
+    PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, offered_capability, parse_envelope,
+    read_frame, write_frame,
 };
 use cistella::isolators::wire::IsolatorGuest;
 
@@ -260,13 +261,19 @@ fn main() -> ExitCode {
     if hello.op != "hello" || hello.protocol != PROTOCOL_MAJOR {
         return ExitCode::from(2);
     }
+    // The host offers wire capabilities in the hello payload; the
+    // typed `Unobservable` await variant emits ONLY when offered
+    // (legacy raw mapping otherwise). The guest advertises the
+    // capability it implements, so the host can refuse unsolicited
+    // variants.
+    let await_interrupted = offered_capability(&hello.payload, AWAIT_INTERRUPTED_V1);
     let response = cistella::framework::protocol::Envelope {
         protocol: PROTOCOL_MAJOR,
         id: hello.id.clone(),
         op: "hello".to_string(),
         payload: serde_json::json!({
             "version": PROTOCOL_MAJOR,
-            "capabilities": [ROLE_CAPABILITY],
+            "capabilities": [ROLE_CAPABILITY, AWAIT_INTERRUPTED_V1],
             "max_frame": HOST_MAX_FRAME as u32,
         }),
     };
@@ -299,7 +306,7 @@ fn main() -> ExitCode {
                 position += 1;
             }
         }
-        let guest = IsolatorGuest::new();
+        let guest = IsolatorGuest::new().with_await_interrupted(await_interrupted);
         let guest = match channel {
             Some(sock) => guest.with_fd_channel(sock),
             None => guest,

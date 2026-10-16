@@ -176,6 +176,11 @@ pub struct WireClient {
     inspector: PodmanIsolator,
     /// Attempt keys recorded before mutating calls (residue duty).
     recorded_keys: std::sync::Mutex<Vec<ReconciliationKey>>,
+    /// Guest-advertised hello capabilities (negotiated set). Gates
+    /// capability-scoped decoding: an `unobservable` await variant
+    /// arriving from a guest that never advertised
+    /// `await-interrupted-v1` refuses as unsolicited.
+    guest_capabilities: Vec<String>,
     /// Abnormal-exit latch: set by the dispatcher ONLY after proven
     /// shutdown (send timeout, hard send failure, stream death,
     /// protocol violation). Local send refusal (oversize) and
@@ -317,6 +322,24 @@ impl WireClient {
         Self::host_as(exe_dir, ISOLATOR_BIN, &[], rendezvous_dir, deadlines)
     }
 
+    /// Host hello offer for shipped isolator guests: the role plus
+    /// the await-interrupted capability (typed `Unobservable` may
+    /// then arrive; without the offer the guest downgrades).
+    fn host_offer() -> Vec<String> {
+        vec![
+            "isolator".to_string(),
+            crate::framework::protocol::AWAIT_INTERRUPTED_V1.to_string(),
+        ]
+    }
+
+    /// Host hello offer for registered isolator guests: the recorded
+    /// role plus the await-interrupted capability.
+    fn host_offer_role(role: &[String]) -> Vec<String> {
+        let mut offered = role.to_vec();
+        offered.push(crate::framework::protocol::AWAIT_INTERRUPTED_V1.to_string());
+        offered
+    }
+
     /// Hosts a named guest binary with extra argv (conformance uses
     /// the scripted peer; production uses [`ISOLATOR_BIN`]).
     ///
@@ -337,13 +360,13 @@ impl WireClient {
             path.to_string_lossy().to_string(),
         ];
         args.extend(extra_args.iter().cloned());
-        let (guest, _negotiated) =
-            host_external(exe_dir, name, &args, &["isolator".to_string()], deadlines).inspect_err(
+        let (guest, negotiated) =
+            host_external(exe_dir, name, &args, &Self::host_offer(), deadlines).inspect_err(
                 |_| {
                     let _ = std::fs::remove_file(&path);
                 },
             )?;
-        Self::serve_accepted(guest, listener, path, deadlines)
+        Self::serve_accepted(guest, negotiated, listener, path, deadlines)
     }
 
     /// Hosts a resolved registered isolator: the verified-FD spawn
@@ -368,11 +391,12 @@ impl WireClient {
             FD_SOCKET_ARG.to_string(),
             path.to_string_lossy().to_string(),
         ];
-        let (guest, _negotiated) =
-            host_registered(resolved, &args, &role, deadlines).inspect_err(|_| {
-                let _ = std::fs::remove_file(&path);
-            })?;
-        Self::serve_accepted(guest, listener, path, deadlines)
+        let (guest, negotiated) =
+            host_registered(resolved, &args, &Self::host_offer_role(&role), deadlines)
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&path);
+                })?;
+        Self::serve_accepted(guest, negotiated, listener, path, deadlines)
     }
 
     /// Accepts the guest's rendezvous connection and serves the
@@ -383,6 +407,7 @@ impl WireClient {
             std::process::ChildStdout,
             std::process::ChildStdin,
         >,
+        negotiated: Vec<String>,
         listener: OwnedFd,
         path: PathBuf,
         deadlines: Deadlines,
@@ -411,6 +436,7 @@ impl WireClient {
             deadlines,
             inspector: PodmanIsolator::new(),
             recorded_keys: std::sync::Mutex::new(Vec::new()),
+            guest_capabilities: negotiated,
             dead,
             uncertain,
             shutdown_report,
@@ -844,7 +870,10 @@ impl Isolator for WireClient {
                     // parse the nested outcome. A bare
                     // `exit_status` at top level is not the schema.
                     let outcome = Self::redeem("await_result", response?)?;
-                    return parse_await_outcome(&outcome);
+                    let guest_offers = self.guest_capabilities.iter().any(|capability| {
+                        capability == crate::framework::protocol::AWAIT_INTERRUPTED_V1
+                    });
+                    return parse_await_outcome(&outcome, guest_offers);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if cancel.is_cancelled() {

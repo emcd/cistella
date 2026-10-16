@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod close;
+pub mod corroboration;
 pub mod dispatch;
 pub mod hook;
 pub mod podman;
