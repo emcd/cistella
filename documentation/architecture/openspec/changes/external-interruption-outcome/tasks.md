@@ -47,10 +47,14 @@
   interleave (exit 1 + typed report + cleanup=converged + absence
   facts; fixed-143 premise withdrawn; compiles + gates, live is
   2.4).
-- [ ] 2.4 QA live loop incl. boundary on both backends; code-exact
-  container checks + explicit service strings.
+- [x] 2.4 QA live loop incl. boundary on both backends; code-exact
+  container checks + explicit service strings. (10/10 + 10/10 confirm
+  with per-run mode lines on both interleaves; labels 4/4; residue
+  explicit. Retained receipts cover the wire boundary loops and
+  direct reference/race pins — NOT the operator-mandated full-live
+  CI/pre-push gate, which stays independent.)
 
 ## 3. Review and sync
 
-- [x] 3.1 Tier-1 review → Tier-2 review. (Packet Tier-1 APPROVE ×3 + Tier-2 observational approval; implementation Tier-1 APPROVE; committed `ed1c800`, local, unpushed.)
-- [ ] 3.2 Sync both spec deltas to main specs + changelog.
+- [x] 3.1 Tier-1 review → Tier-2 review. (Packet Tier-1 APPROVE ×4 + Tier-2 observational approval; implementation Tier-1 APPROVE ×2 + Tier-2 code-scope APPROVE at `c85da70`; race-test delta Tier-1 APPROVE; committed `ed1c800`, `261d54f`, `c85da70`, local, unpushed. Planning approvals never counted as implementation gates.)
+- [x] 3.2 Sync both spec deltas to main specs + changelog.

@@ -15,6 +15,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   All other unlink IO failures and `daemon-reload` failures still
   propagate. Deterministic interleave pins plus a live
   CLI-vs-attached convergence boundary guard the behavior.
+- Outcome-unobservable executions report as typed driver reports:
+  when the awaited container vanishes mid-await (or stops with the
+  harness unobservable), conduct tears down, re-proves absence
+  with checked queries, and reports the observation record with
+  the raw client result and exit 1 — never a fabricated harness
+  disposition. Residue, release, and proof failures dominate the
+  report; foreign backends refuse explicitly.
 
 ## [0.3.0] - 2026-10-15
 
