@@ -257,41 +257,19 @@ fn name_resolves_from_foreign_cwd_live() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
-    let mut cmd = Command::new(bin());
-    cmd.args([
-        "conduct",
-        "--profile",
-        fixture.as_str(),
-        "--session-directory",
+    // Shared spawn with a foreign cwd: profile resolution must not
+    // depend on cwd. Ownership (id read, lifetime drains for both
+    // pipes, Guard teardown) rides the shared helper — no bespoke
+    // partial handoff.
+    let (mut conduct, id, _guard) = spawn_conduct_full(
+        &home,
+        &fixture,
         &worktree_str,
-        "--",
-        "sleep",
-        "300",
-    ]);
-    cmd.env("HOME", &home);
-    cmd.env("TERM", "xterm-ghostty");
-    cmd.current_dir(foreign.path());
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    let mut conduct = cmd.spawn().expect("spawn conduct");
-    let stdout = conduct.stdout.take().expect("piped stdout");
-    // Bounded id-line read (not a blocking read_line loop): silent
-    // or runaway conduct fails loudly within CONDUCT_ID_TIMEOUT.
-    // The positioned reader stays bound for conduct's lifetime so
-    // the pipe stays open (SIGPIPE hygiene); post-id bytes no one
-    // consumes are dropped exactly as the old BufReader handoff did.
-    let id = match read_conduct_id(stdout, CONDUCT_ID_TIMEOUT) {
-        Ok((id, _stdout_rest, _leftover)) => id,
-        Err(why) => {
-            let _ = conduct.kill();
-            let reaped = reap_bounded(&mut conduct, REAP_ALLOWANCE).is_some();
-            panic!(
-                "conduct id line unreadable ({why}; child reaped: {reaped}); conduct stderr: {}",
-                drain_stderr(conduct.stderr.take().expect("piped stderr"))
-            );
-        }
-    };
+        &[],
+        &["sleep", "300"],
+        &[],
+        Some(foreign.path()),
+    );
     let mut guard = Guard {
         id: Some(id.clone()),
     };
@@ -337,6 +315,7 @@ fn configuration_directory_plumbing_live() {
         &["--configuration-directory", &config_str],
         &["sleep", "300"],
         &[],
+        None,
     );
     wait_active(&id);
     assert_eq!(unit_label(&home, &id, "cistella.profile"), "custom");
@@ -587,6 +566,7 @@ fn template_env_and_labels_resolve_live() {
         &["--identity", "alice", "--project-name", "liveproj"],
         &["sleep", "300"],
         &[],
+        None,
     );
     wait_active(&id);
     let container = format!("cistella-{id}");
@@ -664,6 +644,7 @@ fn environment_acceptances_forward_live() {
         &["--identity", "alice", "--project-name", "liveaccept"],
         &["sleep", "300"],
         &[],
+        None,
     );
     wait_active(&id);
     let container = format!("cistella-{id}");
@@ -898,6 +879,7 @@ fn template_namespaces_resolve_live() {
         ],
         &["sleep", "300"],
         &[],
+        None,
     );
     wait_active(&id);
     let container = format!("cistella-{id}");

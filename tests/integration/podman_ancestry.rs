@@ -134,18 +134,7 @@ fn probe_preconditions() -> bool {
         return false;
     }
     let image = image_ref();
-    let mut cmd = Command::new("podman");
-    cmd.args(["image", "exists", &image]);
-    // Exit nonzero = legitimately absent (skip); operational
-    // failure = loud, never a skip.
-    let has_image = match run_bounded(cmd, RUN_CISTELLA_TIMEOUT) {
-        Ok(out) => out.status.success(),
-        Err(why) => panic!("seat operational failure (not a skip): image probe failed: {why}"),
-    };
-    if !has_image {
-        skip(format!(
-            "image {image} not present (build via data/dockerfiles/validate.sh)"
-        ));
+    if !image_present(&image) {
         return false;
     }
     true

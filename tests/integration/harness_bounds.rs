@@ -174,10 +174,13 @@ fn unpiped_stream_needs_no_capture() {
 /// first write gap ends the copy, drops the reader, and the child
 /// dies SIGPIPE. This drives the ACTUAL helpers
 /// (`restore_blocking` + `spawn_stdout_drain`, the exact
-/// `spawn_conduct_tapped` sequence) through ID → 2s quiet gap →
-/// later write → EOF, and attests every byte arrives. Pre-fix code
-/// (one-shot copy on the nonblocking fd) delivers only the
-/// leftover head and misses the post-gap write.
+/// `spawn_conduct_tapped` sequence) with a CONTROLLED handshake:
+/// a 32KB bulk against a 4KB reader buffer blocks partway until
+/// the worker drains — bulk completion PROVES the worker is
+/// scheduled and parked in read (not merely unscheduled) before
+/// the quiet gap. Then gap → later write → EOF, all bytes
+/// attested. Completion is deadline-bounded on the sink (no
+/// unbounded join/read_to_end).
 #[test]
 fn stdout_drain_survives_quiet_gap_after_id_line() {
     use std::io::{Read, Write};
@@ -190,26 +193,59 @@ fn stdout_drain_survives_quiet_gap_after_id_line() {
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
     nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
         .expect("O_NONBLOCK");
+    // Small reader buffer: the handshake bulk cannot fit without
+    // the worker draining (kernel doubles the set value for
+    // bookkeeping; 32KB still far exceeds it).
+    nix::sys::socket::setsockopt(&reader, nix::sys::socket::sockopt::RcvBuf, &4096usize)
+        .expect("small reader buffer");
     // Test-owned sink (production passes io::sink()): the drained
-    // bytes are observable here.
+    // bytes are observable here. Default ~212KB buffer swallows
+    // the whole fixture with no pump thread.
     let (sink_reader, sink_writer) = UnixStream::pair().expect("sink pair");
     // The production handoff sequence, in order.
     restore_blocking(&reader).expect("blocking restored");
     let drain = spawn_stdout_drain(reader, b"LEFTOVER".to_vec(), sink_writer);
-    // Quiet gap LONGER than any copy poll: a nonblocking one-shot
-    // copy would exit here. Then a later write, then EOF.
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Handshake bulk: blocks partway until the worker drains, so
+    // its completion proves the worker is parked in read BEFORE
+    // the gap below. A nonblocking one-shot copy would already
+    // have exited on WouldBlock here.
+    writer.write_all(&[b'k'; 32768]).expect("handshake bulk");
+    // Quiet gap with the worker provably parked: then a later
+    // write, then EOF.
+    std::thread::sleep(std::time::Duration::from_millis(500));
     writer.write_all(b"AFTER-GAP").expect("later write lands");
     drop(writer);
-    drain.join().expect("drain thread reaped");
-    let mut got = Vec::new();
+    // Bounded completion: deadline read on the sink for the
+    // trailer; the worker must have delivered everything by
+    // then (AFTER-GAP is last), so the join after is prompt.
     let mut sink_reader = sink_reader;
-    sink_reader.read_to_end(&mut got).expect("sink drains");
-    let got = String::from_utf8_lossy(&got).to_string();
-    assert!(got.contains("LEFTOVER"), "leftover head delivered: {got:?}");
+    sink_reader
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("sink timeout armed");
+    let mut got = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match sink_reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                got.extend_from_slice(&chunk[..n]);
+                if got.windows(9).any(|w| w == b"AFTER-GAP") {
+                    break;
+                }
+            }
+            Err(e) => panic!("bounded sink completion failed: {e}"),
+        }
+    }
+    drain.join().expect("drain thread reaped");
+    assert_eq!(
+        got.len(),
+        8 + 32768 + 9,
+        "every byte delivered exactly once: {}",
+        got.len()
+    );
     assert!(
-        got.contains("AFTER-GAP"),
-        "post-gap write delivered (no WouldBlock copy exit): {got:?}"
+        got.ends_with(b"AFTER-GAP"),
+        "post-gap write delivered last (no WouldBlock copy exit)"
     );
 }
 
@@ -329,16 +365,20 @@ fn failed_capture_refuses_success() {
     }
 }
 
-/// Multibyte codepoint straddling the 8 KiB diagnostic cut: 4097
-/// é's (U+00E9, 2 bytes each) put a codepoint boundary at byte
-/// 8192. The timeout path must render partials WITHOUT panicking
-/// inside `str` indexing (pre-fix `&text[..8192]` panicked on the
-/// split codepoint, masking the timeout itself).
+/// Multibyte codepoint straddling the 8 KiB diagnostic cut: one
+/// ASCII byte plus 4097 é's (U+00E9, 2 bytes each) = 8195 bytes,
+/// so the 8192 cut lands INSIDE é #4096. The timeout path must
+/// render partials WITHOUT panicking inside `str` indexing
+/// (pre-fix `&text[..8192]` panicked on the split codepoint,
+/// masking the timeout itself).
 #[test]
 fn multibyte_at_truncation_boundary_does_not_panic() {
     let mut cmd = std::process::Command::new("sh");
-    // 4097 two-byte é's = 8194 bytes, then hang for the timeout.
-    cmd.args(["-c", "printf '\\303\\251%.0s' $(seq 1 4097); sleep 60"]);
+    // 1 + 4097×2 = 8195 bytes, then hang for the timeout.
+    cmd.args([
+        "-c",
+        "printf 'X'; printf '\\303\\251%.0s' $(seq 1 4097); sleep 60",
+    ]);
     let start = std::time::Instant::now();
     let outcome = run_bounded(cmd, std::time::Duration::from_millis(500));
     let elapsed = start.elapsed();
@@ -376,30 +416,42 @@ fn drain_pipe_setup_failure_returns_empty_bounded() {
     assert!(out.is_empty(), "no diagnostics invented: {out:?}");
 }
 
-/// Held-writer pipe (exited parent, descendant holds the pipe —
-/// the `sleep 30 &` shape): post-exit drain hits the bound and
-/// returns labeled `DrainTimeout` instead of hanging in EOF.
-/// Costs one 10s allowance; the orphaned sleeper exits alone.
+/// Held-writer pipe (write end held open, no EOF —
+/// descendant-held shape): `wait_drain` returns false at its
+/// deadline instead of hanging, and `finish_capture` assembles the
+/// labeled `DrainTimeout` (never `Ok`). The holder drops after 2s
+/// on a joined thread — no orphaned sleepers contaminating
+/// concurrent runs; the 300ms deadline proves the bound while the
+/// pipe is definitely still held.
 #[test]
 fn held_writer_pipe_drain_times_out_labeled() {
-    let mut cmd = std::process::Command::new("sh");
-    cmd.args(["-c", "sleep 30 &"]);
-    let child = cmd
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn shell");
+    use std::sync::{Arc, Mutex};
+    let (reader, holder) = UnixStream::pair().expect("socket pair");
+    let holder_thread = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        drop(holder);
+    });
+    let out_slot = Arc::new(Mutex::new(StreamCapture::empty()));
+    let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let drain = drain_capped(reader, Arc::clone(&out_slot), tx);
     let start = std::time::Instant::now();
-    let outcome = wait_bounded(child, std::time::Duration::from_secs(20));
-    let elapsed = start.elapsed();
+    let done = wait_drain(&rx, start + std::time::Duration::from_millis(300));
+    assert!(!done, "held pipe not complete at the deadline");
     assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "held-writer drain returned within allowances, took {elapsed:?}"
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "deadline honored promptly: {:?}",
+        start.elapsed()
     );
+    // Holder drops at 2s → EOF → worker completes → join prompt.
+    // Then the assembly refuses Ok on the timed-out drain.
+    holder_thread.join().expect("holder drops");
+    drain.join().expect("drain thread reaped");
+    let status = std::os::unix::process::ExitStatusExt::from_raw(0);
+    let outcome = finish_capture(status, &out_slot, &err_slot, false, true);
     assert!(
         matches!(outcome, Err(BoundedRunError::DrainTimeout { .. })),
-        "held pipe reads as drain timeout, never hang: {outcome:?}"
+        "held pipe assembles as drain timeout, never Ok: {outcome:?}"
     );
 }
 
@@ -434,4 +486,101 @@ fn guard_drop_during_unwind_preserves_original_panic() {
         }
         Ok(()) => panic!("unwind did not propagate"),
     }
+}
+
+/// Single-deadline composition: exit, kill+reap, and drain share
+/// ONE deadline instead of stacking fresh budgets past it. A
+/// stuck child with a 22s deadline is killed at ~2s (22 − 20
+/// reserve), proving the cleanup reserve was held back from the
+/// exit phase — a naive full-deadline exit wait would run the
+/// whole 22s before cleanup even starts.
+#[test]
+fn bounded_at_holds_one_deadline_for_exit_and_cleanup() {
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sleep");
+    let start = std::time::Instant::now();
+    let outcome = wait_bounded_at(child, start + std::time::Duration::from_secs(22));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1),
+        "kill fired at the reserved exit end (~2s), not instantly: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(22),
+        "total stayed inside the single deadline (no stacked budgets): {elapsed:?}"
+    );
+    match outcome {
+        Err(BoundedRunError::Timeout { reaped, .. }) => {
+            assert!(reaped, "composition kill reaps: no zombie left behind")
+        }
+        other => panic!("stuck child reads as timeout: {other:?}"),
+    }
+}
+
+/// Probe exit-status classification (Tier-2 round 2): exit 125 and
+/// signal death are operational failures (`Broken`, stderr
+/// retained), never missing-capability skips — only documented
+/// absence codes (image-exists 1) read `Unavailable`. Statuses are
+/// fabricated wait-status words (no subprocess needed):
+/// exit N = N<<8, SIGKILL death = 9.
+#[test]
+fn probe_exit_classification_distinguishes_operational_failure() {
+    use std::os::unix::process::ExitStatusExt;
+    let exit = |code: u32| ExitStatusExt::from_raw((code << 8) as i32);
+    let killed = ExitStatusExt::from_raw(9);
+    // image-exists table: 0 present, 1 absent, 125 + signal broken.
+    assert!(matches!(
+        classify_probe_exit("podman image exists", exit(0), "", &[1]),
+        Probe::Available
+    ));
+    assert!(matches!(
+        classify_probe_exit("podman image exists", exit(1), "absent", &[1]),
+        Probe::Unavailable(_)
+    ));
+    match classify_probe_exit("podman image exists", exit(125), "Error: daemon", &[1]) {
+        Probe::Broken(detail) => assert!(
+            detail.contains("daemon"),
+            "stderr retained in Broken: {detail}"
+        ),
+        other => panic!("exit 125 is operational failure, never a skip: {other:?}"),
+    }
+    assert!(
+        matches!(
+            classify_probe_exit("podman image exists", killed, "", &[1]),
+            Probe::Broken(_)
+        ),
+        "signal death is never a missing capability"
+    );
+    // podman-info table: no documented absence codes — any
+    // nonzero from a present binary is operational.
+    assert!(matches!(
+        classify_probe_exit("podman info", exit(0), "", &[]),
+        Probe::Available
+    ));
+    assert!(
+        matches!(
+            classify_probe_exit("podman info", exit(1), "", &[]),
+            Probe::Broken(_)
+        ),
+        "unlisted nonzero is operational failure, never a skip"
+    );
+    assert!(
+        matches!(
+            classify_probe_exit("podman info", exit(125), "", &[]),
+            Probe::Broken(_)
+        ),
+        "exit 125 is operational failure"
+    );
+    assert!(
+        matches!(
+            classify_probe_exit("podman info", killed, "", &[]),
+            Probe::Broken(_)
+        ),
+        "signal death is never a missing capability"
+    );
 }

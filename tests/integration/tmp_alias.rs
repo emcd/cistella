@@ -21,17 +21,7 @@ use super::helpers::*;
 #[ignore = "live: requires bind-mount capability (podman unshare)"]
 #[test]
 fn bind_alias_tmp_backing_refuses_precreate() {
-    let mut unshare_cmd = Command::new("podman");
-    unshare_cmd.arg("unshare");
-    unshare_cmd.arg("true");
-    // Exit nonzero = capability absent (skip); operational failure
-    // = loud, never a skip.
-    let unshare = match run_bounded(unshare_cmd, RUN_CISTELLA_TIMEOUT) {
-        Ok(out) => out.status.success(),
-        Err(why) => panic!("seat operational failure (not a skip): unshare probe failed: {why}"),
-    };
-    if !unshare {
-        skip("podman unshare unavailable");
+    if !podman_unshare_capable() {
         return;
     }
     // Fake HOME confinement tree: ancestor $HOME/src with a

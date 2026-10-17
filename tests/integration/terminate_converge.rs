@@ -79,6 +79,7 @@ fn cli_terminate_converges_attached_conduct() {
         &["--identity", "alice"],
         &["sleep", "300"],
         &[],
+        None,
     );
     // Readiness gates "session fully up" before the CLI actor enters,
     // so any overlap below is teardown overlap. `wait_active` gates

@@ -16,11 +16,14 @@ fn image_ref() -> String {
 
 /// Bounded reap of a forkpty child: WNOHANG loop for a grace
 /// window, then SIGKILL + bounded pid reap. Never a blocking
-/// waitpid. Returns false when the child would not reap — callers
-/// report that as unproven evidence, never ignore it. A waitpid
-/// error (e.g. already reaped elsewhere) ends the loop as
-/// unproven: nothing here reaps twice, so an error means the
-/// ownership story is already wrong.
+/// waitpid. Returns true ONLY for clean completion within the
+/// window (reaped, no signal sent) — callers may then evaluate
+/// marker checks. A forced SIGKILL past the window returns FALSE
+/// even when the reap succeeds: cleanup success must never turn
+/// a timeout into success; the run overran, its markers are
+/// unproven. A waitpid error (e.g. already reaped elsewhere)
+/// likewise reads unproven: nothing here reaps twice, so an
+/// error means the ownership story is already wrong.
 fn reap_pty_child(child: nix::unistd::Pid) -> bool {
     let start = std::time::Instant::now();
     let grace = std::time::Duration::from_secs(5);
@@ -28,8 +31,12 @@ fn reap_pty_child(child: nix::unistd::Pid) -> bool {
         match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::StillAlive) => {
                 if start.elapsed() > grace {
+                    eprintln!(
+                        "pty child {child} outlived its window; forcing SIGKILL (timeout, not success)"
+                    );
                     let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-                    return reap_bounded_pid(child, std::time::Duration::from_secs(10));
+                    let _ = reap_bounded_pid(child, std::time::Duration::from_secs(10));
+                    return false;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -46,19 +53,8 @@ fn transport_harness() {
         return;
     }
     let image = image_ref();
-    // Ensure image exists; try building example if missing. Exit
-    // nonzero = legitimately absent (skip); operational failure =
-    // loud, never a skip.
-    let mut probe = Command::new("podman");
-    probe.args(["image", "exists", &image]);
-    let has_image = match run_bounded(probe, RUN_CISTELLA_TIMEOUT) {
-        Ok(out) => out.status.success(),
-        Err(why) => panic!("seat operational failure (not a skip): image probe failed: {why}"),
-    };
-    if !has_image {
-        skip(format!(
-            "image {image} not present (build via data/dockerfiles/validate.sh)"
-        ));
+    // Ensure image exists; try building example if missing.
+    if !image_present(&image) {
         return;
     }
 
@@ -179,6 +175,10 @@ fn check_isatty(cname: &str) -> bool {
             let mut buf = [0u8; 4096];
             let start = std::time::Instant::now();
             let mut acc = Vec::new();
+            // Exit observed here already reaps (WNOHANG reports
+            // only once): remember it so the final reap does not
+            // mistake the resulting ECHILD for failure.
+            let mut exited = false;
             while start.elapsed() < std::time::Duration::from_secs(5) {
                 match f.read(&mut buf) {
                     Ok(0) => break,
@@ -196,12 +196,14 @@ fn check_isatty(cname: &str) -> bool {
                 if wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
                     .is_ok_and(|s| s != WaitStatus::StillAlive)
                 {
+                    exited = true;
                     break;
                 }
             }
             // Bounded reap of the forkpty child: never a blocking
-            // waitpid. An unreaped child is unproven evidence.
-            if !reap_pty_child(child) {
+            // waitpid. An unreaped child is unproven evidence; a
+            // forced kill (even reaped) is a timeout, not success.
+            if !exited && !reap_pty_child(child) {
                 eprintln!("isatty pty child would not reap");
                 return false;
             }
@@ -278,6 +280,10 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
             let mut acc = Vec::new();
             let start = std::time::Instant::now();
             let mut saw = false;
+            // Exit observed here already reaps (WNOHANG reports
+            // only once): remember it so the final reap does not
+            // mistake the resulting ECHILD for failure.
+            let mut exited = false;
             while start.elapsed() < std::time::Duration::from_secs(6) {
                 let n = match f.read(&mut buf) {
                     Ok(0) => break,
@@ -296,6 +302,7 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
                 if wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
                     .is_ok_and(|s| s != WaitStatus::StillAlive)
                 {
+                    exited = true;
                     break;
                 }
             }
@@ -308,9 +315,11 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
             }
             // Bounded reap of the forkpty child (DONE seen; it is
             // exiting): WNOHANG loop, SIGKILL past the bound, never
-            // a blocking waitpid. An unreaped child is unproven
-            // evidence, never ignored success.
-            if !reap_pty_child(child) {
+            // a blocking waitpid. An already-observed exit skips
+            // the second waitpid (ECHILD there IS the reap); an
+            // unreaped or forced-kill child is unproven evidence,
+            // never ignored success.
+            if !exited && !reap_pty_child(child) {
                 eprintln!("DA1 pty child would not reap");
                 return false;
             }

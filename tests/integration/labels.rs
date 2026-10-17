@@ -136,6 +136,7 @@ fn command_label_edge_round_trip_live() {
         &["--identity", "alice"],
         &argv,
         &[],
+        None,
     );
     wait_active(&id);
     let container = format!("cistella-{id}");
@@ -284,6 +285,7 @@ fn environment_values_verbatim() {
         &["--identity", "alice"],
         &["sleep", "300"],
         &[],
+        None,
     );
     wait_active(&id);
     let out = run_cistella(&home, &["enter", &id, "--", "printenv", "EDGE"]);

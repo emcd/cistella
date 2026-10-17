@@ -210,8 +210,15 @@ fn tmpdir_conduct_reaps_slice_on_teardown() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("tmpdir.toml");
-    let (mut conduct, id, mut guard) =
-        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "300"], &[]);
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &[],
+        &["sleep", "300"],
+        &[],
+        None,
+    );
     wait_active(&id);
     let container = format!("cistella-{id}");
     wait_harness(&container, "sleep 300");
@@ -252,8 +259,15 @@ fn tmpdir_natural_exit_reaps_slice() {
     let profile = fixture_profile("tmpdir.toml");
     // Short harness: the session completes naturally (no
     // terminate), exercising the teardown_unit clean path.
-    let (mut conduct, id, mut guard) =
-        spawn_conduct_full(&home, &profile, &worktree_str, &[], &["sleep", "2"], &[]);
+    let (mut conduct, id, mut guard) = spawn_conduct_full(
+        &home,
+        &profile,
+        &worktree_str,
+        &[],
+        &["sleep", "2"],
+        &[],
+        None,
+    );
     wait_active(&id);
     // Pre-exit observation: the slice must exist mid-session.
     // Absence-only would pass even if nothing was ever minted;
@@ -314,6 +328,7 @@ fn tmpdir_hooked_session_writes_tmp() {
         &[],
         &["sh", "-c", "touch /tmp/admit-probe && sleep 300"],
         &[],
+        None,
     );
     wait_active(&id);
     let container = format!("cistella-{id}");
@@ -392,6 +407,7 @@ fn hooked_tmp_admits_through_wrapped_harness() {
         &[],
         &["sh", "-c", "echo admitted > /tmp/admit-probe && sleep 5"],
         &[],
+        None,
     );
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(
@@ -440,6 +456,7 @@ fn hooked_ro_mirror_denies_through_wrapped_harness() {
              if echo intruder > /mirror/probe 2>/dev/null; then exit 7; else exit 0; fi",
         ],
         &[],
+        None,
     );
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(
@@ -528,6 +545,7 @@ fn tmpdir_nested_user_bind_reaps_with_slice() {
         &["--mount", &format!("{cache_str}:/tmp/cache:rw")],
         &["sleep", "300"],
         &[],
+        None,
     );
     wait_active(&id);
     let container = format!("cistella-{id}");

@@ -137,7 +137,9 @@ pub fn spawn_cistella_cmd(home: &str, args: &[&str]) -> Command {
 /// bounded reap past it), full capture (overflow kills LOUD past
 /// the cap), pipes EOF within the drain bound past exit. Returns
 /// the full `Output` on success — no truncation on the evidence
-/// path.
+/// path. Total wall = `timeout` + cleanup allowances (see
+/// `wait_bounded`); for a single deadline over everything, use
+/// `run_bounded_at`.
 pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Output, BoundedRunError> {
     let child = cmd
         .stdin(Stdio::null())
@@ -146,6 +148,19 @@ pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Output, Bounde
         .spawn()
         .map_err(|e| BoundedRunError::Spawn(e.to_string()))?;
     wait_bounded(child, timeout)
+}
+
+/// Bounded run against ONE absolute deadline (see
+/// `wait_bounded_at`): poll loops pass their fixed outer deadline
+/// so exit, kill+reap, and drain never stack past it.
+pub fn run_bounded_at(mut cmd: Command, deadline: Instant) -> Result<Output, BoundedRunError> {
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| BoundedRunError::Spawn(e.to_string()))?;
+    wait_bounded_at(child, deadline)
 }
 
 /// Cleanup allowance past the exit timeout: kill + bounded reap.
@@ -208,6 +223,20 @@ pub fn drain_capped(
     })
 }
 
+/// Bounded drain wait against ONE absolute deadline (shared by
+/// `wait_bounded` and the held-writer pin): true = completion
+/// observed (handle joinable), false = deadline passed with the
+/// pipe still held. Completion is attested by the done channel,
+/// never by an unconditional join (finalize precedent).
+pub fn wait_drain(rx: &std::sync::mpsc::Receiver<()>, deadline: Instant) -> bool {
+    while Instant::now() < deadline {
+        if rx.recv_timeout(Duration::from_millis(25)).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Post-exit assembly: drain-timeout, capture-error, and overflow
 /// checks BEFORE any `Ok`. A failed capture is `Err(Capture)` with
 /// the retained bytes as labeled triage — partial evidence of
@@ -266,8 +295,27 @@ pub fn finish_capture(
 ///
 /// Documented total: `timeout` (exit) + `REAP_ALLOWANCE` (kill +
 /// reap past expiry) + `POST_EXIT_DRAIN_TIMEOUT` (post-exit pipe
-/// EOF). The allowances are named consts, not hidden padding.
-pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, BoundedRunError> {
+/// EOF). The allowances are named consts with a fixed shape; for
+/// a SINGLE deadline governing operation AND cleanup (no stacking
+/// past an outer budget), use `wait_bounded_at`.
+pub fn wait_bounded(child: Child, timeout: Duration) -> Result<Output, BoundedRunError> {
+    wait_bounded_at(
+        child,
+        Instant::now() + timeout + REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT,
+    )
+}
+
+/// Bounded wait-and-capture against ONE absolute deadline: the
+/// exit phase, the kill+reap, and the pipe drain ALL complete by
+/// `deadline` (plus kill latency, which no waiter can bound).
+/// The exit phase ends at `deadline − REAP − DRAIN` so the cleanup
+/// allowances provably fit inside the same budget instead of
+/// stacking fresh ones past an outer deadline; if the deadline is
+/// already inside the reserve, the exit phase is skipped and the
+/// child is killed promptly. Reap gets `min(REAP_ALLOWANCE,
+/// remaining)` with a 100ms floor (the kernel needs a scheduling
+/// quantum past SIGKILL); the drain waits to `deadline` itself.
+pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, BoundedRunError> {
     use std::sync::{Arc, Mutex};
     let out_slot = Arc::new(Mutex::new(StreamCapture::empty()));
     let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
@@ -287,13 +335,30 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
     // capped reader stops consuming, so flag the kill promptly
     // instead of waiting out the full timeout against backpressure.
     let start = Instant::now();
+    // Single-deadline composition: the exit phase ends early
+    // enough that the reap + drain allowances fit INSIDE
+    // `deadline`. Saturating: a deadline already inside the
+    // reserve kills promptly (see `run_bounded_at` contract —
+    // callers must not spawn what cannot clean up).
+    let exit_until = deadline
+        .checked_sub(REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT)
+        .unwrap_or(start);
+    // Reap floor: the kernel needs a scheduling quantum past
+    // SIGKILL; totals may exceed `deadline` by up to this on the
+    // kill path only, documented, never unbounded.
+    let reap_floor = Duration::from_millis(100);
+    let reap_budget = || {
+        REAP_ALLOWANCE
+            .min(deadline.saturating_duration_since(Instant::now()))
+            .max(reap_floor)
+    };
     let status = loop {
         {
             let out = out_slot.lock().expect("capture mutex");
             let err = err_slot.lock().expect("capture mutex");
             if out.overflow || err.overflow {
                 let _ = child.kill();
-                let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
+                let reaped = reap_bounded(&mut child, reap_budget()).is_some();
                 debug_assert!(reaped, "overflow-killed child reaps");
                 let stream = if out.overflow { "stdout" } else { "stderr" };
                 return Err(BoundedRunError::Overflow { stream });
@@ -302,9 +367,9 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
         match child.try_wait().expect("try_wait") {
             Some(status) => break status,
             None => {
-                if start.elapsed() > timeout {
+                if Instant::now() > exit_until {
                     let _ = child.kill();
-                    let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
+                    let reaped = reap_bounded(&mut child, reap_budget()).is_some();
                     let out = out_slot.lock().expect("capture mutex");
                     let err = err_slot.lock().expect("capture mutex");
                     return Err(BoundedRunError::Timeout {
@@ -318,22 +383,13 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
             }
         }
     };
-    // Child reaped: readers must EOF within the drain bound (a
+    // Child reaped: readers must EOF by `deadline` (a
     // descendant-held pipe surfaces here, labeled, never hangs).
     // Handles park on timeout (finalize precedent): completion is
     // attested by the done channel, never by an unconditional join.
-    let drain_start = Instant::now();
-    let drained = |rx: &std::sync::mpsc::Receiver<()>| {
-        while drain_start.elapsed() < POST_EXIT_DRAIN_TIMEOUT {
-            if rx.recv_timeout(Duration::from_millis(25)).is_ok() {
-                return true;
-            }
-        }
-        false
-    };
     let out_ok = match out_wait {
         Some((handle, rx)) => {
-            let ok = drained(&rx);
+            let ok = wait_drain(&rx, deadline);
             if ok {
                 let _ = handle.join();
             }
@@ -343,7 +399,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
     };
     let err_ok = match err_wait {
         Some((handle, rx)) => {
-            let ok = drained(&rx);
+            let ok = wait_drain(&rx, deadline);
             if ok {
                 let _ = handle.join();
             }

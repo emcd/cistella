@@ -82,6 +82,13 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
             let mut buf = [0u8; 4096];
             let mut acc = Vec::new();
             let start = Instant::now();
+            // Exit observed in the read phase counts as REAPED: a
+            // WNOHANG poll reporting non-StillAlive reaps the
+            // zombie, so a later waitpid would say ECHILD — which
+            // is the reap, not a failure. Without this flag the
+            // final stage mistakes ECHILD for an unreaped child
+            // and fails a cleanly-exited session.
+            let mut exited = false;
             while start.elapsed() < Duration::from_secs(30) {
                 match f.read(&mut buf) {
                     Ok(0) => break,
@@ -99,27 +106,37 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 if wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
                     .is_ok_and(|s| s != WaitStatus::StillAlive)
                 {
+                    exited = true;
                     break;
                 }
             }
             // Bounded final reap against the REMAINING window (never
-            // a fresh wait): a child that outlives the session is
-            // killed, and the run reports unattested, never hangs.
+            // a fresh wait). Already-observed exits skip the second
+            // waitpid (ECHILD there IS the reap). A child that
+            // outlives the session is killed and reports unattested
+            // — forced-kill success never reads as success.
             let deadline = start + Duration::from_secs(30);
-            let reaped = loop {
-                match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) => {
-                        if Instant::now() > deadline {
-                            let _ =
-                                nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-                            break reap_bounded_pid(child, Duration::from_secs(10));
+            let reaped = exited
+                || loop {
+                    match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::StillAlive) => {
+                            if Instant::now() > deadline {
+                                eprintln!(
+                                    "enter pty child outlived its window; forcing SIGKILL (timeout, not success)"
+                                );
+                                let _ = nix::sys::signal::kill(
+                                    child,
+                                    nix::sys::signal::Signal::SIGKILL,
+                                );
+                                let _ = reap_bounded_pid(child, Duration::from_secs(10));
+                                break false;
+                            }
+                            std::thread::sleep(Duration::from_millis(50));
                         }
-                        std::thread::sleep(Duration::from_millis(50));
+                        Ok(_) => break true,
+                        Err(_) => break false,
                     }
-                    Ok(_) => break true,
-                    Err(_) => break false,
-                }
-            };
+                };
             let txt = String::from_utf8_lossy(&acc).to_string();
             eprintln!("enter pty acc: {txt}");
             reaped && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))

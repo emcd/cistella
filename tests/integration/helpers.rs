@@ -208,10 +208,21 @@ pub fn fixture_profile(name: &str) -> String {
 /// plus the minted id from its first stdout line.
 pub fn spawn_conduct(home: &str, worktree: &str, extra: &[&str]) -> (Child, String, Guard) {
     let profile = fixture_profile("default.toml");
-    spawn_conduct_full(home, &profile, worktree, extra, &["sleep", "300"], &[])
+    spawn_conduct_full(
+        home,
+        &profile,
+        worktree,
+        extra,
+        &["sleep", "300"],
+        &[],
+        None,
+    )
 }
 
-/// Spawns `conduct` with explicit profile, harness argv, and environment.
+/// Spawns `conduct` with explicit profile, harness argv,
+/// environment, and optional working directory (profile resolution
+/// must not depend on cwd; the foreign-cwd test pins that with
+/// `Some`).
 pub fn spawn_conduct_full(
     home: &str,
     profile: &str,
@@ -219,8 +230,10 @@ pub fn spawn_conduct_full(
     extra: &[&str],
     argv: &[&str],
     envs: &[(&str, &str)],
+    cwd: Option<&std::path::Path>,
 ) -> (Child, String, Guard) {
-    let (child, id, guard, _) = spawn_conduct_tapped(home, profile, worktree, extra, argv, envs);
+    let (child, id, guard, _) =
+        spawn_conduct_tapped(home, profile, worktree, extra, argv, envs, cwd);
     (child, id, guard)
 }
 
@@ -393,6 +406,7 @@ pub fn spawn_conduct_tapped(
     extra: &[&str],
     argv: &[&str],
     envs: &[(&str, &str)],
+    cwd: Option<&std::path::Path>,
 ) -> (Child, String, Guard, ConductTaps) {
     let mut cmd = Command::new(bin());
     cmd.args([
@@ -409,6 +423,9 @@ pub fn spawn_conduct_tapped(
     cmd.env("TERM", "xterm-ghostty");
     for (k, v) in envs {
         cmd.env(k, v);
+    }
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
     }
     let mut child = cmd
         .stdin(Stdio::null())
@@ -533,17 +550,34 @@ pub fn drain_stderr(stderr: std::process::ChildStderr) -> String {
 /// alone decides failure.
 pub const POLL_SUBPROCESS_BUDGET: Duration = Duration::from_secs(10);
 
-/// Remaining outer-deadline-composed budget for one poll invocation.
-fn poll_budget(deadline: Instant) -> Duration {
-    deadline
-        .saturating_duration_since(Instant::now())
-        .min(POLL_SUBPROCESS_BUDGET)
+/// One poll iteration against the FIXED outer deadline: the
+/// iteration may not outlive `outer` (exit + cleanup composed
+/// inside it via `run_bounded_at`), and stops consuming the soft
+/// per-iteration budget once the outer deadline is near. Returns
+/// `None` when the remaining outer budget cannot cover cleanup —
+/// the caller then fails with its last observation instead of
+/// spawning a poll it cannot reap.
+fn poll_at(outer: Instant) -> Option<Instant> {
+    let remaining = outer.saturating_duration_since(Instant::now());
+    if remaining < REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT + Duration::from_secs(1) {
+        return None;
+    }
+    Some(
+        outer.min(
+            Instant::now() + POLL_SUBPROCESS_BUDGET + REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT,
+        ),
+    )
 }
 
 pub fn wait_active(id: &str) {
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut last: String;
+    // Read on the stop-spawning path (first iteration, no poll
+    // yet), overwritten by every poll outcome after.
+    let mut last = "no poll completed yet".to_string();
     loop {
+        let Some(iter_end) = poll_at(deadline) else {
+            panic!("service cistella-{id} never active: {last}");
+        };
         let mut cmd = Command::new("systemctl");
         cmd.args([
             "--user",
@@ -552,7 +586,7 @@ pub fn wait_active(id: &str) {
             "ActiveState",
             &format!("cistella-{id}.service"),
         ]);
-        match run_bounded(cmd, poll_budget(deadline)) {
+        match run_bounded_at(cmd, iter_end) {
             Ok(out) if out.status.success() => {
                 last = String::from_utf8_lossy(&out.stdout).to_string();
                 if last.contains("ActiveState=active") {
@@ -598,11 +632,16 @@ pub fn wait_active(id: &str) {
 /// two lines pre-harness).
 pub fn wait_harness(container: &str, argv: &str) {
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut last: String;
+    // Read on the stop-spawning path (first iteration, no poll
+    // yet), overwritten by every poll outcome after.
+    let mut last = "no poll completed yet".to_string();
     loop {
+        let Some(iter_end) = poll_at(deadline) else {
+            panic!("harness {argv} never visible in {container}: {last}");
+        };
         let mut cmd = Command::new("podman");
         cmd.args(["top", container]);
-        match run_bounded(cmd, poll_budget(deadline)) {
+        match run_bounded_at(cmd, iter_end) {
             Ok(out) if out.status.success() => {
                 last = String::from_utf8_lossy(&out.stdout).to_string();
                 if last.contains(argv) {
