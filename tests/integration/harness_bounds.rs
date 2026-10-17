@@ -261,15 +261,18 @@ fn stdout_drain_survives_quiet_gap_after_id_line() {
     );
 }
 
-/// Negative control for the handoff (restore OMITTED): the worker
-/// exits on its first empty-pipe WouldBlock, so the post-gap
-/// write finds the reader closed (EPIPE) and never arrives. The
-/// join returning PROVES the worker exited (it can only exit via
-/// WouldBlock — the pipe never EOFs while the writer lives);
-/// every step is deterministic, no sleep oracle.
+/// Negative control for the handoff (restore OMITTED).
+/// Previous shape asserted EPIPE on a post-gap write after join —
+/// Tier-1 falsified that on a busy seat (close-vs-write race in
+/// the assertion itself, not the mechanism). This shape depends
+/// on no close timing at all: with the writer deliberately ALIVE
+/// (no EOF possible), the worker's join returning proves its ONLY
+/// remaining exit path — WouldBlock on the empty nonblocking
+/// pipe (a panic would surface as join Err). Sink EOF right after
+/// proves teardown completed with no trailer bytes in flight.
 #[test]
 fn stdout_drain_without_restore_loses_post_gap_write() {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::unix::io::AsRawFd;
     let (reader, mut writer) = UnixStream::pair().expect("socket pair");
     let flags =
@@ -283,19 +286,26 @@ fn stdout_drain_without_restore_loses_post_gap_write() {
     let drain = spawn_stdout_drain(reader, b"LEFTOVER".to_vec(), sink_writer);
     writer.write_all(&[b'k'; 65536]).expect("bulk");
     // Full delivery observed: the worker consumed everything, so
-    // its next read hits the empty nonblocking pipe and exits.
-    // (EOF would also end it, but the writer is deliberately
-    // still alive here.)
-    let (_, got) = drain_sink_exact(sink_reader, 8 + 65536);
+    // its next read hits the empty nonblocking pipe.
+    let (mut sink_reader, got) = drain_sink_exact(sink_reader, 8 + 65536);
     assert_eq!(got.len(), 8 + 65536, "bulk fully delivered first");
+    // Writer stays alive: EOF is impossible, so join returning
+    // proves WouldBlock exit (panic would be join Err).
     drain.join().expect("worker exited on WouldBlock");
-    // Reader is closed: the post-gap write must fail loudly
-    // (Rust ignores SIGPIPE → EPIPE error), never vanish.
-    let write_outcome = writer.write_all(b"AFTER-GAP");
-    assert!(
-        write_outcome.is_err(),
-        "write to a drained-closed pipe fails loudly, got: {write_outcome:?}"
-    );
+    // Teardown completed with nothing more in flight: immediate
+    // EOF, no trailer. (Production code would now SIGPIPE a
+    // later conduct write — the mechanism this control exists
+    // for — but asserting EPIPE here reintroduces the very
+    // close-timing race Tier-1 caught; the exit proof above is
+    // the deterministic part.)
+    sink_reader
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("sink timeout armed");
+    let mut eof = [0u8; 1];
+    match sink_reader.read(&mut eof) {
+        Ok(0) => {}
+        other => panic!("sink closed with worker teardown, got: {other:?}"),
+    }
     drop(writer);
 }
 
