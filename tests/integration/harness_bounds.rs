@@ -262,14 +262,17 @@ fn stdout_drain_survives_quiet_gap_after_id_line() {
 }
 
 /// Negative control for the handoff (restore OMITTED).
-/// Previous shape asserted EPIPE on a post-gap write after join —
-/// Tier-1 falsified that on a busy seat (close-vs-write race in
-/// the assertion itself, not the mechanism). This shape depends
-/// on no close timing at all: with the writer deliberately ALIVE
-/// (no EOF possible), the worker's join returning proves its ONLY
-/// remaining exit path — WouldBlock on the empty nonblocking
-/// pipe (a panic would surface as join Err). Sink EOF right after
-/// proves teardown completed with no trailer bytes in flight.
+/// Ordering by CONSTRUCTION, not scheduling: a small payload is
+/// prequeued BEFORE the worker spawns (1KB fits any buffer, so
+/// the write is bounded with no size assumptions) — the worker
+/// cannot exit before consuming it, closing the opening race
+/// where a first-scheduled worker WouldBlocks on an empty pipe
+/// before the initial bulk is written. With the writer kept
+/// alive (no EOF possible), the bounded join returning proves
+/// WouldBlock exit (panic would be join Err); sink EOF right
+/// after proves teardown with nothing in flight. No sleeps, no
+/// EPIPE-vs-close race, no join hang on regression (done
+/// channel bounds completion).
 #[test]
 fn stdout_drain_without_restore_loses_post_gap_write() {
     use std::io::{Read, Write};
@@ -282,16 +285,30 @@ fn stdout_drain_without_restore_loses_post_gap_write() {
     nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
         .expect("O_NONBLOCK");
     let (sink_reader, sink_writer) = UnixStream::pair().expect("sink pair");
+    // Prequeue BEFORE spawn: bounded 1KB write, fits any buffer.
+    writer.write_all(&[b'k'; 1024]).expect("prequeued payload");
     // NOTE: no restore_blocking — the defect under test.
     let drain = spawn_stdout_drain(reader, b"LEFTOVER".to_vec(), sink_writer);
-    writer.write_all(&[b'k'; 65536]).expect("bulk");
-    // Full delivery observed: the worker consumed everything, so
-    // its next read hits the empty nonblocking pipe.
-    let (mut sink_reader, got) = drain_sink_exact(sink_reader, 8 + 65536);
-    assert_eq!(got.len(), 8 + 65536, "bulk fully delivered first");
-    // Writer stays alive: EOF is impossible, so join returning
-    // proves WouldBlock exit (panic would be join Err).
-    drain.join().expect("worker exited on WouldBlock");
+    // Full delivery observed (head + prequeue): the worker
+    // consumed everything, so its next read hits the empty
+    // nonblocking pipe and exits. Writer stays alive throughout.
+    let (mut sink_reader, got) = drain_sink_exact(sink_reader, 8 + 1024);
+    assert_eq!(got.len(), 8 + 1024, "bulk fully delivered first");
+    assert!(
+        got.starts_with(b"LEFTOVER"),
+        "leftover head delivered first"
+    );
+    // Bounded completion: the join runs in a thread behind a
+    // done channel, so a regression (worker never exits) fails
+    // the test instead of hanging it.
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drain.join().expect("worker exited on WouldBlock");
+        let _ = done_tx.send(());
+    });
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("worker completion bounded");
     // Teardown completed with nothing more in flight: immediate
     // EOF, no trailer. (Production code would now SIGPIPE a
     // later conduct write — the mechanism this control exists
@@ -761,6 +778,11 @@ fn overflow_cleanup_reap_failure_reports_without_deadlock() {
     let start = std::time::Instant::now();
     let outcome = overflow_cleanup(&mut child, &out_slot, &err_slot, start, |_| false);
     let elapsed = start.elapsed();
+    // Owned cleanup FIRST (before asserting): a failed assertion
+    // below must not strand the live child. SIGKILL now; the
+    // reap assert stays last (a missed reap leaves only a
+    // kernel-reaped zombie, never an orphan).
+    let _ = child.kill();
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "forced reap-failure returned (no deadlock), took {elapsed:?}"
@@ -779,7 +801,6 @@ fn overflow_cleanup_reap_failure_reports_without_deadlock() {
         }
         other => panic!("forced reap-failure reads as unreaped timeout: {other:?}"),
     }
-    let _ = child.kill();
     assert!(
         reap_bounded(&mut child, CHILD_REAP_TIMEOUT).is_some(),
         "pin child reaps after SIGKILL"
