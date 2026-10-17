@@ -200,12 +200,10 @@ fn drain_sink_exact(
 /// handshake, not a sleep oracle: writer and sink are sized so no
 /// pump thread is needed (64KB bulk into ~212KB default buffers);
 /// bytes in the sink got there ONLY through the worker, so full
-/// delivery PROVES the worker ran and holds nothing — it is
-/// parked (or about to park) in read on an EMPTY pipe. Whatever
-/// its schedule, its next read blocks (blocking fd, no data, no
-/// EOF): the gap is enforced by conservation + EOF-ordering. A
-/// 100ms separator keeps the phases readable; it is not
-/// load-bearing.
+/// delivery proves the worker holds nothing. Its next read then
+/// blocks whenever it is scheduled (blocking fd, empty pipe, no
+/// EOF) — precisely what is claimed, no more: conservation
+/// proves emptiness, not the instant the worker parks.
 #[test]
 fn stdout_drain_survives_quiet_gap_after_id_line() {
     use std::io::Write;
@@ -241,10 +239,6 @@ fn stdout_drain_survives_quiet_gap_after_id_line() {
         head.starts_with(b"LEFTOVER"),
         "leftover head delivered first"
     );
-    // Quiet separator (not load-bearing): the worker's next read
-    // blocks whenever it is scheduled — enforced by the empty
-    // pipe above plus EOF-ordering below, not by this sleep.
-    std::thread::sleep(std::time::Duration::from_millis(100));
     writer.write_all(b"AFTER-GAP").expect("later write lands");
     drop(writer);
     // Bounded completion: AFTER-GAP is last and EOF follows the
@@ -431,9 +425,12 @@ fn failed_capture_refuses_success() {
 fn multibyte_at_truncation_boundary_does_not_panic() {
     let mut cmd = std::process::Command::new("sh");
     // 1 + 4097×2 = 8195 bytes, then hang for the timeout.
+    // `exec` replaces the shell with the sleeper so the timeout
+    // kill reaps the direct child — no orphaned middleman
+    // holding the pipe past the test.
     cmd.args([
         "-c",
-        "printf 'X'; printf '\\303\\251%.0s' $(seq 1 4097); sleep 60",
+        "printf 'X'; printf '\\303\\251%.0s' $(seq 1 4097); exec sleep 60",
     ]);
     let start = std::time::Instant::now();
     let outcome = run_bounded(cmd, std::time::Duration::from_millis(500));
@@ -691,20 +688,9 @@ fn held_descendant_pipe_caps_drain_at_exit_plus_allowance() {
     let start = std::time::Instant::now();
     let outcome = wait_bounded(child, std::time::Duration::from_secs(2));
     let elapsed = start.elapsed();
-    assert!(
-        elapsed >= std::time::Duration::from_secs(8),
-        "drain waited out the post-exit cap (~10s), not an early return: {elapsed:?}"
-    );
-    assert!(
-        elapsed < std::time::Duration::from_secs(20),
-        "drain capped at exit+allowance, not the outer budget: {elapsed:?}"
-    );
-    assert!(
-        matches!(outcome, Err(BoundedRunError::DrainTimeout { .. })),
-        "held pipe reads as drain timeout: {outcome:?}"
-    );
-    // Retain control: exact pid from the file (never a pattern
-    // kill), SIGKILL, then poll for absence.
+    // Retain control FIRST (before asserting): exact pid from the
+    // file (never a pattern kill), SIGKILL, then poll for absence.
+    // A failed assertion below must not orphan the sleeper.
     let pid_text = std::fs::read_to_string(&pidfile).expect("sleeper pid recorded");
     let pid = Pid::from_raw(pid_text.trim().parse::<i32>().expect("pid parses"));
     kill(pid, Signal::SIGKILL).expect("sleeper signaled");
@@ -721,4 +707,71 @@ fn held_descendant_pipe_caps_drain_at_exit_plus_allowance() {
             }
         }
     }
+    assert!(
+        elapsed >= std::time::Duration::from_secs(8),
+        "drain waited out the post-exit cap (~10s), not an early return: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "drain capped at exit+allowance, not the outer budget: {elapsed:?}"
+    );
+    assert!(
+        matches!(outcome, Err(BoundedRunError::DrainTimeout { .. })),
+        "held pipe reads as drain timeout: {outcome:?}"
+    );
+}
+
+/// Forced reap-failure in the shared overflow-cleanup branch
+/// (Tier-2 round 4): the cleanup step is injected, so the pin
+/// passes a failing cleanup (`|_| false`) with a live child and
+/// poisoned slot — deterministically exercising the
+/// `Timeout{reaped:false}` assembly with partials, promptly.
+/// (Neither SIGSTOP nor pre-reaping forces this: SIGKILL still
+/// reaps stopped processes, and Rust caches a waited child's
+/// status so `try_wait` reports it. Only D-state wedges fail
+/// production cleanup — unforgable in a fast pin, hence the
+/// injected seam.) The live child is killed+reaped after: no
+/// orphans.
+#[test]
+fn overflow_cleanup_reap_failure_reports_without_deadlock() {
+    use std::sync::{Arc, Mutex};
+    let mut child = std::process::Command::new("sleep")
+        .arg("300")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sleep");
+    let out_slot = Arc::new(Mutex::new(StreamCapture {
+        buf: b"partial".to_vec(),
+        overflow: true,
+        error: None,
+    }));
+    let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
+    let start = std::time::Instant::now();
+    let outcome = overflow_cleanup(&mut child, &out_slot, &err_slot, start, |_| false);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "forced reap-failure returned (no deadlock), took {elapsed:?}"
+    );
+    match outcome {
+        Err(BoundedRunError::Timeout {
+            reaped,
+            partial_stdout,
+            ..
+        }) => {
+            assert!(!reaped, "unreaped kill reports reaped:false");
+            assert!(
+                partial_stdout.contains("partial"),
+                "retained bytes kept as triage: {partial_stdout:?}"
+            );
+        }
+        other => panic!("forced reap-failure reads as unreaped timeout: {other:?}"),
+    }
+    let _ = child.kill();
+    assert!(
+        reap_bounded(&mut child, CHILD_REAP_TIMEOUT).is_some(),
+        "pin child reaps after SIGKILL"
+    );
 }

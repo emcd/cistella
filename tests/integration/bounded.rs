@@ -254,6 +254,46 @@ pub fn wait_drain(rx: &std::sync::mpsc::Receiver<()>, deadline: Instant) -> bool
     false
 }
 
+/// Overflow-arm handling, split for pinnability: snapshot the
+/// flags FIRST (dropping the guards — std Mutex is non-reentrant,
+/// so OS cleanup must NEVER run under held capture locks; the
+/// previous shape relocked inside and deadlocked instead of
+/// reporting), then run the injected cleanup step, then report.
+/// Reaped overflow reads as `Overflow`; unreaped overflow reads
+/// as `Timeout{reaped:false}` with partials (failed-cleanup
+/// evidence: never hangs, never panics — Guard Drop runs here
+/// during unwind).
+pub fn overflow_cleanup(
+    child: &mut Child,
+    out_slot: &std::sync::Arc<std::sync::Mutex<StreamCapture>>,
+    err_slot: &std::sync::Arc<std::sync::Mutex<StreamCapture>>,
+    start: Instant,
+    cleanup: impl FnOnce(&mut Child) -> bool,
+) -> Result<Output, BoundedRunError> {
+    let (out_overflow, _err_overflow) = {
+        let out = out_slot.lock().expect("capture mutex");
+        let err = err_slot.lock().expect("capture mutex");
+        (out.overflow, err.overflow)
+    };
+    // The cleanup step is injected (not hardcoded) precisely so a
+    // forced failure is pinnable: no userspace child survives
+    // SIGKILL on schedule (stopped ones included), so the
+    // unreaped branch is otherwise unforgable without D-state
+    // wedges.
+    if !cleanup(child) {
+        let out = out_slot.lock().expect("capture mutex");
+        let err = err_slot.lock().expect("capture mutex");
+        return Err(BoundedRunError::Timeout {
+            waited: start.elapsed(),
+            reaped: false,
+            partial_stdout: label_partial(&out.buf),
+            partial_stderr: label_partial(&err.buf),
+        });
+    }
+    let stream = if out_overflow { "stdout" } else { "stderr" };
+    Err(BoundedRunError::Overflow { stream })
+}
+
 /// Post-exit assembly: drain-timeout, capture-error, and overflow
 /// checks BEFORE any `Ok`. A failed capture is `Err(Capture)` with
 /// the retained bytes as labeled triage — partial evidence of
@@ -370,28 +410,19 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
             .max(reap_floor)
     };
     let (status, exit_time) = loop {
-        {
+        // Snapshot scope: the guards drop here, BEFORE any OS
+        // cleanup below (non-reentrant Mutexes must never be
+        // held across kill/reap).
+        let overflowed = {
             let out = out_slot.lock().expect("capture mutex");
             let err = err_slot.lock().expect("capture mutex");
-            if out.overflow || err.overflow {
+            out.overflow || err.overflow
+        };
+        if overflowed {
+            return overflow_cleanup(&mut child, &out_slot, &err_slot, start, |child| {
                 let _ = child.kill();
-                let reaped = reap_bounded(&mut child, reap_budget()).is_some();
-                // No assert: an unreaped overflow kill is a loud
-                // Timeout (failed cleanup evidence), never a panic
-                // — this path runs inside Guard Drop during unwind.
-                let stream = if out.overflow { "stdout" } else { "stderr" };
-                if !reaped {
-                    let out = out_slot.lock().expect("capture mutex");
-                    let err = err_slot.lock().expect("capture mutex");
-                    return Err(BoundedRunError::Timeout {
-                        waited: start.elapsed(),
-                        reaped: false,
-                        partial_stdout: label_partial(&out.buf),
-                        partial_stderr: label_partial(&err.buf),
-                    });
-                }
-                return Err(BoundedRunError::Overflow { stream });
-            }
+                reap_bounded(child, reap_budget()).is_some()
+            });
         }
         // try_wait failure is mapped, never panicked: the child's
         // disposition is unobtainable (this path runs inside Guard

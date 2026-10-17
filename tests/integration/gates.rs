@@ -23,19 +23,25 @@ pub enum Probe {
 
 /// Tri-state systemd user-manager probe: the command RAN and
 /// reported absence (`Unavailable`) vs the command itself failed
-/// operationally (`Broken`: timeout/overflow/spawn).
+/// operationally (`Broken`: timeout/overflow/spawn, or signal
+/// death — same signal-failure discipline as the podman/image
+/// tables; a killed probe is never a missing prerequisite).
 pub fn systemd_probe() -> Probe {
     let mut cmd = Command::new("systemctl");
     cmd.args(["--user", "show-environment"]);
     match run_bounded(cmd, RUN_CISTELLA_TIMEOUT) {
         Ok(out) if out.status.success() => Probe::Available,
-        Ok(out) => Probe::Unavailable(format!(
-            "systemd user manager not available (exit {})",
-            out.status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".to_string())
-        )),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            match out.status.code() {
+                Some(code) => Probe::Unavailable(format!(
+                    "systemd user manager not available (exit {code}): {stderr}"
+                )),
+                None => Probe::Broken(format!(
+                    "systemctl killed by signal (not a missing prerequisite): {stderr}"
+                )),
+            }
+        }
         Err(why) => Probe::Broken(format!("systemctl probe failed: {why}")),
     }
 }
