@@ -27,4 +27,4 @@
 ## 5. Review and sync
 
 - [x] 5.1 Tier-1 review → Tier-2 review.
-- [ ] 5.2 QA loop focused on interference-sensitive tests.
+- [x] 5.2 QA loop focused on interference-sensitive tests.
