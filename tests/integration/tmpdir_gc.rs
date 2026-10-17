@@ -149,7 +149,8 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     // SIGKILL the driver while the guest hangs: uncertainty is
     // preserved (guest group alive) — no reap.
     kill_wait(driver_a_pid);
-    let _ = reap_bounded(&mut driver_a, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut driver_a, CHILD_REAP_TIMEOUT)
+        .expect("reap driver_a post-kill (missing reap is wedged-child evidence)");
     assert!(signal_dead(driver_a_pid), "driver reaped");
     let out = run_cistella(&home, &["gc"]);
     assert!(
@@ -170,7 +171,8 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     // zombie that still answers kill(-pgid, 0), so the poll would
     // never read dead.)
     kill_wait(guest_pid);
-    let _ = reap_bounded(&mut hanging, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut hanging, CHILD_REAP_TIMEOUT)
+        .expect("reap hanging post-kill (missing reap is wedged-child evidence)");
     wait_group_dead(guest_pgid);
     let out = run_cistella(&home, &["gc"]);
     assert!(
@@ -201,8 +203,7 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn tmpdir_conduct_reaps_slice_on_teardown() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -231,7 +232,8 @@ fn tmpdir_conduct_reaps_slice_on_teardown() {
         String::from_utf8_lossy(&out.stderr)
     );
     guard.id = None;
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     assert!(
         !root.join(&slices[0]).exists(),
         "teardown reaps the declared slice"
@@ -241,8 +243,7 @@ fn tmpdir_conduct_reaps_slice_on_teardown() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn tmpdir_natural_exit_reaps_slice() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -295,8 +296,7 @@ fn tmpdir_natural_exit_reaps_slice() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn tmpdir_hooked_session_writes_tmp() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -337,7 +337,8 @@ fn tmpdir_hooked_session_writes_tmp() {
         String::from_utf8_lossy(&out.stderr)
     );
     guard.id = None;
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     // The slice is gone with the session (reaped, not litter).
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .expect("read seat root")
@@ -372,8 +373,7 @@ fn write_hooked_profile(dir: &std::path::Path, extra_mounts: &str) -> String {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn hooked_tmp_admits_through_wrapped_harness() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     // Unconditional baseline proof through the WRAPPED harness
@@ -404,8 +404,7 @@ fn hooked_tmp_admits_through_wrapped_harness() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn hooked_ro_mirror_denies_through_wrapped_harness() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     // Retention proof: a static source bound RO at /tmp (the
@@ -461,8 +460,7 @@ fn hooked_ro_mirror_denies_through_wrapped_harness() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn hooked_ancestor_alias_refuses_precreate() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     // Ancestor-covered baseline alias: a sibling source bound RO
@@ -510,8 +508,7 @@ fn hooked_ancestor_alias_refuses_precreate() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn tmpdir_nested_user_bind_reaps_with_slice() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     // Generic pre-create live: a user bind nested under the
@@ -550,7 +547,8 @@ fn tmpdir_nested_user_bind_reaps_with_slice() {
         String::from_utf8_lossy(&out.stderr)
     );
     guard.id = None;
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     let root = seat_root();
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .expect("read seat root")

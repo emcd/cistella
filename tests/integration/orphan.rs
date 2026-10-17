@@ -11,8 +11,7 @@ use super::helpers::*;
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn inspect_postmortem_and_gc_reap_orphan() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -32,7 +31,8 @@ fn inspect_postmortem_and_gc_reap_orphan() {
 
     // SIGKILL conduct: no teardown runs, the orphan unit file remains.
     conduct.kill().expect("kill conduct");
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     std::thread::sleep(Duration::from_millis(500));
     assert!(unit_path(&home, &id).exists(), "orphan unit remains");

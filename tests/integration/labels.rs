@@ -41,8 +41,7 @@ fn terminate_with_diagnostics(home: &str, id: &str) {
 fn gc_inspect_failure_fails_closed() {
     // A present-but-uninspectable container is an invocation failure, not
     // Quadlet `--rm` absence: gc must error and reap nothing.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let home = home_dir();
@@ -106,7 +105,8 @@ fn gc_inspect_failure_fails_closed() {
     assert!(String::from_utf8_lossy(&out.stdout).contains(&container));
 
     terminate_with_diagnostics(&home, &id);
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
@@ -116,8 +116,7 @@ fn gc_inspect_failure_fails_closed() {
 fn command_label_edge_round_trip_live() {
     // Spaces, quotes, and `=` must survive Quadlet file -> podman label ->
     // JSON argv, and the harness must execute verbatim.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -178,7 +177,8 @@ fn command_label_edge_round_trip_live() {
     }
 
     terminate_with_diagnostics(&home, &id);
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
@@ -187,8 +187,7 @@ fn command_label_edge_round_trip_live() {
 #[test]
 fn spaced_directory_conduct() {
     // Host paths with spaces must survive Volume= quoting and directory labels.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -223,7 +222,8 @@ fn spaced_directory_conduct() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 
@@ -248,7 +248,8 @@ fn spaced_directory_conduct() {
         String::from_utf8_lossy(&out.stderr)
     );
     terminate_with_diagnostics(&home, &id);
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }
@@ -258,8 +259,7 @@ fn spaced_directory_conduct() {
 fn environment_values_verbatim() {
     // Env values with spaces, quotes, `=`, and `%` must arrive verbatim
     // through the quoted `Environment=` directives (no systemd corruption).
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -302,7 +302,8 @@ fn environment_values_verbatim() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "unit reaped");
 }

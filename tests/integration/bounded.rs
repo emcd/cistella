@@ -32,8 +32,10 @@ pub const RUN_BOUNDED_STREAM_CAP: usize = 4 * 1024 * 1024;
 
 /// Bound on post-exit pipe draining: the child is dead, so EOF must
 /// follow promptly unless a descendant holds the pipe — which
-/// surfaces as a labeled drain timeout, never a hang.
-const RUN_BOUNDED_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// surfaces as a labeled drain timeout, never a hang. Public so
+/// callers that drain outside `wait_bounded` (ssh guest transcript)
+/// compose the same allowance.
+pub const POST_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a bounded run failed. Timeout carries the partial capture
 /// (labeled partial, head-truncated for message size — the run
@@ -51,6 +53,16 @@ pub enum BoundedRunError {
         stream: &'static str,
     },
     DrainTimeout {
+        partial_stdout: String,
+        partial_stderr: String,
+    },
+    /// A capture worker hit a read error before EOF: the retained
+    /// bytes are partial evidence of unknown completeness and must
+    /// never return as `Ok`. The run FAILED; these bytes are triage
+    /// diagnostics with labeled truncation.
+    Capture {
+        stream: &'static str,
+        detail: String,
         partial_stdout: String,
         partial_stderr: String,
     },
@@ -80,6 +92,15 @@ impl fmt::Display for BoundedRunError {
                 f,
                 "pipes did not EOF after exit (descendant-held pipe shape; partial stdout: {partial_stdout:?}; partial stderr: {partial_stderr:?})"
             ),
+            Self::Capture {
+                stream,
+                detail,
+                partial_stdout,
+                partial_stderr,
+            } => write!(
+                f,
+                "{stream} capture failed ({detail}; partial stdout: {partial_stdout:?}; partial stderr: {partial_stderr:?})"
+            ),
             Self::Spawn(detail) => write!(f, "spawn failed: {detail}"),
         }
     }
@@ -87,19 +108,19 @@ impl fmt::Display for BoundedRunError {
 
 /// Truncates failure-path bytes for message embedding, with the
 /// truncation LABELED (cf. `drain_pipe`'s silent cap, which this
-/// replaces on bounded paths).
+/// replaces on bounded paths). Cuts BYTES first (byte slicing never
+/// panics), then lossy-converts: a multibyte codepoint straddling
+/// the cut renders as U+FFFD, never panics inside `str` indexing.
 fn label_partial(bytes: &[u8]) -> String {
     const SHOW: usize = 8192;
-    let text = String::from_utf8_lossy(bytes);
-    if bytes.len() > SHOW {
-        format!(
-            "{}…[truncated, {} bytes total]",
-            &text[..SHOW.min(text.len())],
-            bytes.len()
-        )
-    } else {
-        text.to_string()
+    if bytes.len() <= SHOW {
+        return String::from_utf8_lossy(bytes).to_string();
     }
+    format!(
+        "{}…[truncated, {} bytes total]",
+        String::from_utf8_lossy(&bytes[..SHOW]),
+        bytes.len()
+    )
 }
 
 /// Spawns `bin()` for one bounded CLI invocation (HOME + TERM set).
@@ -127,48 +148,129 @@ pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Output, Bounde
     wait_bounded(child, timeout)
 }
 
+/// Cleanup allowance past the exit timeout: kill + bounded reap.
+/// Part of the documented `wait_bounded` total (exit + reap +
+/// drain), never a hidden extension — outer-deadline composers
+/// account for it explicitly (see `poll_budget`).
+pub const REAP_ALLOWANCE: Duration = Duration::from_secs(10);
+
+/// One stream's capture state. `error` records the FIRST read error
+/// (None = clean EOF): a failed capture refuses `Ok` in
+/// `finish_capture`, never returns partial bytes as success.
+pub struct StreamCapture {
+    pub buf: Vec<u8>,
+    pub overflow: bool,
+    pub error: Option<String>,
+}
+
+impl StreamCapture {
+    pub fn empty() -> Self {
+        Self {
+            buf: Vec::new(),
+            overflow: false,
+            error: None,
+        }
+    }
+}
+
+/// Capped capture worker over any reader: feeds the buffer until
+/// EOF, overflow cap, or read error — then reports completion
+/// either way. Error and overflow are RECORDED, never swallowed:
+/// `finish_capture` refuses both. Shared by `wait_bounded` and the
+/// injected-error pin, so the tracking itself is pinned, not
+/// merely reviewed.
+pub fn drain_capped(
+    pipe: impl Read + Send + 'static,
+    slot: std::sync::Arc<std::sync::Mutex<StreamCapture>>,
+    done: std::sync::mpsc::Sender<()>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut buf = [0u8; 8192];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let mut guard = slot.lock().expect("capture mutex");
+                    if guard.buf.len() + n > RUN_BOUNDED_STREAM_CAP {
+                        guard.overflow = true;
+                        break;
+                    }
+                    guard.buf.extend_from_slice(&buf[..n]);
+                }
+                Err(error) => {
+                    slot.lock().expect("capture mutex").error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = done.send(());
+    })
+}
+
+/// Post-exit assembly: drain-timeout, capture-error, and overflow
+/// checks BEFORE any `Ok`. A failed capture is `Err(Capture)` with
+/// the retained bytes as labeled triage — partial evidence of
+/// unknown completeness must never read as success. Split from
+/// `wait_bounded` so the refusal itself is pinned with poisoned
+/// slots (no child needed).
+pub fn finish_capture(
+    status: std::process::ExitStatus,
+    out_slot: &std::sync::Arc<std::sync::Mutex<StreamCapture>>,
+    err_slot: &std::sync::Arc<std::sync::Mutex<StreamCapture>>,
+    out_ok: bool,
+    err_ok: bool,
+) -> Result<Output, BoundedRunError> {
+    if !(out_ok && err_ok) {
+        let out = out_slot.lock().expect("capture mutex");
+        let err = err_slot.lock().expect("capture mutex");
+        return Err(BoundedRunError::DrainTimeout {
+            partial_stdout: label_partial(&out.buf),
+            partial_stderr: label_partial(&err.buf),
+        });
+    }
+    let mut out = out_slot.lock().expect("capture mutex");
+    let mut err = err_slot.lock().expect("capture mutex");
+    let capture_error = out
+        .error
+        .as_deref()
+        .map(|detail| ("stdout", detail.to_string()))
+        .or_else(|| {
+            err.error
+                .as_deref()
+                .map(|detail| ("stderr", detail.to_string()))
+        });
+    if let Some((stream, detail)) = capture_error {
+        return Err(BoundedRunError::Capture {
+            stream,
+            detail,
+            partial_stdout: label_partial(&out.buf),
+            partial_stderr: label_partial(&err.buf),
+        });
+    }
+    if out.overflow || err.overflow {
+        return Err(BoundedRunError::Overflow {
+            stream: if out.overflow { "stdout" } else { "stderr" },
+        });
+    }
+    Ok(Output {
+        status,
+        stdout: std::mem::take(&mut out.buf),
+        stderr: std::mem::take(&mut err.buf),
+    })
+}
+
 /// Bounded wait-and-capture over an already-spawned child. Split
 /// from `run_bounded` so stuck-poll pins drive it directly with a
 /// `sleep` child (no cistella verb needed).
+///
+/// Documented total: `timeout` (exit) + `REAP_ALLOWANCE` (kill +
+/// reap past expiry) + `POST_EXIT_DRAIN_TIMEOUT` (post-exit pipe
+/// EOF). The allowances are named consts, not hidden padding.
 pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, BoundedRunError> {
     use std::sync::{Arc, Mutex};
-    struct Capture {
-        buf: Vec<u8>,
-        overflow: bool,
-    }
-    fn drain_capped(
-        pipe: impl Read + Send + 'static,
-        slot: Arc<Mutex<Capture>>,
-        done: std::sync::mpsc::Sender<()>,
-    ) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            let mut pipe = pipe;
-            let mut buf = [0u8; 8192];
-            loop {
-                match pipe.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let mut guard = slot.lock().expect("capture mutex");
-                        if guard.buf.len() + n > RUN_BOUNDED_STREAM_CAP {
-                            guard.overflow = true;
-                            break;
-                        }
-                        guard.buf.extend_from_slice(&buf[..n]);
-                    }
-                    Err(_) => break,
-                }
-            }
-            let _ = done.send(());
-        })
-    }
-    let out_slot = Arc::new(Mutex::new(Capture {
-        buf: Vec::new(),
-        overflow: false,
-    }));
-    let err_slot = Arc::new(Mutex::new(Capture {
-        buf: Vec::new(),
-        overflow: false,
-    }));
+    let out_slot = Arc::new(Mutex::new(StreamCapture::empty()));
+    let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
     // A stream the test did not pipe (null/inherit) has no
     // capture: no reader, no wait — `wait_with_output` semantics
     // for caller-chosen stdio, not a silent truncation (the test
@@ -191,7 +293,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
             let err = err_slot.lock().expect("capture mutex");
             if out.overflow || err.overflow {
                 let _ = child.kill();
-                let reaped = reap_bounded(&mut child, Duration::from_secs(10)).is_some();
+                let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
                 debug_assert!(reaped, "overflow-killed child reaps");
                 let stream = if out.overflow { "stdout" } else { "stderr" };
                 return Err(BoundedRunError::Overflow { stream });
@@ -202,7 +304,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
             None => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
-                    let reaped = reap_bounded(&mut child, Duration::from_secs(10)).is_some();
+                    let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
                     let out = out_slot.lock().expect("capture mutex");
                     let err = err_slot.lock().expect("capture mutex");
                     return Err(BoundedRunError::Timeout {
@@ -222,7 +324,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
     // attested by the done channel, never by an unconditional join.
     let drain_start = Instant::now();
     let drained = |rx: &std::sync::mpsc::Receiver<()>| {
-        while drain_start.elapsed() < RUN_BOUNDED_DRAIN_TIMEOUT {
+        while drain_start.elapsed() < POST_EXIT_DRAIN_TIMEOUT {
             if rx.recv_timeout(Duration::from_millis(25)).is_ok() {
                 return true;
             }
@@ -249,26 +351,7 @@ pub fn wait_bounded(mut child: Child, timeout: Duration) -> Result<Output, Bound
         }
         None => true,
     };
-    if !(out_ok && err_ok) {
-        let out = out_slot.lock().expect("capture mutex");
-        let err = err_slot.lock().expect("capture mutex");
-        return Err(BoundedRunError::DrainTimeout {
-            partial_stdout: label_partial(&out.buf),
-            partial_stderr: label_partial(&err.buf),
-        });
-    }
-    let mut out = out_slot.lock().expect("capture mutex");
-    let mut err = err_slot.lock().expect("capture mutex");
-    if out.overflow || err.overflow {
-        return Err(BoundedRunError::Overflow {
-            stream: if out.overflow { "stdout" } else { "stderr" },
-        });
-    }
-    Ok(Output {
-        status,
-        stdout: std::mem::take(&mut out.buf),
-        stderr: std::mem::take(&mut err.buf),
-    })
+    finish_capture(status, &out_slot, &err_slot, out_ok, err_ok)
 }
 
 /// How the conduct id-line read failed. Every variant is a loud,
@@ -283,6 +366,9 @@ pub enum ConductIdError {
     Timeout { waited: Duration },
     /// EOF before any id line (dead child shape).
     EofWithoutId,
+    /// Bytes past the pending cap without an id line (runaway
+    /// producer shape).
+    LineOverflow { bytes: usize },
     /// A `conduct ` line whose id fails minted-shape validation.
     MalformedId(String),
 }
@@ -295,6 +381,9 @@ impl fmt::Display for ConductIdError {
                 write!(f, "no id line within {}ms", waited.as_millis())
             }
             Self::EofWithoutId => write!(f, "EOF before any conduct id line"),
+            Self::LineOverflow { bytes } => {
+                write!(f, "no id line within {bytes} buffered bytes (runaway)")
+            }
             Self::MalformedId(line) => write!(f, "malformed conduct id line: {line:?}"),
         }
     }
@@ -304,6 +393,11 @@ impl fmt::Display for ConductIdError {
 /// confirms on the live seat). Expiry kills the child — a silent
 /// conduct is evidence, never a hang.
 pub const CONDUCT_ID_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Cap on pre-id buffered bytes (64 KiB). An id line arrives
+/// within one line; megabytes without a newline is a runaway
+/// producer, failed loudly — never an unbounded `pending` buffer.
+pub const CONDUCT_ID_PENDING_CAP: usize = 64 * 1024;
 
 /// Reads the `conduct <minted-id>` first line from a child stdout
 /// with a hard bound. Nonblocking short-deadline reads: a silent
@@ -336,10 +430,23 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
+        // Absolute deadline on EVERY iteration, including
+        // successful reads: a continuously-writing newline-free
+        // producer must hit Timeout, never spin past the bound.
+        if start.elapsed() > timeout {
+            return Err(ConductIdError::Timeout {
+                waited: start.elapsed(),
+            });
+        }
         match reader.read(&mut buf) {
             Ok(0) => return Err(ConductIdError::EofWithoutId),
             Ok(n) => {
                 pending.extend_from_slice(&buf[..n]);
+                if pending.len() > CONDUCT_ID_PENDING_CAP {
+                    return Err(ConductIdError::LineOverflow {
+                        bytes: pending.len(),
+                    });
+                }
                 while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
                     let line: Vec<u8> = pending.drain(..=pos).collect();
                     let text = String::from_utf8_lossy(&line).trim().to_string();
@@ -352,23 +459,51 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
                 }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                if start.elapsed() > timeout {
-                    return Err(ConductIdError::Timeout {
-                        waited: start.elapsed(),
-                    });
-                }
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(_) => {
                 std::thread::sleep(Duration::from_millis(25));
-                if start.elapsed() > timeout {
-                    return Err(ConductIdError::Timeout {
-                        waited: start.elapsed(),
-                    });
-                }
             }
         }
     }
+}
+
+/// Restores blocking mode on a reader that `read_conduct_id` left
+/// `O_NONBLOCK`. The lifetime stdout drain is a one-shot blocking
+/// `io::copy`: a nonblocking fd returns `WouldBlock` at the first
+/// write gap, which ends the copy, drops the reader, closes the
+/// pipe, and reintroduces the conduct SIGPIPE/141 failure the
+/// drain exists to prevent. `Err` = fcntl refused; the caller must
+/// fail loudly, never drain on a nonblocking fd.
+pub fn restore_blocking(reader: &impl std::os::unix::io::AsRawFd) -> Result<(), String> {
+    let flags = nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+        .map_err(|e| format!("F_GETFL refused: {e}"))?;
+    let oflags = nix::fcntl::OFlag::from_bits_retain(flags) & !nix::fcntl::OFlag::O_NONBLOCK;
+    nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
+        .map_err(|e| format!("F_SETFL blocking restore refused: {e}"))?;
+    Ok(())
+}
+
+/// Lifetime stdout drain: blocking one-shot copy of the leftover
+/// head plus the restored reader into the sink. The reader MUST be
+/// blocking (see `restore_blocking`); the sink is `io::sink()` in
+/// production and a test-owned pipe in the quiet-gap pin, so the
+/// handoff itself is pinned, not just the reader tuple.
+pub fn spawn_stdout_drain<R, W>(
+    reader: R,
+    leftover: Vec<u8>,
+    sink: W,
+) -> std::thread::JoinHandle<()>
+where
+    R: Read + Send + 'static,
+    W: std::io::Write + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let head: &[u8] = &leftover;
+        let mut drain = head.chain(reader);
+        let mut sink = sink;
+        let _ = std::io::copy(&mut drain, &mut sink);
+    })
 }
 
 /// Bounded reap after a kill: `try_wait` loop against the bound.

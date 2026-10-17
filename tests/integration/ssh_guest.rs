@@ -4,7 +4,7 @@
 //! (the `protocol_peer` tmpdir pattern). Sockets are real
 //! `UnixListener` binds; the P!=C case is a symlink onto one.
 
-use std::io::{Read, Write};
+use std::io::Write;
 
 use super::helpers::*;
 
@@ -61,17 +61,28 @@ fn run_guest(args: &[&str], writes: Vec<Vec<u8>>) -> Transcript {
         }
     }
     drop(child.stdin.take());
-    let mut stdout = Vec::new();
-    child
-        .stdout
-        .as_mut()
-        .expect("stdout")
-        .read_to_end(&mut stdout)
-        .expect("stdout drains");
-    let output = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
+    // Drain on a worker while the bounded reap runs first: a guest
+    // that never exits AND never closes stdout must hit the reap
+    // bound, never hang in read_to_end. Post-exit assembly reuses
+    // finish_capture (cap/overflow/error/drain-timeout refusal).
+    let out_slot = std::sync::Arc::new(std::sync::Mutex::new(StreamCapture::empty()));
+    let empty_slot = std::sync::Arc::new(std::sync::Mutex::new(StreamCapture::empty()));
+    let (drain_tx, drain_rx) = std::sync::mpsc::channel();
+    let drain_handle = drain_capped(
+        child.stdout.take().expect("piped stdout"),
+        std::sync::Arc::clone(&out_slot),
+        drain_tx,
+    );
+    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
+    let drained = drain_rx.recv_timeout(POST_EXIT_DRAIN_TIMEOUT).is_ok();
+    if drained {
+        let _ = drain_handle.join();
+    }
+    let output = finish_capture(status, &out_slot, &empty_slot, drained, true)
+        .expect("guest stdout captured");
     Transcript {
-        code: output.code(),
-        frames: read_frames(&stdout),
+        code: output.status.code(),
+        frames: read_frames(&output.stdout),
     }
 }
 

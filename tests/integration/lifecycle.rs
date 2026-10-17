@@ -10,8 +10,7 @@ use super::helpers::*;
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_exit_passthrough_and_mint() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -139,8 +138,7 @@ fn conduct_exit_passthrough_and_mint() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_lifecycle_terminate_while_attached() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -251,8 +249,7 @@ fn conduct_lifecycle_terminate_while_attached() {
 fn name_resolves_from_foreign_cwd_live() {
     // A profile name resolves without a source checkout: the child runs
     // from a directory containing no `data/profiles`.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let foreign = TempDir::new().unwrap();
@@ -279,22 +276,20 @@ fn name_resolves_from_foreign_cwd_live() {
     cmd.stderr(std::process::Stdio::piped());
     let mut conduct = cmd.spawn().expect("spawn conduct");
     let stdout = conduct.stdout.take().expect("piped stdout");
-    let mut reader = std::io::BufReader::new(stdout);
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let id = loop {
-        use std::io::BufRead as _;
-        let mut line = String::new();
-        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for id line"
+    // Bounded id-line read (not a blocking read_line loop): silent
+    // or runaway conduct fails loudly within CONDUCT_ID_TIMEOUT.
+    // The positioned reader stays bound for conduct's lifetime so
+    // the pipe stays open (SIGPIPE hygiene); post-id bytes no one
+    // consumes are dropped exactly as the old BufReader handoff did.
+    let id = match read_conduct_id(stdout, CONDUCT_ID_TIMEOUT) {
+        Ok((id, _stdout_rest, _leftover)) => id,
+        Err(why) => {
+            let _ = conduct.kill();
+            let reaped = reap_bounded(&mut conduct, REAP_ALLOWANCE).is_some();
+            panic!(
+                "conduct id line unreadable ({why}; child reaped: {reaped}); conduct stderr: {}",
+                drain_stderr(conduct.stderr.take().expect("piped stderr"))
             );
-            std::thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        if let Some(id) = line.trim().strip_prefix("conduct ") {
-            assert!(valid_minted_id(id), "minted id shape: {id}");
-            break id.to_string();
         }
     };
     let mut guard = Guard {
@@ -308,7 +303,8 @@ fn name_resolves_from_foreign_cwd_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
 }
 
@@ -317,8 +313,7 @@ fn name_resolves_from_foreign_cwd_live() {
 fn configuration_directory_plumbing_live() {
     // `--configuration-directory` reaches resolution: a name found only in
     // the supplied dir conducts with that profile.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let config = TempDir::new().unwrap();
@@ -351,7 +346,8 @@ fn configuration_directory_plumbing_live() {
         "terminate {id}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
 }
 
@@ -360,8 +356,7 @@ fn configuration_directory_plumbing_live() {
 fn harness_runs_in_worktree_target_live() {
     // The session directory is a working directory, not just a mount:
     // the harness starts with cwd at the container target.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -402,8 +397,7 @@ fn harness_runs_in_worktree_target_live() {
 fn project_name_template_live() {
     // Templates resolve end to end: explicit flag and directory-basename
     // default both land the mount at the expanded target.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let config = TempDir::new().unwrap();
@@ -489,8 +483,7 @@ fn project_name_template_live() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn terminate_stops_promptly_without_sigkill() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -564,8 +557,7 @@ fn terminate_stops_promptly_without_sigkill() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn template_env_and_labels_resolve_live() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -633,7 +625,8 @@ fn template_env_and_labels_resolve_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
 }
@@ -641,8 +634,7 @@ fn template_env_and_labels_resolve_live() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn environment_acceptances_forward_live() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -695,7 +687,8 @@ fn environment_acceptances_forward_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     match prev {
         Some(v) => unsafe { std::env::set_var("CISTELLA_LIVE_ACCEPT", v) },
@@ -707,8 +700,7 @@ fn environment_acceptances_forward_live() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn environment_acceptances_absent_refuses_residue_free() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -775,7 +767,8 @@ fn environment_acceptances_absent_refuses_residue_free() {
         }
         if Instant::now() > deadline {
             child.kill().ok();
-            let _ = reap_bounded(&mut child, CHILD_REAP_TIMEOUT);
+            let _ = reap_bounded(&mut child, CHILD_REAP_TIMEOUT)
+                .expect("reap child post-kill (missing reap is wedged-child evidence)");
             panic!(
                 "conduct reached the mutation gate (blocked on the creation lock): \
                  acceptance refusal must precede lock acquisition"
@@ -865,8 +858,7 @@ fn environment_acceptances_absent_refuses_residue_free() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn template_namespaces_resolve_live() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -957,7 +949,8 @@ fn template_namespaces_resolve_live() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
 }

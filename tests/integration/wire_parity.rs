@@ -67,8 +67,7 @@ impl Drop for LiveUnitGuard {
 
 /// Resolves the fixture image or skips when the host lacks it.
 fn fixture_image() -> Option<String> {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return None;
     }
     match resolve_image_digest(FIXTURE_IMAGE) {

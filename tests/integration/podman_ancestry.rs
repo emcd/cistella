@@ -35,12 +35,6 @@ use super::helpers::*;
 /// The helper's mount point inside the probe container.
 const HELPER_MOUNT: &str = "/landlock_helper";
 
-fn podman_available() -> bool {
-    let mut cmd = Command::new("podman");
-    cmd.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
-    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success())
-}
-
 fn image_ref() -> String {
     std::env::var("CISTELLA_TEST_IMAGE")
         .unwrap_or_else(|_| "localhost/cistella/opencode:example".to_string())
@@ -136,14 +130,18 @@ fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, Stri
 /// later `podman run` failure is a real failure to investigate, not
 /// a skip.
 fn probe_preconditions() -> bool {
-    if !podman_available() {
-        skip("podman not available");
+    if !podman_gate() {
         return false;
     }
     let image = image_ref();
     let mut cmd = Command::new("podman");
     cmd.args(["image", "exists", &image]);
-    let has_image = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success());
+    // Exit nonzero = legitimately absent (skip); operational
+    // failure = loud, never a skip.
+    let has_image = match run_bounded(cmd, RUN_CISTELLA_TIMEOUT) {
+        Ok(out) => out.status.success(),
+        Err(why) => panic!("seat operational failure (not a skip): image probe failed: {why}"),
+    };
     if !has_image {
         skip(format!(
             "image {image} not present (build via data/dockerfiles/validate.sh)"

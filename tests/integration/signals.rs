@@ -12,8 +12,7 @@ fn signal_during_startup_tears_down() {
     // SIGTERM landing between install and start (opened deterministically by
     // the start-delay hook) must tear down the installed unit
     // and exit 128+SIGTERM instead of dying by default action.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -72,8 +71,7 @@ fn terminate_races_creation_waits() {
     // Terminate issued while conduct is still installing must wait for the
     // creation lock, then tear down the fully installed session — never reap
     // a half-created unit out from under the start.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -141,8 +139,7 @@ fn terminate_races_creation_waits() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn sighup_conduct_tears_down() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -179,8 +176,7 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
     // for the whole test so fleet gc processes cannot steal the fixture,
     // prove a concurrent gc blocks, then reap in-process via the lock-held
     // gc entry point and verify the unit is gone.
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let home = home_dir();
@@ -211,7 +207,8 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
         "gc blocks on the lock with a half-created session present"
     );
     gc.kill().ok();
-    let _ = reap_bounded(&mut gc, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut gc, CHILD_REAP_TIMEOUT)
+        .expect("reap gc post-kill (missing reap is wedged-child evidence)");
 
     let res = cistella::runtime::gc_exited_locked().expect("locked gc");
     assert!(

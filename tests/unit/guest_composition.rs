@@ -19,10 +19,25 @@ fn session_slice_snapshot(session: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// Sweep rule (todos/51): a fixture that orphans its session slice
-/// proves attribution first — exactly the slices minted since its
-/// own snapshot (pre-existing seat litter excluded, concurrent-run
-/// interference fails loudly) — then sweeps ONLY that delta.
+/// Invocation-unique fixture session name: fixed tags collide
+/// across concurrent suite invocations sharing /tmp (the same
+/// prefix from two runs breaks attribution AND sweeping — a
+/// before/after delta of length 1 could be the other run's slice,
+/// which must never be deleted). pid + nanos keeps the tag
+/// greppable while making the full name unique per invocation.
+fn unique_session(tag: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    format!("test-session-{tag}-{}-{nanos}", std::process::id())
+}
+
+/// Sweep rule: a fixture that orphans its session slice proves
+/// attribution first — exactly the slices minted since its own
+/// snapshot (pre-existing seat litter excluded; the session name
+/// is invocation-unique per `unique_session`, so the delta cannot
+/// be a concurrent run's slice) — then sweeps ONLY that delta.
 /// Assert-before-sweep, so a failure never reaps a foreign slice.
 fn sweep_minted_slices(before: &[std::path::PathBuf], session: &str) {
     let after = session_slice_snapshot(session);
@@ -518,7 +533,8 @@ fn later_guest_gating_refuses_with_clean_shutdown() {
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
-    let slice_before = session_slice_snapshot("test-session-late-gate");
+    let session = unique_session("late-gate");
+    let slice_before = session_slice_snapshot(&session);
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,
@@ -529,7 +545,7 @@ fn later_guest_gating_refuses_with_clean_shutdown() {
         &minimal_profile(),
         &[],
         &policy,
-        "test-session-late-gate",
+        &session,
         lease_base.path(),
         &[],
     )
@@ -543,7 +559,7 @@ fn later_guest_gating_refuses_with_clean_shutdown() {
     // The clean shutdown drops the lease but orphans the minted
     // slice (session-attributed, like the collide-slice case):
     // prove attribution, then sweep — no run-over-run litter.
-    sweep_minted_slices(&slice_before, "test-session-late-gate");
+    sweep_minted_slices(&slice_before, &session);
 }
 
 #[test]
@@ -605,8 +621,8 @@ fn mid_prepare_failure_preserves_original_error() {
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
-    let session = "test-session-prepare-fail";
-    let slice_before = session_slice_snapshot(session);
+    let session = unique_session("prepare-fail");
+    let slice_before = session_slice_snapshot(&session);
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Landlock,
@@ -617,7 +633,7 @@ fn mid_prepare_failure_preserves_original_error() {
         &minimal_profile(),
         &[],
         &policy,
-        session,
+        &session,
         lease_base.path(),
         &[],
     )
@@ -626,14 +642,14 @@ fn mid_prepare_failure_preserves_original_error() {
         error.to_string().contains("shape violation"),
         "original fault preserved, got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), session).expect("lease path");
+    let path = PrepareLease::path_for(lease_base.path(), &session).expect("lease path");
     assert!(
         !path.exists(),
         "clean shutdowns prove quiescence: lease drops"
     );
     // The dropped lease still orphans the minted slice: prove
     // attribution, then sweep — no run-over-run litter.
-    sweep_minted_slices(&slice_before, session);
+    sweep_minted_slices(&slice_before, &session);
 }
 
 #[test]
@@ -877,7 +893,8 @@ fn collision_with_minted_slice_orphans_for_gc() {
     let policy =
         cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
-    let session = "test-session-collide-slice";
+    let session = unique_session("collide-slice");
+    let slice_before = session_slice_snapshot(&session);
     let error = prepare_selected_extension(
         vec![
             ExtensionResolution::Tmpdir,
@@ -888,7 +905,7 @@ fn collision_with_minted_slice_orphans_for_gc() {
         &minimal_profile(),
         &[],
         &policy,
-        session,
+        &session,
         lease_base.path(),
         &[],
     )
@@ -897,24 +914,9 @@ fn collision_with_minted_slice_orphans_for_gc() {
         error.to_string().contains("SESSION_ID_ECHO"),
         "got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), session).expect("lease path");
+    let path = PrepareLease::path_for(lease_base.path(), &session).expect("lease path");
     assert!(!path.exists(), "lease drops on clean collision abort");
     // The minted slice orphans with session attribution for gc;
     // the test sweeps its own litter after proving existence.
-    let prefix = format!("cistella-tmp-{session}-");
-    let orphans: Vec<std::path::PathBuf> = std::fs::read_dir("/tmp")
-        .expect("/tmp readable")
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
-        })
-        .collect();
-    assert_eq!(
-        orphans.len(),
-        1,
-        "exactly the minted slice orphans attributed: {orphans:?}"
-    );
-    std::fs::remove_dir_all(&orphans[0]).expect("sweep fixture slice");
+    sweep_minted_slices(&slice_before, &session);
 }

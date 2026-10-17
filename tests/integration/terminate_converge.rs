@@ -60,8 +60,7 @@ fn container_absent(container: &str) -> bool {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn cli_terminate_converges_attached_conduct() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -116,7 +115,9 @@ fn cli_terminate_converges_attached_conduct() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
         );
-        let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+        let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect(
+            "reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)",
+        );
         let tap = taps.finalize(std::time::Duration::from_secs(10));
         panic!(
             "cli terminate converges: status={} stdout={} stderr={} conduct_stderr={} drain={}",

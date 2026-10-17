@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use cistella::framework::contract::Deadlines;
 
-use super::helpers::*;
 use super::protocol_peer::peer_path;
 
 fn tight_deadlines() -> Deadlines {
@@ -172,8 +171,7 @@ fn wire_client_crash_after_create_residue_dominates() {
     use cistella::framework::isolator::{CreateSpec, Isolator};
     use cistella::isolators::client::WireClient;
     use cistella::session::{Session, mint_session_id};
-    if !super::helpers::systemd_available() {
-        skip("systemd user manager not available");
+    if !super::helpers::systemd_gate() {
         return;
     }
     let (dir, _name) = guest_bin();

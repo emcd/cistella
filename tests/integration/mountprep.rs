@@ -10,8 +10,7 @@ use super::helpers::*;
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn mountpoint_parents_prepared_for_siblings() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -70,8 +69,7 @@ fn mountpoint_parents_prepared_for_siblings() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn mountpoint_host_alias_conducts() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -137,8 +135,7 @@ fn mountpoint_host_alias_conducts() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn mountpoint_nested_ro_excluded() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -210,8 +207,7 @@ fn mountpoint_nested_ro_excluded() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn mountpoint_noncanonical_spelling_prepared() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -263,8 +259,7 @@ fn mountpoint_noncanonical_spelling_prepared() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn mountpoint_prepare_timeout_fails_closed() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -328,8 +323,7 @@ fn mountpoint_prepare_timeout_fails_closed() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn nested_ro_preexisting_chain_succeeds() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -391,8 +385,7 @@ fn nested_ro_preexisting_chain_succeeds() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn nested_ro_missing_chain_refuses_pre_mutation() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -455,8 +448,7 @@ fn nested_ro_missing_chain_refuses_pre_mutation() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn nested_ro_session_dogfood_shape_passes() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     // The dogfood shape: session-directory target nested under an RO
@@ -509,8 +501,7 @@ fn nested_ro_session_dogfood_shape_passes() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn nested_ro_symlinked_source_resolves() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     // Ancestor host source behind a symlink: canonicalization supplies
@@ -569,8 +560,7 @@ fn nested_ro_symlinked_source_resolves() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn nested_rw_under_rw_conducts() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -637,8 +627,7 @@ fn nested_rw_under_rw_conducts() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn same_tree_rw_graft_refuses_pre_create() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -712,8 +701,7 @@ fn same_tree_rw_graft_refuses_pre_create() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn hooked_conduct_confines_declared_session() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -782,9 +770,12 @@ fn bind_alias_graft_refuses_precreate() {
     let mut unshare_cmd = Command::new("podman");
     unshare_cmd.arg("unshare");
     unshare_cmd.arg("true");
-    let unshare = run_bounded(unshare_cmd, RUN_CISTELLA_TIMEOUT)
-        .map(|out| out.status.success())
-        .unwrap_or(false);
+    // Exit nonzero = capability absent (skip); operational failure
+    // = loud, never a skip.
+    let unshare = match run_bounded(unshare_cmd, RUN_CISTELLA_TIMEOUT) {
+        Ok(out) => out.status.success(),
+        Err(why) => panic!("seat operational failure (not a skip): unshare probe failed: {why}"),
+    };
     if !unshare {
         skip("podman unshare unavailable");
         return;

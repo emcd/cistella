@@ -5,8 +5,7 @@ use super::helpers::*;
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn selectors_ambiguous_and_exclusive() {
-    if !systemd_available() {
-        skip("systemd user manager not available");
+    if !systemd_gate() {
         return;
     }
     let worktree = src_worktree();
@@ -86,7 +85,8 @@ fn selectors_ambiguous_and_exclusive() {
         "terminate by label: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut child_a, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut child_a, CHILD_REAP_TIMEOUT)
+        .expect("reap child_a post-terminate (missing reap is wedged-child evidence)");
     guard_a.id = None;
 
     let out = run_cistella(&home, &["survey", "--directory", &worktree_str]);
@@ -102,6 +102,7 @@ fn selectors_ambiguous_and_exclusive() {
         "terminate {id_b}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut child_b, CHILD_REAP_TIMEOUT);
+    let _ = reap_bounded(&mut child_b, CHILD_REAP_TIMEOUT)
+        .expect("reap child_b post-terminate (missing reap is wedged-child evidence)");
     guard_b.id = None;
 }

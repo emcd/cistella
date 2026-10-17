@@ -9,12 +9,6 @@ use super::helpers::*;
 use nix::pty::{ForkptyResult, forkpty};
 use nix::sys::wait::{self, WaitStatus};
 
-fn podman_available() -> bool {
-    let mut cmd = Command::new("podman");
-    cmd.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
-    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success())
-}
-
 fn image_ref() -> String {
     std::env::var("CISTELLA_TEST_IMAGE")
         .unwrap_or_else(|_| "localhost/cistella/opencode:example".to_string())
@@ -22,35 +16,45 @@ fn image_ref() -> String {
 
 /// Bounded reap of a forkpty child: WNOHANG loop for a grace
 /// window, then SIGKILL + bounded pid reap. Never a blocking
-/// waitpid. A waitpid error (e.g. already reaped) ends the loop —
-/// there is nothing left to reap.
-fn reap_pty_child(child: nix::unistd::Pid) {
+/// waitpid. Returns false when the child would not reap — callers
+/// report that as unproven evidence, never ignore it. A waitpid
+/// error (e.g. already reaped elsewhere) ends the loop as
+/// unproven: nothing here reaps twice, so an error means the
+/// ownership story is already wrong.
+fn reap_pty_child(child: nix::unistd::Pid) -> bool {
     let start = std::time::Instant::now();
     let grace = std::time::Duration::from_secs(5);
-    while wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
-        .is_ok_and(|s| s == WaitStatus::StillAlive)
-    {
-        if start.elapsed() > grace {
-            let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-            let _ = reap_bounded_pid(child, std::time::Duration::from_secs(10));
-            return;
+    loop {
+        match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) => {
+                if start.elapsed() > grace {
+                    let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+                    return reap_bounded_pid(child, std::time::Duration::from_secs(10));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(_) => return true,
+            Err(_) => return false,
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn transport_harness() {
-    if !podman_available() {
-        skip("podman not available");
+    if !podman_gate() {
         return;
     }
     let image = image_ref();
-    // Ensure image exists; try building example if missing.
+    // Ensure image exists; try building example if missing. Exit
+    // nonzero = legitimately absent (skip); operational failure =
+    // loud, never a skip.
     let mut probe = Command::new("podman");
     probe.args(["image", "exists", &image]);
-    let has_image = run_bounded(probe, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success());
+    let has_image = match run_bounded(probe, RUN_CISTELLA_TIMEOUT) {
+        Ok(out) => out.status.success(),
+        Err(why) => panic!("seat operational failure (not a skip): image probe failed: {why}"),
+    };
     if !has_image {
         skip(format!(
             "image {image} not present (build via data/dockerfiles/validate.sh)"
@@ -152,7 +156,26 @@ fn check_isatty(cname: &str) -> bool {
     match unsafe { forkpty(None, None) } {
         Ok(ForkptyResult::Parent { child, master }) => {
             use std::io::Read;
+            use std::os::unix::io::AsRawFd;
             let mut f = std::fs::File::from(master);
+            // Nonblocking master: the WouldBlock arm below only
+            // bounds the window on a nonblocking fd; a blocking
+            // read would sit past it on a silent child. Setup
+            // failure kills the child first — never leaked.
+            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+                let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
+                oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                {
+                    eprintln!("isatty pty: O_NONBLOCK setup refused");
+                    kill_reap_pty_child(child);
+                    return false;
+                }
+            } else {
+                eprintln!("isatty pty: F_GETFL refused");
+                kill_reap_pty_child(child);
+                return false;
+            }
             let mut buf = [0u8; 4096];
             let start = std::time::Instant::now();
             let mut acc = Vec::new();
@@ -176,8 +199,12 @@ fn check_isatty(cname: &str) -> bool {
                     break;
                 }
             }
-            // wait child
-            let _ = wait::waitpid(child, None);
+            // Bounded reap of the forkpty child: never a blocking
+            // waitpid. An unreaped child is unproven evidence.
+            if !reap_pty_child(child) {
+                eprintln!("isatty pty child would not reap");
+                return false;
+            }
             let txt = String::from_utf8_lossy(&acc).to_string();
             eprintln!("isatty forkpty acc: {txt}");
             txt.contains("isatty:true")
@@ -239,10 +266,12 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
                 if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
                 {
                     eprintln!("DA1 pty: O_NONBLOCK setup refused");
+                    kill_reap_pty_child(child);
                     return false;
                 }
             } else {
                 eprintln!("DA1 pty: F_GETFL refused");
+                kill_reap_pty_child(child);
                 return false;
             }
             let mut buf = vec![0u8; 4096];
@@ -279,8 +308,12 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
             }
             // Bounded reap of the forkpty child (DONE seen; it is
             // exiting): WNOHANG loop, SIGKILL past the bound, never
-            // a blocking waitpid.
-            reap_pty_child(child);
+            // a blocking waitpid. An unreaped child is unproven
+            // evidence, never ignored success.
+            if !reap_pty_child(child) {
+                eprintln!("DA1 pty child would not reap");
+                return false;
+            }
             let mut cat = Command::new("podman");
             cat.args(["exec", cname, "cat", "/tmp/da1_harness"]);
             let check = run_bounded(cat, RUN_CISTELLA_TIMEOUT);
@@ -326,10 +359,12 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
                 if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
                 {
                     eprintln!("sigint pty: O_NONBLOCK setup refused");
+                    kill_reap_pty_child(child);
                     return false;
                 }
             } else {
                 eprintln!("sigint pty: F_GETFL refused");
+                kill_reap_pty_child(child);
                 return false;
             }
             let mut buf = vec![0u8; 4096];
@@ -354,8 +389,12 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
             let _ = f.flush();
             eprintln!("SIGINT wrote 0x03");
             // Bounded reap: the INT-trapped child exits promptly;
-            // SIGKILL past the bound, never a blocking waitpid.
-            reap_pty_child(child);
+            // SIGKILL past the bound, never a blocking waitpid. An
+            // unreaped child is unproven evidence, never ignored.
+            if !reap_pty_child(child) {
+                eprintln!("sigint pty child would not reap");
+                return false;
+            }
             std::thread::sleep(std::time::Duration::from_millis(400));
             let mut cmd = Command::new("podman");
             cmd.args([

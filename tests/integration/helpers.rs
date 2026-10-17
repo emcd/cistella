@@ -1,13 +1,13 @@
 //! Shared helpers for lifecycle integration tests.
 
-use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub use super::bounded::*;
+pub use super::gates::*;
+pub use super::pty::*;
 
 use cistella::isolators::client::WireClient;
 
@@ -92,29 +92,24 @@ pub fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_cistella")
 }
 
-pub fn systemd_available() -> bool {
-    let mut cmd = Command::new("systemctl");
-    cmd.args(["--user", "show-environment"]);
-    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).is_ok_and(|o| o.status.success())
-}
-
-/// Uniform soft-skip log for environment gates: every seat-
-/// capability skip speaks this marker (`skip: ...`) so skip rosters
-/// grep cleanly from captured output. A skip records APPLICABILITY,
-/// never execution — the body does not run, and this line is its
-/// only trace. Capability tags (the `#[ignore]` reason) live beside
-/// the gate check that enforces them; this marker is the shared
-/// spelling that keeps them from rotting apart.
-pub fn skip(reason: impl std::fmt::Display) {
-    eprintln!("skip: {reason}");
-}
-
 pub fn home_dir() -> String {
     std::env::var("HOME").expect("HOME set")
 }
 
 pub fn run_cistella(home: &str, args: &[&str]) -> Output {
     run_bounded(spawn_cistella_cmd(home, args), RUN_CISTELLA_TIMEOUT).expect("bounded cistella run")
+}
+
+/// Owned-session teardown WITHOUT panicking: the `Drop` path.
+/// Returns the terminate outcome for the caller to log; a `Drop`
+/// that panics (e.g. on a cleanup timeout) during an assertion
+/// unwind would double-panic and abort the test process, masking
+/// the original failure and bypassing sibling cleanup.
+pub fn guard_terminate(home: &str, id: &str) -> Result<Output, BoundedRunError> {
+    run_bounded(
+        spawn_cistella_cmd(home, &["terminate", id]),
+        RUN_CISTELLA_TIMEOUT,
+    )
 }
 
 pub fn valid_minted_id(id: &str) -> bool {
@@ -189,9 +184,14 @@ impl Drop for Guard {
         // sibling fixtures sitting in their unlocked windows. A
         // panic path that strands an orphaned unit surfaces it in
         // residue-diff tests instead of sweeping it silently.
+        // Non-panicking by construction (`guard_terminate` returns
+        // `Result`): a Drop panic during an assertion unwind would
+        // abort the process and mask the original failure.
         if let Some(id) = self.id.take() {
             let home = home_dir();
-            let _ = run_cistella(&home, &["terminate", &id]);
+            if let Err(why) = guard_terminate(&home, &id) {
+                eprintln!("guard teardown of {id} failed (best effort): {why}");
+            }
         }
     }
 }
@@ -422,13 +422,23 @@ pub fn spawn_conduct_tapped(
         Ok(found) => found,
         Err(why) => {
             let _ = child.kill();
-            let reaped = reap_bounded(&mut child, Duration::from_secs(10)).is_some();
+            let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
             panic!(
                 "conduct id line unreadable ({why}; child reaped: {reaped}); conduct stderr: {}",
                 drain_stderr(stderr)
             );
         }
     };
+    // Blocking restore BEFORE the lifetime drain: the id reader
+    // leaves stdout O_NONBLOCK, and the one-shot copy below would
+    // exit at the first write gap on a nonblocking fd — dropping
+    // the reader and reintroducing the conduct SIGPIPE/141 failure
+    // this drain exists to prevent. Restore failure kills loudly.
+    if let Err(why) = restore_blocking(&stdout_rest) {
+        let _ = child.kill();
+        let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
+        panic!("conduct stdout blocking restore failed ({why}; child reaped: {reaped})");
+    }
     // Drain for conduct lifetime: dropping the readers closes the
     // pipes, and conduct's later gate writes would die SIGPIPE
     // (128+13) under main()'s deliberate SigDfl — a racy false
@@ -447,14 +457,11 @@ pub fn spawn_conduct_tapped(
         drain_handle: None,
     };
     let tap_writer = std::sync::Arc::clone(&taps.stderr_tail);
-    std::thread::spawn(move || {
-        // Leftover bytes (read past the id-line newline) head the
-        // stream so the lifetime drain loses nothing vs the old
-        // nonblocking-reader handoff.
-        let head: &[u8] = &leftover;
-        let mut drain = head.chain(stdout_rest);
-        let _ = std::io::copy(&mut drain, &mut std::io::sink());
-    });
+    // Leftover bytes (read past the id-line newline) head the
+    // stream so the lifetime drain loses nothing; the reader is
+    // blocking again (restored above), so the one-shot copy holds
+    // the pipe through write gaps until EOF at conduct exit.
+    spawn_stdout_drain(stdout_rest, leftover, std::io::sink());
     // Single drain implementation shared with deterministic pins
     // (`run_tap_drain`): the worker below is the production path the
     // pins exercise.
@@ -474,11 +481,20 @@ pub fn drain_pipe<R: std::io::Read + std::os::unix::io::AsRawFd>(pipe: R) -> Str
     let mut collected = Vec::new();
     let mut buf = [0u8; 4096];
     let mut pipe = pipe;
-    // Best effort only: ignore setup failure and read what is there.
+    // Nonblocking setup is LOAD-BEARING, not best-effort: without it
+    // the reads below can block past the deadline on a held-open
+    // pipe. Setup failure returns empty immediately (logged) instead
+    // of risking the hang — diagnostics degrade, boundedness holds.
     if let Ok(flags) = nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
         let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
         oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-        let _ = nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags));
+        if nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err() {
+            eprintln!("drain_pipe: O_NONBLOCK setup refused; no diagnostics captured");
+            return String::new();
+        }
+    } else {
+        eprintln!("drain_pipe: F_GETFL refused; no diagnostics captured");
+        return String::new();
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -537,11 +553,23 @@ pub fn wait_active(id: &str) {
             &format!("cistella-{id}.service"),
         ]);
         match run_bounded(cmd, poll_budget(deadline)) {
-            Ok(out) => {
+            Ok(out) if out.status.success() => {
                 last = String::from_utf8_lossy(&out.stdout).to_string();
                 if last.contains("ActiveState=active") {
                     return;
                 }
+            }
+            // A nonzero poll exit is failed evidence, not state:
+            // record stderr, keep polling to the outer deadline.
+            Ok(out) => {
+                last = format!(
+                    "poll exit {}: {}",
+                    out.status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".to_string()),
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
             Err(why) => {
                 last = format!("poll failed: {why}");
@@ -575,11 +603,23 @@ pub fn wait_harness(container: &str, argv: &str) {
         let mut cmd = Command::new("podman");
         cmd.args(["top", container]);
         match run_bounded(cmd, poll_budget(deadline)) {
-            Ok(out) => {
+            Ok(out) if out.status.success() => {
                 last = String::from_utf8_lossy(&out.stdout).to_string();
                 if last.contains(argv) {
                     return;
                 }
+            }
+            // A nonzero poll exit is failed evidence, not state:
+            // record stderr, keep polling to the outer deadline.
+            Ok(out) => {
+                last = format!(
+                    "poll exit {}: {}",
+                    out.status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".to_string()),
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
             Err(why) => {
                 last = format!("poll failed: {why}");
@@ -656,129 +696,6 @@ pub fn wait_for_unit_file(
             panic!("unit file never appeared for {worktree}");
         }
         std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
-/// Bounded reap of a forkpty child by pid: WNOHANG loop against
-/// the bound after SIGKILL. True = reaped. A pid that will not reap
-/// is wedged; the caller reports loudly — bounded, never hangs.
-/// Public so forkpty-based tests share the one bounded reap.
-pub fn reap_bounded_pid(child: nix::unistd::Pid, timeout: Duration) -> bool {
-    use nix::sys::wait::{WaitPidFlag, WaitStatus};
-    let start = Instant::now();
-    loop {
-        match nix::sys::wait::waitpid(child, Some(WaitPidFlag::WNOHANG)) {
-            Ok(WaitStatus::StillAlive) => {
-                if start.elapsed() > timeout {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Ok(_) => return true,
-            Err(_) => return false,
-        }
-    }
-}
-
-pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
-    use nix::pty::{ForkptyResult, Winsize, forkpty};
-    use nix::sys::wait::{self, WaitStatus};
-    use std::io::Read;
-    let winsize = Winsize {
-        ws_row: 30,
-        ws_col: 100,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    match unsafe { forkpty(Some(&winsize), None) } {
-        Ok(ForkptyResult::Parent { child, master }) => {
-            let f = std::fs::File::from(master);
-            // Nonblocking master: the 30s window below must bound
-            // controller progress, and a blocking `read` would sit
-            // past it on a silent child. Setup failure surfaces
-            // (false + diagnostic), never degrades silently.
-            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
-                let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
-                oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
-                {
-                    eprintln!("enter pty: O_NONBLOCK setup refused");
-                    return false;
-                }
-            } else {
-                eprintln!("enter pty: F_GETFL refused");
-                return false;
-            }
-            let mut f = f;
-            let mut buf = [0u8; 4096];
-            let mut acc = Vec::new();
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(30) {
-                match f.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        acc.extend_from_slice(&buf[..n]);
-                        if String::from_utf8_lossy(&acc).contains("DONE") {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(_) => break,
-                }
-                if wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
-                    .is_ok_and(|s| s != WaitStatus::StillAlive)
-                {
-                    break;
-                }
-            }
-            // Bounded final reap against the REMAINING window (never
-            // a fresh wait): a child that outlives the session is
-            // killed, and the run reports unattested, never hangs.
-            let deadline = start + Duration::from_secs(30);
-            let reaped = loop {
-                match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) => {
-                        if Instant::now() > deadline {
-                            let _ =
-                                nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-                            break reap_bounded_pid(child, Duration::from_secs(10));
-                        }
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Ok(_) => break true,
-                    Err(_) => break false,
-                }
-            };
-            let txt = String::from_utf8_lossy(&acc).to_string();
-            eprintln!("enter pty acc: {txt}");
-            reaped && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))
-        }
-        Ok(ForkptyResult::Child) => {
-            use std::os::unix::process::CommandExt;
-            let home = home.to_string();
-            let worktree = worktree.to_string();
-            let e = Command::new(bin())
-                .args([
-                    "enter",
-                    "--directory",
-                    &worktree,
-                    "--",
-                    "sh",
-                    "-c",
-                    "stty size; echo DONE",
-                ])
-                .env("HOME", home)
-                .env("TERM", "xterm-ghostty")
-                .exec();
-            eprintln!("cistella enter {e:?}");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("forkpty {e}");
-            false
-        }
     }
 }
 

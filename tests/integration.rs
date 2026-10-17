@@ -8,6 +8,8 @@ mod conduct_taps;
 mod conformance;
 #[path = "integration/design_vectors.rs"]
 mod design_vectors;
+#[path = "integration/gates.rs"]
+mod gates;
 #[path = "integration/guest_hello.rs"]
 mod guest_hello;
 #[path = "integration/guest_hosting.rs"]
@@ -36,6 +38,8 @@ mod podman_ancestry;
 mod prepare_peer;
 #[path = "integration/protocol_peer.rs"]
 mod protocol_peer;
+#[path = "integration/pty.rs"]
+mod pty;
 #[path = "integration/recovery.rs"]
 mod recovery;
 #[path = "integration/selectors.rs"]
