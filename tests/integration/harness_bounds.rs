@@ -168,85 +168,141 @@ fn unpiped_stream_needs_no_capture() {
     );
 }
 
+/// Deadline-bounded sink read of exactly `len` bytes: 10s per
+/// read call, panic (not hang) past it. EOF before `len` ends
+/// early (the caller asserts on the shortfall).
+fn drain_sink_exact(
+    mut sink: std::os::unix::net::UnixStream,
+    len: usize,
+) -> (std::os::unix::net::UnixStream, Vec<u8>) {
+    use std::io::Read;
+    sink.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("sink timeout armed");
+    let mut got = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while got.len() < len {
+        match sink.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => got.extend_from_slice(&chunk[..n]),
+            Err(e) => panic!("bounded sink completion failed: {e}"),
+        }
+    }
+    (sink, got)
+}
+
 /// Lifetime-drain handoff pin (Tier-2 material finding on 29ae74a):
 /// `read_conduct_id` leaves stdout O_NONBLOCK; the production
 /// handoff must restore blocking BEFORE its one-shot copy, or the
 /// first write gap ends the copy, drops the reader, and the child
 /// dies SIGPIPE. This drives the ACTUAL helpers
 /// (`restore_blocking` + `spawn_stdout_drain`, the exact
-/// `spawn_conduct_tapped` sequence) with a CONTROLLED handshake:
-/// a 32KB bulk against a 4KB reader buffer blocks partway until
-/// the worker drains — bulk completion PROVES the worker is
-/// scheduled and parked in read (not merely unscheduled) before
-/// the quiet gap. Then gap → later write → EOF, all bytes
-/// attested. Completion is deadline-bounded on the sink (no
-/// unbounded join/read_to_end).
+/// `spawn_conduct_tapped` sequence) with a CONSERVATION
+/// handshake, not a sleep oracle: writer and sink are sized so no
+/// pump thread is needed (64KB bulk into ~212KB default buffers);
+/// bytes in the sink got there ONLY through the worker, so full
+/// delivery PROVES the worker ran and holds nothing — it is
+/// parked (or about to park) in read on an EMPTY pipe. Whatever
+/// its schedule, its next read blocks (blocking fd, no data, no
+/// EOF): the gap is enforced by conservation + EOF-ordering. A
+/// 100ms separator keeps the phases readable; it is not
+/// load-bearing.
 #[test]
 fn stdout_drain_survives_quiet_gap_after_id_line() {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::os::unix::io::AsRawFd;
     let (reader, mut writer) = UnixStream::pair().expect("socket pair");
     // Simulate the reader's postcondition exactly: O_NONBLOCK set.
+    // (No SO_RCVBUF games: unix(7) documents RcvBuf as void on
+    // AF_UNIX — the handshake below needs no buffer tuning.)
     let flags =
         nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).expect("F_GETFL");
     let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
     nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
         .expect("O_NONBLOCK");
-    // Small reader buffer: the handshake bulk cannot fit without
-    // the worker draining (kernel doubles the set value for
-    // bookkeeping; 32KB still far exceeds it).
-    nix::sys::socket::setsockopt(&reader, nix::sys::socket::sockopt::RcvBuf, &4096usize)
-        .expect("small reader buffer");
     // Test-owned sink (production passes io::sink()): the drained
-    // bytes are observable here. Default ~212KB buffer swallows
-    // the whole fixture with no pump thread.
+    // bytes are observable here.
     let (sink_reader, sink_writer) = UnixStream::pair().expect("sink pair");
     // The production handoff sequence, in order.
     restore_blocking(&reader).expect("blocking restored");
     let drain = spawn_stdout_drain(reader, b"LEFTOVER".to_vec(), sink_writer);
-    // Handshake bulk: blocks partway until the worker drains, so
-    // its completion proves the worker is parked in read BEFORE
-    // the gap below. A nonblocking one-shot copy would already
-    // have exited on WouldBlock here.
-    writer.write_all(&[b'k'; 32768]).expect("handshake bulk");
-    // Quiet gap with the worker provably parked: then a later
-    // write, then EOF.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    writer.write_all(b"AFTER-GAP").expect("later write lands");
-    drop(writer);
-    // Bounded completion: deadline read on the sink for the
-    // trailer; the worker must have delivered everything by
-    // then (AFTER-GAP is last), so the join after is prompt.
-    let mut sink_reader = sink_reader;
-    sink_reader
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .expect("sink timeout armed");
-    let mut got = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match sink_reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                got.extend_from_slice(&chunk[..n]);
-                if got.windows(9).any(|w| w == b"AFTER-GAP") {
-                    break;
-                }
-            }
-            Err(e) => panic!("bounded sink completion failed: {e}"),
-        }
-    }
-    drain.join().expect("drain thread reaped");
+    // Conservation: 64KB in; the worker alone moves it to the
+    // sink. Phase 1 reads EXACTLY head+bulk: full arrival proves
+    // the worker drained everything and holds nothing — the pipe
+    // is empty while the writer stays idle.
+    writer.write_all(&[b'k'; 65536]).expect("bulk");
+    let (sink_reader, head) = drain_sink_exact(sink_reader, 8 + 65536);
     assert_eq!(
-        got.len(),
-        8 + 32768 + 9,
-        "every byte delivered exactly once: {}",
-        got.len()
+        head.len(),
+        8 + 65536,
+        "worker drained every bulk byte (pipe now provably empty)"
     );
     assert!(
-        got.ends_with(b"AFTER-GAP"),
+        head.starts_with(b"LEFTOVER"),
+        "leftover head delivered first"
+    );
+    // Quiet separator (not load-bearing): the worker's next read
+    // blocks whenever it is scheduled — enforced by the empty
+    // pipe above plus EOF-ordering below, not by this sleep.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    writer.write_all(b"AFTER-GAP").expect("later write lands");
+    drop(writer);
+    // Bounded completion: AFTER-GAP is last and EOF follows the
+    // dropped writer deterministically, so the join after is
+    // prompt. Pre-fix code fails here instead: it exited on the
+    // empty-pipe WouldBlock during the separator, EOF arrives
+    // with no trailer, and the assertion names the shortfall.
+    let (_, tail) = drain_sink_exact(sink_reader, 9);
+    drain.join().expect("drain thread reaped");
+    assert_eq!(
+        head.len() + tail.len(),
+        8 + 65536 + 9,
+        "every byte delivered exactly once: head {} + tail {}",
+        head.len(),
+        tail.len()
+    );
+    assert_eq!(
+        tail, b"AFTER-GAP",
         "post-gap write delivered last (no WouldBlock copy exit)"
     );
+}
+
+/// Negative control for the handoff (restore OMITTED): the worker
+/// exits on its first empty-pipe WouldBlock, so the post-gap
+/// write finds the reader closed (EPIPE) and never arrives. The
+/// join returning PROVES the worker exited (it can only exit via
+/// WouldBlock — the pipe never EOFs while the writer lives);
+/// every step is deterministic, no sleep oracle.
+#[test]
+fn stdout_drain_without_restore_loses_post_gap_write() {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+    let (reader, mut writer) = UnixStream::pair().expect("socket pair");
+    let flags =
+        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).expect("F_GETFL");
+    let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
+    oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+    nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
+        .expect("O_NONBLOCK");
+    let (sink_reader, sink_writer) = UnixStream::pair().expect("sink pair");
+    // NOTE: no restore_blocking — the defect under test.
+    let drain = spawn_stdout_drain(reader, b"LEFTOVER".to_vec(), sink_writer);
+    writer.write_all(&[b'k'; 65536]).expect("bulk");
+    // Full delivery observed: the worker consumed everything, so
+    // its next read hits the empty nonblocking pipe and exits.
+    // (EOF would also end it, but the writer is deliberately
+    // still alive here.)
+    let (_, got) = drain_sink_exact(sink_reader, 8 + 65536);
+    assert_eq!(got.len(), 8 + 65536, "bulk fully delivered first");
+    drain.join().expect("worker exited on WouldBlock");
+    // Reader is closed: the post-gap write must fail loudly
+    // (Rust ignores SIGPIPE → EPIPE error), never vanish.
+    let write_outcome = writer.write_all(b"AFTER-GAP");
+    assert!(
+        write_outcome.is_err(),
+        "write to a drained-closed pipe fails loudly, got: {write_outcome:?}"
+    );
+    drop(writer);
 }
 
 /// Continuously-writing newline-free producer (no id, no EOF):
@@ -583,4 +639,86 @@ fn probe_exit_classification_distinguishes_operational_failure() {
         ),
         "signal death is never a missing capability"
     );
+}
+
+/// Injected failure through the Guard Drop seam (Tier-2 round 3):
+/// `guard_drop_inner` takes the HOME lookup as a `Result`, so the
+/// HOME-missing path is pinnable WITHOUT process-global env
+/// mutation (unsetting HOME would race parallel tests). Every
+/// branch returns normally and logs — a cleanup failure during
+/// an assertion unwind must never panic (double-panic aborts and
+/// masks the original evidence). A terminate-timeout DURING
+/// unwind stays unforgable without a fault seam, disclosed; the
+/// `Result` type plus this pin plus the unwind pin carry it.
+#[test]
+fn guard_drop_inner_failure_seams_return_without_panic() {
+    // HOME-missing path, with and without an armed id.
+    guard_drop_inner(
+        Err(std::env::VarError::NotPresent),
+        Some("any-id".to_string()),
+    );
+    guard_drop_inner(Err(std::env::VarError::NotPresent), None);
+    // Full terminate path with a bogus home/id (fast failure,
+    // exercises the logging branch to completion).
+    guard_drop_inner(
+        Ok("no-such-home-guard-pin".to_string()),
+        Some("no-such-session-inner-pin".to_string()),
+    );
+}
+
+/// Held-descendant pipe through the ACTUAL `wait_bounded`
+/// integration (not only the `wait_drain` helper): the shell exits
+/// at once, its backgrounded sleeper holds stdout, and the
+/// post-exit drain caps at exit+allowance (~10s), NOT the ~24s
+/// outer budget. The sleeper's pid is captured to a file BEFORE
+/// the wait so the test retains control: SIGKILL to the exact pid
+/// plus an absence poll after the assertion — no orphaned
+/// sleepers contaminating concurrent runs.
+#[test]
+fn held_descendant_pipe_caps_drain_at_exit_plus_allowance() {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    let pid_dir = tempfile::TempDir::new().expect("pid dir");
+    let pidfile = pid_dir.path().join("sleeper.pid");
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", &format!("sleep 30 & echo $! > {}", pidfile.display())]);
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn shell");
+    let start = std::time::Instant::now();
+    let outcome = wait_bounded(child, std::time::Duration::from_secs(2));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_secs(8),
+        "drain waited out the post-exit cap (~10s), not an early return: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "drain capped at exit+allowance, not the outer budget: {elapsed:?}"
+    );
+    assert!(
+        matches!(outcome, Err(BoundedRunError::DrainTimeout { .. })),
+        "held pipe reads as drain timeout: {outcome:?}"
+    );
+    // Retain control: exact pid from the file (never a pattern
+    // kill), SIGKILL, then poll for absence.
+    let pid_text = std::fs::read_to_string(&pidfile).expect("sleeper pid recorded");
+    let pid = Pid::from_raw(pid_text.trim().parse::<i32>().expect("pid parses"));
+    kill(pid, Signal::SIGKILL).expect("sleeper signaled");
+    let gone_start = std::time::Instant::now();
+    loop {
+        match kill(pid, None) {
+            Err(nix::errno::Errno::ESRCH) => break,
+            _ => {
+                assert!(
+                    gone_start.elapsed() < std::time::Duration::from_secs(5),
+                    "sleeper reaped after SIGKILL"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
 }

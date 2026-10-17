@@ -184,15 +184,32 @@ impl Drop for Guard {
         // sibling fixtures sitting in their unlocked windows. A
         // panic path that strands an orphaned unit surfaces it in
         // residue-diff tests instead of sweeping it silently.
-        // Non-panicking by construction (`guard_terminate` returns
-        // `Result`): a Drop panic during an assertion unwind would
-        // abort the process and mask the original failure.
-        if let Some(id) = self.id.take() {
-            let home = home_dir();
-            if let Err(why) = guard_terminate(&home, &id) {
-                eprintln!("guard teardown of {id} failed (best effort): {why}");
-            }
+        // Non-panicking by construction: `guard_drop_inner` takes
+        // the HOME lookup as a `Result` (no expect in Drop — a Drop
+        // panic during an assertion unwind would abort the process
+        // and mask the original failure) and `guard_terminate`
+        // returns `Result` (wait/reap failures map into the error
+        // type, never panic).
+        guard_drop_inner(std::env::var("HOME"), self.id.take());
+    }
+}
+
+/// Guard teardown body, split from `Drop` so the failure seams
+/// are pinnable without process-global env mutation: pass
+/// `Err(VarError::NotPresent)` to exercise the HOME-missing path,
+/// any `id` to exercise the terminate path. Every branch returns
+/// normally and logs; none panics.
+pub fn guard_drop_inner(home: Result<String, std::env::VarError>, id: Option<String>) {
+    let (home, id) = match (home, id) {
+        (Ok(home), Some(id)) => (home, id),
+        (Err(_), _) => {
+            eprintln!("guard teardown skipped: HOME not set (best effort)");
+            return;
         }
+        (_, None) => return,
+    };
+    if let Err(why) = guard_terminate(&home, &id) {
+        eprintln!("guard teardown of {id} failed (best effort): {why}");
     }
 }
 

@@ -66,6 +66,15 @@ pub enum BoundedRunError {
         partial_stdout: String,
         partial_stderr: String,
     },
+    /// The wait poll itself failed (not a timeout, not an exit):
+    /// the child's disposition is unobtainable, so no outcome —
+    /// success or timeout — may be reported. Partials retained
+    /// for triage.
+    Wait {
+        detail: String,
+        partial_stdout: String,
+        partial_stderr: String,
+    },
     Spawn(String),
 }
 
@@ -100,6 +109,14 @@ impl fmt::Display for BoundedRunError {
             } => write!(
                 f,
                 "{stream} capture failed ({detail}; partial stdout: {partial_stdout:?}; partial stderr: {partial_stderr:?})"
+            ),
+            Self::Wait {
+                detail,
+                partial_stdout,
+                partial_stderr,
+            } => write!(
+                f,
+                "child wait failed ({detail}; partial stdout: {partial_stdout:?}; partial stderr: {partial_stderr:?})"
             ),
             Self::Spawn(detail) => write!(f, "spawn failed: {detail}"),
         }
@@ -352,21 +369,45 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
             .min(deadline.saturating_duration_since(Instant::now()))
             .max(reap_floor)
     };
-    let status = loop {
+    let (status, exit_time) = loop {
         {
             let out = out_slot.lock().expect("capture mutex");
             let err = err_slot.lock().expect("capture mutex");
             if out.overflow || err.overflow {
                 let _ = child.kill();
                 let reaped = reap_bounded(&mut child, reap_budget()).is_some();
-                debug_assert!(reaped, "overflow-killed child reaps");
+                // No assert: an unreaped overflow kill is a loud
+                // Timeout (failed cleanup evidence), never a panic
+                // — this path runs inside Guard Drop during unwind.
                 let stream = if out.overflow { "stdout" } else { "stderr" };
+                if !reaped {
+                    let out = out_slot.lock().expect("capture mutex");
+                    let err = err_slot.lock().expect("capture mutex");
+                    return Err(BoundedRunError::Timeout {
+                        waited: start.elapsed(),
+                        reaped: false,
+                        partial_stdout: label_partial(&out.buf),
+                        partial_stderr: label_partial(&err.buf),
+                    });
+                }
                 return Err(BoundedRunError::Overflow { stream });
             }
         }
-        match child.try_wait().expect("try_wait") {
-            Some(status) => break status,
-            None => {
+        // try_wait failure is mapped, never panicked: the child's
+        // disposition is unobtainable (this path runs inside Guard
+        // Drop during unwind, where a panic would abort).
+        match child.try_wait() {
+            Err(wait_error) => {
+                let out = out_slot.lock().expect("capture mutex");
+                let err = err_slot.lock().expect("capture mutex");
+                return Err(BoundedRunError::Wait {
+                    detail: format!("try_wait failed: {wait_error}"),
+                    partial_stdout: label_partial(&out.buf),
+                    partial_stderr: label_partial(&err.buf),
+                });
+            }
+            Ok(Some(status)) => break (status, Instant::now()),
+            Ok(None) => {
                 if Instant::now() > exit_until {
                     let _ = child.kill();
                     let reaped = reap_bounded(&mut child, reap_budget()).is_some();
@@ -383,13 +424,19 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
             }
         }
     };
-    // Child reaped: readers must EOF by `deadline` (a
-    // descendant-held pipe surfaces here, labeled, never hangs).
+    // Child reaped: readers must EOF by the SHARED post-exit
+    // cap — min(exit time + allowance, absolute deadline) — so a
+    // held descendant retains a normal run for the allowance, not
+    // the whole outer budget. One cap across both streams.
     // Handles park on timeout (finalize precedent): completion is
     // attested by the done channel, never by an unconditional join.
+    let drain_end = exit_time
+        .checked_add(POST_EXIT_DRAIN_TIMEOUT)
+        .unwrap_or(deadline)
+        .min(deadline);
     let out_ok = match out_wait {
         Some((handle, rx)) => {
-            let ok = wait_drain(&rx, deadline);
+            let ok = wait_drain(&rx, drain_end);
             if ok {
                 let _ = handle.join();
             }
@@ -399,7 +446,7 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
     };
     let err_ok = match err_wait {
         Some((handle, rx)) => {
-            let ok = wait_drain(&rx, deadline);
+            let ok = wait_drain(&rx, drain_end);
             if ok {
                 let _ = handle.join();
             }

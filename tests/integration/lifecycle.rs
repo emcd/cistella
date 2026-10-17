@@ -270,9 +270,9 @@ fn name_resolves_from_foreign_cwd_live() {
         &[],
         Some(foreign.path()),
     );
-    let mut guard = Guard {
-        id: Some(id.clone()),
-    };
+    // Single teardown owner: reuse the helper's Guard (a second
+    // Guard on the same id would double-run terminate at drop).
+    let mut guard = _guard;
     wait_active(&id);
     assert_eq!(unit_label(&home, &id, "cistella.profile"), "default");
     let out = run_cistella(&home, &["terminate", &id]);
