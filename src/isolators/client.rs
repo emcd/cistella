@@ -582,6 +582,9 @@ impl WireClient {
                 // same omission class as the terminate arm.
                 // Litter reports, never fails the disposition.
                 crate::cleanup::reap_and_report(&crate::lock::runtime_base(), session_id);
+                // Attestation reaps with the session (unit gone via
+                // terminate+remove above — record-gone dominates).
+                crate::attestation::reap(&crate::lock::runtime_base(), session_id);
                 Ok(())
             }
             Err(error) => {

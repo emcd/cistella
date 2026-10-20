@@ -168,6 +168,46 @@ pub fn reap(base: &Path, session_id: &str) {
     dir.remove_file(&name);
 }
 
+/// Reaps attestations with no live session (gc orphan sweep):
+/// enumerates the state dir for attestation names, skips sessions
+/// in `live_sessions`, removes the rest FD-relative. Returns
+/// reaped file names for reporting. Unparseable names skip
+/// (never a baseline comparison — name-attribution plus the
+/// live-set gate is the safety, mirroring the tmpdir sweep).
+pub fn reap_orphans(base: &Path, live_sessions: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut reaped = Vec::new();
+    let state_dir = crate::lock::PrepareLease::state_dir(base);
+    if !state_dir.exists() {
+        return reaped;
+    }
+    let Ok(dir) = open_attestation_dir(base) else {
+        return reaped;
+    };
+    let entries = match std::fs::read_dir(&state_dir) {
+        Ok(entries) => entries,
+        Err(_) => return reaped,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(session) = name.strip_prefix("cistella-attestation-") else {
+            continue;
+        };
+        if session.is_empty()
+            || !session
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            continue;
+        }
+        if live_sessions.contains(session) {
+            continue;
+        }
+        dir.remove_file(&name);
+        reaped.push(name);
+    }
+    reaped
+}
+
 /// Queries the live backend incarnation for one container name
 /// via the existing `podman inspect` template pattern (cf. the
 /// pidns proof). Failure means identity-unknown: the caller

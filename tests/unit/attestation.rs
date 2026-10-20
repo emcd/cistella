@@ -175,3 +175,60 @@ fn empty_identity_fields_refuse_publish() {
         "empty incarnation field must refuse publish, got: {result:?}"
     );
 }
+
+#[test]
+fn orphan_sweep_reaps_only_dead_sessions() {
+    let dir = state_root();
+    let base = dir.path();
+    let live = sample();
+    let mut dead = sample();
+    dead.session_id = "dead-session-7".to_string();
+    dead.container_name = "cistella-dead-session-7".to_string();
+    cistella::attestation::publish(base, &live).expect("publish live");
+    cistella::attestation::publish(base, &dead).expect("publish dead");
+    let live_set = std::collections::HashSet::from([live.session_id.clone()]);
+    let reaped = cistella::attestation::reap_orphans(base, &live_set);
+    assert_eq!(
+        reaped.len(),
+        1,
+        "exactly the dead session reaps: {reaped:?}"
+    );
+    assert!(
+        reaped[0].contains(&dead.session_id),
+        "reaped name attributes the dead session: {reaped:?}"
+    );
+    let still = cistella::attestation::read(base, &live.session_id)
+        .expect("read")
+        .expect("live survives");
+    assert_eq!(still, live);
+}
+
+#[test]
+fn orphan_sweep_skips_unparseable_and_absent_dir() {
+    let dir = state_root();
+    let base = dir.path();
+    // Absent state dir sweeps empty without creating noise.
+    let empty = cistella::attestation::reap_orphans(base, &std::collections::HashSet::new());
+    assert!(empty.is_empty());
+    // Unparseable names skip (planted through the anchored dir
+    // to prove the sweep — not the planter — skips).
+    let state_dir = cistella::lock::PrepareLease::state_dir(base);
+    let anchored = cistella::guest_anchor::open_state_dir(&state_dir).expect("state dir opens");
+    {
+        use std::io::Write as _;
+        let mut f = anchored
+            .create_file("cistella-attestation-!!!")
+            .expect("plant");
+        f.write_all(b"junk").expect("write");
+    }
+    {
+        use std::io::Write as _;
+        let mut f = anchored.create_file("unrelated-file").expect("plant");
+        f.write_all(b"junk").expect("write");
+    }
+    let reaped = cistella::attestation::reap_orphans(base, &std::collections::HashSet::new());
+    assert!(
+        reaped.is_empty(),
+        "unparseable names must skip, got: {reaped:?}"
+    );
+}

@@ -620,6 +620,35 @@ pub(crate) fn conduct_session(
     // an empty execution. A wrapper exec failure (attested
     // applied:false post-spawn) reports wrapper failure below,
     // never a harness outcome.
+    // Launch-commit pre-capture (readiness attestation): the native
+    // incarnation bound at publication. Foreign sessions skip
+    // entirely (identity unestablishable — no readiness conferred).
+    // A failed pre-capture converges exactly like a launch failure
+    // below (refuse + typed teardown, nothing published).
+    let backend_native = matches!(isolator, cistella::profile::IsolatorResolution::Podman);
+    let pre_incarnation = if backend_native {
+        match cistella::attestation::query_incarnation(&container_name) {
+            Ok(incarnation) => Some(incarnation),
+            Err(error) => {
+                let refusal = cistella::error::CistellaError::Runtime(format!(
+                    "launch incarnation unestablishable (refusing): {error}"
+                ));
+                if let Err(teardown_err) =
+                    client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+                {
+                    report_release(release_client(client, &rendezvous_dir));
+                    eprintln!(
+                        "error: teardown after incarnation refusal ({refusal}): {teardown_err}"
+                    );
+                    return Ok(1);
+                }
+                report_release(release_client(client, &rendezvous_dir));
+                return Err(refusal);
+            }
+        }
+    } else {
+        None
+    };
     let attempt = match hook_plan {
         None => client
             .death_checked(client.execute_launch(
@@ -652,6 +681,50 @@ pub(crate) fn conduct_session(
             return Err(error);
         }
     };
+    // Launch-commit publication (readiness attestation): post-check
+    // the live incarnation against the pre-capture and publish ONLY
+    // the pre-bound identity on exact equality. Mismatch or
+    // unestablishable identity refuses + converges with nothing
+    // published (false-negative-only: no blessed false positive).
+    // Foreign sessions publish nothing (no readiness conferred).
+    if backend_native {
+        let committed = match (
+            pre_incarnation.as_ref(),
+            cistella::attestation::query_incarnation(&container_name),
+        ) {
+            (Some(pre), Ok(post)) if pre == &post => {
+                let attestation = cistella::attestation::Attestation {
+                    session_id: id.clone(),
+                    container_name: container_name.clone(),
+                    attempt_key: key.as_str().to_string(),
+                    argv: argv.clone(),
+                    execution_handle: execution.as_str().to_string(),
+                    incarnation: pre.clone(),
+                };
+                cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation)
+            }
+            (Some(_), Ok(_)) => Err(cistella::error::CistellaError::Runtime(
+                "launch incarnation changed during launch (refusing)".to_string(),
+            )),
+            (_, Err(error)) => Err(cistella::error::CistellaError::Runtime(format!(
+                "launch incarnation unestablishable (refusing): {error}"
+            ))),
+            (None, Ok(_)) => Err(cistella::error::CistellaError::Runtime(
+                "launch incarnation pre-capture missing (refusing)".to_string(),
+            )),
+        };
+        if let Err(refusal) = committed {
+            if let Err(teardown_err) =
+                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+            {
+                report_release(release_client(client, &rendezvous_dir));
+                eprintln!("error: teardown after incarnation refusal ({refusal}): {teardown_err}");
+                return Ok(1);
+            }
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(refusal);
+        }
+    }
     let status =
         match client.death_checked(client.await_result(&execution, signals::conduct_cancel())) {
             Ok(outcome) => outcome,
@@ -720,7 +793,6 @@ pub(crate) fn conduct_session(
         // Local absence proof attests only native-backend cleanup:
         // a registered guest's resources are invisible to local
         // queries, so its report refuses explicitly inside.
-        let backend_native = matches!(isolator, cistella::profile::IsolatorResolution::Podman);
         return Ok(finalize_unobservable(
             client,
             &rendezvous_dir,

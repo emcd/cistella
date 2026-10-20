@@ -154,6 +154,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             isolator.terminate(&handle, grace, &key)?;
             isolator.remove(&handle, &key)?;
             cistella::cleanup::reap_and_report(&cistella::lock::runtime_base(), &record.id);
+            cistella::attestation::reap(&cistella::lock::runtime_base(), &record.id);
             println!("terminate {}", record.container_name);
             Ok(())
         }
