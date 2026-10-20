@@ -5,6 +5,7 @@
 //! design-session verdicts at `home:coordination/6` for the
 //! authoritative scope.
 
+pub mod attestation;
 pub mod cleanup;
 pub mod cli;
 pub mod error;

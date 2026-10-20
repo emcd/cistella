@@ -292,14 +292,16 @@ impl Isolator for PodmanIsolator {
             .cloned()
             .unwrap_or_else(|| "inactive".to_string());
         let unit_present = unit_file_present(&record.unit_name);
-        // Executing means an unreaped child exists, not merely a
-        // retained record (outcomes replay after completion).
+        // Executing means THIS unit has an unreaped child, not merely
+        // a retained record (outcomes replay after completion) and
+        // never another unit's live child (per-unit scope: a second
+        // unit's harness must not ready this unit).
         let executing = self
             .executions
             .lock()
             .expect("exec table lock")
             .values()
-            .any(|pending| pending.child.is_some());
+            .any(|pending| pending.unit == *handle && pending.child.is_some());
         let lifecycle = classify_state(
             Some(&active_state),
             container.as_deref(),
