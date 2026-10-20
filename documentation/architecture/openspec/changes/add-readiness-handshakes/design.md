@@ -1,0 +1,44 @@
+## Context
+
+The framework lifecycle spine has no host-readable execution-state edge, and tests gate on `wait_active`, sleeps, and argv inference (issues/11, issues/12). Tier-2 rounds 1–3 establish the full contract surface: ownerless reconstruction only (no owner contact); commitment separated from currency (CLI never reports `executing`); the invented slice lifecycle replaced by the host runtime dir; record-exists-iff-unit-file with prefix selectors; single-thread dispatcher linearization. Round 3 adds four truth/identity/applicability cases: (a) id+name matching survives same-name recreate/restart, so attestation needs backend incarnation binding checked at read time; (b) record-gone coexists with live containers (residue) as well as with attestation-only residue — the table must distinguish them; (c) `runtime_base` falls back to `/tmp` without `XDG_RUNTIME_DIR`, so privacy must come from the anchored I/O discipline (`cleanup.rs`: `open_trusted_parent`, `traversal_trusted`, O_NOFOLLOW, fstat seat-ownership, dev+ino re-verification), not from the directory path — and profiles CAN mount anything explicitly, so mount-absence must not be claimed; (d) current `enter` is direct Podman exec — record liveness proves nothing about foreign exec capability. Acceptance details: event waits must arm-then-recheck and validate-after-wake; first-terminal means fatal-exchange terminal exclusively. Stakeholders: RG (Tier-1), Advisor (Tier-2), QA (live proof).
+
+## Goals / Non-Goals
+
+**Goals:**
+- Stale-generation-proof attestation via backend incarnation identity checked at read time.
+- Exact residue/selection truth table; consistent corruption contract (kept from R2).
+- Anchored-discipline storage with accurate trust assumptions.
+- Native-scoped readiness; honest foreign unavailable semantics.
+- Acceptance-precise event waits and terminal definition.
+
+**Non-Goals:**
+- No new isolator backends or guest roles; no changes to reconciliation, policy, or confinement.
+- No new cross-process IPC, no owner-contact endpoint; no current-harness-liveness proof (explicitly not required); no widened sleeps; no poll/retry loops; no clock-tuned waits.
+- Forced reload-failure exercise (todos/50) rides along as test-only.
+
+## Decisions
+
+- **Incarnation binding: pre/post-bounded publication plus read-time equality.** The owner captures the native incarnation (container ID + StartedAt, via the existing `podman inspect` template pattern) twice: pre-capture after initiate/start and before `execute_launch` (the container MUST be present — absent pre-capture refuses+converges, since launch-into-absent is itself an error), and post-check immediately after Ok. The attestation publishes ONLY the pre-verified identity when pre==post (both present, exactly equal); any mismatch or unestablishable identity → refuse + converge the attempt via typed teardown reporting incarnation-refusal, with nothing published. Every readiness read re-queries and requires exact equality with the published identity; mismatch → typed stale-generation error. Failure-direction analysis (why this is false-negative-only): recreate/restart inside [pre-capture, post-check] → mismatch → no publication; recreate between post-check and file write → the marker binds the checked identity, so read-time equality fails → stale (safe); post-publication recreate → read-time equality fails → stale. No path publishes a blessed false positive — this WITHDRAWS the R3 "accepted micro-window" rationale, which wrongly let a post-Ok query bless a replacement and wrongly claimed old-handle convergence made the new marker true. Chosen over backend-attested launch results: owner-side only, no trait/protocol changes, no polling, no endpoint, no liveness proof. Recreate changes the ID; restart changes StartedAt. Pins: same-name recreate/restart with old marker refuses stale (live), and choreographed recreate inside the launch-to-publication interval refuses+converges with nothing published (injected, deterministic). Foreign attestations carry no incarnation (unestablishable) and confer no readiness — consistent with the legacy foreign path.
+- **Storage = anchored discipline, trust stated accurately.** All attestation I/O reuses the `cleanup.rs` anchored pattern: `open_trusted_parent` (O_NOFOLLOW|O_DIRECTORY|O_CLOEXEC + fstat + `traversal_trusted`: seat-or-root owner, no group/other write or sticky-with-trusted-owner — which is exactly why the `/tmp` fallback holds: root-owned sticky qualifies), file opens NOFOLLOW with fstat seat-ownership (seat or root, mirroring `reap_one`), publication O_CREAT|O_EXCL 0600 + temp+rename in-dir, dev+ino re-verification around mutation. Retraction: "runtime_base is never a mount source" is withdrawn — profiles allow explicit mounts. Accurate assumptions instead: the WRITER is the trusted owner process (same uid; the user is trusted over their own runtime dir); READERS trust uid-owned, checked-open files; an explicit profile mount of the runtime dir into a guest is an operator act outside the boundary (same class as granting any sensitive mount); a guest escaping confinement to write the dir breaks the sandbox itself, which owns that class exactly as it does for cleanup-state files today. No new isolation boundary is claimed from 0600 alone — the boundary is uid ownership + checked I/O + writer identity.
+- **Residue truth table (record-gone never dominates live residue).** R2's "record-gone dominates stale attestation" holds ONLY for inert residue and is restated without the overbroad rationale (the fallback probe exists precisely because record-absence is expected post-teardown — the "always matches a record" rationale is removed): no-record + container present (live/orphan) → typed residue error naming the container and directing to terminate/gc (backend fact dominates registry absence, per residue-dominated doctrine); no-record + attestation-only → `absent` success (inert metadata; gc reaps); all absent → `absent` success; backend query failure during probe → typed observation error; fuzzy no-match/ambiguous → existing Selector errors unchanged.
+- **Foreign scope: native-gated guarantee, legacy foreign path.** Readiness/enter gating applies to Podman-backed sessions only. Foreign `enter` keeps the current direct-exec behavior bit-for-bit (no gate added, no readiness claimed — the proof is explicitly refused as unsupported, same principle as Unobservable finalization). Foreign `state` reports commitment + record metadata verbatim + explicit admittability-unsupported marker — actual supported facts with unavailable semantics, never a lifecycle snapshot invented from record liveness.
+- **Event-wait acceptance shape.** Arm the inotify watch, THEN recheck for existing/matching attestation (closes the pre-subscription commit gap), then validate full record contents and identity after wake (id, container, incarnation vs record+backend) — never mere CREATE. Backstop bound fails loud on genuine non-commit only.
+- **First-terminal := first fatal-exchange terminal.** Ordinary per-request completions (ok or error replies) never mark dispatcher terminal; only `fatal_terminal`/orderly-Shutdown transition does. Spec wording corrected accordingly.
+- **Conversions follow artifacts/7 mapping**, each anchored on commit events with retained boundary + negative control.
+
+## Risks / Trade-offs
+
+- [Incarnation query adds a bounded backend read at commit] → local, single `podman inspect`; failure refuses readiness (identity-unknown-never-ready) rather than proceeding blind.
+- [Two new typed errors (stale-generation, residue)] → each names its evidence and its remedy; both fail closed.
+- [Pre-change sessions read unattested] → documented upgrade-window behavior, unchanged from R2.
+- [Foreign sessions gain no readiness] → honest scope boundary; legacy behavior preserved exactly.
+- [Unifying post-terminal errors + dominance scenario] → unchanged from R2.
+
+## Migration Plan
+
+No format migration (absence valid; older binaries ignore new files). Upgrade-window behavior documented. Teardown ordering (unit file → attestation reap) + gc orphan-attestation coverage ship together. Rollback = revert.
+
+## Open Questions
+
+- Attestation filename (`cistella-attestation-<id>`) and JSON layout (id/container/key/argv/handle/incarnation proposed) — ratify in review.
+- Unified post-terminal error string — ratify in review.
