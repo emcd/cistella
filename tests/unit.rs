@@ -17,6 +17,8 @@ mod compile_binding;
 mod conduct_eval;
 #[path = "unit/credentials.rs"]
 mod credentials;
+#[path = "unit/describe.rs"]
+mod describe;
 #[path = "unit/discovery.rs"]
 mod discovery;
 #[path = "unit/environment_acceptances.rs"]

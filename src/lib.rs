@@ -8,6 +8,7 @@
 pub mod attestation;
 pub mod cleanup;
 pub mod cli;
+pub mod describe;
 pub mod error;
 pub mod framework;
 pub mod guest_anchor;

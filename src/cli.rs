@@ -2,8 +2,10 @@
 //!
 //! All-Latinate verb slate: `conduct` owns the session lifetime,
 //! `enter` provides companion entry, `survey` lists, `inspect` shows
-//! post-mortem, `terminate` tears down from outside, `gc` reaps orphans,
-//! `check` runs host preflight. No aliases on verbs; `--cwd` is the sole
+//! post-mortem, `describe` reports commitment plus backend snapshot
+//! (`state` subcommand; explicitly native-scoped), `terminate`
+//! tears down from outside, `gc` reaps orphans, `check` runs host
+//! preflight. No aliases on verbs; `--cwd` is the sole
 //! flag alias (hidden) for `--session-directory`.
 
 use clap::{Parser, Subcommand};
@@ -107,6 +109,30 @@ pub enum Command {
     },
     /// Reap orphaned cistella units.
     Gc,
+    /// Describe session aspects (explicitly native-scoped queries).
+    Describe {
+        #[command(subcommand)]
+        target: DescribeTarget,
+    },
     /// Host preflight check.
     Check,
+}
+
+/// Describable session aspects (one subcommand each; `state` is first).
+#[derive(Debug, Subcommand)]
+pub enum DescribeTarget {
+    /// Report launch commitment plus backend snapshot (never
+    /// `executing`: current harness liveness is not ownerlessly
+    /// provable). Native-backend scope: absence means absent from
+    /// the probed backend, never a global claim.
+    State {
+        /// Session id unique prefix (exactly one selector per invocation).
+        id: Option<String>,
+        /// Select by canonical host directory.
+        #[arg(long)]
+        directory: Option<String>,
+        /// Select by generic label `k=v` (repeatable, ANDed).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+    },
 }

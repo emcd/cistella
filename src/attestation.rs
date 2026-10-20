@@ -61,8 +61,11 @@ pub struct Attestation {
     pub argv: Vec<String>,
     /// Framework execution handle returned by the launch.
     pub execution_handle: String,
-    /// Backend incarnation bound at commit.
-    pub incarnation: Incarnation,
+    /// Backend incarnation bound at commit (`Some` for native
+    /// sessions; `None` for foreign sessions whose identity is
+    /// unestablishable — commitment without incarnation confers
+    /// no readiness, only launch provenance).
+    pub incarnation: Option<Incarnation>,
 }
 
 /// Attestation file name for one session id (single-component,
@@ -106,11 +109,16 @@ pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
         || attestation.container_name.is_empty()
         || attestation.attempt_key.is_empty()
         || attestation.execution_handle.is_empty()
-        || attestation.incarnation.container_id.is_empty()
-        || attestation.incarnation.started_at.is_empty()
     {
         return Err(CistellaError::Runtime(
             "attestation refuses empty identity fields".to_string(),
+        ));
+    }
+    if let Some(incarnation) = &attestation.incarnation
+        && (incarnation.container_id.is_empty() || incarnation.started_at.is_empty())
+    {
+        return Err(CistellaError::Runtime(
+            "attestation refuses empty incarnation fields".to_string(),
         ));
     }
     let bytes = serde_json::to_vec(attestation)

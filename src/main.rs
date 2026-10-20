@@ -4,8 +4,8 @@ mod cli_conduct;
 mod cli_util;
 
 use crate::cli_conduct::conduct_session;
-use crate::cli_util::{canonical_directory, parse_label_filters, select_exact};
-use cistella::cli::{Cli, Command};
+use crate::cli_util::{canonical_directory, describe_state, parse_label_filters, select_exact};
+use cistella::cli::{Cli, Command, DescribeTarget};
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
 use cistella::framework::isolator::Isolator;
 use cistella::isolators::podman::PodmanIsolator;
@@ -158,6 +158,13 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             println!("terminate {}", record.container_name);
             Ok(())
         }
+        Command::Describe { target } => match target {
+            DescribeTarget::State {
+                id,
+                directory,
+                labels,
+            } => describe_state(id.as_deref(), directory.as_deref(), &labels),
+        },
         Command::Gc => {
             let res = gc_exited()?;
             if res.reaped.is_empty() {

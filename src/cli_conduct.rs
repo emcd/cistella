@@ -699,7 +699,7 @@ pub(crate) fn conduct_session(
                     attempt_key: key.as_str().to_string(),
                     argv: argv.clone(),
                     execution_handle: execution.as_str().to_string(),
-                    incarnation: pre.clone(),
+                    incarnation: Some(pre.clone()),
                 };
                 cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation)
             }
@@ -719,6 +719,38 @@ pub(crate) fn conduct_session(
             {
                 report_release(release_client(client, &rendezvous_dir));
                 eprintln!("error: teardown after incarnation refusal ({refusal}): {teardown_err}");
+                return Ok(1);
+            }
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(refusal);
+        }
+    } else {
+        // Foreign commitment (no incarnation establishable):
+        // records the launch provenance without conferring
+        // readiness. Write failure converges like any commit
+        // failure — no silent live-unattested session.
+        let attestation = cistella::attestation::Attestation {
+            session_id: id.clone(),
+            container_name: container_name.clone(),
+            attempt_key: key.as_str().to_string(),
+            argv: argv.clone(),
+            execution_handle: execution.as_str().to_string(),
+            incarnation: None,
+        };
+        if let Err(refusal) =
+            cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation).map_err(
+                |e| {
+                    cistella::error::CistellaError::Runtime(format!(
+                        "foreign commitment publish failed (refusing): {e}"
+                    ))
+                },
+            )
+        {
+            if let Err(teardown_err) =
+                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+            {
+                report_release(release_client(client, &rendezvous_dir));
+                eprintln!("error: teardown after commitment refusal ({refusal}): {teardown_err}");
                 return Ok(1);
             }
             report_release(release_client(client, &rendezvous_dir));

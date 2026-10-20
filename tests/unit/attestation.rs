@@ -13,10 +13,10 @@ fn sample() -> Attestation {
         attempt_key: "key-1".to_string(),
         argv: vec!["sleep".to_string(), "infinity".to_string()],
         execution_handle: "exec-1".to_string(),
-        incarnation: Incarnation {
+        incarnation: Some(Incarnation {
             container_id: "deadbeef".to_string(),
             started_at: "2026-10-20T00:00:00Z".to_string(),
-        },
+        }),
     }
 }
 
@@ -165,10 +165,32 @@ fn reap_removes_without_failing() {
 }
 
 #[test]
+fn foreign_commitment_round_trips_without_incarnation() {
+    let dir = state_root();
+    let base = dir.path();
+    let mut attestation = sample();
+    attestation.incarnation = None;
+    cistella::attestation::publish(base, &attestation).expect("publish foreign");
+    let back = cistella::attestation::read(base, &attestation.session_id)
+        .expect("read")
+        .expect("present");
+    assert_eq!(back, attestation);
+    assert!(
+        back.incarnation.is_none(),
+        "foreign commitment carries no incarnation"
+    );
+}
+
+#[test]
 fn empty_identity_fields_refuse_publish() {
     let dir = state_root();
     let mut attestation = sample();
-    attestation.incarnation.started_at.clear();
+    attestation
+        .incarnation
+        .as_mut()
+        .expect("sample carries incarnation")
+        .started_at
+        .clear();
     let result = cistella::attestation::publish(dir.path(), &attestation);
     assert!(
         result.is_err(),
