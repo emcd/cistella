@@ -108,6 +108,127 @@ pub fn snapshot_checked(snapshot: &UnitSnapshot) -> Result<LifecycleState> {
     }
 }
 
+/// Exec-admittability evidence for one container name: single
+/// `podman inspect` round trip plus unit-file presence. Absent
+/// containers read as non-running evidence; backend contact
+/// failures are typed errors, never silent absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admittability {
+    /// Container status is exactly `running`.
+    pub running: bool,
+    /// Container init PID (`State.Pid`;exec-admissibility proof).
+    pub init_pid: i64,
+    /// Quadlet unit file present.
+    pub unit_present: bool,
+}
+
+/// Collects exec-admittability evidence for one container name.
+pub fn exec_admittability(container_name: &str) -> Result<Admittability> {
+    let out = std::process::Command::new("podman")
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Status}} {{.State.Pid}}",
+            container_name,
+        ])
+        .output()
+        .map_err(|e| CistellaError::Runtime(format!("enter probe {container_name}: {e}")))?;
+    let (running, init_pid) = if out.status.success() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut parts = text.split_whitespace();
+        let status = parts.next().unwrap_or_default();
+        let pid: i64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+        (status == "running", pid)
+    } else if crate::isolators::quadlet::container_exists(container_name).map_err(|e| {
+        CistellaError::Runtime(format!("enter probe container {container_name}: {e}"))
+    })? {
+        return Err(CistellaError::Runtime(format!(
+            "enter probe {container_name} failed while container exists"
+        )));
+    } else {
+        (false, 0)
+    };
+    let unit_present =
+        crate::isolators::podman::unit_file_present(&format!("{container_name}.container"));
+    Ok(Admittability {
+        running,
+        init_pid,
+        unit_present,
+    })
+}
+
+/// Live-vs-bound incarnation comparison outcome (the caller
+/// queries live identity via `attestation::query_incarnation`
+/// and compares exactly; query failure is `Unknown`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveIncarnation {
+    /// Live identity equals the bound identity.
+    Current,
+    /// Live identity differs (recreate or restart).
+    Stale,
+    /// Live identity unqueryable (refuse, never proceed).
+    Unknown,
+}
+
+/// Enter routing decision: the pure decision table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnterDecision {
+    /// All edge conditions hold: proceed to exec.
+    ProceedNative,
+    /// Foreign commitment: legacy direct exec, no gate, no claim.
+    ProceedLegacyDirect,
+    /// Refuse immediately, naming the unmet condition.
+    Refuse(String),
+}
+
+/// Pure enter-edge decision over a resolved record's
+/// attestation (if any), the record's container name, the
+/// live-vs-bound comparison, and admittability evidence.
+/// Every refusal names its condition; no retries, no polls —
+/// the caller renders `Refuse` as a typed error.
+#[must_use]
+pub fn decide_enter(
+    attestation: Option<&crate::attestation::Attestation>,
+    container_name: &str,
+    live: &LiveIncarnation,
+    admittability: &Admittability,
+) -> EnterDecision {
+    let Some(bound) = attestation else {
+        return EnterDecision::Refuse("no launch attestation committed".to_string());
+    };
+    if bound.container_name != container_name {
+        return EnterDecision::Refuse(
+            "attestation container mismatch (possible out-of-band recreate)".to_string(),
+        );
+    }
+    if bound.incarnation.is_none() {
+        return EnterDecision::ProceedLegacyDirect;
+    }
+    match live {
+        LiveIncarnation::Unknown => {
+            return EnterDecision::Refuse(
+                "launch incarnation unestablishable (refusing)".to_string(),
+            );
+        }
+        LiveIncarnation::Stale => {
+            return EnterDecision::Refuse(
+                "stale launch incarnation (container recreated or restarted)".to_string(),
+            );
+        }
+        LiveIncarnation::Current => {}
+    }
+    if !admittability.unit_present {
+        return EnterDecision::Refuse("unit file absent".to_string());
+    }
+    if !admittability.running {
+        return EnterDecision::Refuse("container not running".to_string());
+    }
+    if admittability.init_pid <= 0 {
+        return EnterDecision::Refuse("container init PID not established".to_string());
+    }
+    EnterDecision::ProceedNative
+}
+
 /// Renders the verbatim lowercase lifecycle token.
 #[must_use]
 pub fn render_state(state: &LifecycleState) -> &'static str {

@@ -115,3 +115,155 @@ fn state_renders_verbatim_lowercase() {
     assert_eq!(render_state(&LifecycleState::Stopped), "stopped");
     assert_eq!(render_state(&LifecycleState::Absent), "absent");
 }
+
+use cistella::attestation::{Attestation, Incarnation};
+
+fn bound_attestation() -> Attestation {
+    Attestation {
+        session_id: "s-1".to_string(),
+        container_name: "cistella-s-1".to_string(),
+        attempt_key: "k".to_string(),
+        argv: vec!["sleep".to_string()],
+        execution_handle: "e".to_string(),
+        incarnation: Some(Incarnation {
+            container_id: "id".to_string(),
+            started_at: "t".to_string(),
+        }),
+    }
+}
+
+fn ready_adm() -> cistella::describe::Admittability {
+    cistella::describe::Admittability {
+        running: true,
+        init_pid: 42,
+        unit_present: true,
+    }
+}
+
+use cistella::describe::{EnterDecision, LiveIncarnation, decide_enter};
+
+#[test]
+fn enter_proceeds_when_all_edges_hold() {
+    let attestation = bound_attestation();
+    assert_eq!(
+        decide_enter(
+            Some(&attestation),
+            "cistella-s-1",
+            &LiveIncarnation::Current,
+            &ready_adm(),
+        ),
+        EnterDecision::ProceedNative,
+    );
+}
+
+#[test]
+fn enter_refuses_before_commit() {
+    let decision = decide_enter(
+        None,
+        "cistella-s-1",
+        &LiveIncarnation::Unknown,
+        &ready_adm(),
+    );
+    assert!(
+        matches!(&decision, EnterDecision::Refuse(reason) if reason.contains("no launch attestation")),
+        "missing attestation refuses typed: {decision:?}"
+    );
+}
+
+#[test]
+fn enter_refuses_container_mismatch() {
+    let attestation = bound_attestation();
+    let decision = decide_enter(
+        Some(&attestation),
+        "cistella-other",
+        &LiveIncarnation::Current,
+        &ready_adm(),
+    );
+    assert!(
+        matches!(&decision, EnterDecision::Refuse(reason) if reason.contains("mismatch")),
+        "container mismatch refuses typed: {decision:?}"
+    );
+}
+
+#[test]
+fn enter_refuses_stale_and_unknown_incarnation() {
+    let attestation = bound_attestation();
+    let stale = decide_enter(
+        Some(&attestation),
+        "cistella-s-1",
+        &LiveIncarnation::Stale,
+        &ready_adm(),
+    );
+    assert!(
+        matches!(&stale, EnterDecision::Refuse(reason) if reason.contains("stale")),
+        "stale incarnation refuses typed: {stale:?}"
+    );
+    let unknown = decide_enter(
+        Some(&attestation),
+        "cistella-s-1",
+        &LiveIncarnation::Unknown,
+        &ready_adm(),
+    );
+    assert!(
+        matches!(&unknown, EnterDecision::Refuse(reason) if reason.contains("unestablishable")),
+        "unknown incarnation refuses typed: {unknown:?}"
+    );
+}
+
+#[test]
+fn enter_refuses_unready_backend_each_condition_named() {
+    let attestation = bound_attestation();
+    let no_unit = cistella::describe::Admittability {
+        unit_present: false,
+        ..ready_adm()
+    };
+    assert!(
+        matches!(
+            decide_enter(Some(&attestation), "cistella-s-1", &LiveIncarnation::Current, &no_unit),
+            EnterDecision::Refuse(reason) if reason.contains("unit file")
+        ),
+        "missing unit refuses naming it"
+    );
+    let stopped = cistella::describe::Admittability {
+        running: false,
+        ..ready_adm()
+    };
+    assert!(
+        matches!(
+            decide_enter(Some(&attestation), "cistella-s-1", &LiveIncarnation::Current, &stopped),
+            EnterDecision::Refuse(reason) if reason.contains("not running")
+        ),
+        "stopped container refuses naming it"
+    );
+    let no_pid = cistella::describe::Admittability {
+        init_pid: 0,
+        ..ready_adm()
+    };
+    assert!(
+        matches!(
+            decide_enter(Some(&attestation), "cistella-s-1", &LiveIncarnation::Current, &no_pid),
+            EnterDecision::Refuse(reason) if reason.contains("PID")
+        ),
+        "unestablished PID refuses naming it"
+    );
+}
+
+#[test]
+fn enter_routes_foreign_to_legacy_direct() {
+    let mut attestation = bound_attestation();
+    attestation.incarnation = None;
+    assert_eq!(
+        decide_enter(
+            Some(&attestation),
+            "cistella-s-1",
+            &LiveIncarnation::Unknown,
+            &cistella::describe::Admittability {
+                running: false,
+                init_pid: 0,
+                unit_present: false,
+            },
+        ),
+        EnterDecision::ProceedLegacyDirect,
+        "foreign commitment bypasses the native gate entirely",
+    );
+}
