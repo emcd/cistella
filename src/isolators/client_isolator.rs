@@ -93,7 +93,9 @@ impl Isolator for WireClient {
                 timeout: None,
                 reply: reply_tx,
             })
-            .map_err(|_| CistellaError::Protocol("dispatcher gone".to_string()))?;
+            .map_err(|_| {
+                CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+            })?;
         // Last-sent request id is dispatcher-internal; detach by
         // execution handle is not addressable — instead the caller
         // drops interest by disconnecting the reply channel: the
@@ -129,7 +131,7 @@ impl Isolator for WireClient {
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(CistellaError::Protocol(
-                        "dispatcher dropped the call".to_string(),
+                        crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string(),
                     ));
                 }
             }

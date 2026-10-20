@@ -402,10 +402,12 @@ impl WireClient {
                 timeout: Some(timeout),
                 reply: reply_tx,
             })
-            .map_err(|_| CistellaError::Protocol("dispatcher gone".to_string()))?;
-        let response = reply_rx
-            .recv()
-            .map_err(|_| CistellaError::Protocol("dispatcher dropped the call".to_string()))??;
+            .map_err(|_| {
+                CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+            })?;
+        let response = reply_rx.recv().map_err(|_| {
+            CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+        })??;
         Self::redeem(op, response)
     }
 
