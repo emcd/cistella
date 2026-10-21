@@ -10,8 +10,8 @@
 
 - [ ] 2.1 Convert `lifecycle::conduct_lifecycle_terminate_while_attached` to the commit-event edge: arm inotify watch → recheck existing/matching attestation → validate contents + incarnation after wake (fail-loud bound); pre-commit enter refuses typed (issues/12)
 - [x] 2.2 Unify post-terminal dispatcher sends into one documented typed error (send-refusal + orphaned-disconnect paths); pin the unified string; first-terminal := fatal-exchange terminal only
-- [ ] 2.3 wire_death admitted case: peer mode reads N ops before the lingering-descendant exit, host sends N back-to-back with no sleeps, all name the shutdown failure with uncertain-set and no death latch (issues/11)
-- [ ] 2.4 wire_death post-terminal case: op after the first fatal terminal gets exactly the unified error; `death_checked` dominance asserted; FD/rendezvous holders kept to post-observation explicit scope-drop release, no timers
+- [x] 2.3 wire_death admitted case: peer mode reads N ops before the lingering-descendant exit, host sends N back-to-back with no sleeps, all name the shutdown failure with uncertain-set and no death latch (issues/11)
+- [x] 2.4 wire_death post-terminal case: op after the first fatal terminal gets exactly the unified error; `death_checked` dominance asserted; FD/rendezvous holders kept to post-observation explicit scope-drop release, no timers
 
 ## 3. Handshake conversions (artifacts/7)
 

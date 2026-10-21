@@ -549,14 +549,23 @@ fn teardown_unit_lock_held_branch_completes_under_guard() {
 #[ignore = "live: requires host-global writable lock path"]
 #[test]
 fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
-    // The scripted peer reads one op (left pending), then forks a
-    // setsid grandchild holding stdout while the parent exits: the
-    // group kill cannot touch the reparented child, so shutdown's
-    // pipe-EOF verification fails and the fatal path must NOT
-    // latch death (the descendant may live) — it names the
-    // shutdown failure instead, sets shutdown-uncertain, records
-    // the proof failure, and still converges by name without ever
-    // returning clean. The grandchild self-exits in 10s.
+    // The scripted peer reads TWO ops (left pending), then forks
+    // a setsid grandchild holding stdout while the parent exits:
+    // the group kill cannot touch the reparented child, so
+    // shutdown's pipe-EOF verification fails and the fatal path
+    // must NOT latch death (the descendant may live) — it names
+    // the shutdown failure instead, sets shutdown-uncertain,
+    // records the proof failure, and still converges by name
+    // without ever returning clean. The grandchild self-exits
+    // in 10s.
+    //
+    // Ordering is structural, not timed: the peer counts both
+    // frames before exiting, so every host send lands while the
+    // guest is alive — both ops are admitted to the pending
+    // table and their terminal arrives via the
+    // expiry/peer-exited discrimination. No sleep, no EPIPE
+    // race (the single-frame predecessor timed the second send
+    // against teardown and flaked under load: issues/11).
     use cistella::framework::contract::ReconciliationKey;
     use cistella::framework::isolator::Isolator;
     use cistella::isolators::client::WireClient;
@@ -573,29 +582,21 @@ fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
         &dir,
         &name,
         &[
-            "--mode=isolator-lingering-descendant".to_string(),
+            "--mode=isolator-lingering-admitted".to_string(),
             format!("--fd-watch={}", rendezvous.path().to_string_lossy()),
         ],
         rendezvous.path(),
         deadlines,
     )
     .expect("host must negotiate with the scripted peer");
-    // First op pends (peer reads it, never answers); the parent
-    // exits microseconds after reading, so by the time the second
-    // op sends the stdin read ends are gone and it fails fast
-    // EPIPE into the fatal path. The 2s settle is not a race —
-    // any value from milliseconds up behaves identically; only
-    // pathological descheduling past the 15s op budget would
-    // expire instead, failing loud rather than wrong.
+    // Both ops send back-to-back with no settle: admission is
+    // structural (the peer reads both before exiting), so any
+    // interleaving lands pre-terminal.
     let waiter = {
         let client = &client;
         std::thread::scope(|scope| {
             let first =
                 scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
-            // Let the first op arrive and the parent exit before
-            // the second send; the new peer needs no sleep-tuned
-            // wait — any send after parent death fails fast.
-            std::thread::sleep(Duration::from_secs(2));
             let second =
                 scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
             (
@@ -644,6 +645,111 @@ fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
     drop(_guard);
     // Close surfaces the recorded proof failure instead of a bland
     // termination, and still joins + unlinks.
+    let error = client
+        .close()
+        .expect_err("close after uncertain shutdown reports");
+    assert!(
+        error.to_string().contains("shutdown failed"),
+        "close reports the recorded failure, got: {error}"
+    );
+    assert!(
+        std::fs::read_dir(rendezvous.path())
+            .expect("rendezvous dir lists")
+            .next()
+            .is_none(),
+        "rendezvous socket unlinked on every close outcome"
+    );
+}
+
+#[ignore = "live: requires host-global writable lock path"]
+#[test]
+fn wire_client_post_terminal_op_gets_unified_error_with_dominance() {
+    // Post-terminal companion to the admitted shutdown test
+    // above: same lingering-admitted peer, but the assertions
+    // run on an op issued AFTER the first fatal terminal was
+    // received. The dispatcher has deterministically exited by
+    // then (the fatal arm drains pending, sets stopping, and
+    // breaks before delivering the admitted terminals), so the
+    // late op can never be admitted — send-refused and
+    // orphaned-disconnect shapes alike collapse into the one
+    // documented post-terminal error. No sleeps anywhere: the
+    // joined admitted terminals ARE the ordering proof.
+    use cistella::framework::isolator::Isolator;
+    use cistella::isolators::client::WireClient;
+    use cistella::isolators::dispatch::POST_TERMINAL_ERROR;
+    let dir = examples_dir();
+    let name = peer_path()
+        .file_name()
+        .expect("peer file name")
+        .to_string_lossy()
+        .into_owned();
+    let rendezvous = tempfile::tempdir().expect("tmpdir");
+    let mut deadlines = tight_deadlines();
+    deadlines.apply = Duration::from_secs(15);
+    let client = WireClient::host_as(
+        &dir,
+        &name,
+        &[
+            "--mode=isolator-lingering-admitted".to_string(),
+            format!("--fd-watch={}", rendezvous.path().to_string_lossy()),
+        ],
+        rendezvous.path(),
+        deadlines,
+    )
+    .expect("host must negotiate with the scripted peer");
+    // Drive the dispatcher to its first fatal terminal with two
+    // admitted ops (same structural admission as the companion
+    // test); joining both terminals proves terminal delivery.
+    std::thread::scope(|scope| {
+        let first =
+            scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
+        let second =
+            scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
+        for (which, outcome) in [
+            ("first", first.join().expect("first joins")),
+            ("second", second.join().expect("second joins")),
+        ] {
+            outcome.expect_err(&format!("{which} must fail on fatal shutdown"));
+        }
+    });
+    assert!(
+        client.shutdown_uncertain(),
+        "fatal shutdown sets the uncertain flag before the post-terminal op"
+    );
+    // Raw roundtrip past terminal: exactly the unified error
+    // (typed Protocol, exact inner string — not an admitted
+    // terminal, not a shape variant).
+    let late = client
+        .inspect(&cistella::framework::contract::UnitHandle::mint())
+        .expect_err("post-terminal op must fail");
+    assert!(
+        matches!(
+            &late,
+            cistella::error::CistellaError::Protocol(message)
+                if message == POST_TERMINAL_ERROR
+        ),
+        "post-terminal op gets the unified error, got: {late}"
+    );
+    // Dominance preserved: the same error through
+    // `death_checked` under the uncertain flag returns the
+    // RECORDED shutdown failure, never the unified string.
+    let dominant = client
+        .death_checked::<()>(Err(late))
+        .expect_err("dominated post-terminal error still fails");
+    assert!(
+        dominant.to_string().contains("shutdown failed"),
+        "uncertainty dominance returns the recorded failure, got: {dominant}"
+    );
+    assert!(
+        !dominant.to_string().contains("no further ops admitted"),
+        "recorded failure displaces the unified string, got: {dominant}"
+    );
+    assert!(
+        !client.guest_dead(),
+        "unproven shutdown must not latch death"
+    );
+    // Close surfaces the recorded proof failure (dominance
+    // applies on the close path too), and still unlinks.
     let error = client
         .close()
         .expect_err("close after uncertain shutdown reports");

@@ -441,8 +441,8 @@ pub(crate) fn run(
                 let _ = write_frame(&mut stdout_lock, &response, 256);
             }
         }
-        "isolator-lingering-descendant" => {
-            // Hello, read one op frame (left pending forever), then
+        "isolator-lingering-descendant" | "isolator-lingering-admitted" => {
+            // Hello, read op frames (left pending forever), then
             // fork a setsid grandchild holding stdout while the
             // parent exits immediately: the framework's group kill
             // (SIGTERM, grace, SIGKILL to the parent's group) cannot
@@ -453,6 +453,20 @@ pub(crate) fn run(
             // failure. Child uses raw libc only (fork in a
             // multithreaded process): setsid, close stdin, sleep,
             // _exit. Bounded 10s self-exit; nothing leaks past it.
+            //
+            // Frame count is the admission contract: the
+            // single-frame mode leaves the second host op to race
+            // teardown (EPIPE timing), while the admitted mode
+            // reads both frames before exiting — every host send
+            // lands while the guest is alive, so admission is
+            // structural and the fatal terminal arrives via the
+            // expiry/peer-exited discrimination, never via send
+            // timing.
+            let ops_to_hold = if mode == "isolator-lingering-admitted" {
+                2
+            } else {
+                1
+            };
             if read_frame_from_stdin(&mut stdin_lock).is_err() {
                 return Some(protocol_error_exit());
             }
@@ -468,7 +482,9 @@ pub(crate) fn run(
             }))
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
-            let _ = read_frame_from_stdin(&mut stdin_lock);
+            for _ in 0..ops_to_hold {
+                let _ = read_frame_from_stdin(&mut stdin_lock);
+            }
             let _ = stdout_lock.flush();
             let forked = unsafe { ::libc::fork() };
             if forked < 0 {
