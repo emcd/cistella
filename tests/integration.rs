@@ -8,6 +8,8 @@ mod conduct_taps;
 mod conformance;
 #[path = "integration/design_vectors.rs"]
 mod design_vectors;
+#[path = "integration/enter_gate.rs"]
+mod enter_gate;
 #[path = "integration/gates.rs"]
 mod gates;
 #[path = "integration/guest_hello.rs"]

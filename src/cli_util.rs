@@ -163,23 +163,28 @@ fn describe_probe(id: &str) -> Result<(), cistella::error::CistellaError> {
 pub(crate) fn gate_enter(
     record: &cistella::registry::SessionRecord,
 ) -> Result<cistella::describe::EnterDecision, cistella::error::CistellaError> {
-    use cistella::describe::{LiveIncarnation, decide_enter};
+    use cistella::describe::{EnterDecision, LiveIncarnation, decide_enter};
     let base = cistella::lock::runtime_base();
     let attestation = cistella::attestation::read(&base, &record.id)?;
-    // Incarnation compare happens only for bound attestations;
-    // query failure degrades to Unknown (refuse, never proceed).
-    let live = match attestation.as_ref().and_then(|a| a.incarnation.as_ref()) {
-        None => LiveIncarnation::Unknown,
-        Some(bound) => match cistella::attestation::query_incarnation(&record.container_name) {
-            Ok(observed) if &observed == bound => LiveIncarnation::Current,
-            Ok(_) => LiveIncarnation::Stale,
-            Err(_) => LiveIncarnation::Unknown,
-        },
+    // Unattested sessions refuse before any backend contact:
+    // there is no commitment whose admittability could be
+    // checked, and the refusal must not depend on podman.
+    // Unincarnated (foreign) commitments route legacy-direct
+    // with no gate and no claim, likewise contact-free.
+    let Some(bound) = attestation.as_ref().and_then(|a| a.incarnation.as_ref()) else {
+        return Ok(match attestation.as_ref() {
+            None => EnterDecision::Refuse("no launch attestation committed".to_string()),
+            Some(_) => EnterDecision::ProceedLegacyDirect,
+        });
     };
-    // Admittability evidence is gathered unconditionally: the
-    // decision table ignores it on the foreign route, and a
-    // query failure there errors typed (backend contact
-    // failure is never silent absence).
+    // Bound session: compare live incarnation, then gather
+    // admittability. Backend query failures error typed (never
+    // silent absence); unknown identity refuses, never proceeds.
+    let live = match cistella::attestation::query_incarnation(&record.container_name) {
+        Ok(observed) if &observed == bound => LiveIncarnation::Current,
+        Ok(_) => LiveIncarnation::Stale,
+        Err(_) => LiveIncarnation::Unknown,
+    };
     let admittability = cistella::describe::exec_admittability(&record.container_name)?;
     Ok(decide_enter(
         attestation.as_ref(),
