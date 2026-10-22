@@ -300,17 +300,18 @@ fn tmpdir_natural_exit_reaps_slice() {
         .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
         .collect();
     assert_eq!(slices.len(), 1, "one session slice, got: {slices:?}");
-    // Release: opening for write unblocks the harness's read;
-    // the newline lets `read` succeed so the harness exits 0
-    // (EOF without data would fail it).
-    {
-        use std::io::Write as _;
-        let mut gate = std::fs::OpenOptions::new()
-            .write(true)
-            .open(worktree.path().join("gate.fifo"))
-            .expect("open gate for release");
-        gate.write_all(b"\n").expect("release the harness");
-    }
+    // Release through the three-phase nonblocking protocol:
+    // admission fails ENXIO while no reader holds the fifo
+    // (bounded retry while the harness lives; its exit fails
+    // fast as missing-reader), then one newline releases the
+    // blocked read so the harness exits 0 (EOF without data
+    // would fail it). No blocking open anywhere — a vanished
+    // workload cannot hang the test past the bound.
+    release_fifo(
+        &worktree.path().join("gate.fifo"),
+        &mut conduct,
+        Duration::from_secs(60),
+    );
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(status.success(), "natural exit 0, got: {status:?}");
     guard.id = None;

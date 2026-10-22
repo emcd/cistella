@@ -205,12 +205,14 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn gc");
-    // Lock-attempt synchronization (no sleep-tuned settle):
-    // the gc holds the lock-file fd once it reaches the guarded
-    // operation, so fd-presence proves the attempt; still-alive
-    // after that proves blockage (an unscheduled child would
-    // hold no fd). Test-side lock is held throughout.
-    wait_lock_attempt(&mut gc, Duration::from_secs(10));
+    // Lock-contention synchronization (no sleep-tuned settle):
+    // /proc/locks must show this gc blocked on this exact lock
+    // file (pid + dev:ino), so the observation proves contention
+    // — not mere fd-presence, which a bypassed flock would also
+    // produce. try_wait after that proves the block is live
+    // (an unscheduled child shows no blocked entry). Test-side
+    // lock is held throughout.
+    wait_lock_blocked(&mut gc, Duration::from_secs(10));
     // Blockage is structural (lock held ⇒ gc cannot proceed),
     // so no settle sleep: try_wait after a proven attempt is
     // correct in every case (blocked → None passes; crashed →
@@ -253,8 +255,8 @@ fn gc_creation_window_reaps_nothing() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn gc");
-    // Same lock-attempt synchronization as above.
-    wait_lock_attempt(&mut gc, Duration::from_secs(10));
+    // Same lock-contention synchronization as above.
+    wait_lock_blocked(&mut gc, Duration::from_secs(10));
     // Same structural blockage as above: no settle sleep.
     assert!(
         gc.try_wait().expect("poll gc").is_none(),

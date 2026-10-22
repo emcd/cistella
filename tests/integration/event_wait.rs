@@ -179,40 +179,67 @@ pub fn await_armed<T>(
 
 /// Reads and validates one attestation: parseable, id-matching,
 /// container-matching, incarnation-bound (native commits), AND
-/// live-equal to the current backend incarnation. A present file
-/// that is corrupt, mismatched, stale, or unincarnated panics
-/// immediately: with atomic publication a present file is always
-/// complete, and a write-once marker never becomes current — so
-/// waiting out the bound on a hopeless file would be silent
-/// wrongness, not patience. A present-but-unobservable backend
-/// is transient (loaded backend, hiccup), so it reads as
-/// not-yet-valid and the bound stays fail-loud for the genuinely
-/// dead. The product would fail typed on the same facts; the
-/// harness fails loud on them.
+/// live-equal to the current backend incarnation. Every
+/// non-valid outcome panics immediately: corrupt, mismatched,
+/// stale, unincarnated, and unqueryable are all hopeless —
+/// atomic publication means a present file is always complete,
+/// a write-once marker never becomes current, and no attestation
+/// event will ever make an unobservable backend observable —
+/// so waiting out the bound would be silent wrongness, not
+/// patience. A safe false-negative (loud failure) beats a
+/// hopeful wait. The product would fail typed on the same
+/// facts; the harness fails loud on them.
 fn read_valid_attestation(
     base: &std::path::Path,
     id: &str,
     container: &str,
 ) -> Option<cistella::attestation::Attestation> {
+    read_valid_attestation_with(base, id, container, || {
+        cistella::attestation::query_incarnation(container).map_err(|error| error.to_string())
+    })
+}
+
+/// Validation with an injected identity source: the pure
+/// currency classification (`decide_currency`) behind a
+/// caller-supplied live query. Production passes the real
+/// backend query; pins inject fabricated outcomes, so all four
+/// deterministic observation controls run with no backend.
+fn read_valid_attestation_with(
+    base: &std::path::Path,
+    id: &str,
+    container: &str,
+    query: impl FnOnce() -> Result<cistella::attestation::Incarnation, String>,
+) -> Option<cistella::attestation::Attestation> {
+    use cistella::attestation::{Currency, decide_currency};
     let attestation = match cistella::attestation::read(base, id) {
         Ok(found) => found?,
         Err(error) => panic!("attestation for session {id} unreadable: {error}"),
     };
+    // Container binding before any backend contact: a mismatch
+    // fails without running the live query at all.
     if attestation.container_name != container {
-        return None;
+        panic!(
+            "attestation for session {id} names a different container (possible out-of-band recreate)"
+        );
     }
     let bound = attestation.incarnation.as_ref().unwrap_or_else(|| {
         panic!("attestation for session {id} carries no incarnation (foreign commitment)")
     });
-    // Live equality is the currency proof — but a query failure
-    // is transient (loaded backend, hiccup), not a verdict: only
-    // a successful comparison decides, and only mismatch fails.
-    // A present-but-unobservable backend is not-yet-valid, and
-    // the 60s bound stays fail-loud for the genuinely dead.
-    match cistella::attestation::query_incarnation(container) {
-        Ok(live) if &live == bound => Some(attestation),
-        Ok(_) => panic!("attestation for session {id} is stale (container recreated or restarted)"),
-        Err(_) => None,
+    let live = match query() {
+        Ok(observed) => Some(observed),
+        Err(error) => panic!("incarnation unqueryable for session {id}: {error}"),
+    };
+    match decide_currency(true, bound, live.as_ref()) {
+        Currency::Current => Some(attestation),
+        Currency::Stale => {
+            panic!("attestation for session {id} is stale (container recreated or restarted)")
+        }
+        Currency::Unknown => {
+            panic!("incarnation unqueryable for session {id} (unknown)")
+        }
+        Currency::Mismatched => {
+            unreachable!("container binding checked above")
+        }
     }
 }
 
@@ -295,4 +322,137 @@ fn await_observed_bound_fails_loud_without_commit() {
         Duration::from_millis(200),
         || None,
     );
+}
+
+#[test]
+fn await_armed_recheck_precedes_poll() {
+    // Deterministic pin for the post-subscription recheck: the
+    // target is staged AFTER the arm (same thread, so the
+    // subscription strictly precedes it) and the budget is zero
+    // — await_armed must return via the recheck without ever
+    // polling. Deleting the recheck turns this into an
+    // immediate bound failure. No sleeps, no timing.
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let armed = arm_watch(dir.path());
+    std::fs::write(dir.path().join("target"), b"recheck-content").expect("stage target");
+    let got: String = await_armed(&armed, "recheck-only", Duration::ZERO, || {
+        std::fs::read_to_string(dir.path().join("target"))
+            .ok()
+            .filter(|text| !text.is_empty())
+    });
+    assert_eq!(
+        got, "recheck-content",
+        "post-subscription recheck satisfies"
+    );
+}
+
+fn fixture_commitment(
+    base: &std::path::Path,
+    id: &str,
+    container: &str,
+) -> cistella::attestation::Incarnation {
+    let incarnation = cistella::attestation::Incarnation {
+        container_id: "fixture-container-id".to_string(),
+        started_at: "fixture-started-at".to_string(),
+    };
+    cistella::attestation::publish(
+        base,
+        &cistella::attestation::Attestation {
+            session_id: id.to_string(),
+            container_name: container.to_string(),
+            attempt_key: "fixture-key".to_string(),
+            argv: vec!["sleep".to_string()],
+            execution_handle: "fixture-exec".to_string(),
+            incarnation: Some(incarnation.clone()),
+        },
+    )
+    .expect("fixture commitment publishes");
+    incarnation
+}
+
+#[test]
+fn read_valid_attestation_accepts_current_identity() {
+    // Injected live query returning the bound identity: the
+    // helper returns the attestation (no podman involved).
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let base = dir.path();
+    let id = "fixture-current-1";
+    let container = format!("cistella-{id}");
+    let bound = fixture_commitment(base, id, &container);
+    let found =
+        read_valid_attestation_with(base, id, &container, || Ok::<_, String>(bound.clone()))
+            .expect("current identity validates");
+    assert_eq!(found.session_id, id);
+}
+
+#[test]
+#[should_panic(expected = "is stale")]
+fn read_valid_attestation_rejects_stale_identity() {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let base = dir.path();
+    let id = "fixture-stale-1";
+    let container = format!("cistella-{id}");
+    fixture_commitment(base, id, &container);
+    let stale = cistella::attestation::Incarnation {
+        container_id: "replacement-id".to_string(),
+        started_at: "fixture-started-at".to_string(),
+    };
+    let _ = read_valid_attestation_with(base, id, &container, || Ok::<_, String>(stale));
+}
+
+#[test]
+#[should_panic(expected = "unqueryable")]
+fn read_valid_attestation_rejects_unknown_identity() {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let base = dir.path();
+    let id = "fixture-unknown-1";
+    let container = format!("cistella-{id}");
+    fixture_commitment(base, id, &container);
+    let _ = read_valid_attestation_with(base, id, &container, || {
+        Err::<cistella::attestation::Incarnation, String>("backend hiccup".to_string())
+    });
+}
+
+#[test]
+#[should_panic(expected = "different container")]
+fn read_valid_attestation_rejects_container_mismatch() {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let base = dir.path();
+    let id = "fixture-mismatch-1";
+    let container = format!("cistella-{id}");
+    let bound = fixture_commitment(base, id, &container);
+    // The query must never run on a mismatch: the closure
+    // panics if called, proving the ordering.
+    let _ = read_valid_attestation_with(base, id, "cistella-some-other-session", || {
+        panic!("live query must not run after a container mismatch");
+        #[allow(unreachable_code)]
+        Ok::<_, String>(bound.clone())
+    });
+}
+
+#[test]
+#[should_panic(expected = "foreign commitment")]
+fn read_valid_attestation_rejects_unincarnated_commitment() {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let base = dir.path();
+    let id = "fixture-foreign-1";
+    let container = format!("cistella-{id}");
+    cistella::attestation::publish(
+        base,
+        &cistella::attestation::Attestation {
+            session_id: id.to_string(),
+            container_name: container.clone(),
+            attempt_key: "fixture-key".to_string(),
+            argv: vec!["sleep".to_string()],
+            execution_handle: "fixture-exec".to_string(),
+            incarnation: None,
+        },
+    )
+    .expect("foreign fixture publishes");
+    let _ = read_valid_attestation_with(base, id, &container, || {
+        Ok::<_, String>(cistella::attestation::Incarnation {
+            container_id: "whatever".to_string(),
+            started_at: "whenever".to_string(),
+        })
+    });
 }

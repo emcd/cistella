@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub use super::blocking::{release_fifo, wait_lock_blocked};
 pub use super::bounded::*;
 pub use super::event_wait::{wait_attestation, wait_readiness_file};
 pub use super::gates::*;
@@ -111,54 +112,6 @@ pub fn guard_terminate(home: &str, id: &str) -> Result<Output, BoundedRunError> 
         spawn_cistella_cmd(home, &["terminate", id]),
         RUN_CISTELLA_TIMEOUT,
     )
-}
-
-/// Waits until a child process has opened the creation-window
-/// lock file (observable lock attempt): the fd's presence
-/// proves the child reached the guarded operation — the lock
-/// path is opened immediately before the blocking flock, so a
-/// child holding the fd has attempted admission. Bounded and
-/// fail-loud: an exited child or a timeout means the attempt
-/// never happened. Combined with a subsequent still-running
-/// assert, this separates "blocked on the lock" from "never
-/// scheduled" (an unscheduled child holds no lock fd).
-pub fn wait_lock_attempt(child: &mut std::process::Child, timeout: Duration) {
-    let pid = child.id();
-    // Identity by inode, not path spelling: the /proc fd target
-    // is resolved while lock_path() may spell an unresolved
-    // prefix — byte comparison would false-fail on symlinked
-    // runtime dirs. A missing lock file is simply not-yet (the
-    // child creates it on open, immediately before flock).
-    use std::os::unix::fs::MetadataExt as _;
-    let lock_id = std::fs::metadata(cistella::lock::lock_path())
-        .ok()
-        .map(|meta| (meta.dev(), meta.ino()));
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
-            for entry in entries.flatten() {
-                let matches = std::fs::metadata(entry.path())
-                    .ok()
-                    .map(|meta| (meta.dev(), meta.ino()))
-                    .zip(lock_id)
-                    .is_some_and(|(fd_id, lock)| fd_id == lock);
-                if matches {
-                    return;
-                }
-            }
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                panic!("child {pid} exited ({status:?}) before attempting the lock")
-            }
-            Ok(None) => {}
-            Err(error) => panic!("child {pid} unobservable: {error}"),
-        }
-        if Instant::now() > deadline {
-            panic!("child {pid} never opened the lock file (no lock attempt observed)");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
 }
 
 pub fn valid_minted_id(id: &str) -> bool {

@@ -134,9 +134,11 @@ pub enum DescribeTarget {
     /// unknown>` where proven; `commitment=unattested
     /// backend=unknown` with no state= token where provenance
     /// is absent; `state=absent ... scope=native` on the
-    /// no-record probe. Typed errors refuse instead of
-    /// inventing: stale/unknown incarnation, container
-    /// mismatch, contradictory provenance, live residue.
+    /// no-record probe. A stale or unknown incarnation renders
+    /// as a qualifier, not an error — `enter` (not this verb)
+    /// refuses those. Typed errors refuse instead of inventing:
+    /// container mismatch, contradictory provenance, live
+    /// residue, foreign no-record probe, uncontactable backend.
     State {
         /// Session id unique prefix (exactly one selector per invocation).
         id: Option<String>,

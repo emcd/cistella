@@ -328,6 +328,40 @@ pub enum CommitDecision {
     Refuse(&'static str),
 }
 
+/// Currency decision over a bound incarnation and a live
+/// observation: pure, so all four cases pin deterministically
+/// with no backend. The observation is injected by the caller
+/// (live query in production, fabricated values in pins).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Currency {
+    /// Live identity equals the bound identity.
+    Current,
+    /// Live identity differs (recreate or restart).
+    Stale,
+    /// Live identity unobservable.
+    Unknown,
+    /// Attestation names a different container.
+    Mismatched,
+}
+
+/// Pure currency classification: container binding first, then
+/// liveness, then equality. No I/O, no clock.
+#[must_use]
+pub fn decide_currency(
+    container_matches: bool,
+    bound: &Incarnation,
+    live: Option<&Incarnation>,
+) -> Currency {
+    if !container_matches {
+        return Currency::Mismatched;
+    }
+    match live {
+        None => Currency::Unknown,
+        Some(observed) if observed == bound => Currency::Current,
+        Some(_) => Currency::Stale,
+    }
+}
+
 /// Resolves pre-capture vs post-check into a commit decision.
 /// `post = None` means the post-launch identity query failed.
 #[must_use]

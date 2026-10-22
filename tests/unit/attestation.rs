@@ -4,7 +4,9 @@
 //! temp state root; incarnation liveness (`query_incarnation`)
 //! stays a live-tier concern (podman contact).
 
-use cistella::attestation::{Attestation, CommitDecision, Incarnation, commit_decision};
+use cistella::attestation::{
+    Attestation, CommitDecision, Currency, Incarnation, commit_decision, decide_currency,
+};
 
 fn sample() -> Attestation {
     Attestation {
@@ -78,6 +80,57 @@ fn commit_decision_publishes_only_pre_bound_identity() {
     assert!(
         matches!(commit_decision(None, None), CommitDecision::Refuse(_)),
         "missing pre-capture with unknown post refuses"
+    );
+}
+
+#[test]
+fn decide_currency_classifies_all_four_cases_without_backend() {
+    // Pure classification pin: fabricated bound vs injected
+    // observation, no podman. The event-wait helper asserts
+    // these same outcomes live; these pins assert the
+    // classification itself.
+    let bound = Incarnation {
+        container_id: "id-1".to_string(),
+        started_at: "t-1".to_string(),
+    };
+    let same = bound.clone();
+    assert_eq!(
+        decide_currency(true, &bound, Some(&same)),
+        Currency::Current,
+        "equal live identity is current"
+    );
+    let recreated = Incarnation {
+        container_id: "id-2".to_string(),
+        started_at: "t-1".to_string(),
+    };
+    assert_eq!(
+        decide_currency(true, &bound, Some(&recreated)),
+        Currency::Stale,
+        "new container ID is stale"
+    );
+    let restarted = Incarnation {
+        container_id: "id-1".to_string(),
+        started_at: "t-2".to_string(),
+    };
+    assert_eq!(
+        decide_currency(true, &bound, Some(&restarted)),
+        Currency::Stale,
+        "new StartedAt is stale"
+    );
+    assert_eq!(
+        decide_currency(true, &bound, None),
+        Currency::Unknown,
+        "unobservable live identity is unknown"
+    );
+    assert_eq!(
+        decide_currency(false, &bound, Some(&same)),
+        Currency::Mismatched,
+        "container mismatch dominates liveness"
+    );
+    assert_eq!(
+        decide_currency(false, &bound, None),
+        Currency::Mismatched,
+        "container mismatch dominates unknown too"
     );
 }
 

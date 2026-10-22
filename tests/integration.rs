@@ -1,5 +1,7 @@
 //! Integration tests entry point.
 
+#[path = "integration/blocking.rs"]
+mod blocking;
 #[path = "integration/bounded.rs"]
 mod bounded;
 #[path = "integration/conduct_taps.rs"]
