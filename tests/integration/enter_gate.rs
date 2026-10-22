@@ -77,8 +77,12 @@ fn conduct_enter_refuses_before_launch_commit() {
     );
     let shown = String::from_utf8_lossy(&stated.stdout).to_string();
     assert!(
-        shown.contains("commitment=unattested"),
-        "describe reports unattested, got: {shown}"
+        shown.contains("commitment=unattested") && shown.contains("backend=unknown"),
+        "describe reports unattested+unknown-backend, got: {shown}"
+    );
+    assert!(
+        !shown.contains("state="),
+        "no lifecycle snapshot without provenance, got: {shown}"
     );
     // Cleanup: kill the stalled child, terminate the leftover
     // unit, disarm the guard (it owns only this session).

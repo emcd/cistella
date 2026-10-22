@@ -178,14 +178,13 @@ fn describe_state_foreign_probe_without_backend_is_unsupported() {
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn describe_state_foreign_commitment_reports_unavailable() {
-    // Foreign shape: a record plus an unincarnated commitment
-    // renders commitment plus verbatim record metadata plus
-    // explicit admittability-unsupported — actual supported
-    // facts, never an invented lifecycle snapshot. The
-    // commitment is published directly (test-as-owner fixture
-    // over a stalled conduct's record); no backend contact
-    // happens on this arm.
+fn describe_state_contradictory_commitment_refuses_typed() {
+    // Contradictory provenance pin: an unincarnated (foreign)
+    // commitment attached to a record-holding session cannot
+    // occur in production (foreign conducts create no unit
+    // files), so describe fails closed loud instead of
+    // rendering any shape. The fixture stages exactly that
+    // contradiction over a stalled conduct's record.
     if !systemd_gate() {
         return;
     }
@@ -222,26 +221,19 @@ fn describe_state_foreign_commitment_reports_unavailable() {
             incarnation: None,
         },
     )
-    .expect("foreign fixture commitment publishes");
+    .expect("fixture commitment publishes");
     let out = run_cistella(&home, &["describe", "state", &id]);
     assert!(
-        out.status.success(),
-        "foreign describe succeeds: {}",
-        String::from_utf8_lossy(&out.stderr)
+        !out.status.success(),
+        "contradictory provenance must refuse, not render"
     );
-    let shown = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
-        shown.contains("commitment=attested")
-            && shown.contains("backend=foreign")
-            && shown.contains("admittability=unsupported"),
-        "foreign shape reports commitment+metadata+unsupported, got: {shown}"
+        stderr.contains("contradictory provenance"),
+        "refusal names the contradiction, got: {stderr}"
     );
-    assert!(
-        !shown.contains("state=initiated") && !shown.contains("state=executing"),
-        "no lifecycle snapshot is invented, got: {shown}"
-    );
-    // Cleanup: kill the stalled child; terminate reaps the
-    // unit and the fixture commitment.
+    // Cleanup: kill the stalled child; terminate reaps the unit
+    // and the fixture commitment.
     let _ = conduct.kill();
     let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     let term = run_cistella(&home, &["terminate", &id]);

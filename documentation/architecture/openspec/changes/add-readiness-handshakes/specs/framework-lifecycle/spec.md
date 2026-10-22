@@ -2,55 +2,60 @@
 
 ### Requirement: Dedicated state query verb
 
-The host CLI SHALL provide a dedicated `state` verb reporting launch commitment plus a backend snapshot. The verb SHALL resolve ownerlessly and report: a commitment bit (attested with attempt provenance, or unattested) and a snapshot enum from created/initiated/stopped/absent in verbatim lowercase. The verb SHALL NEVER report `executing` (not ownerlessly provable; reserved to the in-protocol scoped meaning). Attested+running SHALL read `initiated`. Selection: no-match in any form keeps the existing typed Selector error EXCEPT a FULL session id matching no record, which probes the derived container name and follows the residue table. Podman-specific facts SHALL be gated to Podman-backed sessions. Foreign sessions SHALL report commitment + record metadata verbatim + explicit admittability-unsupported (never an invented snapshot). Default `inspect` SHALL remain byte-identical.
+The host CLI SHALL provide `describe state` reporting launch commitment plus a backend snapshot. The verb SHALL resolve ownerlessly and report: a commitment bit (attested with attempt provenance, or unattested) and — only where backend provenance exists — a snapshot enum from created/initiated/stopped/absent in verbatim lowercase. The verb SHALL NEVER report `executing` (not ownerlessly provable; reserved to the in-protocol scoped meaning). Attested+running SHALL read `initiated`. Backend provenance rule: attestation + live incarnation equality proves native (snapshot rendered); unincarnated commitment with no record proves nothing locally (unsupported); a record with no attestation proves nothing about backend (explicitly `backend=unknown` with NO snapshot — the upgrade-window cost). Selection: no-match in any form keeps the existing typed Selector error EXCEPT a FULL session id matching no record, which probes the derived container name and follows the residue table with query scope marked (`scope=native`, never a global `backend=` claim). Podman-specific facts SHALL be gated to proven-native sessions. Record + unincarnated commitment (contradictory provenance — foreign conducts create no unit files) SHALL refuse typed, never render. Default `inspect` SHALL remain byte-identical.
 
 #### Scenario: State reports commitment and snapshot
 
 - **WHEN** a session's attestation is committed and its container runs
-- **THEN** `state` reports `initiated` plus attested commitment with success exit — never `executing`
+- **THEN** `describe state` reports `initiated` plus attested commitment with success exit — never `executing`
 
 #### Scenario: State is postmortem-safe
 
 - **WHEN** the owner is dead and the unit file persists (orphan, container possibly still running)
-- **THEN** `state` reports its actual snapshot (commitment + backend facts as observed) with success exit, never a contact error
+- **THEN** `describe state` reports its actual snapshot (commitment + backend facts as observed) with success exit, never a contact error
 
 #### Scenario: Foreign no-record probe is unsupported
 
-- **WHEN** a full-id probe matches no record and the session would be foreign-registered (backend identity not establishable from local evidence)
-- **THEN** `state` fails typed as unsupported rather than inferring foreign absence from local Podman queries alone
+- **WHEN** a full-id probe matches no record, no container, and no unit file, but an unincarnated (foreign) commitment is present
+- **THEN** `describe state` fails typed as unsupported rather than inferring foreign absence from local Podman queries alone
 
-#### Scenario: Foreign state marks admittability unsupported
+#### Scenario: Unattested record reports unknown backend without snapshot
 
-- **WHEN** the session is foreign-registered
-- **THEN** `state` reports commitment and record metadata verbatim plus admittability-unsupported; no container/pid observation is asserted and no lifecycle snapshot is invented
+- **WHEN** a record matches but no attestation is committed (pre-change session or pre-commit window)
+- **THEN** `describe state` reports commitment=unattested and backend=unknown with success exit, and renders no lifecycle snapshot
+
+#### Scenario: Contradictory provenance refuses typed
+
+- **WHEN** a record matches an unincarnated (foreign) commitment (which production never produces — foreign conducts create no unit files)
+- **THEN** `describe state` fails typed naming the contradiction, never rendering any shape
 
 ### Requirement: Residue and selection truth table
 
-Full-id probes with no record SHALL resolve by backend evidence in this exact order: container present (any state) → typed residue error naming the container and directing to terminate/gc (backend fact dominates registry absence); else attestation-only residue → `absent` with success exit (inert metadata; gc reaps); else all absent → `absent` with success exit; backend query failure during the probe → typed observation error. Fuzzy (prefix/directory/label) no-match and multi-match SHALL keep the existing Selector errors. The probe exists because record-absence is expected post-teardown; no invariant that live sessions match records SHALL be assumed.
+Full-id probes with no record SHALL resolve by backend evidence in this exact order: container OR unit-file present (any state) → typed residue error naming the container and directing to terminate/gc (backend fact dominates registry absence); else attestation-only residue → `absent` with success exit and query scope marked (`scope=native`, never a global `backend=` claim; inert metadata, gc reaps); else all absent → `absent` with success exit and `scope=native`; backend query failure during the probe → typed observation error. Fuzzy (prefix/directory/label) no-match and multi-match SHALL keep the existing Selector errors. The probe exists because record-absence is expected post-teardown; no invariant that live sessions match records SHALL be assumed.
 
 #### Scenario: Live residue dominates record absence
 
-- **WHEN** no record matches but the derived container exists (running or stopped)
-- **THEN** `state` fails typed naming the residue container; it never reports `absent`
+- **WHEN** no record matches but the derived container or unit file exists (running, stopped, or file-only)
+- **THEN** `describe state` fails typed naming the residue container; it never reports `absent`
 
 #### Scenario: Inert attestation residue resolves Absent
 
 - **WHEN** no record and no container exist but attestation residue remains
-- **THEN** `state` reports `absent` with success exit
+- **THEN** `describe state` reports `absent` with success exit
 
 #### Scenario: All absent resolves Absent
 
 - **WHEN** a full id matches nothing anywhere (unit file, container, attestation)
-- **THEN** `state` reports `absent` with success exit
+- **THEN** `describe state` reports `absent` with success exit
 
 #### Scenario: Probe query failure is explicit
 
 - **WHEN** the backend cannot be contacted during a full-id probe
-- **THEN** `state` fails with a typed observation error, never an `absent` claim
+- **THEN** `describe state` fails with a typed observation error, never an `absent` claim
 
 ### Requirement: Owner-written launch attestation
 
-The conduct owner SHALL capture the native incarnation (container ID + StartedAt) BEFORE `execute_launch` (pre-capture; container absent → refuse+converge) and re-query immediately after Ok (post-check); the file SHALL publish ONLY the pre-verified identity when pre==post exactly — any mismatch or unestablishable identity SHALL refuse + converge the attempt via typed teardown with nothing published. The file SHALL carry session id, container name, attempt reconciliation key, harness argv, fw execution handle, and backend incarnation (container ID + StartedAt queried at commit). All file I/O SHALL follow the anchored state-root discipline (trusted-parent FDs, O_NOFOLLOW, fstat seat-ownership, O_EXCL publication, dev+ino re-verification — the `cleanup.rs` pattern). Binding checks: id ↔ filename + record; container ↔ record + presence; incarnation ↔ live re-query (exact equality); key/argv/handle are write-time bindings and read-time provenance (not re-checked). Write failure after Ok SHALL converge the attempt via typed teardown and report the failure. Container-name mismatch → typed mismatch error. Incarnation mismatch → typed stale-generation error (identity-unknown → refuse, never ready). Corrupt/unreadable with present record → typed corruption error. Missing file → unattested. Record-gone → Absent path; teardown removes the unit file before reaping the attestation; gc reaps orphans. Pre-change sessions without files read unattested (documented window). A pre-commit visible child is not acknowledgement.
+The conduct owner SHALL capture the native incarnation (container ID + StartedAt) BEFORE `execute_launch` (pre-capture; container absent → refuse+converge) and re-query immediately after Ok (post-check); the file SHALL publish ONLY the pre-verified identity when pre==post exactly — any mismatch or unestablishable identity SHALL refuse + converge the attempt via typed teardown with nothing published. The file SHALL carry session id, container name, attempt reconciliation key, harness argv, fw execution handle, and backend incarnation (container ID + StartedAt queried at commit). All file I/O SHALL follow the anchored state-root discipline (trusted-parent FDs, O_NOFOLLOW, fstat seat-ownership, atomic temp+link publication with EEXIST-preserving write-once — linkat, since renameat would clobber — dev+ino re-verification — the `cleanup.rs` pattern). Binding checks: id ↔ filename + record; container ↔ record + presence; incarnation ↔ live re-query (exact equality); key/argv/handle are write-time bindings and read-time provenance (not re-checked). Write failure after Ok SHALL converge the attempt via typed teardown and report the failure. Container-name mismatch → typed mismatch error. Incarnation mismatch → typed stale-generation error (identity-unknown → refuse, never ready). Corrupt/unreadable with present record → typed corruption error. Missing file → unattested. Record-gone → Absent path; teardown removes the unit file before reaping the attestation; gc reaps orphans. Pre-change sessions without files read unattested (documented window). A pre-commit visible child is not acknowledgement.
 
 #### Scenario: Attestation commits with bound incarnation
 
@@ -70,7 +75,7 @@ The conduct owner SHALL capture the native incarnation (container ID + StartedAt
 #### Scenario: Missing is unattested success for state, typed refusal for enter
 
 - **WHEN** no attestation file exists
-- **THEN** `state` reports unattested with a success exit (missing is the normal precommit state, not an error), while `enter` refuses with a typed readiness error and nonzero exit
+- **THEN** `describe state` reports unattested with a success exit (missing is the normal precommit state, not an error), while `enter` refuses with a typed readiness error and nonzero exit
 
 #### Scenario: Corruption fails loud
 

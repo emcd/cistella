@@ -111,9 +111,16 @@ fn ownerless_executing_refuses() {
 fn state_renders_verbatim_lowercase() {
     assert_eq!(render_state(&LifecycleState::Created), "created");
     assert_eq!(render_state(&LifecycleState::Initiated), "initiated");
-    assert_eq!(render_state(&LifecycleState::Executing), "executing");
     assert_eq!(render_state(&LifecycleState::Stopped), "stopped");
     assert_eq!(render_state(&LifecycleState::Absent), "absent");
+}
+
+#[test]
+#[should_panic(expected = "snapshot_checked excludes ownerless executing")]
+fn executing_has_no_rendering() {
+    // Structural, not conventional: the arm panics instead of
+    // mapping a token the verb must never report.
+    let _ = render_state(&LifecycleState::Executing);
 }
 
 use cistella::attestation::{Attestation, Incarnation};

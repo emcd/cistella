@@ -18,7 +18,7 @@
 - [x] 3.1 signals.rs start-delay/lock-attempt → commit-event-anchored waits with fail-loud backstops
 - [x] 3.2 wire_death FD-holder → readiness/release handshake + injected populated-pending tests
 - [x] 3.3 tmpdir natural-exit observation → commit-event-anchored wait with fail-loud backstop
-- [x] 3.4 Retained boundary + negative control per conversion (Advisor confidence model): sighup keeps 129/teardown/no-residue asserts, gate-negative via the shared pre-commit refusal pin; wire_death keeps converge+close reporting with post-terminal+dominance as the complementary case; tmpdir keeps mid-session slice + litter-free asserts, gate-negative via the shared pre-commit refusal pin
+- [x] 3.4 Retained boundary + negative control per conversion (Advisor confidence model): sighup keeps 129/teardown/no-residue asserts, gate-negative via the shared pre-commit refusal pin; wire_death keeps converge+close reporting with post-terminal+dominance as the complementary case; tmpdir keeps mid-session slice + litter-free asserts, gate-negative via the shared pre-commit refusal pin; await_observed helper pins arm→recheck→validate + fail-loud bound directly (event_wait.rs)
 
 ## 4. Ride-along (todos/50)
 

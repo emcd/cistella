@@ -229,13 +229,18 @@ pub fn decide_enter(
     EnterDecision::ProceedNative
 }
 
-/// Renders the verbatim lowercase lifecycle token.
+/// Renders the verbatim lowercase lifecycle token for a
+/// checked snapshot. `executing` is structurally unreachable
+/// (only `snapshot_checked` constructs the input invariant —
+/// the arm documents the impossibility, never a rendering).
 #[must_use]
 pub fn render_state(state: &LifecycleState) -> &'static str {
     match state {
         LifecycleState::Created => "created",
         LifecycleState::Initiated => "initiated",
-        LifecycleState::Executing => "executing",
+        LifecycleState::Executing => {
+            unreachable!("snapshot_checked excludes ownerless executing")
+        }
         LifecycleState::Stopped => "stopped",
         LifecycleState::Absent => "absent",
     }

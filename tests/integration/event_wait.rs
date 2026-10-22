@@ -146,16 +146,87 @@ fn await_observed<T>(
 /// Reads and validates one attestation: parseable, id-matching,
 /// container-matching, incarnation-bound (native commits).
 /// Returns None when absent or not-yet-valid — the caller, not
-/// this probe, decides failure.
+/// this probe, decides failure. A present-but-unreadable file
+/// panics immediately: with atomic publication a present file
+/// is always complete, so corruption means genuine damage the
+/// product would fail typed — failing fast here matches the
+/// product instead of waiting out the bound on a hopeless file.
 fn read_valid_attestation(
     base: &std::path::Path,
     id: &str,
     container: &str,
 ) -> Option<cistella::attestation::Attestation> {
-    let attestation = cistella::attestation::read(base, id).ok()??;
+    let attestation = match cistella::attestation::read(base, id) {
+        Ok(found) => found?,
+        Err(error) => panic!("attestation for session {id} unreadable: {error}"),
+    };
     if attestation.container_name != container {
         return None;
     }
     attestation.incarnation.as_ref()?;
     Some(attestation)
+}
+
+#[test]
+fn await_observed_pins_arm_recheck_validate() {
+    // Helper-level pin for the event-wait acceptance shape (no
+    // podman, no systemd): unrelated CREATEs never satisfy the
+    // wait, a pre-arm commit is caught by the recheck, and the
+    // fail-loud bound does not fire on a genuine commit. A
+    // thread stages the events; the assertions pin identity
+    // (content), never timing.
+    let dir = tempfile::tempdir().expect("tmpdir");
+    // Pre-arm commit: staged before the arm, caught by the
+    // first recheck (no event needed). Short bound so a
+    // missing recheck fails instead of hanging the suite.
+    std::fs::write(dir.path().join("early"), b"early-content").expect("stage");
+    let got: String = await_observed(
+        dir.path(),
+        "pre-armed commit",
+        Duration::from_secs(2),
+        || {
+            std::fs::read_to_string(dir.path().join("early"))
+                .ok()
+                .filter(|text| !text.is_empty())
+        },
+    );
+    assert_eq!(got, "early-content", "pre-arm commit caught by recheck");
+    // Unrelated CREATE first, genuine commit second: the wait
+    // must ignore the former and return the latter's content.
+    // (Proves wake-on-unrelated does not satisfy, and the bound
+    // does not fire on a genuine commit — return itself is the
+    // proof, no timing asserts.)
+    let staged = dir.path().to_path_buf();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(staged.join("unrelated"), b"noise").expect("stage noise");
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(staged.join("target"), b"target-content").expect("stage target");
+    });
+    let got: String = await_observed(
+        dir.path(),
+        "genuine commit",
+        Duration::from_secs(10),
+        || {
+            std::fs::read_to_string(dir.path().join("target"))
+                .ok()
+                .filter(|text| !text.is_empty())
+        },
+    );
+    assert_eq!(got, "target-content", "only the validated commit satisfies");
+}
+
+#[test]
+#[should_panic(expected = "never observed (fail-loud bound)")]
+fn await_observed_bound_fails_loud_without_commit() {
+    // Negative control for the backstop: no commit ever lands,
+    // so the bound fires with the fail-loud message instead of
+    // returning or hanging. Short bound keeps it fast.
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let _: Option<()> = await_observed(
+        dir.path(),
+        "absent commit",
+        Duration::from_millis(200),
+        || None,
+    );
 }

@@ -92,42 +92,50 @@ fn describe_record(
 ) -> Result<(), cistella::error::CistellaError> {
     let base = cistella::lock::runtime_base();
     let attestation = cistella::attestation::read(&base, &record.id)?;
-    let incarnated = attestation
-        .as_ref()
-        .and_then(|attested| attested.incarnation.as_ref());
-    if attestation.is_some() && incarnated.is_none() {
-        // Foreign shape: commitment plus verbatim record
-        // metadata plus explicit unsupported admittability —
-        // never an invented lifecycle snapshot.
+    let Some(bound_attestation) = attestation.as_ref() else {
+        // No commitment: the backend is unproven — explicitly
+        // uncertain with no snapshot. A record alone proves
+        // nothing about which backend, if any, is live, so no
+        // backend is claimed and no lifecycle is invented.
         println!(
-            "{} state=unavailable commitment=attested backend=foreign admittability=unsupported profile={} directory={} identity={}",
-            record.container_name, record.profile, record.directory, record.identity,
+            "{} commitment=unattested backend=unknown",
+            record.container_name,
         );
         return Ok(());
+    };
+    // Container binding before anything else: the attestation
+    // must bind THIS record's container (tamper or out-of-band
+    // recreate), or every later fact is attributed wrongly.
+    if bound_attestation.container_name != record.container_name {
+        return Err(cistella::error::CistellaError::Runtime(format!(
+            "describe state: attestation container mismatch for {} (possible out-of-band recreate)",
+            record.container_name,
+        )));
     }
+    let Some(bound) = bound_attestation.incarnation.as_ref() else {
+        // Contradictory provenance: an unincarnated (foreign)
+        // commitment for a record-holding session cannot occur
+        // in production (foreign conducts create no unit
+        // files), so fail closed loud instead of rendering.
+        return Err(cistella::error::CistellaError::Runtime(format!(
+            "describe state: foreign commitment for native record {} (contradictory provenance)",
+            record.container_name,
+        )));
+    };
     let backend = PodmanIsolator::new();
     let handle = backend.adopt(&record.container_name, &record.id);
     let snapshot = backend.inspect(&handle)?;
     let state = cistella::describe::snapshot_checked(&snapshot)?;
     let rendered = cistella::describe::render_state(&state);
-    match incarnated {
-        None => println!(
-            "{} state={rendered} commitment=unattested backend=native",
-            record.container_name,
-        ),
-        Some(bound) => {
-            let incarnation = match cistella::attestation::query_incarnation(&record.container_name)
-            {
-                Ok(live) if &live == bound => "current",
-                Ok(_) => "stale",
-                Err(_) => "unknown",
-            };
-            println!(
-                "{} state={rendered} commitment=attested backend=native incarnation={incarnation}",
-                record.container_name,
-            );
-        }
-    }
+    let incarnation = match cistella::attestation::query_incarnation(&record.container_name) {
+        Ok(live) if &live == bound => "current",
+        Ok(_) => "stale",
+        Err(_) => "unknown",
+    };
+    println!(
+        "{container} state={rendered} commitment=attested backend=native incarnation={incarnation}",
+        container = record.container_name,
+    );
     Ok(())
 }
 
@@ -159,11 +167,18 @@ fn describe_probe(id: &str) -> Result<(), cistella::error::CistellaError> {
             )))
         }
         cistella::describe::ProbeOutcome::AbsentAttested => {
-            println!("{container_name} state=absent commitment=attested backend=native");
+            // Scope, not backend: the query probed the native
+            // backend and found inert commitment residue there.
+            // No claim about any other backend is made.
+            println!("{container_name} state=absent commitment=attested scope=native");
             Ok(())
         }
         cistella::describe::ProbeOutcome::AbsentClean => {
-            println!("{container_name} state=absent commitment=unattested backend=native");
+            // Scope, not backend: absent from the probed native
+            // backend. A session unknown anywhere else is not
+            // distinguished from never-existing — the scope
+            // marker is the honesty mechanism.
+            println!("{container_name} state=absent commitment=unattested scope=native");
             Ok(())
         }
     }

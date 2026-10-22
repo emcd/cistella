@@ -12,9 +12,11 @@
 //! Storage follows the established host-private state discipline:
 //! files live in the uid-scoped state dir
 //! (`PrepareLease::state_dir`, 0700 seat-owned via
-//! `open_state_dir`), written O_EXCL 0600 and read through the
-//! anchored same-FD discipline — the exact pattern cleanup state
-//! already uses. The spec filename (`cistella-attestation-<id>`)
+//! `open_state_dir`), written O_EXCL 0600 temp files and read
+//! through the anchored same-FD discipline — the cleanup-state
+//! pattern, with publication via linkat (atomic-or-exist:
+//! atomic visibility AND write-once, where renameat would
+//! clobber). The spec filename (`cistella-attestation-<id>`)
 //! is preserved; the directory refines the draft's bare
 //! `runtime_base` to the state dir, which is the discipline
 //! Tier-2 accepted. Guests never receive the state dir as a
@@ -93,15 +95,24 @@ fn open_attestation_dir(
     crate::guest_anchor::open_state_dir(&crate::lock::PrepareLease::state_dir(base))
 }
 
-/// Publishes one attestation exactly once (O_EXCL: a second
-/// publish for the same session refuses rather than
-/// overwriting — session ids are minted unique, so a clash is
-/// a programmer error, never a retry).
+/// Publication counter for unique staging names (pid + nanos
+/// join below; the counter closes the same-nanosecond case).
+static PUBLISH_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Publishes one attestation exactly once, atomically: bytes go
+/// to an O_EXCL temp file, then linkat binds the final name —
+/// linkat fails EEXIST when the final name exists, so
+/// atomicity (readers see absent or complete, never partial)
+/// and write-once (second publish refuses, never overwrites)
+/// hold together with no trade between them. Readers therefore
+/// never observe a mid-publication file: present means
+/// committed, absent means not-yet-committed.
 ///
 /// # Errors
 ///
-/// Returns `CistellaError::Runtime` on bad session id, state-dir
-/// refusal, name clash, or I/O failure.
+/// Returns `CistellaError::Runtime` on bad session id, empty
+/// identity fields, state-dir refusal, name clash, or I/O
+/// failure.
 pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
     let name = attestation_name(&attestation.session_id)
         .map_err(|error| CistellaError::Runtime(format!("attestation: {error}")))?;
@@ -125,13 +136,50 @@ pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
         .map_err(|e| CistellaError::Runtime(format!("encode attestation: {e}")))?;
     let dir = open_attestation_dir(base)
         .map_err(|error| CistellaError::Runtime(format!("attestation state: {error}")))?;
+    let tmp = format!(
+        ".tmp-attestation-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0),
+        PUBLISH_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let mut staged = dir
-        .create_file(&name)
-        .map_err(|e| CistellaError::Runtime(format!("publish attestation {name}: {e}")))?;
-    staged
+        .create_file(&tmp)
+        .map_err(|e| CistellaError::Runtime(format!("stage attestation {tmp}: {e}")))?;
+    let write_outcome = staged
         .write_all(&bytes)
-        .map_err(|e| CistellaError::Runtime(format!("write attestation {name}: {e}")))?;
-    Ok(())
+        .map_err(|e| CistellaError::Runtime(format!("write attestation staging {tmp}: {e}")));
+    drop(staged);
+    if let Err(error) = write_outcome {
+        dir.remove_file(&tmp);
+        return Err(error);
+    }
+    // Atomic-or-exist publication: the link makes the complete
+    // bytes visible at the final name in one step; EEXIST means
+    // another publish won (write-once violation, never an
+    // overwrite). Raw linkat (not renameat): rename would
+    // clobber.
+    // SAFETY: dirfd-relative paths, single-component names
+    // validated above (no slashes), empty flags.
+    let linked = nix::unistd::linkat(
+        Some(dir.dirfd()),
+        std::path::Path::new(&tmp),
+        Some(dir.dirfd()),
+        std::path::Path::new(&name),
+        nix::fcntl::AtFlags::empty(),
+    );
+    dir.remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(()),
+        Err(nix::errno::Errno::EEXIST) => Err(CistellaError::Runtime(format!(
+            "attestation {name} already published (write-once)"
+        ))),
+        Err(errno) => Err(CistellaError::Runtime(format!(
+            "link attestation {name}: {errno}"
+        ))),
+    }
 }
 
 /// Reads one attestation: `None` when absent (normal precommit —
