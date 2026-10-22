@@ -268,28 +268,23 @@ fn tmpdir_natural_exit_reaps_slice() {
         &[],
         None,
     );
-    wait_active(&id);
+    wait_attestation(&id, &format!("cistella-{id}"));
     // Pre-exit observation: the slice must exist mid-session.
     // Absence-only would pass even if nothing was ever minted;
     // the live-slice check proves the fixture exercises the reap
     // (same shape as the terminate test's mid-run assertion).
+    // No poll: the attestation commits post-launch, and prepare
+    // (which mints the slice) strictly precedes launch — so a
+    // committed attestation implies a minted slice, and nothing
+    // reaps mid-session (teardown/gc only; gc skips live units).
+    // A single read asserts; absence is genuine failure, not timing.
     let root = seat_root();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let slices = loop {
-        let found: Vec<_> = std::fs::read_dir(&root)
-            .expect("read seat root")
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
-            .collect();
-        if !found.is_empty() {
-            break found;
-        }
-        if Instant::now() >= deadline {
-            panic!("session slice never minted for {id}");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let slices: Vec<_> = std::fs::read_dir(&root)
+        .expect("read seat root")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
+        .collect();
     assert_eq!(slices.len(), 1, "one session slice, got: {slices:?}");
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(status.success(), "natural exit 0, got: {status:?}");

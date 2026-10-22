@@ -10,6 +10,8 @@ mod conformance;
 mod design_vectors;
 #[path = "integration/enter_gate.rs"]
 mod enter_gate;
+#[path = "integration/event_wait.rs"]
+mod event_wait;
 #[path = "integration/gates.rs"]
 mod gates;
 #[path = "integration/guest_hello.rs"]
