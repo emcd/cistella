@@ -180,12 +180,15 @@ pub fn await_armed<T>(
 /// Reads and validates one attestation: parseable, id-matching,
 /// container-matching, incarnation-bound (native commits), AND
 /// live-equal to the current backend incarnation. A present file
-/// that is corrupt, mismatched, stale, or unqueryable panics
+/// that is corrupt, mismatched, stale, or unincarnated panics
 /// immediately: with atomic publication a present file is always
 /// complete, and a write-once marker never becomes current — so
 /// waiting out the bound on a hopeless file would be silent
-/// wrongness, not patience. The product would fail typed on the
-/// same facts; the harness fails loud on them.
+/// wrongness, not patience. A present-but-unobservable backend
+/// is transient (loaded backend, hiccup), so it reads as
+/// not-yet-valid and the bound stays fail-loud for the genuinely
+/// dead. The product would fail typed on the same facts; the
+/// harness fails loud on them.
 fn read_valid_attestation(
     base: &std::path::Path,
     id: &str,
@@ -201,10 +204,15 @@ fn read_valid_attestation(
     let bound = attestation.incarnation.as_ref().unwrap_or_else(|| {
         panic!("attestation for session {id} carries no incarnation (foreign commitment)")
     });
+    // Live equality is the currency proof — but a query failure
+    // is transient (loaded backend, hiccup), not a verdict: only
+    // a successful comparison decides, and only mismatch fails.
+    // A present-but-unobservable backend is not-yet-valid, and
+    // the 60s bound stays fail-loud for the genuinely dead.
     match cistella::attestation::query_incarnation(container) {
         Ok(live) if &live == bound => Some(attestation),
         Ok(_) => panic!("attestation for session {id} is stale (container recreated or restarted)"),
-        Err(error) => panic!("incarnation unqueryable for session {id}: {error}"),
+        Err(_) => None,
     }
 }
 
@@ -257,13 +265,14 @@ fn await_observed_pins_arm_recheck_validate() {
 #[test]
 #[should_panic(expected = "never observed (fail-loud bound)")]
 fn await_unrelated_wake_never_satisfies() {
-    // Negative control: only an unrelated file exists, so even
-    // its wake cannot satisfy the predicate — the bound fires
-    // fail-loud instead of returning or hanging. Deterministic:
-    // no target file exists at all.
+    // Negative control: the unrelated CREATE lands AFTER the
+    // subscription, so its wake genuinely fires — yet the
+    // predicate only accepts the absent target, so the bound
+    // fires fail-loud instead of returning or hanging.
+    // Deterministic: no target file exists at all.
     let dir = tempfile::tempdir().expect("tmpdir");
-    std::fs::write(dir.path().join("unrelated"), b"noise").expect("stage noise");
     let armed = arm_watch(dir.path());
+    std::fs::write(dir.path().join("unrelated"), b"noise").expect("stage noise");
     let _: () = await_armed(&armed, "unrelated-only", Duration::from_millis(200), || {
         // The unrelated file exists and its wake fires, but the
         // predicate only accepts the absent target: never

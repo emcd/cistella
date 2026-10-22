@@ -123,16 +123,26 @@ pub fn guard_terminate(home: &str, id: &str) -> Result<Output, BoundedRunError> 
 /// assert, this separates "blocked on the lock" from "never
 /// scheduled" (an unscheduled child holds no lock fd).
 pub fn wait_lock_attempt(child: &mut std::process::Child, timeout: Duration) {
-    use std::os::unix::ffi::OsStrExt as _;
     let pid = child.id();
-    let lock = cistella::lock::lock_path();
-    let lock_bytes = lock.as_os_str().as_bytes();
+    // Identity by inode, not path spelling: the /proc fd target
+    // is resolved while lock_path() may spell an unresolved
+    // prefix — byte comparison would false-fail on symlinked
+    // runtime dirs. A missing lock file is simply not-yet (the
+    // child creates it on open, immediately before flock).
+    use std::os::unix::fs::MetadataExt as _;
+    let lock_id = std::fs::metadata(cistella::lock::lock_path())
+        .ok()
+        .map(|meta| (meta.dev(), meta.ino()));
     let deadline = Instant::now() + timeout;
     loop {
         if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
             for entry in entries.flatten() {
-                let target = std::fs::read_link(entry.path()).unwrap_or_default();
-                if target.as_os_str().as_bytes() == lock_bytes {
+                let matches = std::fs::metadata(entry.path())
+                    .ok()
+                    .map(|meta| (meta.dev(), meta.ino()))
+                    .zip(lock_id)
+                    .is_some_and(|(fd_id, lock)| fd_id == lock);
+                if matches {
                     return;
                 }
             }
