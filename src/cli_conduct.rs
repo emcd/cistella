@@ -681,37 +681,39 @@ pub(crate) fn conduct_session(
             return Err(error);
         }
     };
-    // Launch-commit publication (readiness attestation): post-check
-    // the live incarnation against the pre-capture and publish ONLY
-    // the pre-bound identity on exact equality. Mismatch or
-    // unestablishable identity refuses + converges with nothing
-    // published (false-negative-only: no blessed false positive).
-    // Foreign sessions publish nothing (no readiness conferred).
+    // Launch-commit publication (readiness attestation): the
+    // pure pre/post bound decides — publish ONLY the pre-bound
+    // identity on exact equality, refuse + converge with nothing
+    // published otherwise (false-negative-only: no blessed false
+    // positive). Foreign sessions publish an unincarnated
+    // commitment (no readiness conferred).
     if backend_native {
-        let committed = match (
+        let post_result = cistella::attestation::query_incarnation(&container_name);
+        let committed = match cistella::attestation::commit_decision(
             pre_incarnation.as_ref(),
-            cistella::attestation::query_incarnation(&container_name),
+            post_result.as_ref().ok(),
         ) {
-            (Some(pre), Ok(post)) if pre == &post => {
+            cistella::attestation::CommitDecision::Publish(bound) => {
                 let attestation = cistella::attestation::Attestation {
                     session_id: id.clone(),
                     container_name: container_name.clone(),
                     attempt_key: key.as_str().to_string(),
                     argv: argv.clone(),
                     execution_handle: execution.as_str().to_string(),
-                    incarnation: Some(pre.clone()),
+                    incarnation: Some(bound),
                 };
                 cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation)
             }
-            (Some(_), Ok(_)) => Err(cistella::error::CistellaError::Runtime(
-                "launch incarnation changed during launch (refusing)".to_string(),
-            )),
-            (_, Err(error)) => Err(cistella::error::CistellaError::Runtime(format!(
-                "launch incarnation unestablishable (refusing): {error}"
-            ))),
-            (None, Ok(_)) => Err(cistella::error::CistellaError::Runtime(
-                "launch incarnation pre-capture missing (refusing)".to_string(),
-            )),
+            cistella::attestation::CommitDecision::Refuse(reason) => {
+                // Preserve the query failure detail when the
+                // post-check itself errored (diagnostics, not
+                // control flow — the decision is already made).
+                let detail = match &post_result {
+                    Err(error) => format!("{reason} (refusing): {error}"),
+                    Ok(_) => format!("{reason} (refusing)"),
+                };
+                Err(cistella::error::CistellaError::Runtime(detail))
+            }
         };
         if let Err(refusal) = committed {
             if let Err(teardown_err) =

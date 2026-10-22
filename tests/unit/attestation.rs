@@ -4,7 +4,7 @@
 //! temp state root; incarnation liveness (`query_incarnation`)
 //! stays a live-tier concern (podman contact).
 
-use cistella::attestation::{Attestation, Incarnation, incarnation_matches};
+use cistella::attestation::{Attestation, CommitDecision, Incarnation, commit_decision};
 
 fn sample() -> Attestation {
     Attestation {
@@ -22,6 +22,63 @@ fn sample() -> Attestation {
 
 fn state_root() -> tempfile::TempDir {
     tempfile::tempdir().expect("tmpdir")
+}
+
+#[test]
+fn commit_decision_publishes_only_pre_bound_identity() {
+    // Exact equality: the pre-bound identity publishes.
+    let pre = Incarnation {
+        container_id: "id-1".to_string(),
+        started_at: "t-1".to_string(),
+    };
+    let same = pre.clone();
+    assert_eq!(
+        commit_decision(Some(&pre), Some(&same)),
+        CommitDecision::Publish(pre.clone()),
+        "equal pre/post publishes the bound identity"
+    );
+    // In-launch recreate (new ID): refuse, nothing published.
+    let recreated = Incarnation {
+        container_id: "id-2".to_string(),
+        started_at: "t-1".to_string(),
+    };
+    assert!(
+        matches!(
+            commit_decision(Some(&pre), Some(&recreated)),
+            CommitDecision::Refuse(_)
+        ),
+        "recreate inside the launch window refuses"
+    );
+    // In-launch restart (new StartedAt): refuse.
+    let restarted = Incarnation {
+        container_id: "id-1".to_string(),
+        started_at: "t-2".to_string(),
+    };
+    assert!(
+        matches!(
+            commit_decision(Some(&pre), Some(&restarted)),
+            CommitDecision::Refuse(_)
+        ),
+        "restart inside the launch window refuses"
+    );
+    // Unestablishable post-check: refuse (identity-unknown
+    // never reads ready, never publishes).
+    assert!(
+        matches!(commit_decision(Some(&pre), None), CommitDecision::Refuse(_)),
+        "unknown post-check refuses"
+    );
+    // Missing pre-capture: refuse even with a live post.
+    assert!(
+        matches!(
+            commit_decision(None, Some(&same)),
+            CommitDecision::Refuse(_)
+        ),
+        "missing pre-capture refuses"
+    );
+    assert!(
+        matches!(commit_decision(None, None), CommitDecision::Refuse(_)),
+        "missing pre-capture with unknown post refuses"
+    );
 }
 
 #[test]
@@ -126,6 +183,8 @@ fn session_mismatch_refuses() {
 
 #[test]
 fn incarnation_equality_is_exact() {
+    // Primitive equality behind the commit decision: both
+    // fields compare, neither a partial match.
     let a = Incarnation {
         container_id: "id-1".to_string(),
         started_at: "t-1".to_string(),
@@ -139,15 +198,9 @@ fn incarnation_equality_is_exact() {
         container_id: "id-1".to_string(),
         started_at: "t-2".to_string(),
     };
-    assert!(incarnation_matches(&a, &same));
-    assert!(
-        !incarnation_matches(&a, &new_id),
-        "recreate (new ID) must mismatch"
-    );
-    assert!(
-        !incarnation_matches(&a, &restarted),
-        "restart (new StartedAt) must mismatch"
-    );
+    assert_eq!(a, same);
+    assert_ne!(a, new_id, "recreate (new ID) must mismatch");
+    assert_ne!(a, restarted, "restart (new StartedAt) must mismatch");
 }
 
 #[test]

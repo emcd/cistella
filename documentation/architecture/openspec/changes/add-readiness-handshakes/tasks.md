@@ -3,8 +3,8 @@
 - [x] 1.1 Owner pre-captures incarnation before `execute_launch`, post-checks after Ok, publishes `cistella-attestation-<id>` (0600, O_EXCL, atomic temp+rename, anchored-discipline I/O) ONLY on equality; mismatch/unknown refuses + converges via typed teardown; teardown removes unit file before attestation reap; gc reaps orphans
 - [x] 1.2 Dedicated `state` verb: commitment + snapshot (never `executing`); residue table (live-residue error / attestation-only Absent / all-absent / probe-error); fuzzy Selector errors unchanged; foreign unavailable semantics; default `inspect` byte-identical
 - [x] 1.3 `enter` single-pass check (attestation + incarnation + native admittability), immediate typed refusal; stale-generation refusal; post-check exec failure honest; foreign legacy direct path; no retries, no polls
-- [ ] 1.4 Repair `inspect()` executing scope (`pending.unit == *handle`); pins: other-unit-executing and pre-commit-child-is-not-ack
-- [ ] 1.5 Pins: absent/state-success vs enter-refusal split, corrupt/mismatch/stale/deletion-race, residue rows, typo-id truthfulness, foreign gating + foreign no-record probe unsupported, pre-change unattested window, same-name recreate/restart refusal, choreographed launch-interval recreate refusal (injected, deterministic)
+- [x] 1.4 Repair `inspect()` executing scope (`pending.unit == *handle` via shared predicate + inline scope pin); pre-commit refusal via the enter-gate negative control + commit-decision no-publication pins
+- [x] 1.5 Pins: absent/state-success vs enter-refusal split (stalled pair), corrupt/mismatch unit pins, stale restart+recreate live pins, post-teardown Selector ordering, residue rows + typo-id + attestation-only live probes, foreign gating (shape + unsupported probe), pre-change unattested window (stalled pair), same-name recreate/restart refusal, choreographed launch-interval refusal (commit_decision injected pins)
 
 ## 2. Race fixes (issues/11, issues/12)
 
@@ -22,7 +22,7 @@
 
 ## 4. Ride-along (todos/50)
 
-- [ ] 4.1 Forced reload-failure exercise for `remove_unit_file` (live fault-injection seat, shimmed systemctl)
+- [x] 4.1 Forced reload-failure exercise for `remove_unit_file` (live fault-injection seat, shimmed systemctl degrading only daemon-reload; recovery converges)
 
 ## 5. Validation
 

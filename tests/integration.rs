@@ -6,6 +6,8 @@ mod bounded;
 mod conduct_taps;
 #[path = "integration/conformance.rs"]
 mod conformance;
+#[path = "integration/describe_gate.rs"]
+mod describe_gate;
 #[path = "integration/design_vectors.rs"]
 mod design_vectors;
 #[path = "integration/enter_gate.rs"]
@@ -52,6 +54,8 @@ mod selectors;
 mod signals;
 #[path = "integration/ssh_guest.rs"]
 mod ssh_guest;
+#[path = "integration/teardown_reload.rs"]
+mod teardown_reload;
 #[path = "integration/terminate_converge.rs"]
 mod terminate_converge;
 #[path = "integration/tmp_alias.rs"]

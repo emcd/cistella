@@ -260,10 +260,29 @@ pub fn query_incarnation(container_name: &str) -> Result<Incarnation> {
     })
 }
 
-/// Exact incarnation equality: the only comparison. Any field
-/// difference (recreate → new ID, restart → new StartedAt) is
-/// a stale generation, never a partial match.
+/// Launch-commit decision: the pure pre/post bound behind
+/// publication. Publishes ONLY the pre-verified identity on
+/// exact equality; mismatch, unestablishable post-check, or
+/// missing pre-capture refuses with nothing published
+/// (false-negative-only — no blessed false positives).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitDecision {
+    /// Publish the pre-bound identity.
+    Publish(Incarnation),
+    /// Refuse and converge with nothing published.
+    Refuse(&'static str),
+}
+
+/// Resolves pre-capture vs post-check into a commit decision.
+/// `post = None` means the post-launch identity query failed.
 #[must_use]
-pub fn incarnation_matches(live: &Incarnation, attested: &Incarnation) -> bool {
-    live == attested
+pub fn commit_decision(pre: Option<&Incarnation>, post: Option<&Incarnation>) -> CommitDecision {
+    match (pre, post) {
+        (Some(bound), Some(observed)) if bound == observed => {
+            CommitDecision::Publish(bound.clone())
+        }
+        (Some(_), Some(_)) => CommitDecision::Refuse("launch incarnation changed during launch"),
+        (_, None) => CommitDecision::Refuse("launch incarnation unestablishable"),
+        (None, Some(_)) => CommitDecision::Refuse("launch incarnation pre-capture missing"),
+    }
 }

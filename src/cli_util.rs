@@ -137,8 +137,22 @@ fn describe_record(
 fn describe_probe(id: &str) -> Result<(), cistella::error::CistellaError> {
     let container_name = format!("cistella-{id}");
     let evidence = cistella::describe::probe_native(&container_name)?;
-    let attestation = cistella::attestation::read(&cistella::lock::runtime_base(), id)?.is_some();
-    match cistella::describe::probe_table(&container_name, &evidence, attestation) {
+    let attestation = cistella::attestation::read(&cistella::lock::runtime_base(), id)?;
+    // Unincarnated (foreign) commitment with no local residue:
+    // foreign absence cannot be established from local Podman
+    // evidence — unsupported, never an inferred `absent`.
+    // Local residue still dominates (backend fact first).
+    if attestation
+        .as_ref()
+        .is_some_and(|attested| attested.incarnation.is_none())
+        && !evidence.container_present
+        && !evidence.unit_present
+    {
+        return Err(cistella::error::CistellaError::Runtime(
+            "describe state: foreign session identity not establishable from local evidence (unsupported)".to_string(),
+        ));
+    }
+    match cistella::describe::probe_table(&container_name, &evidence, attestation.is_some()) {
         cistella::describe::ProbeOutcome::Residue { container_name } => {
             Err(cistella::error::CistellaError::Runtime(format!(
                 "describe state: residue {container_name} present with no record; terminate or gc to converge"

@@ -295,13 +295,10 @@ impl Isolator for PodmanIsolator {
         // Executing means THIS unit has an unreaped child, not merely
         // a retained record (outcomes replay after completion) and
         // never another unit's live child (per-unit scope: a second
-        // unit's harness must not ready this unit).
-        let executing = self
-            .executions
-            .lock()
-            .expect("exec table lock")
-            .values()
-            .any(|pending| pending.unit == *handle && pending.child.is_some());
+        // unit's harness must not ready this unit). Predicate is
+        // shared with the scope pin below.
+        let executing =
+            unit_has_live_child(&self.executions.lock().expect("exec table lock"), handle);
         let lifecycle = classify_state(
             Some(&active_state),
             container.as_deref(),
@@ -440,6 +437,76 @@ impl Isolator for PodmanIsolator {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }
+}
+
+/// Per-unit live-child predicate behind `inspect`'s executing
+/// bit: THIS unit has an unreaped harness child (never another
+/// unit's live child, never a retained outcome). Pure over the
+/// table so the scope rule pins without a backend.
+fn unit_has_live_child(
+    executions: &std::collections::HashMap<ExecutionHandle, PendingExec>,
+    handle: &UnitHandle,
+) -> bool {
+    executions
+        .values()
+        .any(|pending| pending.unit == *handle && pending.child.is_some())
+}
+
+#[cfg(test)]
+mod scope_tests {
+    // Inline by exception (project rule): the executions table
+    // is crate-private by design, and no public interface reaches
+    // the predicate without a live podman backend. Single test.
+    use super::{PendingExec, UnitHandle, unit_has_live_child};
+    use crate::framework::contract::ExecutionHandle;
+
+    #[test]
+    fn other_unit_executing_does_not_ready_this_unit() {
+        let unit_a = UnitHandle::mint();
+        let unit_b = UnitHandle::mint();
+        let mut table = std::collections::HashMap::new();
+        // Live harness child on A only (real short-lived sleep,
+        // reaped at test end — no podman involved).
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        table.insert(
+            ExecutionHandle::mint(),
+            PendingExec {
+                unit: unit_a.clone(),
+                child: Some(child),
+                outcome: None,
+            },
+        );
+        // Retained outcome on B (reaped child, replayable
+        // result): not live, never executing.
+        table.insert(
+            ExecutionHandle::mint(),
+            PendingExec {
+                unit: unit_b.clone(),
+                child: None,
+                outcome: Some(crate::framework::isolator::ExecutionOutcome::Exited(0)),
+            },
+        );
+        assert!(
+            unit_has_live_child(&table, &unit_a),
+            "unit with a live child reads executing"
+        );
+        assert!(
+            !unit_has_live_child(&table, &unit_b),
+            "other unit's live child must not ready this unit"
+        );
+        // Reap the sleep (fail-loud on wedged child).
+        for pending in table.values_mut() {
+            if let Some(mut child) = pending.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
