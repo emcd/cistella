@@ -257,27 +257,41 @@ fn tmpdir_natural_exit_reaps_slice() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("tmpdir.toml");
-    // Short harness: the session completes naturally (no
-    // terminate), exercising the teardown_unit clean path.
+    // Workload release handshake (no clock anywhere): the gate
+    // fifo is created pre-conduct; the harness blocks opening it
+    // for reading, so natural exit is impossible before the
+    // test releases — publication cannot race teardown.
+    nix::unistd::mkfifo(
+        &worktree.path().join("gate.fifo"),
+        nix::sys::stat::Mode::from_bits(0o600).expect("mode bits"),
+    )
+    .expect("mkfifo gate");
+    // Harness that cannot exit on its own: it blocks on the
+    // gate until the test observes the commit and releases.
+    // The session completes naturally (no terminate),
+    // exercising the teardown_unit clean path.
     let (mut conduct, id, mut guard) = spawn_conduct_full(
         &home,
         &profile,
         &worktree_str,
         &[],
-        &["sleep", "2"],
+        &["sh", "-c", "read line < /work/gate.fifo"],
         &[],
         None,
     );
-    wait_attestation(&id, &format!("cistella-{id}"));
-    // Pre-exit observation: the slice must exist mid-session.
-    // Absence-only would pass even if nothing was ever minted;
-    // the live-slice check proves the fixture exercises the reap
-    // (same shape as the terminate test's mid-run assertion).
-    // No poll: the attestation commits post-launch, and prepare
-    // (which mints the slice) strictly precedes launch — so a
-    // committed attestation implies a minted slice, and nothing
-    // reaps mid-session (teardown/gc only; gc skips live units).
-    // A single read asserts; absence is genuine failure, not timing.
+    let container = format!("cistella-{id}");
+    // Commit event with live incarnation proof: the harness is
+    // provably blocked (container running now), never assumed.
+    wait_attestation(&id, &container);
+    // Pre-exit observation: the slice must exist mid-session
+    // while the harness cannot exit. Absence-only would pass
+    // even if nothing was ever minted; the live-slice check
+    // proves the fixture exercises the reap. No poll: the
+    // attestation commits post-launch, and prepare (which mints
+    // the slice) strictly precedes launch — a committed
+    // attestation implies a minted slice, and nothing reaps
+    // mid-session (teardown/gc only; gc skips live units).
+    // A single read asserts; absence is genuine failure.
     let root = seat_root();
     let slices: Vec<_> = std::fs::read_dir(&root)
         .expect("read seat root")
@@ -286,6 +300,17 @@ fn tmpdir_natural_exit_reaps_slice() {
         .filter(|name| name.starts_with(&format!("cistella-tmp-{id}-")))
         .collect();
     assert_eq!(slices.len(), 1, "one session slice, got: {slices:?}");
+    // Release: opening for write unblocks the harness's read;
+    // the newline lets `read` succeed so the harness exits 0
+    // (EOF without data would fail it).
+    {
+        use std::io::Write as _;
+        let mut gate = std::fs::OpenOptions::new()
+            .write(true)
+            .open(worktree.path().join("gate.fifo"))
+            .expect("open gate for release");
+        gate.write_all(b"\n").expect("release the harness");
+    }
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
     assert!(status.success(), "natural exit 0, got: {status:?}");
     guard.id = None;

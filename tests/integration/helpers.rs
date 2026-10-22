@@ -113,6 +113,44 @@ pub fn guard_terminate(home: &str, id: &str) -> Result<Output, BoundedRunError> 
     )
 }
 
+/// Waits until a child process has opened the creation-window
+/// lock file (observable lock attempt): the fd's presence
+/// proves the child reached the guarded operation — the lock
+/// path is opened immediately before the blocking flock, so a
+/// child holding the fd has attempted admission. Bounded and
+/// fail-loud: an exited child or a timeout means the attempt
+/// never happened. Combined with a subsequent still-running
+/// assert, this separates "blocked on the lock" from "never
+/// scheduled" (an unscheduled child holds no lock fd).
+pub fn wait_lock_attempt(child: &mut std::process::Child, timeout: Duration) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let pid = child.id();
+    let lock = cistella::lock::lock_path();
+    let lock_bytes = lock.as_os_str().as_bytes();
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
+            for entry in entries.flatten() {
+                let target = std::fs::read_link(entry.path()).unwrap_or_default();
+                if target.as_os_str().as_bytes() == lock_bytes {
+                    return;
+                }
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                panic!("child {pid} exited ({status:?}) before attempting the lock")
+            }
+            Ok(None) => {}
+            Err(error) => panic!("child {pid} unobservable: {error}"),
+        }
+        if Instant::now() > deadline {
+            panic!("child {pid} never opened the lock file (no lock attempt observed)");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 pub fn valid_minted_id(id: &str) -> bool {
     id.len() == cistella::session::MINTED_ID_LEN
         && id

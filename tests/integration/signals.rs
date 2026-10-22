@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use super::helpers::*;
 
@@ -204,9 +205,15 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn gc");
+    // Lock-attempt synchronization (no sleep-tuned settle):
+    // the gc holds the lock-file fd once it reaches the guarded
+    // operation, so fd-presence proves the attempt; still-alive
+    // after that proves blockage (an unscheduled child would
+    // hold no fd). Test-side lock is held throughout.
+    wait_lock_attempt(&mut gc, Duration::from_secs(10));
     // Blockage is structural (lock held ⇒ gc cannot proceed),
-    // so no settle sleep: try_wait immediately is correct in
-    // every case (unspawned/blocked → None passes; crashed →
+    // so no settle sleep: try_wait after a proven attempt is
+    // correct in every case (blocked → None passes; crashed →
     // Some fails loud). The lock is the synchronization.
     assert!(
         gc.try_wait().expect("poll gc").is_none(),
@@ -246,6 +253,8 @@ fn gc_creation_window_reaps_nothing() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn gc");
+    // Same lock-attempt synchronization as above.
+    wait_lock_attempt(&mut gc, Duration::from_secs(10));
     // Same structural blockage as above: no settle sleep.
     assert!(
         gc.try_wait().expect("poll gc").is_none(),

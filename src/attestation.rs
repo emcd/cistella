@@ -1,4 +1,5 @@
-//! Owner-written launch attestation: the commit event made durable.
+//! Owner-written launch attestation: the commit event made
+//! process-visible.
 //!
 //! The conduct owner publishes one file per session after
 //! `execute_launch` returns Ok, binding the attempt (unit,
@@ -8,6 +9,12 @@
 //! state`, `enter`) treat the file as historical commitment proof:
 //! present + incarnation-equal means the launch committed for
 //! this incarnation; anything else fails closed.
+//!
+//! Publication is atomic as observed by processes (linkat:
+//! absent-or-complete, never partial) — NOT power-loss/crash
+//! durable. A crash may leave a corrupt or missing commitment
+//! (fail closed typed) or staging litter (ignored by gc;
+//! harmless). Readers never observe a mid-publication file.
 //!
 //! Storage follows the established host-private state discipline:
 //! files live in the uid-scoped state dir

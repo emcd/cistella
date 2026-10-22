@@ -54,31 +54,49 @@ fn await_observed<T>(
     timeout: Duration,
     observe: impl Fn() -> Option<T>,
 ) -> T {
-    use std::os::unix::io::RawFd;
     // Recheck before subscribing: the event may already exist.
     if let Some(valid) = observe() {
         return valid;
     }
+    let armed = arm_watch(dir);
+    await_armed(&armed, what, timeout, observe)
+}
+
+/// An armed inotify watch: the subscription exists, so a later
+/// `await_armed` exercises the post-subscription recheck path
+/// (never the pre-arm one). Closed on drop.
+pub struct ArmedWatch {
+    fd: std::os::unix::io::RawFd,
+}
+
+impl Drop for ArmedWatch {
+    fn drop(&mut self) {
+        unsafe {
+            ::libc::close(self.fd);
+        }
+    }
+}
+
+/// Arms an inotify watch on `dir` (CLOSE_WRITE|CREATE|MOVED_TO)
+/// without waiting: split from `await_observed` so pins can
+/// choreograph the arm-then-event ordering deterministically
+/// (stage after arm, never sleep-tuned).
+pub fn arm_watch(dir: &std::path::Path) -> ArmedWatch {
+    use std::os::unix::io::RawFd;
     // SAFETY: straight-line libc inotify init with checked
-    // return; CLOEXEC|NONBLOCK, closed on every exit path below.
+    // return; CLOEXEC|NONBLOCK, owned by the guard below.
     let fd: RawFd = unsafe { ::libc::inotify_init1(::libc::IN_CLOEXEC | ::libc::IN_NONBLOCK) };
     if fd < 0 {
         panic!("inotify init failed");
     }
-    struct Closer(RawFd);
-    impl Drop for Closer {
-        fn drop(&mut self) {
-            unsafe {
-                ::libc::close(self.0);
-            }
-        }
-    }
-    let _closer = Closer(fd);
     // SAFETY: watch the dir for publication events; the path is
     // NUL-free by construction, checked here rather than assumed.
     use std::os::unix::ffi::OsStrExt;
     let bytes = dir.as_os_str().as_bytes();
     if bytes.contains(&0) {
+        unsafe {
+            ::libc::close(fd);
+        }
         panic!("inotify path contains NUL");
     }
     let mut path_buf = bytes.to_vec();
@@ -92,8 +110,23 @@ fn await_observed<T>(
         )
     };
     if watch < 0 {
+        unsafe {
+            ::libc::close(fd);
+        }
         panic!("inotify watch failed on {}", dir.display());
     }
+    ArmedWatch { fd }
+}
+
+/// Waits on an already-armed watch: post-subscription recheck
+/// first (closes the arm-then-miss gap), then the poll loop.
+/// Every wake re-drives `observe`; the bound fires fail-loud.
+pub fn await_armed<T>(
+    armed: &ArmedWatch,
+    what: &str,
+    timeout: Duration,
+    observe: impl Fn() -> Option<T>,
+) -> T {
     // Recheck after subscribing: closes the arm-then-miss gap.
     if let Some(valid) = observe() {
         return valid;
@@ -111,7 +144,7 @@ fn await_observed<T>(
         // ignored (any readiness or timeout re-drives the
         // observe below, which is the actual condition).
         let mut poll_fd = ::libc::pollfd {
-            fd,
+            fd: armed.fd,
             events: ::libc::POLLIN,
             revents: 0,
         };
@@ -130,8 +163,9 @@ fn await_observed<T>(
             // SAFETY: bounded buffer, checked fd, short read is
             // a complete drain for NONBLOCK semantics.
             loop {
-                let n =
-                    unsafe { ::libc::read(fd, buf.as_mut_ptr() as *mut ::libc::c_void, buf.len()) };
+                let n = unsafe {
+                    ::libc::read(armed.fd, buf.as_mut_ptr() as *mut ::libc::c_void, buf.len())
+                };
                 if n <= 0 {
                     break;
                 }
@@ -144,13 +178,14 @@ fn await_observed<T>(
 }
 
 /// Reads and validates one attestation: parseable, id-matching,
-/// container-matching, incarnation-bound (native commits).
-/// Returns None when absent or not-yet-valid — the caller, not
-/// this probe, decides failure. A present-but-unreadable file
-/// panics immediately: with atomic publication a present file
-/// is always complete, so corruption means genuine damage the
-/// product would fail typed — failing fast here matches the
-/// product instead of waiting out the bound on a hopeless file.
+/// container-matching, incarnation-bound (native commits), AND
+/// live-equal to the current backend incarnation. A present file
+/// that is corrupt, mismatched, stale, or unqueryable panics
+/// immediately: with atomic publication a present file is always
+/// complete, and a write-once marker never becomes current — so
+/// waiting out the bound on a hopeless file would be silent
+/// wrongness, not patience. The product would fail typed on the
+/// same facts; the harness fails loud on them.
 fn read_valid_attestation(
     base: &std::path::Path,
     id: &str,
@@ -163,8 +198,14 @@ fn read_valid_attestation(
     if attestation.container_name != container {
         return None;
     }
-    attestation.incarnation.as_ref()?;
-    Some(attestation)
+    let bound = attestation.incarnation.as_ref().unwrap_or_else(|| {
+        panic!("attestation for session {id} carries no incarnation (foreign commitment)")
+    });
+    match cistella::attestation::query_incarnation(container) {
+        Ok(live) if &live == bound => Some(attestation),
+        Ok(_) => panic!("attestation for session {id} is stale (container recreated or restarted)"),
+        Err(error) => panic!("incarnation unqueryable for session {id}: {error}"),
+    }
 }
 
 #[test]
@@ -195,25 +236,41 @@ fn await_observed_pins_arm_recheck_validate() {
     // must ignore the former and return the latter's content.
     // (Proves wake-on-unrelated does not satisfy, and the bound
     // does not fire on a genuine commit — return itself is the
-    // proof, no timing asserts.)
+    // proof, no timing asserts.) Staging is causally ordered
+    // after the arm (same-thread spawn order), never
+    // sleep-tuned: the target write cannot precede the
+    // subscription.
+    let armed = arm_watch(dir.path());
+    std::fs::write(dir.path().join("unrelated"), b"noise").expect("stage noise");
     let staged = dir.path().to_path_buf();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        std::fs::write(staged.join("unrelated"), b"noise").expect("stage noise");
-        std::thread::sleep(Duration::from_millis(50));
         std::fs::write(staged.join("target"), b"target-content").expect("stage target");
     });
-    let got: String = await_observed(
-        dir.path(),
-        "genuine commit",
-        Duration::from_secs(10),
-        || {
-            std::fs::read_to_string(dir.path().join("target"))
-                .ok()
-                .filter(|text| !text.is_empty())
-        },
-    );
+    let got: String = await_armed(&armed, "genuine commit", Duration::from_secs(10), || {
+        std::fs::read_to_string(dir.path().join("target"))
+            .ok()
+            .filter(|text| !text.is_empty())
+    });
     assert_eq!(got, "target-content", "only the validated commit satisfies");
+}
+
+#[test]
+#[should_panic(expected = "never observed (fail-loud bound)")]
+fn await_unrelated_wake_never_satisfies() {
+    // Negative control: only an unrelated file exists, so even
+    // its wake cannot satisfy the predicate — the bound fires
+    // fail-loud instead of returning or hanging. Deterministic:
+    // no target file exists at all.
+    let dir = tempfile::tempdir().expect("tmpdir");
+    std::fs::write(dir.path().join("unrelated"), b"noise").expect("stage noise");
+    let armed = arm_watch(dir.path());
+    let _: () = await_armed(&armed, "unrelated-only", Duration::from_millis(200), || {
+        // The unrelated file exists and its wake fires, but the
+        // predicate only accepts the absent target: never
+        // satisfied, so the bound fires.
+        let _ = std::fs::read_to_string(dir.path().join("unrelated")).ok();
+        None::<()>
+    });
 }
 
 #[test]
