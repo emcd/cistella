@@ -97,13 +97,14 @@ pub fn wait_lock_blocked(child: &mut std::process::Child, timeout: Duration) {
             .map(|meta| (meta.dev(), meta.ino()));
         if let (Ok(text), Some((dev, ino))) = (std::fs::read_to_string("/proc/locks"), lock_id) {
             let waiter = BlockedWait { pid, dev, ino };
-            let mut pid_mentions = 0;
+            // Relevant lines for the failure message (bounded):
+            // any line naming the pid, verbatim, so an
+            // unexpected kernel format is reportable, not
+            // mysterious. Counts alone would not be.
+            let mut relevant: Vec<&str> = Vec::new();
             let matched = text.lines().any(|line| {
-                // Diagnostic count only (substring, not the
-                // decision predicate): how many lines name a
-                // pid containing ours.
-                if line.contains(&pid.to_string()) {
-                    pid_mentions += 1;
+                if line.contains(&pid.to_string()) && relevant.len() < 10 {
+                    relevant.push(line);
                 }
                 lock_waiter_matches(line, &waiter)
             });
@@ -111,8 +112,9 @@ pub fn wait_lock_blocked(child: &mut std::process::Child, timeout: Duration) {
                 return;
             }
             last_seen = format!(
-                "{} lock lines, {pid_mentions} mention pid {pid}",
-                text.lines().count()
+                "{} lock lines; pid-mentioning lines: {:?}",
+                text.lines().count(),
+                relevant
             );
         }
         match child.try_wait() {
