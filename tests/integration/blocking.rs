@@ -92,10 +92,22 @@ pub fn wait_lock_blocked(child: &mut std::process::Child, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     let mut last_seen = "no /proc/locks read yet".to_string();
     loop {
-        let lock_id = std::fs::metadata(cistella::lock::lock_path())
-            .ok()
-            .map(|meta| (meta.dev(), meta.ino()));
-        if let (Ok(text), Some((dev, ino))) = (std::fs::read_to_string("/proc/locks"), lock_id) {
+        let lock_meta = std::fs::metadata(cistella::lock::lock_path());
+        let lock_id = lock_meta.as_ref().ok().map(|meta| (meta.dev(), meta.ino()));
+        let locks_read = std::fs::read_to_string("/proc/locks");
+        // Every route to the deadline names its cause: a read
+        // or metadata error is itself the diagnostic (restricted
+        // proc, hidepid, missing lock dir) — never a stale or
+        // empty summary.
+        if let Err(error) = &locks_read {
+            last_seen = format!("read /proc/locks failed: {error}");
+        } else if lock_id.is_none() {
+            last_seen = format!(
+                "lock file unstatable: {}",
+                cistella::lock::lock_path().display()
+            );
+        }
+        if let (Ok(text), Some((dev, ino))) = (locks_read, lock_id) {
             let waiter = BlockedWait { pid, dev, ino };
             // Relevant lines for the failure message (bounded):
             // any line naming the pid, verbatim, so an
