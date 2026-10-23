@@ -167,7 +167,7 @@ fn conduct_lifecycle_terminate_while_attached() {
     wait_active(&id);
 
     let container = format!("cistella-{id}");
-    // Commit-event edge (issues/12): the launch attestation is
+    // Commit-event edge: the launch attestation is
     // the readiness fact — service-active fires before podman
     // exec can succeed, so the test gates enter on attestation
     // appearance (inotify-anchored, fail-loud bound), not on

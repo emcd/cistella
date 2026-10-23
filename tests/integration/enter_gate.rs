@@ -1,5 +1,5 @@
 //! Enter readiness-gate tests: the commit-event edge and its
-//! refusals (Change 2, issues/12).
+//! refusals (Change 2 test surface).
 //!
 //! Split from `lifecycle.rs` at the file-size limit; the
 //! terminate-while-attached conversion stays in place there,
@@ -10,16 +10,40 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 
+/// Kill-on-drop for a parked test child: armed at spawn,
+/// before any fallible id discovery, so every exit path —
+/// including a failed wait_for_unit_file or a panicked
+/// assertion — kills the parked conduct instead of orphaning
+/// it into a launch past the test. Reaping stays with the
+/// normal path (reap_bounded); a Drop kill without reap leaves
+/// only a zombie, never a running session.
+struct KillOnDrop(Option<std::process::Child>);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+        }
+    }
+}
+
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_enter_refuses_before_launch_commit() {
-    // Negative control for the commit-event edge (issues/12):
-    // a stalled conduct has installed its unit (record exists)
-    // but committed no launch (no attestation), so `enter`
-    // must refuse typed naming the missing attestation — never
-    // exec into the unlaunched container. The 30s install/start
-    // stall makes pre-commit deterministic; cleanup kills the
-    // stalled child and terminates the leftover unit.
+    // Negative control for the commit-event edge:
+    // a gated conduct has installed its unit (record exists)
+    // but cannot launch (no attestation ever commits), so
+    // `enter` must refuse typed naming the missing
+    // attestation — never exec into the unlaunched container.
+    // The create→initiate boundary is held by an explicit
+    // test-controlled handshake, not elapsed time: the conduct
+    // parks opening the gate fifo (no product-side timeout),
+    // the test asserts while launch is structurally unable to
+    // proceed, then aborts via SIGTERM (the parked open has no
+    // SA_RESTART, so the signal takes the abort path). The
+    // KillOnDrop guard is armed at spawn — before any fallible
+    // id discovery — so no path orphans the parked child into
+    // a launch past the test.
     if !systemd_gate() {
         return;
     }
@@ -28,14 +52,17 @@ fn conduct_enter_refuses_before_launch_commit() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("default.toml");
-    // Learn the session id at INSTALL time, not from conduct
-    // stdout: the id line prints only after the 30s stall,
-    // ~1s before the attestation commits — reading it there
-    // races publication (the gate can read present after the
-    // test observed absent). The unit file lands at install
-    // (pre-stall), so resolving it then leaves the whole
-    // stall window for deterministic pre-commit asserts. Raw
-    // spawn (no id-line wait) on the terminate_races precedent.
+    // The gate fifo is test-owned (not in the worktree): the
+    // conduct blocks opening it for reading; no test open of
+    // the write end ever happens here — the abort below is the
+    // only release this test performs.
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate.fifo");
+    nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::from_bits(0o600).expect("mode"))
+        .expect("mkfifo gate");
+    // Install-completed unit files, pre-gate: the id is learned
+    // from the installed unit, never from post-stall stdout
+    // (which would race publication).
     let unit_dir = std::path::PathBuf::from(&home).join(".config/containers/systemd");
     let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
         .map(|r| {
@@ -44,41 +71,42 @@ fn conduct_enter_refuses_before_launch_commit() {
                 .collect()
         })
         .unwrap_or_default();
-    let mut conduct = std::process::Command::new(bin())
-        .args([
-            "conduct",
-            "--profile",
-            profile.as_str(),
-            "--session-directory",
-            &worktree_str,
-            "--",
-            "sleep",
-            "300",
-        ])
-        .env("HOME", &home)
-        .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_CONDUCT_START_DELAY_MS", "30000")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn stalled conduct");
+    // Raw spawn (no id-line wait, no stderr lifetime drain)
+    // on the terminate_races precedent: the stalled conduct
+    // writes nothing before the test kills it, and the pipes
+    // stay open so there is no SIGPIPE — but a future edit
+    // that lets this child write freely must add a drain
+    // thread or it will discover the hang, not the drain.
+    let mut conduct = KillOnDrop(Some(
+        std::process::Command::new(bin())
+            .args([
+                "conduct",
+                "--profile",
+                profile.as_str(),
+                "--session-directory",
+                &worktree_str,
+                "--",
+                "sleep",
+                "300",
+            ])
+            .env("HOME", &home)
+            .env("TERM", "xterm-ghostty")
+            .env("CISTELLA_CONDUCT_START_GATE", &gate)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn gated conduct"),
+    ));
     let (id, _unit_path) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
     let mut guard = Guard {
         id: Some(id.clone()),
     };
-    // Install completed (record resolvable) but start stalled:
-    // bounded poll for the unit file, then prove pre-commit by
-    // the attestation's absence (ids are minted unique, so no
-    // sibling can have published for this session).
-    let unit = unit_path(&home, &id);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !unit.exists() {
-        if Instant::now() > deadline {
-            panic!("unit file never installed for stalled conduct {id}");
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    // Install is complete when wait_for_unit_file returns
+    // (bounded: its timeout fails the test, never releases the
+    // conduct): the record exists and the launch is parked at
+    // the gate, so every assertion below runs while commit is
+    // structurally impossible.
     let base = cistella::lock::runtime_base();
     assert!(
         cistella::attestation::read(&base, &id)
@@ -114,15 +142,23 @@ fn conduct_enter_refuses_before_launch_commit() {
         !shown.contains("state="),
         "no lifecycle snapshot without provenance, got: {shown}"
     );
-    // Cleanup: kill the stalled child, terminate the leftover
-    // unit, disarm the guard (it owns only this session).
-    let _ = conduct.kill();
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
-    let term = run_cistella(&home, &["terminate", &id]);
-    assert!(
-        term.status.success(),
-        "stalled unit terminates: {}",
-        String::from_utf8_lossy(&term.stderr)
+    // Cleanup is the abort half of the handshake: SIGTERM the
+    // parked conduct (the gate has no product-side timeout, so
+    // the abort is the only way it advances) and reap the
+    // startup-abort disposition (128+SIGTERM — the same path
+    // the existing signal-during-startup test pins). The abort
+    // tears down the installed unit; the guard is disarmed
+    // afterwards (it owns only this session).
+    let pid = conduct.0.as_ref().expect("child alive").id();
+    let mut kill = Command::new("kill");
+    kill.args(["-TERM", &pid.to_string()]);
+    run_bounded(kill, RUN_CISTELLA_TIMEOUT).expect("kill delivers");
+    let status = reap_bounded(conduct.0.as_mut().expect("child alive"), CHILD_REAP_TIMEOUT)
+        .expect("conduct reaped after abort");
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "abort disposition is 128+SIGTERM, got: {status:?}"
     );
     guard.id = None;
 }
@@ -342,9 +378,22 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         .expect("native commitment carries incarnation")
         .container_id
         .clone();
+    // Pre-surgery identity, tolerantly: a transient inspect
+    // failure here must retry, not fail — the loop below
+    // already owns the fail-loud bound, this just establishes
+    // the baseline it compares against.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let bound_live = loop {
+        if let Some(current) = live_container_id(&container) {
+            break current;
+        }
+        if Instant::now() > deadline {
+            panic!("container never inspectable pre-surgery: {container}");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
     assert_eq!(
-        live_container_id(&container).as_deref(),
-        Some(bound_id.as_str()),
+        bound_live, bound_id,
         "attested ID matches the live container pre-surgery"
     );
     // Failure-inducing surgery: `podman kill` (SIGKILL) exits

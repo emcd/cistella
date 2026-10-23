@@ -1,5 +1,5 @@
 //! Forced reload-failure exercise for `remove_unit_file`
-//! (Change 2 ride-along, todos/50).
+//! (Change 2 ride-along: forced reload-failure exercise).
 //!
 //! The repair preserves the reload-on-unlink branch: when the
 //! unit file unlinks but `daemon-reload` fails, teardown must
@@ -7,7 +7,9 @@
 //! forces that branch with a PATH-shimmed `systemctl` that
 //! fails ONLY `daemon-reload` and delegates everything else to
 //! the real binary — a live fault-injection seat, no product
-//! seams widened.
+//! seams widened. Recovery is the operator path (direct podman
+//! stop/rm, then gc reaps the orphan attestation), since a
+//! record-based terminate cannot resolve a unitless session.
 
 use super::helpers::*;
 

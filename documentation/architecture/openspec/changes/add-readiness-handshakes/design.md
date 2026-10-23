@@ -33,6 +33,7 @@ The framework lifecycle spine has no host-readable execution-state edge, and tes
 - [Two new typed errors (stale-generation, residue)] → each names its evidence and its remedy; both fail closed.
 - [Pre-change sessions read unattested] → documented upgrade-window behavior, unchanged from R2.
 - [Foreign sessions gain no readiness] → honest scope boundary; legacy behavior preserved exactly.
+- [Half-torn sessions (unit file gone, container + attestation live) have no record-based terminate path] → operator recovery (direct podman stop/rm, then gc reaps the orphan attestation) is the documented shape; whether the CLI should converge such sessions is an open product question tracked in the project notebook's issues folder (deferred, not waived; deciding it either way is a new proposal, not this change).
 - [Unifying post-terminal errors + dominance scenario] → unchanged from R2.
 
 ## Migration Plan

@@ -565,7 +565,7 @@ fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
     // table and their terminal arrives via the
     // expiry/peer-exited discrimination. No sleep, no EPIPE
     // race (the single-frame predecessor timed the second send
-    // against teardown and flaked under load: issues/11).
+    // against teardown and flaked under load on the 26.04 CI legs).
     use cistella::framework::contract::ReconciliationKey;
     use cistella::framework::isolator::Isolator;
     use cistella::isolators::client::WireClient;
