@@ -28,15 +28,45 @@ fn conduct_enter_refuses_before_launch_commit() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("default.toml");
-    let (mut conduct, id, mut guard) = spawn_conduct_full(
-        &home,
-        &profile,
-        &worktree_str,
-        &[],
-        &["sleep", "300"],
-        &[("CISTELLA_CONDUCT_START_DELAY_MS", "30000")],
-        None,
-    );
+    // Learn the session id at INSTALL time, not from conduct
+    // stdout: the id line prints only after the 30s stall,
+    // ~1s before the attestation commits — reading it there
+    // races publication (the gate can read present after the
+    // test observed absent). The unit file lands at install
+    // (pre-stall), so resolving it then leaves the whole
+    // stall window for deterministic pre-commit asserts. Raw
+    // spawn (no id-line wait) on the terminate_races precedent.
+    let unit_dir = std::path::PathBuf::from(&home).join(".config/containers/systemd");
+    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
+        .map(|r| {
+            r.flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut conduct = std::process::Command::new(bin())
+        .args([
+            "conduct",
+            "--profile",
+            profile.as_str(),
+            "--session-directory",
+            &worktree_str,
+            "--",
+            "sleep",
+            "300",
+        ])
+        .env("HOME", &home)
+        .env("TERM", "xterm-ghostty")
+        .env("CISTELLA_CONDUCT_START_DELAY_MS", "30000")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn stalled conduct");
+    let (id, _unit_path) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
+    let mut guard = Guard {
+        id: Some(id.clone()),
+    };
     // Install completed (record resolvable) but start stalled:
     // bounded poll for the unit file, then prove pre-commit by
     // the attestation's absence (ids are minted unique, so no
@@ -128,8 +158,11 @@ fn ownerless_committed_session(home: &str, worktree_str: &str) -> (String, Strin
 }
 
 /// Reads the live container ID via the same inspect template
-/// the attestation binds (fail-loud on backend error).
-fn live_container_id(container: &str) -> String {
+/// the attestation binds. Returns None when the container is
+/// transiently uninspectable (remove/recreate window) — the
+/// caller keeps polling and fails loud only on the bound, never
+/// mistaking a mid-swap absence for a reading.
+fn live_container_id(container: &str) -> Option<String> {
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
@@ -139,16 +172,20 @@ fn live_container_id(container: &str) -> String {
         RUN_CISTELLA_TIMEOUT,
     )
     .expect("podman inspect runs");
-    assert!(
-        out.status.success(),
-        "podman inspect reads the container: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
+    if !out.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+    Some(id)
 }
 
 /// Reads the live container StartedAt via the bound template.
-fn live_started_at(container: &str) -> String {
+/// None on transient failure — same contract as
+/// `live_container_id`.
+fn live_started_at(container: &str) -> Option<String> {
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
@@ -158,12 +195,14 @@ fn live_started_at(container: &str) -> String {
         RUN_CISTELLA_TIMEOUT,
     )
     .expect("podman inspect runs");
-    assert!(
-        out.status.success(),
-        "podman inspect reads StartedAt: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
+    if !out.status.success() {
+        return None;
+    }
+    let started = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if started.is_empty() {
+        return None;
+    }
+    Some(started)
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
@@ -208,16 +247,20 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     );
     // Bounded wait for the new incarnation (fail loud on a
     // restart that never lands — never assume the swap).
+    // Transient inspect failures (remove/recreate window) read
+    // as not-yet, not as readings: only a successful query
+    // naming a different StartedAt breaks the loop.
+    let bound_started = before
+        .incarnation
+        .as_ref()
+        .expect("native commitment carries incarnation")
+        .started_at
+        .clone();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if live_started_at(&container)
-            != before
-                .incarnation
-                .as_ref()
-                .expect("native commitment carries incarnation")
-                .started_at
-        {
-            break;
+        match live_started_at(&container) {
+            Some(current) if current != bound_started => break,
+            _ => {}
         }
         if Instant::now() > deadline {
             panic!("restart never landed a new StartedAt for {container}");
@@ -300,31 +343,39 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         .container_id
         .clone();
     assert_eq!(
-        live_container_id(&container),
-        bound_id,
+        live_container_id(&container).as_deref(),
+        Some(bound_id.as_str()),
         "attested ID matches the live container pre-surgery"
     );
+    // Failure-inducing surgery: `podman kill` (SIGKILL) exits
+    // the container as a failure, so the unit's
+    // Restart=on-failure fires and systemd recreates the same
+    // name with a new container ID. (`rm -f` exits clean and
+    // never recreates — the wait below would be unreachable.)
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
-            cmd.args(["rm", "-f", &container]);
+            cmd.args(["kill", &container]);
             cmd
         },
         RUN_CISTELLA_TIMEOUT,
     )
-    .expect("podman rm runs");
+    .expect("podman kill runs");
     assert!(
         out.status.success(),
-        "podman rm: {}",
+        "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     // Bounded wait for systemd's replacement (fail loud if the
     // service never recreates — never assume the swap).
+    // Transient inspect failures (kill/recreate window) read as
+    // not-yet: only a successful query naming a different ID
+    // breaks the loop.
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let current = live_container_id(&container);
-        if !current.is_empty() && current != bound_id {
-            break;
+        match live_container_id(&container) {
+            Some(current) if current != bound_id => break,
+            _ => {}
         }
         if Instant::now() > deadline {
             panic!("recreate never landed a new ID for {container}");
