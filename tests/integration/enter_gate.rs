@@ -119,27 +119,39 @@ impl ParkedConduct {
         found
     }
 
-    /// Converges one unit by id, reporting (never panicking) —
-    /// Drop-safe by construction.
+    /// Converges one unit by id (Drop-safe: reports, never
+    /// panics). A `guard_terminate` `Ok` alone is not success:
+    /// the helper returns `Ok` even for a nonzero CLI exit,
+    /// so the exit status is inspected and stderr retained —
+    /// a failed unit cleanup is reported, never silently
+    /// accepted.
     fn converge_unit(&self, id: &str) {
-        if let Err(error) = guard_terminate(&self.home, id) {
-            eprintln!("parked conduct teardown of {id} failed: {error:?}");
+        match guard_terminate(&self.home, id) {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                eprintln!(
+                    "parked conduct teardown of {id} exited {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(error) => {
+                eprintln!("parked conduct teardown of {id} failed: {error:?}");
+            }
         }
     }
 
     /// Aborts the parked conduct via SIGTERM and reaps the
     /// startup-abort disposition (explicit path: panics with
-    /// context on failure, unlike Drop).
+    /// context on failure, unlike Drop). Takes the child out
+    /// so Drop never re-reaps it.
     fn abort(&mut self) -> std::process::ExitStatus {
-        let pid = self.child.as_ref().expect("conduct alive for abort").id();
+        let mut child = self.child.take().expect("conduct alive for abort");
+        let pid = child.id();
         let mut kill = Command::new("kill");
         kill.args(["-TERM", &pid.to_string()]);
         run_bounded(kill, RUN_CISTELLA_TIMEOUT).expect("kill delivers");
-        reap_bounded(
-            self.child.as_mut().expect("conduct alive"),
-            CHILD_REAP_TIMEOUT,
-        )
-        .expect("conduct reaped after abort")
+        reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped after abort")
     }
 
     /// Marks the session converged by an explicit path so
@@ -148,6 +160,15 @@ impl ParkedConduct {
     fn settle(&mut self) {
         self.settled = true;
     }
+
+    /// Releases ownership of an explicitly reaped child, so
+    /// Drop has nothing left to kill, reap, or drain on the
+    /// happy path. Pure hygiene (a reaped child reaps
+    /// idempotently; std caches the status) — not a workaround
+    /// for any observed misreport.
+    fn disown_child(&mut self) {
+        let _ = self.child.take();
+    }
 }
 
 /// Bounded pipe drain: nonblocking reads until EOF, WouldBlock,
@@ -155,13 +176,19 @@ impl ParkedConduct {
 /// survives the reaped child); the cap bounds pathological
 /// cases (a leaked writer elsewhere) instead of hanging.
 fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(mut pipe: R, what: &str) {
-    // No import needed: the AsRawFd bound already brings
-    // as_raw_fd into scope for the call below.
     let fd = pipe.as_raw_fd();
-    // Best effort: a gate error here must not fail cleanup.
+    // Best effort: if nonblocking setup cannot be established,
+    // close without reading rather than risk blocking forever
+    // on a surviving writer. A blocking read with no
+    // guaranteed EOF is never attempted here.
     let flags = unsafe { ::libc::fcntl(fd, ::libc::F_GETFL) };
-    if flags >= 0 {
-        unsafe { ::libc::fcntl(fd, ::libc::F_SETFL, flags | ::libc::O_NONBLOCK) };
+    if flags < 0 {
+        eprintln!("drain {what}: cannot query flags, closing unread");
+        return;
+    }
+    if unsafe { ::libc::fcntl(fd, ::libc::F_SETFL, flags | ::libc::O_NONBLOCK) } < 0 {
+        eprintln!("drain {what}: cannot set nonblocking, closing unread");
+        return;
     }
     let mut total = 0usize;
     let mut buf = [0u8; 8192];
@@ -191,9 +218,13 @@ impl Drop for ParkedConduct {
         // every fallible step reports via eprintln.
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
+            // reap_bounded returns None on timeout; try_wait
+            // errors are equally terminal here. Explicit paths
+            // take the child out via abort()/disown_child(), so
+            // this arm runs only when no explicit path did.
             match reap_bounded(&mut child, CHILD_REAP_TIMEOUT) {
                 Some(_) => {}
-                None => eprintln!("parked conduct reap timed out after kill"),
+                None => eprintln!("parked conduct reap failed or timed out after kill"),
             }
             if let Some(out) = child.stdout.take() {
                 drain_bounded(out, "stdout");
@@ -323,14 +354,23 @@ fn conduct_enter_refuses_before_launch_commit() {
 #[test]
 fn conduct_parked_gate_aborts_on_pre_park_signal() {
     // Distinguishing ordering control for the check-then-park
-    // question: the signal is delivered with no wait for any
-    // gate state, so it may land before the first pre-park
-    // check or interrupt the parked poll — the outcome is
+    // question: the signal is delivered as early as causality
+    // allows, so it may land before the first per-iteration
+    // check or interrupt a parked poll — the outcome is
     // identical either way (abort, 143, unit converged),
     // because every path re-checks pending_signal and no path
     // advances on time. A blocking-open gate would park
     // forever in the pre-check-missed interleaving; this
     // polled gate cannot.
+    //
+    // Causality, not racing: the id is discovered first, which
+    // requires the installed unit file — and signal handlers
+    // are installed in main() long before create runs — so by
+    // the time SIGTERM is sent, the disposition can only be
+    // the abort path, never the pre-handler default. (Sending
+    // before discovery could land before handler installation
+    // and die by raw signal instead: a different, unasserted
+    // path, and exactly the race this control refuses to run.)
     if !systemd_gate() {
         return;
     }
@@ -342,14 +382,19 @@ fn conduct_parked_gate_aborts_on_pre_park_signal() {
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
     let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
-    // No discovery, no assertions first: signal immediately.
-    // Whichever gate state the conduct has reached — pre-check
-    // or parked poll — the result is the same abort.
+    // Boundary arrival first: the installed unit proves create
+    // ran, which proves the handlers are installed. Only then
+    // signal — the abort that follows is ordered, not raced.
+    let id = parked.discover_id();
     let status = parked.abort();
     assert_eq!(
         status.code(),
         Some(143),
         "pre-park signal aborts with 128+SIGTERM, got: {status:?}"
+    );
+    assert!(
+        !unit_path(&home, &id).exists(),
+        "aborted startup leaves no unit file"
     );
     parked.settle();
 }
@@ -689,6 +734,7 @@ fn conduct_gate_release_proceeds_to_commit() {
     )
     .expect("conduct reaped after teardown");
     eprintln!("conduct end: {status:?}");
+    parked.disown_child();
     assert!(
         !unit_path(&home, &id).exists(),
         "released session leaves no unit file"
