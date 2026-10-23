@@ -107,30 +107,51 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
 
     // Recovery is the operator path, not a second terminate:
     // the unit file is gone so no record resolves (record
-    // resolution requires the file), while the container still
-    // runs. Stop and remove the container directly, then let
-    // `gc` reap the orphan attestation — the same sweep that
-    // covers crashed conducts. A record-based terminate here
-    // would (correctly) report `no session matches`; asserting
-    // convergence through it would pin a resolution path the
-    // product deliberately does not offer.
+    // resolution requires the file). Stop and remove the
+    // container directly, then let `gc` reap the orphan
+    // attestation — the same sweep that covers crashed
+    // conducts. A record-based terminate here would (correctly)
+    // report `no session matches`; asserting convergence
+    // through it would pin a resolution path the product
+    // deliberately does not offer.
+    //
+    // The failed terminate's service-stop may already have
+    // removed the container (only daemon-reload was shimmed;
+    // ExecStop still ran): an absent container at stop time is
+    // the converged-container fact, not an error — assert it
+    // as such and continue. `rm -f` stays strict (it must
+    // converge regardless).
     let base = cistella::lock::runtime_base();
-    for args in [&["stop", &container][..], &["rm", "-f", &container][..]] {
-        let out = run_bounded(
-            {
-                let mut cmd = Command::new("podman");
-                cmd.args(args);
-                cmd
-            },
-            RUN_CISTELLA_TIMEOUT,
-        )
-        .expect("podman stop/rm runs");
+    let stopped = run_bounded(
+        {
+            let mut cmd = Command::new("podman");
+            cmd.args(["stop", &container]);
+            cmd
+        },
+        RUN_CISTELLA_TIMEOUT,
+    )
+    .expect("podman stop runs");
+    if !stopped.status.success() {
+        let stderr = String::from_utf8_lossy(&stopped.stderr).to_string();
         assert!(
-            out.status.success(),
-            "podman {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
+            stderr.contains("no such container") || stderr.contains("no container"),
+            "stop fails only on absent container, got: {stderr}"
         );
     }
+    let removed = run_bounded(
+        {
+            let mut cmd = Command::new("podman");
+            cmd.args(["rm", "-f", &container]);
+            cmd
+        },
+        RUN_CISTELLA_TIMEOUT,
+    )
+    .expect("podman rm runs");
+    assert!(
+        removed.status.success(),
+        "podman rm -f converges: {}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
     let collected = run_cistella(&home, &["gc"]);
     assert!(
         collected.status.success(),
