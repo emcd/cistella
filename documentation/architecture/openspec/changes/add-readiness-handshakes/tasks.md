@@ -27,4 +27,4 @@
 ## 5. Validation
 
 - [x] 5.1 `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `openspec validate --all --strict`, `git diff --check` (all green seat-side)
-- [ ] 5.2 Fast suite + full live tier on QA seat; 26.04-leg CI watch on issues/11, issues/12
+- [x] 5.2 Full live tier on QA seat (816/816 green at 4ee7097, 22/22 named paths PASS, empty skip roster for required paths, attributed residue deltas, rdv backlog swept); 26.04-leg CI watch on issues/11, issues/12
