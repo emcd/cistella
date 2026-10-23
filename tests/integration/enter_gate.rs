@@ -10,19 +10,221 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 
-/// Kill-on-drop for a parked test child: armed at spawn,
-/// before any fallible id discovery, so every exit path —
-/// including a failed wait_for_unit_file or a panicked
-/// assertion — kills the parked conduct instead of orphaning
-/// it into a launch past the test. Reaping stays with the
-/// normal path (reap_bounded); a Drop kill without reap leaves
-/// only a zombie, never a running session.
-struct KillOnDrop(Option<std::process::Child>);
+/// Spawn-time ownership for a gated conduct: the child, its
+/// pipes, and its unit attribution are owned from spawn —
+/// before any fallible id discovery — so every exit path
+/// converges instead of stranding. Best-effort and never
+/// panicking in Drop (report via eprintln); explicit paths
+/// assert.
+///
+/// Attribution is always this invocation's worktree label
+/// (never a before-set sweep): candidates are filtered by the
+/// known set, then attributed by label, revalidated
+/// immediately before any terminate. Ambiguity is reported,
+/// never resolved by sweeping.
+struct ParkedConduct {
+    child: Option<std::process::Child>,
+    home: String,
+    worktree: String,
+    unit_dir: std::path::PathBuf,
+    before: std::collections::HashSet<String>,
+    id: Option<String>,
+    settled: bool,
+}
 
-impl Drop for KillOnDrop {
+impl ParkedConduct {
+    /// Spawns a gated conduct (parked pre-initiate) and arms
+    /// ownership immediately: the gate file is test-owned and
+    /// absent (never pre-created — creation IS the release),
+    /// and from here on the Drop owns converge-on-every-path.
+    fn spawn(home: &str, worktree: &str, profile: &str, gate: &std::path::Path) -> Self {
+        let unit_dir = std::path::PathBuf::from(home).join(".config/containers/systemd");
+        let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
+            .map(|r| {
+                r.flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Raw spawn (no id-line wait): the test learns the id
+        // from the installed unit file, never from post-stall
+        // stdout (which would race publication). Piped stdio
+        // with no drain thread: the parked conduct writes
+        // nothing before the test acts, and Drop drains what
+        // little exists after the kill — bounded, never hanging.
+        let child = std::process::Command::new(bin())
+            .args([
+                "conduct",
+                "--profile",
+                profile,
+                "--session-directory",
+                worktree,
+                "--",
+                "sleep",
+                "300",
+            ])
+            .env("HOME", home)
+            .env("TERM", "xterm-ghostty")
+            .env("CISTELLA_CONDUCT_START_GATE", gate)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn gated conduct");
+        Self {
+            child: Some(child),
+            home: home.to_string(),
+            worktree: worktree.to_string(),
+            unit_dir,
+            before,
+            id: None,
+            settled: false,
+        }
+    }
+
+    /// Discovers the installed unit's id (bounded; the timeout
+    /// fails the test, never releases the conduct): the unit
+    /// file lands at install, pre-gate, so this is where the
+    /// pre-commit window starts.
+    fn discover_id(&mut self) -> String {
+        let (id, _) = wait_for_unit_file(&self.unit_dir, &self.before, &self.worktree);
+        self.id = Some(id.clone());
+        id
+    }
+
+    /// Unit ids attributable to this invocation: recorded unit
+    /// files absent from the pre-spawn set whose directory
+    /// label equals this invocation's worktree. The before-set
+    /// is a candidate filter only — the label attributes.
+    fn attributed_units(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.unit_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("cistella-")
+                    || !name.ends_with(".container")
+                    || self.before.contains(&name)
+                {
+                    continue;
+                }
+                if unit_directory_label(&entry.path()) == self.worktree {
+                    found.push(
+                        name.trim_start_matches("cistella-")
+                            .trim_end_matches(".container")
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        found
+    }
+
+    /// Converges one unit by id, reporting (never panicking) —
+    /// Drop-safe by construction.
+    fn converge_unit(&self, id: &str) {
+        if let Err(error) = guard_terminate(&self.home, id) {
+            eprintln!("parked conduct teardown of {id} failed: {error:?}");
+        }
+    }
+
+    /// Aborts the parked conduct via SIGTERM and reaps the
+    /// startup-abort disposition (explicit path: panics with
+    /// context on failure, unlike Drop).
+    fn abort(&mut self) -> std::process::ExitStatus {
+        let pid = self.child.as_ref().expect("conduct alive for abort").id();
+        let mut kill = Command::new("kill");
+        kill.args(["-TERM", &pid.to_string()]);
+        run_bounded(kill, RUN_CISTELLA_TIMEOUT).expect("kill delivers");
+        reap_bounded(
+            self.child.as_mut().expect("conduct alive"),
+            CHILD_REAP_TIMEOUT,
+        )
+        .expect("conduct reaped after abort")
+    }
+
+    /// Marks the session converged by an explicit path so
+    /// Drop does not re-converge it (avoids noisy
+    /// already-converged errors in the log).
+    fn settle(&mut self) {
+        self.settled = true;
+    }
+}
+
+/// Bounded pipe drain: nonblocking reads until EOF, WouldBlock,
+/// or a byte cap. Post-kill EOF is immediate (no writer
+/// survives the reaped child); the cap bounds pathological
+/// cases (a leaked writer elsewhere) instead of hanging.
+fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(mut pipe: R, what: &str) {
+    // No import needed: the AsRawFd bound already brings
+    // as_raw_fd into scope for the call below.
+    let fd = pipe.as_raw_fd();
+    // Best effort: a gate error here must not fail cleanup.
+    let flags = unsafe { ::libc::fcntl(fd, ::libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe { ::libc::fcntl(fd, ::libc::F_SETFL, flags | ::libc::O_NONBLOCK) };
+    }
+    let mut total = 0usize;
+    let mut buf = [0u8; 8192];
+    loop {
+        match std::io::Read::read(&mut pipe, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                if total > (1 << 20) {
+                    eprintln!("drain {what}: exceeded 1MiB cap, stopping");
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => {
+                eprintln!("drain {what} failed: {error}");
+                break;
+            }
+        }
+    }
+}
+
+impl Drop for ParkedConduct {
     fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
+        // Child first: kill unblocks any gate/unit wait, reap
+        // bounds the join, drains bound the pipes. No panics:
+        // every fallible step reports via eprintln.
+        if let Some(mut child) = self.child.take() {
             let _ = child.kill();
+            match reap_bounded(&mut child, CHILD_REAP_TIMEOUT) {
+                Some(_) => {}
+                None => eprintln!("parked conduct reap timed out after kill"),
+            }
+            if let Some(out) = child.stdout.take() {
+                drain_bounded(out, "stdout");
+            }
+            if let Some(err) = child.stderr.take() {
+                drain_bounded(err, "stderr");
+            }
+        }
+        if self.settled {
+            return;
+        }
+        // Unit convergence by attribution: the known id if
+        // discovered, else a worktree-label scan. Ambiguity is
+        // reported, never resolved by sweeping.
+        if let Some(id) = self.id.clone() {
+            self.converge_unit(&id);
+            return;
+        }
+        let mut candidates = self.attributed_units();
+        // Re-check identity immediately before mutating: drop
+        // anything that vanished since the scan.
+        candidates.retain(|id| {
+            unit_path(&self.home, id).exists() || {
+                eprintln!("parked conduct candidate {id} vanished before converge; skipping");
+                false
+            }
+        });
+        match candidates.as_slice() {
+            [] => {}
+            [id] => self.converge_unit(id),
+            many => eprintln!("parked conduct found ambiguous units, leaving untouched: {many:?}"),
         }
     }
 }
@@ -30,20 +232,21 @@ impl Drop for KillOnDrop {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_enter_refuses_before_launch_commit() {
-    // Negative control for the commit-event edge:
-    // a gated conduct has installed its unit (record exists)
-    // but cannot launch (no attestation ever commits), so
-    // `enter` must refuse typed naming the missing
-    // attestation — never exec into the unlaunched container.
-    // The create→initiate boundary is held by an explicit
-    // test-controlled handshake, not elapsed time: the conduct
-    // parks opening the gate fifo (no product-side timeout),
-    // the test asserts while launch is structurally unable to
-    // proceed, then aborts via SIGTERM (the parked open has no
-    // SA_RESTART, so the signal takes the abort path). The
-    // KillOnDrop guard is armed at spawn — before any fallible
-    // id discovery — so no path orphans the parked child into
-    // a launch past the test.
+    // Negative control for the commit-event edge: a gated
+    // conduct has installed its unit (record exists) but
+    // cannot launch (no attestation ever commits), so `enter`
+    // must refuse typed naming the missing attestation — never
+    // exec into the unlaunched container. The create→initiate
+    // boundary is held by an explicit test-controlled
+    // handshake, not elapsed time: the conduct parks on the
+    // gate file (no product-side timeout — absence of the file
+    // never advances the session), so every assertion below
+    // runs while commit is structurally unable to proceed.
+    // ParkedConduct owns the child, pipes, and unit from spawn,
+    // before any fallible id discovery; the test then aborts
+    // via SIGTERM (128+SIGTERM, the startup-abort path).
+    // Dropping that file here would be the release arm — this
+    // test never creates it.
     if !systemd_gate() {
         return;
     }
@@ -52,61 +255,12 @@ fn conduct_enter_refuses_before_launch_commit() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("default.toml");
-    // The gate fifo is test-owned (not in the worktree): the
-    // conduct blocks opening it for reading; no test open of
-    // the write end ever happens here — the abort below is the
-    // only release this test performs.
     let gate_dir = tempfile::tempdir().expect("gate dir");
-    let gate = gate_dir.path().join("start-gate.fifo");
-    nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::from_bits(0o600).expect("mode"))
-        .expect("mkfifo gate");
-    // Install-completed unit files, pre-gate: the id is learned
-    // from the installed unit, never from post-stall stdout
-    // (which would race publication).
-    let unit_dir = std::path::PathBuf::from(&home).join(".config/containers/systemd");
-    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-        .map(|r| {
-            r.flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    // Raw spawn (no id-line wait, no stderr lifetime drain)
-    // on the terminate_races precedent: the stalled conduct
-    // writes nothing before the test kills it, and the pipes
-    // stay open so there is no SIGPIPE — but a future edit
-    // that lets this child write freely must add a drain
-    // thread or it will discover the hang, not the drain.
-    let mut conduct = KillOnDrop(Some(
-        std::process::Command::new(bin())
-            .args([
-                "conduct",
-                "--profile",
-                profile.as_str(),
-                "--session-directory",
-                &worktree_str,
-                "--",
-                "sleep",
-                "300",
-            ])
-            .env("HOME", &home)
-            .env("TERM", "xterm-ghostty")
-            .env("CISTELLA_CONDUCT_START_GATE", &gate)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn gated conduct"),
-    ));
-    let (id, _unit_path) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
-    let mut guard = Guard {
-        id: Some(id.clone()),
-    };
-    // Install is complete when wait_for_unit_file returns
-    // (bounded: its timeout fails the test, never releases the
-    // conduct): the record exists and the launch is parked at
-    // the gate, so every assertion below runs while commit is
-    // structurally impossible.
+    let gate = gate_dir.path().join("start-gate");
+    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    // Install is complete when discovery returns (bounded: its
+    // timeout fails the test, never releases the conduct).
+    let id = parked.discover_id();
     let base = cistella::lock::runtime_base();
     assert!(
         cistella::attestation::read(&base, &id)
@@ -142,19 +296,14 @@ fn conduct_enter_refuses_before_launch_commit() {
         !shown.contains("state="),
         "no lifecycle snapshot without provenance, got: {shown}"
     );
-    // Cleanup is the abort half of the handshake: SIGTERM the
-    // parked conduct (the gate has no product-side timeout, so
-    // the abort is the only way it advances) and reap the
+    // Abort half of the handshake: SIGTERM the parked
+    // conduct (the gate has no product-side timeout, so the
+    // abort is the only way it advances) and reap the
     // startup-abort disposition (128+SIGTERM — the same path
     // the existing signal-during-startup test pins). The abort
-    // tears down the installed unit; the guard is disarmed
-    // afterwards (it owns only this session).
-    let pid = conduct.0.as_ref().expect("child alive").id();
-    let mut kill = Command::new("kill");
-    kill.args(["-TERM", &pid.to_string()]);
-    run_bounded(kill, RUN_CISTELLA_TIMEOUT).expect("kill delivers");
-    let status = reap_bounded(conduct.0.as_mut().expect("child alive"), CHILD_REAP_TIMEOUT)
-        .expect("conduct reaped after abort");
+    // tears down the installed unit; the id is disarmed
+    // afterwards so Drop finds nothing left to converge.
+    let status = parked.abort();
     assert_eq!(
         status.code(),
         Some(143),
@@ -167,7 +316,42 @@ fn conduct_enter_refuses_before_launch_commit() {
         !unit_path(&home, &id).exists(),
         "aborted startup leaves no unit file"
     );
-    guard.id = None;
+    parked.settle();
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn conduct_parked_gate_aborts_on_pre_park_signal() {
+    // Distinguishing ordering control for the check-then-park
+    // question: the signal is delivered with no wait for any
+    // gate state, so it may land before the first pre-park
+    // check or interrupt the parked poll — the outcome is
+    // identical either way (abort, 143, unit converged),
+    // because every path re-checks pending_signal and no path
+    // advances on time. A blocking-open gate would park
+    // forever in the pre-check-missed interleaving; this
+    // polled gate cannot.
+    if !systemd_gate() {
+        return;
+    }
+    let worktree = src_worktree();
+    std::fs::write(worktree.path().join("README.md"), "# test").unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let profile = fixture_profile("default.toml");
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate");
+    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    // No discovery, no assertions first: signal immediately.
+    // Whichever gate state the conduct has reached — pre-check
+    // or parked poll — the result is the same abort.
+    let status = parked.abort();
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "pre-park signal aborts with 128+SIGTERM, got: {status:?}"
+    );
+    parked.settle();
 }
 
 /// Spawns a conduct, waits for its launch commitment, then kills
@@ -460,12 +644,12 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_gate_release_proceeds_to_commit() {
-    // Positive control for the release gate: opening the write
-    // end releases the parked conduct, which proceeds to
-    // initiate, launch, and commit. Proves the gate does not
-    // wedge a normal launch — the release branch is taken, not
-    // just present. The abort path (refusal test above) covers
-    // the other arm.
+    // Positive control for the release gate: creating the
+    // release file lets the parked conduct proceed to initiate,
+    // launch, and commit. Proves the gate does not wedge a
+    // normal launch — the release branch is taken, not just
+    // present. The abort path (refusal tests above) covers the
+    // other arm.
     if !systemd_gate() {
         return;
     }
@@ -475,67 +659,39 @@ fn conduct_gate_release_proceeds_to_commit() {
     let home = home_dir();
     let profile = fixture_profile("default.toml");
     let gate_dir = tempfile::tempdir().expect("gate dir");
-    let gate = gate_dir.path().join("start-gate.fifo");
-    nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::from_bits(0o600).expect("mode"))
-        .expect("mkfifo gate");
-    let unit_dir = std::path::PathBuf::from(&home).join(".config/containers/systemd");
-    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-        .map(|r| {
-            r.flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut conduct = KillOnDrop(Some(
-        std::process::Command::new(bin())
-            .args([
-                "conduct",
-                "--profile",
-                profile.as_str(),
-                "--session-directory",
-                &worktree_str,
-                "--",
-                "sleep",
-                "300",
-            ])
-            .env("HOME", &home)
-            .env("TERM", "xterm-ghostty")
-            .env("CISTELLA_CONDUCT_START_GATE", &gate)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn gated conduct"),
-    ));
-    let (id, _unit_path) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
-    let mut guard = Guard {
-        id: Some(id.clone()),
-    };
+    let gate = gate_dir.path().join("start-gate");
+    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    let id = parked.discover_id();
     let container = format!("cistella-{id}");
-    // Release: the nonblocking open succeeds once the conduct
-    // is parked in its own open (missing-reader fail-fast if
-    // the conduct died instead), then the attestation must
-    // commit — proving the gate released rather than wedged.
-    release_fifo(
-        &gate,
-        conduct.0.as_mut().expect("child alive"),
-        Duration::from_secs(60),
-    );
+    // Release: create the gate file; the next poll iteration
+    // observes it and the conduct proceeds. The attestation
+    // must then commit — proving the gate released rather
+    // than wedged.
+    std::fs::write(&gate, b"release").expect("release the gate");
     let attested = wait_attestation(&id, &container);
     assert_eq!(
         attested.container_name, container,
         "released conduct commits its launch"
     );
     // Normal teardown from here: terminate converges the
-    // launched session, reap the conduct, disarm the guard.
+    // launched session, reap the conduct, then confirm the
+    // unit is gone before disarming (Drop would converge it
+    // identically, but the assertion belongs to the test).
     let term = run_cistella(&home, &["terminate", &id]);
     assert!(
         term.status.success(),
         "released session terminates: {}",
         String::from_utf8_lossy(&term.stderr)
     );
-    guard.id = None;
-    let status = reap_bounded(conduct.0.as_mut().expect("child alive"), CHILD_REAP_TIMEOUT)
-        .expect("conduct reaped after teardown");
+    let status = reap_bounded(
+        parked.child.as_mut().expect("conduct alive for reap"),
+        CHILD_REAP_TIMEOUT,
+    )
+    .expect("conduct reaped after teardown");
     eprintln!("conduct end: {status:?}");
+    assert!(
+        !unit_path(&home, &id).exists(),
+        "released session leaves no unit file"
+    );
+    parked.settle();
 }

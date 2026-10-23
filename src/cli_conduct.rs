@@ -412,77 +412,33 @@ pub(crate) fn conduct_session(
                 }
                 // Test-hook stall between install and start: a deterministic window for
                 // signal-during-startup regression, polling so signals abort promptly.
-                // A release fifo (CISTELLA_CONDUCT_START_GATE) replaces the
-                // timed wait with a causal hold when set: open-for-read
-                // blocks until the test opens the write end (release),
-                // with no product-side timeout — absence of release
-                // never advances the session. EINTR (handlers install
-                // without SA_RESTART) returns to the pending-signal
-                // check, so signals abort through the identical path;
-                // an unopenable gate fails closed after converging
-                // the installed residue. The pre-park check closes
-                // the check-then-block race to nanoseconds (a signal
-                // arriving in that window with no follow-up would
-                // park; the residual is documented, and its failure
-                // mode is a loud reap timeout, never a silent
-                // proceed).
+                // A release marker (CISTELLA_CONDUCT_START_GATE) replaces the
+                // timed wait with a causal hold when set: the test
+                // creates the named file to release; a pending
+                // signal aborts through the identical path as the
+                // timed stall. The check repeats every 50ms with no
+                // overall timeout — absence of the file never
+                // advances the session; the test's own bound fails
+                // the test instead. This is explicitly a test-hook
+                // poll (honest description): the interval bounds
+                // signal-detection latency, never the launch.
                 if let Some(gate) = start_gate() {
-                    use std::os::unix::io::FromRawFd as _;
-                    if let Some(signum) = signals::pending_signal() {
-                        drop(guard);
-                        return Ok(abort_startup(
-                            client,
-                            &rendezvous_dir,
-                            Some(&handle),
-                            &container_name,
-                            &id,
-                            signum,
-                        ));
-                    }
                     loop {
-                        match nix::fcntl::open(
-                            &gate,
-                            nix::fcntl::OFlag::O_RDONLY,
-                            nix::sys::stat::Mode::empty(),
-                        ) {
-                            // Released: the test opened the write end.
-                            // SAFETY: freshly opened above, owned here,
-                            // closed immediately, never read from.
-                            Ok(raw) => {
-                                drop(unsafe { std::os::unix::io::OwnedFd::from_raw_fd(raw) });
-                                break;
-                            }
-                            Err(nix::errno::Errno::EINTR) => {
-                                if let Some(signum) = signals::pending_signal() {
-                                    drop(guard);
-                                    return Ok(abort_startup(
-                                        client,
-                                        &rendezvous_dir,
-                                        Some(&handle),
-                                        &container_name,
-                                        &id,
-                                        signum,
-                                    ));
-                                }
-                                // Spurious wakeup: re-open.
-                            }
-                            Err(error) => {
-                                drop(guard);
-                                let grace = Deadlines::default().terminate_grace;
-                                let key = ReconciliationKey::generate();
-                                // Best-effort converge of the installed
-                                // unit (a misconfigured gate is a test
-                                // bug, but the residue must not strand);
-                                // the returned error is the report.
-                                let _ = client.terminate(&handle, grace, &key);
-                                let _ = client.remove(&handle, &key);
-                                report_release(release_client(client, &rendezvous_dir));
-                                return Err(cistella::error::CistellaError::Runtime(format!(
-                                    "conduct start gate unusable {}: {error}",
-                                    gate.display()
-                                )));
-                            }
+                        if gate.exists() {
+                            break;
                         }
+                        if let Some(signum) = signals::pending_signal() {
+                            drop(guard);
+                            return Ok(abort_startup(
+                                client,
+                                &rendezvous_dir,
+                                Some(&handle),
+                                &container_name,
+                                &id,
+                                signum,
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                 } else {
                     let delay = start_delay_ms();
@@ -971,16 +927,16 @@ fn start_delay_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Test hook: path of a release fifo. When set, the
-/// install/start stall blocks opening it for reading instead of
-/// sleeping a fixed duration: the test opens the write end to
-/// release, or signals to abort. This is explicitly a
-/// test-only synchronization hook next to `start_delay_ms` —
-/// not a product readiness signal, never part of the
-/// enter/readiness policy. No product-side timeout: absence of
-/// release never advances the session (the open blocks until
-/// release or a signal). A missing/unopenable path fails
-/// closed.
+/// Test hook: path of a release marker file. When set, the
+/// install/start stall polls for that file instead of sleeping
+/// a fixed duration: release is the test creating the file,
+/// abort is a pending signal. This is explicitly a
+/// test-only synchronization hook next to
+/// `start_delay_ms` — a bounded-interval existence check plus
+/// a per-iteration signal check, with no overall timeout and
+/// no bearing on the enter/readiness policy. Absence of the
+/// file never advances the session; the test's own bound
+/// fails the test instead.
 fn start_gate() -> Option<std::path::PathBuf> {
     std::env::var("CISTELLA_CONDUCT_START_GATE")
         .ok()
