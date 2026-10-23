@@ -160,6 +160,13 @@ fn conduct_enter_refuses_before_launch_commit() {
         Some(143),
         "abort disposition is 128+SIGTERM, got: {status:?}"
     );
+    // The abort path converges the installed unit (terminate +
+    // remove inside abort_startup): assert the teardown rather
+    // than assuming it.
+    assert!(
+        !unit_path(&home, &id).exists(),
+        "aborted startup leaves no unit file"
+    );
     guard.id = None;
 }
 
@@ -448,4 +455,87 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         String::from_utf8_lossy(&term.stderr)
     );
     guard.id = None;
+}
+
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn conduct_gate_release_proceeds_to_commit() {
+    // Positive control for the release gate: opening the write
+    // end releases the parked conduct, which proceeds to
+    // initiate, launch, and commit. Proves the gate does not
+    // wedge a normal launch — the release branch is taken, not
+    // just present. The abort path (refusal test above) covers
+    // the other arm.
+    if !systemd_gate() {
+        return;
+    }
+    let worktree = src_worktree();
+    std::fs::write(worktree.path().join("README.md"), "# test").unwrap();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    let profile = fixture_profile("default.toml");
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate.fifo");
+    nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::from_bits(0o600).expect("mode"))
+        .expect("mkfifo gate");
+    let unit_dir = std::path::PathBuf::from(&home).join(".config/containers/systemd");
+    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
+        .map(|r| {
+            r.flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut conduct = KillOnDrop(Some(
+        std::process::Command::new(bin())
+            .args([
+                "conduct",
+                "--profile",
+                profile.as_str(),
+                "--session-directory",
+                &worktree_str,
+                "--",
+                "sleep",
+                "300",
+            ])
+            .env("HOME", &home)
+            .env("TERM", "xterm-ghostty")
+            .env("CISTELLA_CONDUCT_START_GATE", &gate)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn gated conduct"),
+    ));
+    let (id, _unit_path) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
+    let mut guard = Guard {
+        id: Some(id.clone()),
+    };
+    let container = format!("cistella-{id}");
+    // Release: the nonblocking open succeeds once the conduct
+    // is parked in its own open (missing-reader fail-fast if
+    // the conduct died instead), then the attestation must
+    // commit — proving the gate released rather than wedged.
+    release_fifo(
+        &gate,
+        conduct.0.as_mut().expect("child alive"),
+        Duration::from_secs(60),
+    );
+    let attested = wait_attestation(&id, &container);
+    assert_eq!(
+        attested.container_name, container,
+        "released conduct commits its launch"
+    );
+    // Normal teardown from here: terminate converges the
+    // launched session, reap the conduct, disarm the guard.
+    let term = run_cistella(&home, &["terminate", &id]);
+    assert!(
+        term.status.success(),
+        "released session terminates: {}",
+        String::from_utf8_lossy(&term.stderr)
+    );
+    guard.id = None;
+    let status = reap_bounded(conduct.0.as_mut().expect("child alive"), CHILD_REAP_TIMEOUT)
+        .expect("conduct reaped after teardown");
+    eprintln!("conduct end: {status:?}");
 }
