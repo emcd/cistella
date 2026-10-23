@@ -143,13 +143,6 @@ impl ParkedConduct {
 
     /// Aborts the parked conduct via SIGTERM and reaps the
     /// startup-abort disposition (explicit path: panics with
-    /// context on failure, unlike Drop). Takes the child out
-    /// so Drop never re-reaps it — but on any failure path
-    /// the child is put back first, so a failed abort can
-    /// never strand a live parked conduct past the test:
-    /// Drop still owns it.
-    /// Aborts the parked conduct via SIGTERM and reaps the
-    /// startup-abort disposition (explicit path: panics with
     /// context on failure, unlike Drop). The child stays owned
     /// throughout: a panic at any point unwinds into Drop,
     /// which still kills, reaps, drains, and converges.
