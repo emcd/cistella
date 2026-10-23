@@ -11,6 +11,8 @@
 
 use super::helpers::*;
 
+use std::process::Command;
+
 /// Resolves the real `systemctl` for shim delegation (fail-loud:
 /// the shim must never shadow blindly).
 fn real_systemctl() -> String {
@@ -101,13 +103,43 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
         "unit file unlinked before the reload failure"
     );
 
-    // Recovery with the real binary converges the half-torn
-    // session (reload now succeeds; absence converges).
-    let term = run_cistella(&home, &["terminate", &id]);
+    // Recovery is the operator path, not a second terminate:
+    // the unit file is gone so no record resolves (record
+    // resolution requires the file), while the container still
+    // runs. Stop and remove the container directly, then let
+    // `gc` reap the orphan attestation — the same sweep that
+    // covers crashed conducts. A record-based terminate here
+    // would (correctly) report `no session matches`; asserting
+    // convergence through it would pin a resolution path the
+    // product deliberately does not offer.
+    let base = cistella::lock::runtime_base();
+    for args in [&["stop", &container][..], &["rm", "-f", &container][..]] {
+        let out = run_bounded(
+            {
+                let mut cmd = Command::new("podman");
+                cmd.args(args);
+                cmd
+            },
+            RUN_CISTELLA_TIMEOUT,
+        )
+        .expect("podman stop/rm runs");
+        assert!(
+            out.status.success(),
+            "podman {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let collected = run_cistella(&home, &["gc"]);
     assert!(
-        term.status.success(),
-        "recovery terminate converges: {}",
-        String::from_utf8_lossy(&term.stderr)
+        collected.status.success(),
+        "gc converges: {}",
+        String::from_utf8_lossy(&collected.stderr)
+    );
+    assert!(
+        cistella::attestation::read(&base, &id)
+            .expect("attestation reads")
+            .is_none(),
+        "gc reaps the orphan attestation"
     );
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
