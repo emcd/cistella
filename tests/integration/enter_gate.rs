@@ -144,14 +144,26 @@ impl ParkedConduct {
     /// Aborts the parked conduct via SIGTERM and reaps the
     /// startup-abort disposition (explicit path: panics with
     /// context on failure, unlike Drop). Takes the child out
-    /// so Drop never re-reaps it.
+    /// so Drop never re-reaps it — but on any failure path
+    /// the child is put back first, so a failed abort can
+    /// never strand a live parked conduct past the test:
+    /// Drop still owns it.
+    /// Aborts the parked conduct via SIGTERM and reaps the
+    /// startup-abort disposition (explicit path: panics with
+    /// context on failure, unlike Drop). The child stays owned
+    /// throughout: a panic at any point unwinds into Drop,
+    /// which still kills, reaps, drains, and converges.
+    /// Never take it out for an explicit path.
     fn abort(&mut self) -> std::process::ExitStatus {
-        let mut child = self.child.take().expect("conduct alive for abort");
-        let pid = child.id();
+        let pid = self.child.as_ref().expect("conduct alive for abort").id();
         let mut kill = Command::new("kill");
         kill.args(["-TERM", &pid.to_string()]);
         run_bounded(kill, RUN_CISTELLA_TIMEOUT).expect("kill delivers");
-        reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped after abort")
+        reap_bounded(
+            self.child.as_mut().expect("conduct alive"),
+            CHILD_REAP_TIMEOUT,
+        )
+        .expect("conduct reaped after abort")
     }
 
     /// Marks the session converged by an explicit path so
@@ -159,15 +171,6 @@ impl ParkedConduct {
     /// already-converged errors in the log).
     fn settle(&mut self) {
         self.settled = true;
-    }
-
-    /// Releases ownership of an explicitly reaped child, so
-    /// Drop has nothing left to kill, reap, or drain on the
-    /// happy path. Pure hygiene (a reaped child reaps
-    /// idempotently; std caches the status) — not a workaround
-    /// for any observed misreport.
-    fn disown_child(&mut self) {
-        let _ = self.child.take();
     }
 }
 
@@ -219,9 +222,9 @@ impl Drop for ParkedConduct {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             // reap_bounded returns None on timeout; try_wait
-            // errors are equally terminal here. Explicit paths
-            // take the child out via abort()/disown_child(), so
-            // this arm runs only when no explicit path did.
+            // errors are equally terminal here. The child is
+            // always owned at this point — explicit paths never
+            // take it out — so this arm runs on every Drop.
             match reap_bounded(&mut child, CHILD_REAP_TIMEOUT) {
                 Some(_) => {}
                 None => eprintln!("parked conduct reap failed or timed out after kill"),
@@ -734,7 +737,6 @@ fn conduct_gate_release_proceeds_to_commit() {
     )
     .expect("conduct reaped after teardown");
     eprintln!("conduct end: {status:?}");
-    parked.disown_child();
     assert!(
         !unit_path(&home, &id).exists(),
         "released session leaves no unit file"
