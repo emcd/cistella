@@ -203,10 +203,14 @@ fn spaced_directory_conduct() {
     let container = format!("cistella-{id}");
     assert_eq!(unit_label(&home, &id, "cistella.directory"), spaced_str);
     assert_eq!(podman_label(&container, "cistella.directory"), spaced_str);
-
     let out = run_cistella(&home, &["survey", "--directory", &spaced_str]);
     assert!(String::from_utf8_lossy(&out.stdout).contains(&container));
     // The /work mount resolves through the quoted Volume= triple.
+    // Commit-event edge: enter refuses before the launch
+    // attestation commits, and service-active fires first —
+    // gate the enter on attestation appearance, not the
+    // service proxy.
+    let _ = wait_attestation(&id, &container);
     let out = run_cistella(
         &home,
         &["enter", &id, "--", "test", "-f", "/work/README.md"],
@@ -239,6 +243,9 @@ fn spaced_directory_conduct() {
     let container = format!("cistella-{id}");
     assert_eq!(unit_label(&home, &id, "cistella.directory"), pct_str);
     assert_eq!(podman_label(&container, "cistella.directory"), pct_str);
+    // Commit-event edge (see above): gate the enter on
+    // attestation appearance, not the service proxy.
+    let _ = wait_attestation(&id, &container);
     let out = run_cistella(
         &home,
         &["enter", &id, "--", "test", "-f", "/work/README.md"],
@@ -288,6 +295,12 @@ fn environment_values_verbatim() {
         None,
     );
     wait_active(&id);
+    let container = format!("cistella-{id}");
+    // Commit-event edge: enter refuses before the launch
+    // attestation commits, and service-active fires first —
+    // gate the enter on attestation appearance, not the
+    // service proxy.
+    let _ = wait_attestation(&id, &container);
     let out = run_cistella(&home, &["enter", &id, "--", "printenv", "EDGE"]);
     assert!(
         out.status.success(),

@@ -65,6 +65,12 @@ fn selectors_ambiguous_and_exclusive() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("no session"));
 
     // Full-id selector enters exactly that session (true exits 0, no PTY needed).
+    // Commit-event edge: enter refuses before the launch
+    // attestation commits, and service-active fires first —
+    // gate the enter on attestation appearance, not the
+    // service proxy.
+    let container_a = format!("cistella-{id_a}");
+    let _ = wait_attestation(&id_a, &container_a);
     let out = run_cistella(&home, &["enter", &id_a, "--", "true"]);
     assert!(
         out.status.success(),

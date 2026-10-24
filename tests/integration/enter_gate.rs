@@ -9,252 +9,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::helpers::*;
-
-/// Spawn-time ownership for a gated conduct: the child, its
-/// pipes, and its unit attribution are owned from spawn —
-/// before any fallible id discovery — so every exit path
-/// converges instead of stranding. Best-effort and never
-/// panicking in Drop (report via eprintln); explicit paths
-/// assert.
-///
-/// Attribution is always this invocation's worktree label
-/// (never a before-set sweep): candidates are filtered by the
-/// known set, then attributed by label, revalidated
-/// immediately before any terminate. Ambiguity is reported,
-/// never resolved by sweeping.
-struct ParkedConduct {
-    child: Option<std::process::Child>,
-    home: String,
-    worktree: String,
-    unit_dir: std::path::PathBuf,
-    before: std::collections::HashSet<String>,
-    id: Option<String>,
-    settled: bool,
-}
-
-impl ParkedConduct {
-    /// Spawns a gated conduct (parked pre-initiate) and arms
-    /// ownership immediately: the gate file is test-owned and
-    /// absent (never pre-created — creation IS the release),
-    /// and from here on the Drop owns converge-on-every-path.
-    fn spawn(home: &str, worktree: &str, profile: &str, gate: &std::path::Path) -> Self {
-        let unit_dir = std::path::PathBuf::from(home).join(".config/containers/systemd");
-        let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-            .map(|r| {
-                r.flatten()
-                    .map(|entry| entry.file_name().to_string_lossy().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        // Raw spawn (no id-line wait): the test learns the id
-        // from the installed unit file, never from post-stall
-        // stdout (which would race publication). Piped stdio
-        // with no drain thread: the parked conduct writes
-        // nothing before the test acts, and Drop drains what
-        // little exists after the kill — bounded, never hanging.
-        let child = std::process::Command::new(bin())
-            .args([
-                "conduct",
-                "--profile",
-                profile,
-                "--session-directory",
-                worktree,
-                "--",
-                "sleep",
-                "300",
-            ])
-            .env("HOME", home)
-            .env("TERM", "xterm-ghostty")
-            .env("CISTELLA_CONDUCT_START_GATE", gate)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn gated conduct");
-        Self {
-            child: Some(child),
-            home: home.to_string(),
-            worktree: worktree.to_string(),
-            unit_dir,
-            before,
-            id: None,
-            settled: false,
-        }
-    }
-
-    /// Discovers the installed unit's id (bounded; the timeout
-    /// fails the test, never releases the conduct): the unit
-    /// file lands at install, pre-gate, so this is where the
-    /// pre-commit window starts.
-    fn discover_id(&mut self) -> String {
-        let (id, _) = wait_for_unit_file(&self.unit_dir, &self.before, &self.worktree);
-        self.id = Some(id.clone());
-        id
-    }
-
-    /// Unit ids attributable to this invocation: recorded unit
-    /// files absent from the pre-spawn set whose directory
-    /// label equals this invocation's worktree. The before-set
-    /// is a candidate filter only — the label attributes.
-    fn attributed_units(&self) -> Vec<String> {
-        let mut found = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.unit_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.starts_with("cistella-")
-                    || !name.ends_with(".container")
-                    || self.before.contains(&name)
-                {
-                    continue;
-                }
-                if unit_directory_label(&entry.path()) == self.worktree {
-                    found.push(
-                        name.trim_start_matches("cistella-")
-                            .trim_end_matches(".container")
-                            .to_string(),
-                    );
-                }
-            }
-        }
-        found
-    }
-
-    /// Converges one unit by id (Drop-safe: reports, never
-    /// panics). A `guard_terminate` `Ok` alone is not success:
-    /// the helper returns `Ok` even for a nonzero CLI exit,
-    /// so the exit status is inspected and stderr retained —
-    /// a failed unit cleanup is reported, never silently
-    /// accepted.
-    fn converge_unit(&self, id: &str) {
-        match guard_terminate(&self.home, id) {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                eprintln!(
-                    "parked conduct teardown of {id} exited {}: {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            Err(error) => {
-                eprintln!("parked conduct teardown of {id} failed: {error:?}");
-            }
-        }
-    }
-
-    /// Aborts the parked conduct via SIGTERM and reaps the
-    /// startup-abort disposition (explicit path: panics with
-    /// context on failure, unlike Drop). The child stays owned
-    /// throughout: a panic at any point unwinds into Drop,
-    /// which still kills, reaps, drains, and converges.
-    /// Never take it out for an explicit path.
-    fn abort(&mut self) -> std::process::ExitStatus {
-        let pid = self.child.as_ref().expect("conduct alive for abort").id();
-        let mut kill = Command::new("kill");
-        kill.args(["-TERM", &pid.to_string()]);
-        run_bounded(kill, RUN_CISTELLA_TIMEOUT).expect("kill delivers");
-        reap_bounded(
-            self.child.as_mut().expect("conduct alive"),
-            CHILD_REAP_TIMEOUT,
-        )
-        .expect("conduct reaped after abort")
-    }
-
-    /// Marks the session converged by an explicit path so
-    /// Drop does not re-converge it (avoids noisy
-    /// already-converged errors in the log).
-    fn settle(&mut self) {
-        self.settled = true;
-    }
-}
-
-/// Bounded pipe drain: nonblocking reads until EOF, WouldBlock,
-/// or a byte cap. Post-kill EOF is immediate (no writer
-/// survives the reaped child); the cap bounds pathological
-/// cases (a leaked writer elsewhere) instead of hanging.
-fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(mut pipe: R, what: &str) {
-    let fd = pipe.as_raw_fd();
-    // Best effort: if nonblocking setup cannot be established,
-    // close without reading rather than risk blocking forever
-    // on a surviving writer. A blocking read with no
-    // guaranteed EOF is never attempted here.
-    let flags = unsafe { ::libc::fcntl(fd, ::libc::F_GETFL) };
-    if flags < 0 {
-        eprintln!("drain {what}: cannot query flags, closing unread");
-        return;
-    }
-    if unsafe { ::libc::fcntl(fd, ::libc::F_SETFL, flags | ::libc::O_NONBLOCK) } < 0 {
-        eprintln!("drain {what}: cannot set nonblocking, closing unread");
-        return;
-    }
-    let mut total = 0usize;
-    let mut buf = [0u8; 8192];
-    loop {
-        match std::io::Read::read(&mut pipe, &mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                total += n;
-                if total > (1 << 20) {
-                    eprintln!("drain {what}: exceeded 1MiB cap, stopping");
-                    break;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(error) => {
-                eprintln!("drain {what} failed: {error}");
-                break;
-            }
-        }
-    }
-}
-
-impl Drop for ParkedConduct {
-    fn drop(&mut self) {
-        // Child first: kill unblocks any gate/unit wait, reap
-        // bounds the join, drains bound the pipes. No panics:
-        // every fallible step reports via eprintln.
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            // reap_bounded returns None on timeout; try_wait
-            // errors are equally terminal here. The child is
-            // always owned at this point — explicit paths never
-            // take it out — so this arm runs on every Drop.
-            match reap_bounded(&mut child, CHILD_REAP_TIMEOUT) {
-                Some(_) => {}
-                None => eprintln!("parked conduct reap failed or timed out after kill"),
-            }
-            if let Some(out) = child.stdout.take() {
-                drain_bounded(out, "stdout");
-            }
-            if let Some(err) = child.stderr.take() {
-                drain_bounded(err, "stderr");
-            }
-        }
-        if self.settled {
-            return;
-        }
-        // Unit convergence by attribution: the known id if
-        // discovered, else a worktree-label scan. Ambiguity is
-        // reported, never resolved by sweeping.
-        if let Some(id) = self.id.clone() {
-            self.converge_unit(&id);
-            return;
-        }
-        let mut candidates = self.attributed_units();
-        // Re-check identity immediately before mutating: drop
-        // anything that vanished since the scan.
-        candidates.retain(|id| {
-            unit_path(&self.home, id).exists() || {
-                eprintln!("parked conduct candidate {id} vanished before converge; skipping");
-                false
-            }
-        });
-        match candidates.as_slice() {
-            [] => {}
-            [id] => self.converge_unit(id),
-            many => eprintln!("parked conduct found ambiguous units, leaving untouched: {many:?}"),
-        }
-    }
-}
+use super::parked::ParkedConduct;
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
@@ -450,36 +205,85 @@ fn live_container_id(container: &str) -> Option<String> {
     Some(id)
 }
 
-/// Reads the live container StartedAt via the bound template.
-/// None on transient failure — same contract as
-/// `live_container_id`.
-fn live_started_at(container: &str) -> Option<String> {
+/// Reads the live (Id, StartedAt) pair with one `podman
+/// inspect`: one command, one observation, parsed with the
+/// product's shared parser (first token plus the whole
+/// remainder — never split StartedAt itself apart).
+/// Absent or malformed reads as not-yet, never as absence.
+/// The note carries the capped raw rendering for the
+/// fail-loud bound, so a CI-only timeout still reports what
+/// the backend actually showed.
+fn live_identity(container: &str) -> (Option<(String, String)>, String) {
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
-            cmd.args(["inspect", "--format", "{{.State.StartedAt}}", container]);
+            cmd.args([
+                "inspect",
+                "--format",
+                "{{.Id}} {{.State.StartedAt}}",
+                container,
+            ]);
             cmd
         },
         RUN_CISTELLA_TIMEOUT,
     )
     .expect("podman inspect runs");
+    let raw: String = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .chars()
+        .take(160)
+        .collect();
     if !out.status.success() {
-        return None;
+        return (None, format!("inspect exit {}: {raw}", out.status));
     }
-    let started = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if started.is_empty() {
-        return None;
+    match cistella::attestation::parse_identity(&String::from_utf8_lossy(&out.stdout)) {
+        Ok(identity) => (
+            Some((identity.container_id, identity.started_at)),
+            format!("parsed: {raw}"),
+        ),
+        Err(error) => (None, format!("unparseable {raw}: {error}")),
     }
-    Some(started)
+}
+
+/// Waits for a post-surgery incarnation to land as one
+/// coherent observation: a single paired reading differing
+/// from the bound. Transient uninspectability reads as
+/// not-yet, never as absence; the bound fails loud with the
+/// bound pair and the last raw backend observation. Landing
+/// is the premise — the product gate renders the verdict.
+fn wait_landed_incarnation(container: &str, bound_id: &str, bound_started: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last = "no inspect completed".to_string();
+    loop {
+        if Instant::now() > deadline {
+            panic!(
+                "surgery never landed a new incarnation for {container}: bound=({bound_id}, {bound_started}), last={last}"
+            );
+        }
+        let (current, note) = live_identity(container);
+        last = note;
+        if let Some((id, started)) = current
+            && (id != bound_id || started != bound_started)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_enter_refuses_stale_incarnation_after_restart() {
-    // Restart changes StartedAt under a stable name: the
-    // pre-restart commitment must not ready the new
-    // incarnation. Ownerless setup (helper above) removes the
-    // conduct-teardown race — the only writer is the restart.
+    // Live arm of the stale-incarnation split: after a restart
+    // lands, entry into the replacement must be refused at
+    // the readiness edge — never executed. This arm asserts
+    // the refusal, not the word: both the stale and the
+    // unestablishable refusals satisfy the safety property,
+    // and the receipt reports which one fired. The stale
+    // classification itself is pinned deterministically
+    // beside `gate_enter` (no backend). Ownerless setup
+    // (helper above) removes the conduct-teardown race — the
+    // only writer is the restart.
     if !systemd_gate() {
         return;
     }
@@ -491,14 +295,25 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     let before = cistella::attestation::read(&base, &id)
         .expect("attestation reads")
         .expect("committed");
-    // Sanity: the edge passes while the incarnation is current
-    // (ownerless direct exec of a no-op proves ProceedNative).
-    let fresh = run_cistella(&home, &["enter", &id, "--", "true"]);
+    let bound = before
+        .incarnation
+        .as_ref()
+        .expect("native commitment carries incarnation");
+    let marker = "enter-probe";
+    let probe = worktree.path().join(marker);
+    // Positive current-incarnation entry evidence: the payload
+    // executes and its side effect lands before the surgery.
+    let fresh = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
     assert!(
         fresh.status.success(),
         "edge passes pre-restart: {}",
         String::from_utf8_lossy(&fresh.stderr)
     );
+    assert!(probe.exists(), "pre-restart entry executes the payload");
+    std::fs::remove_file(&probe).expect("clear the pre-restart marker");
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
@@ -513,38 +328,35 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Bounded wait for the new incarnation (fail loud on a
-    // restart that never lands — never assume the swap).
-    // Transient inspect failures (remove/recreate window) read
-    // as not-yet, not as readings: only a successful query
-    // naming a different StartedAt breaks the loop.
-    let bound_started = before
-        .incarnation
-        .as_ref()
-        .expect("native commitment carries incarnation")
-        .started_at
-        .clone();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        match live_started_at(&container) {
-            Some(current) if current != bound_started => break,
-            _ => {}
-        }
-        if Instant::now() > deadline {
-            panic!("restart never landed a new StartedAt for {container}");
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    let out = run_cistella(&home, &["enter", &id, "--", "true"]);
+    // Bounded wait for the replacement to land as one
+    // coherent observation: a single paired reading differing
+    // from the bound. Transient uninspectability reads as
+    // not-yet, never as absence; the bound fails loud.
+    // Landing is the premise — the product gate below renders
+    // the verdict.
+    wait_landed_incarnation(&container, &bound.container_id, &bound.started_at);
+    // Readiness-edge negative control: the same payload must
+    // not execute — its side effect stays absent — and the
+    // refusal must come from the edge (stale or
+    // unestablishable), never a selector or launch failure.
+    let out = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         !out.status.success(),
         "post-restart enter must refuse, not exec"
     );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("stale"),
-        "refusal names staleness, got: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(!probe.exists(), "refused entry executes no payload");
+    let verdict = if stderr.contains("stale") {
+        "stale"
+    } else if stderr.contains("unestablishable") {
+        "unestablishable"
+    } else {
+        panic!("post-restart refusal must come from the readiness edge, got: {stderr}");
+    };
+    eprintln!("post-restart refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
     assert!(
         term.status.success(),
@@ -589,10 +401,14 @@ fn conduct_enter_after_teardown_reports_selector_not_readiness() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_enter_refuses_stale_incarnation_after_recreate() {
-    // Out-of-band rm under Restart=on-failure: systemd recreates
-    // the same name with a NEW container ID. The old commitment
-    // must not ready the replacement. Same ownerless shape as
-    // the restart test (ID change instead of StartedAt).
+    // Live arm of the stale-incarnation split for the recreate
+    // mutation: after systemd recreates the same name with a
+    // NEW container ID, entry into the replacement must be
+    // refused at the readiness edge — never executed. Same
+    // three-part shape as the restart arm: positive entry
+    // evidence before the surgery, payload non-execution
+    // after, and the edge refusal reported rather than
+    // asserted as a specific word.
     if !systemd_gate() {
         return;
     }
@@ -604,12 +420,26 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     let before = cistella::attestation::read(&base, &id)
         .expect("attestation reads")
         .expect("committed");
-    let bound_id = before
+    let bound = before
         .incarnation
         .as_ref()
-        .expect("native commitment carries incarnation")
-        .container_id
-        .clone();
+        .expect("native commitment carries incarnation");
+    let bound_id = bound.container_id.clone();
+    let marker = "enter-probe";
+    let probe = worktree.path().join(marker);
+    // Positive current-incarnation entry evidence: the payload
+    // executes and its side effect lands before the surgery.
+    let fresh = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
+    assert!(
+        fresh.status.success(),
+        "edge passes pre-recreate: {}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    assert!(probe.exists(), "pre-recreate entry executes the payload");
+    std::fs::remove_file(&probe).expect("clear the pre-recreate marker");
     // Pre-surgery identity, tolerantly: a transient inspect
     // failure here must retry, not fail — the loop below
     // already owns the fail-loud bound, this just establishes
@@ -647,32 +477,35 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Bounded wait for systemd's replacement (fail loud if the
-    // service never recreates — never assume the swap).
-    // Transient inspect failures (kill/recreate window) read as
-    // not-yet: only a successful query naming a different ID
-    // breaks the loop.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        match live_container_id(&container) {
-            Some(current) if current != bound_id => break,
-            _ => {}
-        }
-        if Instant::now() > deadline {
-            panic!("recreate never landed a new ID for {container}");
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    let out = run_cistella(&home, &["enter", &id, "--", "true"]);
+    // Bounded wait for systemd's replacement to land as one
+    // coherent observation: a single paired reading differing
+    // from the bound. Transient uninspectability reads as
+    // not-yet, never as absence; the bound fails loud.
+    // Landing is the premise — the product gate below renders
+    // the verdict.
+    wait_landed_incarnation(&container, &bound_id, &bound.started_at);
+    // Readiness-edge negative control: the same payload must
+    // not execute — its side effect stays absent — and the
+    // refusal must come from the edge (stale or
+    // unestablishable), never a selector or launch failure.
+    let out = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         !out.status.success(),
         "post-recreate enter must refuse, not exec"
     );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("stale"),
-        "refusal names staleness, got: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(!probe.exists(), "refused entry executes no payload");
+    let verdict = if stderr.contains("stale") {
+        "stale"
+    } else if stderr.contains("unestablishable") {
+        "unestablishable"
+    } else {
+        panic!("post-recreate refusal must come from the readiness edge, got: {stderr}");
+    };
+    eprintln!("post-recreate refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
     assert!(
         term.status.success(),
@@ -724,11 +557,7 @@ fn conduct_gate_release_proceeds_to_commit() {
         "released session terminates: {}",
         String::from_utf8_lossy(&term.stderr)
     );
-    let status = reap_bounded(
-        parked.child.as_mut().expect("conduct alive for reap"),
-        CHILD_REAP_TIMEOUT,
-    )
-    .expect("conduct reaped after teardown");
+    let status = parked.reap_child();
     eprintln!("conduct end: {status:?}");
     assert!(
         !unit_path(&home, &id).exists(),

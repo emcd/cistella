@@ -271,6 +271,34 @@ pub fn reap_orphans(base: &Path, live_sessions: &std::collections::HashSet<Strin
     reaped
 }
 
+/// Parses one `podman inspect --format "{{.Id}}
+/// {{.State.StartedAt}}"` rendering: the container ID is the
+/// first whitespace-delimited field and StartedAt is the
+/// entire remainder (trimmed). StartedAt rendering is
+/// backend-version-dependent (observed: a single token on
+/// podman 4.9, a space-separated clock reading on 5.7), so
+/// only the first token boundary is structural — splitting
+/// StartedAt itself apart would make same-day restarts
+/// invisible on spaceful renderings.
+///
+/// # Errors
+///
+/// Returns `CistellaError::Runtime` when the rendering does
+/// not carry both fields.
+pub fn parse_identity(text: &str) -> Result<Incarnation> {
+    let Some((id, started)) = text.trim().split_once(|c: char| c.is_whitespace()) else {
+        return Err(CistellaError::Runtime("unexpected shape".to_string()));
+    };
+    let started = started.trim();
+    if id.is_empty() || started.is_empty() {
+        return Err(CistellaError::Runtime("empty identity".to_string()));
+    }
+    Ok(Incarnation {
+        container_id: id.to_string(),
+        started_at: started.to_string(),
+    })
+}
+
 /// Queries the live backend incarnation for one container name
 /// via the existing `podman inspect` template pattern (cf. the
 /// pidns proof). Failure means identity-unknown: the caller
@@ -298,20 +326,11 @@ pub fn query_incarnation(container_name: &str) -> Result<Incarnation> {
         )));
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut parts = text.split_whitespace();
-    let (Some(id), Some(started)) = (parts.next(), parts.next()) else {
-        return Err(CistellaError::Runtime(format!(
-            "incarnation inspect {container_name}: unexpected shape"
-        )));
-    };
-    if id.is_empty() || started.is_empty() {
-        return Err(CistellaError::Runtime(format!(
-            "incarnation inspect {container_name}: empty identity"
-        )));
-    }
-    Ok(Incarnation {
-        container_id: id.to_string(),
-        started_at: started.to_string(),
+    parse_identity(&text).map_err(|error| {
+        CistellaError::Runtime(format!(
+            "incarnation inspect {container_name}: {}",
+            error.inner()
+        ))
     })
 }
 

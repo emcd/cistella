@@ -192,9 +192,43 @@ fn describe_probe(id: &str) -> Result<(), cistella::error::CistellaError> {
 pub(crate) fn gate_enter(
     record: &cistella::registry::SessionRecord,
 ) -> Result<cistella::describe::EnterDecision, cistella::error::CistellaError> {
-    use cistella::describe::{EnterDecision, LiveIncarnation, decide_enter};
     let base = cistella::lock::runtime_base();
-    let attestation = cistella::attestation::read(&base, &record.id)?;
+    gate_enter_with(
+        record,
+        &|id| cistella::attestation::read(&base, id),
+        &cistella::attestation::query_incarnation,
+        &cistella::describe::exec_admittability,
+    )
+}
+
+/// Injection seam behind `gate_enter`: the same
+/// read-compare-probe-decide wiring with the three contact
+/// steps supplied by the caller. Production passes the live
+/// queries; pins inject fabricated outcomes. No retries, no
+/// polls — one pass over one record, exactly like `gate_enter`.
+fn gate_enter_with(
+    record: &cistella::registry::SessionRecord,
+    read_attestation: &dyn Fn(
+        &str,
+    ) -> Result<
+        Option<cistella::attestation::Attestation>,
+        cistella::error::CistellaError,
+    >,
+    query_identity: &dyn Fn(
+        &str,
+    ) -> Result<
+        cistella::attestation::Incarnation,
+        cistella::error::CistellaError,
+    >,
+    probe_admittability: &dyn Fn(
+        &str,
+    ) -> Result<
+        cistella::describe::Admittability,
+        cistella::error::CistellaError,
+    >,
+) -> Result<cistella::describe::EnterDecision, cistella::error::CistellaError> {
+    use cistella::describe::{EnterDecision, LiveIncarnation, decide_enter};
+    let attestation = read_attestation(&record.id)?;
     // Unattested sessions refuse before any backend contact:
     // there is no commitment whose admittability could be
     // checked, and the refusal must not depend on podman.
@@ -209,16 +243,154 @@ pub(crate) fn gate_enter(
     // Bound session: compare live incarnation, then gather
     // admittability. Backend query failures error typed (never
     // silent absence); unknown identity refuses, never proceeds.
-    let live = match cistella::attestation::query_incarnation(&record.container_name) {
+    let live = match query_identity(&record.container_name) {
         Ok(observed) if &observed == bound => LiveIncarnation::Current,
         Ok(_) => LiveIncarnation::Stale,
         Err(_) => LiveIncarnation::Unknown,
     };
-    let admittability = cistella::describe::exec_admittability(&record.container_name)?;
+    let admittability = probe_admittability(&record.container_name)?;
     Ok(decide_enter(
         attestation.as_ref(),
         &record.container_name,
         &live,
         &admittability,
     ))
+}
+
+#[cfg(test)]
+mod gate_tests {
+    // Inline by exception (project rule): the gate wiring
+    // lives in the bin crate by design, and no public
+    // interface reaches its read-compare-probe-decide path
+    // without a live backend. Single test: the three
+    // companion controls over the injected seam — a supplied
+    // current identity proceeds, a supplied different
+    // identity forces the stale refusal (ruling out an
+    // always-Unknown wiring), an unsuppliable identity
+    // forces the unknown refusal. This proves the wiring
+    // maps supplied identities to decisions; the live arm
+    // proves the CLI's own query reaches it.
+    use super::gate_enter_with;
+    use cistella::attestation::{Attestation, Incarnation, parse_identity};
+    use cistella::describe::{Admittability, EnterDecision};
+
+    fn record() -> cistella::registry::SessionRecord {
+        cistella::registry::SessionRecord {
+            id: "s-1".to_string(),
+            container_name: "cistella-s-1".to_string(),
+            directory: "/work".to_string(),
+            profile: "default".to_string(),
+            identity: "alice".to_string(),
+            image: "image".to_string(),
+            active_state: "active".to_string(),
+            container_present: true,
+            generic_labels: Vec::new(),
+            hooked: Some(false),
+        }
+    }
+
+    fn attested(incarnation: Option<Incarnation>) -> Attestation {
+        Attestation {
+            session_id: "s-1".to_string(),
+            container_name: "cistella-s-1".to_string(),
+            attempt_key: "key-1".to_string(),
+            argv: vec!["sleep".to_string()],
+            execution_handle: "exec-1".to_string(),
+            incarnation,
+        }
+    }
+
+    fn admitted() -> Admittability {
+        Admittability {
+            running: true,
+            init_pid: 1,
+            unit_present: true,
+        }
+    }
+
+    #[test]
+    fn injected_identity_drives_the_gate_decision() {
+        let bound = Incarnation {
+            container_id: "id-1".to_string(),
+            started_at: "t-1".to_string(),
+        };
+        let record = record();
+        let read = |_: &str| {
+            Ok(Some(attested(Some(bound.clone()))))
+                as Result<Option<Attestation>, cistella::error::CistellaError>
+        };
+        let probe =
+            |_: &str| Ok(admitted()) as Result<Admittability, cistella::error::CistellaError>;
+        // Supplied current identity proceeds native.
+        let query =
+            |_: &str| Ok(bound.clone()) as Result<Incarnation, cistella::error::CistellaError>;
+        assert!(
+            matches!(
+                gate_enter_with(&record, &read, &query, &probe),
+                Ok(EnterDecision::ProceedNative)
+            ),
+            "supplied current identity proceeds"
+        );
+        // Supplied different identity forces the stale refusal.
+        let changed = Incarnation {
+            container_id: "id-1".to_string(),
+            started_at: "t-2".to_string(),
+        };
+        let query =
+            |_: &str| Ok(changed.clone()) as Result<Incarnation, cistella::error::CistellaError>;
+        match gate_enter_with(&record, &read, &query, &probe) {
+            Ok(EnterDecision::Refuse(why)) if why.contains("stale") => {}
+            outcome => panic!("supplied different identity must refuse stale, got: {outcome:?}"),
+        }
+        // Unsuppliable identity forces the unknown refusal.
+        let query = |_: &str| {
+            Err(cistella::error::CistellaError::Runtime(
+                "contact failed".to_string(),
+            )) as Result<Incarnation, cistella::error::CistellaError>
+        };
+        match gate_enter_with(&record, &read, &query, &probe) {
+            Ok(EnterDecision::Refuse(why)) if why.contains("unestablishable") => {}
+            outcome => {
+                panic!("unsuppliable identity must refuse unestablishable, got: {outcome:?}")
+            }
+        }
+        // Direct regression pin for the truncation defect: two
+        // full renderings with the same date but different
+        // times — the committed bound and the supplied live
+        // identity — must refuse stale. The old second-token
+        // parse collapsed both to the same date and proceeded.
+        let bound_rendering =
+            parse_identity("id-9 2026-10-24 14:51:00 +0000 UTC").expect("bound rendering parses");
+        let live_rendering =
+            parse_identity("id-9 2026-10-24 15:06:00 +0000 UTC").expect("live rendering parses");
+        assert_ne!(
+            bound_rendering, live_rendering,
+            "renderings with different times stay distinct"
+        );
+        let read = |_: &str| {
+            Ok(Some(attested(Some(bound_rendering.clone()))))
+                as Result<Option<Attestation>, cistella::error::CistellaError>
+        };
+        let query = |_: &str| {
+            Ok(live_rendering.clone()) as Result<Incarnation, cistella::error::CistellaError>
+        };
+        match gate_enter_with(&record, &read, &query, &probe) {
+            Ok(EnterDecision::Refuse(why)) if why.contains("stale") => {}
+            outcome => panic!("same-date restart must refuse stale, got: {outcome:?}"),
+        }
+        // Old-marker control (named separately): a date-only
+        // marker from a lossy old writer, read by the fixed
+        // reader against a full live rendering, refuses
+        // conservative (stale) — a liveness cost, not a safety
+        // hole.
+        let old_marker = parse_identity("id-9 2026-10-24").expect("date-only marker parses");
+        let read = |_: &str| {
+            Ok(Some(attested(Some(old_marker.clone()))))
+                as Result<Option<Attestation>, cistella::error::CistellaError>
+        };
+        match gate_enter_with(&record, &read, &query, &probe) {
+            Ok(EnterDecision::Refuse(why)) if why.contains("stale") => {}
+            outcome => panic!("lossy old marker must refuse stale, got: {outcome:?}"),
+        }
+    }
 }

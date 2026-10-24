@@ -38,25 +38,6 @@ fn service_state(id: &str) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-/// True only when the container is documented-absent: `podman
-/// container exists` exits 1 for absent, 125 for command/storage
-/// errors — 125 (or any other unexpected outcome) fails observation
-/// instead of proving cleanup.
-fn container_absent(container: &str) -> bool {
-    let mut cmd = std::process::Command::new("podman");
-    cmd.args(["container", "exists", container]);
-    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman container exists");
-    match out.status.code() {
-        Some(1) => true,
-        Some(0) => false,
-        other => panic!(
-            "podman container exists returned {other:?} (want 0/present or 1/absent): stdout={} stderr={}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr),
-        ),
-    }
-}
-
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn cli_terminate_converges_attached_conduct() {

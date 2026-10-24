@@ -124,23 +124,6 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
     // else a contact failure. A failed stop/rm converges ONLY
     // when that checked query proves absence; query failures
     // fail loud with the command diagnostics.
-    fn container_absent(name: &str) {
-        let probe = run_bounded(
-            {
-                let mut cmd = Command::new("podman");
-                cmd.args(["container", "exists", name]);
-                cmd
-            },
-            RUN_CISTELLA_TIMEOUT,
-        )
-        .expect("podman container exists runs");
-        assert!(
-            probe.status.code() == Some(1),
-            "expected absent container {name} (exit 1), got: {} / {}",
-            probe.status,
-            String::from_utf8_lossy(&probe.stderr)
-        );
-    }
     let base = cistella::lock::runtime_base();
     for args in [&["stop", &container][..], &["rm", "-f", &container][..]] {
         let out = run_bounded(
@@ -153,7 +136,10 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
         )
         .expect("podman stop/rm runs");
         if !out.status.success() {
-            container_absent(&container);
+            assert!(
+                container_absent(&container),
+                "failed stop/rm converges only when the container is provably absent"
+            );
         }
     }
     let collected = run_cistella(&home, &["gc"]);
@@ -171,7 +157,10 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
     let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
-    container_absent(&container);
+    assert!(
+        container_absent(&container),
+        "expected absent container {container} after recovery converge"
+    );
     assert!(
         cistella::runtime::residue_gone(&container),
         "no residue after recovery converge"
