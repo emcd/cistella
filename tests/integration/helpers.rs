@@ -127,6 +127,26 @@ pub fn unit_path(home: &str, id: &str) -> PathBuf {
         .join(format!("cistella-{id}.container"))
 }
 
+/// True only when the container is documented-absent: `podman
+/// container exists` exits 1 for absent, 0 for present.
+/// Anything else (including 125 for command/storage errors)
+/// is a contact failure, never cleanup proof — it panics
+/// with diagnostics instead of proving absence.
+pub fn container_absent(container: &str) -> bool {
+    let mut cmd = Command::new("podman");
+    cmd.args(["container", "exists", container]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman container exists");
+    match out.status.code() {
+        Some(1) => true,
+        Some(0) => false,
+        other => panic!(
+            "podman container exists returned {other:?} (want 0/present or 1/absent): stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        ),
+    }
+}
+
 /// Isolates one child conduct's temp root: production
 /// conduct builds `cistella-rdv-{id}` under
 /// `std::env::temp_dir()` ahead of the creation lock, so a
