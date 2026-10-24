@@ -60,6 +60,8 @@ mod pty;
 mod recovery;
 #[path = "integration/selectors.rs"]
 mod selectors;
+#[path = "integration/sigint.rs"]
+mod sigint;
 #[path = "integration/signals.rs"]
 mod signals;
 #[path = "integration/ssh_guest.rs"]

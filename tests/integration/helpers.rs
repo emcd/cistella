@@ -595,8 +595,9 @@ pub const POLL_SUBPROCESS_BUDGET: Duration = Duration::from_secs(10);
 /// per-iteration budget once the outer deadline is near. Returns
 /// `None` when the remaining outer budget cannot cover cleanup —
 /// the caller then fails with its last observation instead of
-/// spawning a poll it cannot reap.
-fn poll_at(outer: Instant) -> Option<Instant> {
+/// spawning a poll it cannot reap. Shared by waits that compose
+/// subprocess polls under one outer bound.
+pub fn poll_at(outer: Instant) -> Option<Instant> {
     let remaining = outer.saturating_duration_since(Instant::now());
     if remaining < REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT + Duration::from_secs(1) {
         return None;
