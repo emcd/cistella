@@ -210,7 +210,10 @@ fn live_container_id(container: &str) -> Option<String> {
 /// product's shared parser (first token plus the whole
 /// remainder — never split StartedAt itself apart).
 /// Absent or malformed reads as not-yet, never as absence.
-fn live_identity(container: &str) -> Option<(String, String)> {
+/// The note carries the capped raw rendering for the
+/// fail-loud bound, so a CI-only timeout still reports what
+/// the backend actually showed.
+fn live_identity(container: &str) -> (Option<(String, String)>, String) {
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
@@ -225,29 +228,44 @@ fn live_identity(container: &str) -> Option<(String, String)> {
         RUN_CISTELLA_TIMEOUT,
     )
     .expect("podman inspect runs");
+    let raw: String = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .chars()
+        .take(160)
+        .collect();
     if !out.status.success() {
-        return None;
+        return (None, format!("inspect exit {}: {raw}", out.status));
     }
     match cistella::attestation::parse_identity(&String::from_utf8_lossy(&out.stdout)) {
-        Ok(identity) => Some((identity.container_id, identity.started_at)),
-        Err(_) => None,
+        Ok(identity) => (
+            Some((identity.container_id, identity.started_at)),
+            format!("parsed: {raw}"),
+        ),
+        Err(error) => (None, format!("unparseable {raw}: {error}")),
     }
 }
 
 /// Waits for a post-surgery incarnation to land as one
 /// coherent observation: a single paired reading differing
 /// from the bound. Transient uninspectability reads as
-/// not-yet, never as absence; the bound fails loud. Landing
+/// not-yet, never as absence; the bound fails loud with the
+/// bound pair and the last raw backend observation. Landing
 /// is the premise — the product gate renders the verdict.
 fn wait_landed_incarnation(container: &str, bound_id: &str, bound_started: &str) {
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last = "no inspect completed".to_string();
     loop {
-        match live_identity(container) {
-            Some((id, started)) if id != bound_id || started != bound_started => return,
-            _ => {}
-        }
         if Instant::now() > deadline {
-            panic!("surgery never landed a new incarnation for {container}");
+            panic!(
+                "surgery never landed a new incarnation for {container}: bound=({bound_id}, {bound_started}), last={last}"
+            );
+        }
+        let (current, note) = live_identity(container);
+        last = note;
+        if let Some((id, started)) = current
+            && (id != bound_id || started != bound_started)
+        {
+            return;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
