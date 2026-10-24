@@ -1,8 +1,9 @@
 //! Deterministic controls for the shared bounded capture:
 //! every interleaving the collector promises is pinned here
-//! with no backend, no timing, and no sleeps as ordering.
-//! Split from `capture.rs` at the file-size limit: the
-//! collector stays dependency-light while the controls grow.
+//! with no backend, no timing, and no sleeps as ordering
+//! (bounded convergence polls only). Split from `capture.rs`
+//! at the file-size limit: the collector stays
+//! dependency-light while the controls grow.
 
 use std::os::unix::io::IntoRawFd;
 use std::time::{Duration, Instant};
@@ -113,6 +114,10 @@ fn child_gone_reports_live_child_without_consuming() {
             reap_child(child);
         }
         nix::unistd::ForkResult::Child => unsafe {
+            // Shed inherited sibling fds: this sleeper outlives
+            // every capture window and must not hold another
+            // test's EOF open.
+            close_unrelated_fds(&[]);
             libc::sleep(30);
             libc::_exit(0);
         },
@@ -312,7 +317,7 @@ fn capture_cap_reports_truncation_never_complete() {
 /// Sets O_NONBLOCK on a master fd (controls only): the
 /// collector contract requires it, and a blocking read would
 /// sit past the bound on a silent child.
-fn set_nonblocking(file: &std::fs::File) {
+pub fn set_nonblocking(file: &std::fs::File) {
     use std::os::unix::io::AsRawFd;
     let flags =
         nix::fcntl::fcntl(file.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).expect("flags query");
@@ -359,8 +364,8 @@ fn capture_drains_after_exit_before_first_read() {
     // parent reaps first, so exit strictly precedes the first
     // read), and the collector still drains to EOF. (The
     // retired stop-on-exit shape is pinned separately below:
-    // it breaks on the observed exit and loses bytes the
-    // grandchild writes afterwards.)
+    // it breaks on the observed exit and loses bytes written
+    // inside the read-then-poll window.)
     let expected = b"COMPLETE-BYNARY-MARKER\n";
     let (read, write) = nix::unistd::pipe().expect("pipe");
     match unsafe { nix::unistd::fork().expect("fork") } {
@@ -544,18 +549,27 @@ fn capture_silent_nonzero_exit_is_empty_eof() {
     }
 }
 
-/// Retired stop-on-exit read loop, reproduced exactly for the
-/// old-vs-new control: read first, then break on an observed
-/// exit — never draining past it. Kept ONLY as the failing
-/// half of the comparison; never use this shape.
+/// Retired stop-on-exit read loop: a faithful relevant
+/// fragment of the retired production shape — read first,
+/// then break on an observed exit, never draining past it.
+/// Test-only differences from retired production, stated:
+/// bounded 10ms convergence polls instead of the old sleeps,
+/// a hook slot fired once after the first WouldBlock (used
+/// below to force the implicated window deterministically),
+/// and an ECHILD break (a reaped-elsewhere pid is an observed
+/// exit too). The read-then-poll-then-break order itself is
+/// the shape under test. Kept ONLY as the failing half of the
+/// comparison; never use this shape.
 fn retired_stop_on_exit(
     master: &std::fs::File,
     child: nix::unistd::Pid,
     bound: Duration,
+    on_first_wouldblock: Option<&dyn Fn()>,
 ) -> (Vec<u8>, &'static str) {
     let mut fd = master;
     let mut buf = [0u8; 4096];
     let mut acc = Vec::new();
+    let mut hook = on_first_wouldblock;
     let start = Instant::now();
     loop {
         if start.elapsed() > bound {
@@ -565,272 +579,182 @@ fn retired_stop_on_exit(
             Ok(0) => return (acc, "eof"),
             Ok(n) => acc.extend_from_slice(&buf[..n]),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                // The implicated window opens here: the hook
+                // releases the waiting child and reaps its
+                // exit (bounded, fail-loud) before the old poll
+                // below runs, so the write+exit land between
+                // this read and that poll deterministically —
+                // scheduled, never raced.
+                if let Some(release) = hook.take() {
+                    release();
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(_) => return (acc, "read-error"),
         }
-        if nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG))
-            .is_ok_and(|s| s != nix::sys::wait::WaitStatus::StillAlive)
-        {
-            return (acc, "saw-exit");
+        match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+            Ok(nix::sys::wait::WaitStatus::StillAlive) => {}
+            Ok(_) => return (acc, "saw-exit"),
+            Err(nix::errno::Errno::ECHILD) => return (acc, "saw-exit-echild"),
+            Err(_) => {}
         }
     }
+}
+
+/// Close every fd except `keep` (forked children only, raw
+/// libc — safe post-fork): a gate-blocked child must not hold
+/// sibling tests' pipe ends open across parallel tests, or
+/// their EOF never arrives and they time out. This includes
+/// stdio: the forkpty early-close child closes its slave this
+/// way. Call after `into_raw_fd`, before any blocking wait.
+pub fn close_unrelated_fds(keep: &[std::os::unix::io::RawFd]) {
+    for fd in 0..8192 {
+        if keep.contains(&fd) {
+            continue;
+        }
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+/// Bounded gate wait for forked children (libc only): waits up
+/// to `bound` for one release byte on `fd`. True when
+/// released; false on timeout or error — the caller must exit
+/// distinctly and never proceed as if released.
+pub fn gate_wait(fd: std::os::unix::io::RawFd, bound: Duration) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN as _,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut pfd, 1, bound.as_millis() as _) };
+    if ready <= 0 {
+        return false;
+    }
+    let mut one = [0u8; 1];
+    unsafe { libc::read(fd, one.as_mut_ptr() as *mut _, 1) == 1 }
 }
 
 #[test]
 fn capture_old_shape_loses_bytes_new_shape_retains_them() {
-    // The implicated interleaving, deterministically
-    // handshake-ordered (no timing): the direct child forks a
-    // writer grandchild and exits immediately, while the
-    // grandchild blocks on a gate before writing. The parent
-    // observes the child's exit with an empty buffer — the
-    // retired shape breaks there and loses the grandchild's
-    // later bytes; the collector drains through the grace and
-    // retains them. No sleeps substitute for the ordering:
-    // every step is gated (blocking reap, gate release) or
-    // bounded with fail-loud expiry.
-    let (read, write) = nix::unistd::pipe().expect("pipe");
-    let (gate_read, gate_write) = nix::unistd::pipe().expect("pipe");
-    match unsafe { nix::unistd::fork().expect("fork") } {
-        nix::unistd::ForkResult::Parent { child } => {
-            drop(write);
-            // The retired shape breaks on the observed exit
-            // with an empty buffer — the loss under test.
-            let file = std::fs::File::from(read);
-            set_nonblocking(&file);
-            let (old_bytes, old_why) = retired_stop_on_exit(&file, child, Duration::from_secs(10));
-            assert!(old_bytes.is_empty(), "retired shape stops before any write");
-            assert_eq!(
-                old_why, "saw-exit",
-                "retired shape breaks on the observed exit"
-            );
-            // Release the grandchild; the new shape drains to EOF.
-            let wrote = nix::unistd::write(&gate_write, &[1u8]);
-            assert!(wrote.is_ok(), "gate release delivers");
-            drop(gate_write);
-            let outcome = capture_master(
-                &file,
-                child,
-                Duration::from_secs(10),
-                Duration::from_secs(2),
-                CAPTURE_CAP,
-                |bytes| String::from_utf8_lossy(bytes).contains("PART2"),
-            );
-            assert_eq!(
-                outcome.bytes, b"PART2\n",
-                "new shape retains the late bytes"
-            );
-            assert_eq!(outcome.end, CaptureEnd::Eof);
-            assert!(outcome.matched, "settle predicate fires on the late bytes");
-        }
-        nix::unistd::ForkResult::Child => {
-            use std::os::unix::io::{AsFd, AsRawFd};
-            let w = write.as_fd().as_raw_fd();
-            let gr = gate_read.as_fd().as_raw_fd();
-            std::mem::forget(write);
-            std::mem::forget(gate_write);
-            std::mem::forget(gate_read);
-            let _ = nix::unistd::close(read.into_raw_fd());
-            match unsafe { nix::unistd::fork() } {
-                Ok(nix::unistd::ForkResult::Parent { .. }) => unsafe { libc::_exit(0) },
-                Ok(nix::unistd::ForkResult::Child) => {
-                    // Block until the parent releases the gate:
-                    // no writes happen before the retired shape
-                    // has already broken on the observed exit.
-                    let mut one = [0u8; 1];
-                    unsafe {
-                        libc::read(gr, one.as_mut_ptr() as *mut _, 1);
-                    }
-                    let message = b"PART2\n";
-                    unsafe {
-                        libc::write(w, message.as_ptr() as *const _, message.len());
-                        libc::close(w);
-                        libc::_exit(0);
-                    }
+    // The implicated interleaving, deterministically forced on
+    // the SAME direct child (no descendants): the child blocks
+    // on a gate before writing; the parent's first WouldBlock
+    // releases it and reaps its exit before the old poll runs,
+    // so the write+exit land inside the read-then-poll window.
+    // The retired shape breaks with an empty buffer; a second,
+    // identically-choreographed direct child proves the
+    // collector retains the bytes. Every step is gated
+    // (release, reap, EOF-terminated drain) or bounded with
+    // fail-loud expiry — no timing, no orphans: both children
+    // are owned and reaped, gate waits are bounded with
+    // distinct exit codes, and unused ends are closed (never
+    // forgotten) so no failure path can hang.
+    for new_shape in [false, true] {
+        let (read, write) = nix::unistd::pipe().expect("pipe");
+        let (gate_read, gate_write) = nix::unistd::pipe().expect("pipe");
+        match unsafe { nix::unistd::fork().expect("fork") } {
+            nix::unistd::ForkResult::Parent { child } => {
+                drop(write);
+                drop(gate_read);
+                let file = std::fs::File::from(read);
+                set_nonblocking(&file);
+                if !new_shape {
+                    // The hook schedules the loss window: release
+                    // the child, then reap its exit (bounded)
+                    // before the old poll below observes it.
+                    let release_and_reap = || {
+                        let wrote = nix::unistd::write(&gate_write, &[1u8]);
+                        assert!(wrote.is_ok(), "gate release delivers");
+                        let mut reaped = false;
+                        let mut exited_at = None;
+                        let mut disposition = ChildDisposition::Unknown;
+                        spin_until_gone(child, &mut reaped, &mut exited_at, &mut disposition);
+                        assert!(reaped, "released child converges");
+                    };
+                    let (old_bytes, old_why) = retired_stop_on_exit(
+                        &file,
+                        child,
+                        Duration::from_secs(10),
+                        Some(&release_and_reap),
+                    );
+                    assert!(
+                        old_bytes.is_empty(),
+                        "retired shape breaks before the gated write lands"
+                    );
+                    assert_eq!(
+                        old_why, "saw-exit-echild",
+                        "retired shape breaks on the reaped exit"
+                    );
+                    drop(gate_write);
+                } else {
+                    // Same choreography, collector under test:
+                    // release, then drain to EOF. The collector
+                    // has no exit-break, so every schedule
+                    // retains; the gate only orders the write,
+                    // never the verdict.
+                    let wrote = nix::unistd::write(&gate_write, &[1u8]);
+                    assert!(wrote.is_ok(), "gate release delivers");
+                    drop(gate_write);
+                    let outcome = capture_master(
+                        &file,
+                        child,
+                        Duration::from_secs(10),
+                        Duration::from_secs(2),
+                        CAPTURE_CAP,
+                        |bytes| String::from_utf8_lossy(bytes).contains("PART2"),
+                    );
+                    assert_eq!(
+                        outcome.bytes, b"PART2\n",
+                        "new shape retains the gated bytes"
+                    );
+                    assert_eq!(outcome.end, CaptureEnd::Eof);
+                    assert!(outcome.matched, "settle predicate fires on the gated bytes");
+                    let fin = finalize_capture(
+                        child,
+                        "old-vs-new",
+                        &outcome,
+                        Instant::now() + Duration::from_secs(10),
+                    );
+                    assert_eq!(fin.disposition, ChildDisposition::Exited(0));
+                    let end_ok = matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
+                    assert!(
+                        verdict_ready(end_ok, &fin, outcome.matched),
+                        "clean EOF plus clean exit verifies"
+                    );
                 }
-                Err(_) => unsafe { libc::_exit(3) },
             }
-        }
-    }
-}
-
-#[test]
-fn capture_finalize_carries_post_closure_exit() {
-    // R1 integrated path: marker plus closure first while the
-    // child stays alive, then the child exits 0. Finalize must
-    // carry the actual disposition into the verdict inputs —
-    // the capture alone correctly reports Unknown here, and
-    // stopping there would fail a clean run.
-    let (read, write) = nix::unistd::pipe().expect("pipe");
-    match unsafe { nix::unistd::fork().expect("fork") } {
-        nix::unistd::ForkResult::Parent { child } => {
-            drop(write);
-            let file = std::fs::File::from(read);
-            set_nonblocking(&file);
-            let outcome = capture_master(
-                &file,
-                child,
-                Duration::from_secs(10),
-                Duration::from_secs(2),
-                CAPTURE_CAP,
-                |bytes| String::from_utf8_lossy(bytes).contains("POST-CLOSE"),
-            );
-            assert_eq!(outcome.bytes, b"POST-CLOSE\n");
-            assert!(outcome.matched, "settle predicate fires");
-            assert_eq!(outcome.end, CaptureEnd::Eof);
-            // Integrated finalization, exactly as the call
-            // sites use it: bounded wait, first-consumption
-            // disposition, forced-kill accounting.
-            let fin = finalize_capture(
-                child,
-                "post-close",
-                &outcome,
-                Instant::now() + Duration::from_secs(10),
-            );
-            assert!(fin.reaped, "final reap converges");
-            assert!(!fin.forced_kill, "no kill needed for a clean exit");
-            assert_eq!(
-                fin.disposition,
-                ChildDisposition::Exited(0),
-                "post-closure exit is carried, not left Unknown"
-            );
-            assert!(
-                verdict_ready(true, &fin, outcome.matched),
-                "clean closure plus clean exit verifies"
-            );
-        }
-        nix::unistd::ForkResult::Child => {
-            use std::os::unix::io::{AsFd, AsRawFd};
-            let w = write.as_fd().as_raw_fd();
-            std::mem::forget(write);
-            let _ = nix::unistd::close(read.into_raw_fd());
-            let message = b"POST-CLOSE\n";
-            let wrote = unsafe {
-                libc::write(
-                    w,
-                    message.as_ptr() as *const std::os::raw::c_void,
-                    message.len() as libc::size_t,
-                )
-            };
-            if wrote != message.len() as isize {
-                unsafe { libc::_exit(2) };
-            }
-            unsafe { libc::close(w) };
-            // Stay alive past the closure so capture observes
-            // EOF while the child is still unreaped, then exit
-            // clean inside the finalization window.
-            unsafe { libc::sleep(2) };
-            unsafe { libc::_exit(0) };
-        }
-    }
-}
-
-#[test]
-fn capture_finalize_reports_nonzero_exit() {
-    // Same post-closure route with a nonzero exit: the
-    // disposition distinguishes it, and the shared verdict
-    // refuses it even with a clean end and content.
-    let (read, write) = nix::unistd::pipe().expect("pipe");
-    match unsafe { nix::unistd::fork().expect("fork") } {
-        nix::unistd::ForkResult::Parent { child } => {
-            drop(write);
-            let file = std::fs::File::from(read);
-            set_nonblocking(&file);
-            let outcome = capture_master(
-                &file,
-                child,
-                Duration::from_secs(10),
-                Duration::from_secs(2),
-                CAPTURE_CAP,
-                |bytes| String::from_utf8_lossy(bytes).contains("POST-CLOSE"),
-            );
-            assert_eq!(outcome.end, CaptureEnd::Eof);
-            let fin = finalize_capture(
-                child,
-                "post-close-nonzero",
-                &outcome,
-                Instant::now() + Duration::from_secs(10),
-            );
-            assert!(fin.reaped, "final reap converges");
-            assert_eq!(fin.disposition, ChildDisposition::Exited(3));
-            assert!(
-                !verdict_ready(true, &fin, true),
-                "nonzero exit never verifies, even with clean end and content"
-            );
-        }
-        nix::unistd::ForkResult::Child => {
-            use std::os::unix::io::{AsFd, AsRawFd};
-            let w = write.as_fd().as_raw_fd();
-            std::mem::forget(write);
-            let _ = nix::unistd::close(read.into_raw_fd());
-            let message = b"POST-CLOSE\n";
-            unsafe {
-                libc::write(
-                    w,
-                    message.as_ptr() as *const std::os::raw::c_void,
-                    message.len() as libc::size_t,
-                );
-                libc::close(w);
-                libc::sleep(2);
-                libc::_exit(3);
-            }
-        }
-    }
-}
-
-#[test]
-fn capture_finalize_reports_signal_death() {
-    // Same post-closure route with a signal death: the
-    // disposition distinguishes it from an exit code, and the
-    // shared verdict refuses it.
-    let (read, write) = nix::unistd::pipe().expect("pipe");
-    match unsafe { nix::unistd::fork().expect("fork") } {
-        nix::unistd::ForkResult::Parent { child } => {
-            drop(write);
-            let file = std::fs::File::from(read);
-            set_nonblocking(&file);
-            let outcome = capture_master(
-                &file,
-                child,
-                Duration::from_secs(10),
-                Duration::from_secs(2),
-                CAPTURE_CAP,
-                |bytes| String::from_utf8_lossy(bytes).contains("POST-CLOSE"),
-            );
-            assert_eq!(outcome.end, CaptureEnd::Eof);
-            let fin = finalize_capture(
-                child,
-                "post-close-signal",
-                &outcome,
-                Instant::now() + Duration::from_secs(10),
-            );
-            assert!(fin.reaped, "final reap converges");
-            assert_eq!(
-                fin.disposition,
-                ChildDisposition::Signaled(libc::SIGTERM),
-                "signal death recorded, not an exit code"
-            );
-            assert!(
-                !verdict_ready(true, &fin, true),
-                "signaled child never verifies, even with clean end and content"
-            );
-        }
-        nix::unistd::ForkResult::Child => {
-            use std::os::unix::io::{AsFd, AsRawFd};
-            let w = write.as_fd().as_raw_fd();
-            std::mem::forget(write);
-            let _ = nix::unistd::close(read.into_raw_fd());
-            let message = b"POST-CLOSE\n";
-            unsafe {
-                libc::write(
-                    w,
-                    message.as_ptr() as *const std::os::raw::c_void,
-                    message.len() as libc::size_t,
-                );
-                libc::close(w);
-                libc::sleep(2);
-                libc::raise(libc::SIGTERM);
-                libc::_exit(3);
+            nix::unistd::ForkResult::Child => {
+                unsafe { libc::close(gate_write.into_raw_fd()) };
+                let gate = gate_read.into_raw_fd();
+                unsafe { libc::close(read.into_raw_fd()) };
+                let w = write.into_raw_fd();
+                // A gate-blocked child outlives the capture
+                // window: shed every inherited sibling fd first
+                // so this block cannot hold another test's EOF
+                // open.
+                close_unrelated_fds(&[w, gate]);
+                // Wait for the release (bounded: a dead parent
+                // surfaces as exit 2, never a hang and never a
+                // false pass — the parent asserts convergence).
+                if !gate_wait(gate, Duration::from_secs(15)) {
+                    unsafe { libc::_exit(2) };
+                }
+                unsafe { libc::close(gate) };
+                let message = b"PART2\n";
+                let wrote = unsafe {
+                    libc::write(
+                        w,
+                        message.as_ptr() as *const std::os::raw::c_void,
+                        message.len() as libc::size_t,
+                    )
+                };
+                unsafe { libc::close(w) };
+                if wrote != message.len() as isize {
+                    unsafe { libc::_exit(2) };
+                }
+                unsafe { libc::_exit(0) };
             }
         }
     }

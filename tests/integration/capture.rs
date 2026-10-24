@@ -6,6 +6,17 @@
 //! retained byte; a byte cap reports truncation/overflow and
 //! never claims complete evidence. Refusal-keyword hits are
 //! observations, never verdicts.
+//!
+//! Probe contract for end-of-stream admission: EOF and EIO
+//! are both admitted as terminal observations. The probes'
+//! own children close their ends and never reopen them, so a
+//! closed slave (EIO) or drained pipe (EOF) means no further
+//! output from this probe; a reopened slave is outside this
+//! contract and is not supported. This is a statement about
+//! the probes' own behavior, not a kernel guarantee. An
+//! early close (before the child is reaped) is recorded as
+//! PtyEio with child_reaped unset — admission still requires
+//! the final disposition to verify the exit.
 
 use std::time::{Duration, Instant};
 

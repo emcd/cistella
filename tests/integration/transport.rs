@@ -196,10 +196,11 @@ fn check_isatty(cname: &str) -> bool {
                 super::capture::excerpt_capped(&outcome.bytes)
             );
             eprintln!(
-                "isatty capture: end={:?} reads={} attempts={} matched={} truncated={} reaped={} status={:?} final={:?} forced_kill={} phases={} final_exit={} hits={:?}",
+                "isatty capture: end={:?} reads={} attempts={} retained={} matched={} truncated={} reaped={} status={:?} final={:?} forced_kill={} phases={} final_exit={} hits={:?}",
                 outcome.end,
                 outcome.reads,
                 outcome.attempts,
+                outcome.bytes.len(),
                 outcome.matched,
                 outcome.truncated,
                 outcome.child_reaped,
@@ -210,14 +211,17 @@ fn check_isatty(cname: &str) -> bool {
                 final_exit,
                 outcome.refusal_hits
             );
-            // Verdict admits only a clean end of stream with a
-            // successfully exited child and the isatty marker.
-            // Anything else fails loud instead of passing on a
-            // partial capture.
+            // Verdict admits a clean end of stream (EOF, or EIO
+            // observing no open slave) with a successfully
+            // exited child and the isatty marker. Probe
+            // contract: the harness under test never reopens
+            // the slave once closed, so a closed slave means no
+            // further output from this probe; a reopened slave
+            // is outside this contract. Anything else fails
+            // loud instead of passing on a partial capture.
             let end_ok = matches!(
                 outcome.end,
-                super::capture::CaptureEnd::Eof
-                    | super::capture::CaptureEnd::PtyEio { child_reaped: true }
+                super::capture::CaptureEnd::Eof | super::capture::CaptureEnd::PtyEio { .. }
             );
             super::capture::verdict_ready(end_ok, &fin, txt.contains("isatty:true"))
         }

@@ -101,10 +101,11 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 super::capture::excerpt_capped(&outcome.bytes)
             );
             eprintln!(
-                "enter pty capture: end={:?} reads={} attempts={} matched={} truncated={} reaped={} status={:?} final={:?} forced_kill={} phases={} final_exit={} hits={:?}",
+                "enter pty capture: end={:?} reads={} attempts={} retained={} matched={} truncated={} reaped={} status={:?} final={:?} forced_kill={} phases={} final_exit={} hits={:?}",
                 outcome.end,
                 outcome.reads,
                 outcome.attempts,
+                outcome.bytes.len(),
                 outcome.matched,
                 outcome.truncated,
                 outcome.child_reaped,
@@ -115,17 +116,21 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 final_exit,
                 outcome.refusal_hits
             );
-            // Verdict admits only a clean end of stream with a
-            // successfully exited child and the expected content.
-            // Anything else — capture error or timeout,
-            // truncation, an unknown or unsuccessful disposition
-            // (including a disposition first observed here, in
-            // finalization), a missing marker — fails loud
-            // instead of passing on a partial capture.
+            // Verdict admits a clean end of stream (EOF, or EIO
+            // observing no open slave) with a successfully
+            // exited child and the expected content. Probe
+            // contract: the harness under test never reopens
+            // the slave once closed, so a closed slave means no
+            // further output from this probe; a reopened slave
+            // is outside this contract. Anything else — capture
+            // error or timeout, truncation, an unknown or
+            // unsuccessful disposition (including a disposition
+            // first observed here, in finalization), a missing
+            // marker — fails loud instead of passing on a
+            // partial capture.
             let end_ok = matches!(
                 outcome.end,
-                super::capture::CaptureEnd::Eof
-                    | super::capture::CaptureEnd::PtyEio { child_reaped: true }
+                super::capture::CaptureEnd::Eof | super::capture::CaptureEnd::PtyEio { .. }
             );
             let content_ok =
                 txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0"));
