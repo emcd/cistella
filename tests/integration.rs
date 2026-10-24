@@ -4,6 +4,8 @@
 mod blocking;
 #[path = "integration/bounded.rs"]
 mod bounded;
+#[path = "integration/capture.rs"]
+mod capture;
 #[path = "integration/conduct_taps.rs"]
 mod conduct_taps;
 #[path = "integration/conformance.rs"]
