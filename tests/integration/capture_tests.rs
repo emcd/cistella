@@ -154,6 +154,7 @@ fn capture_descendant_held_pipe_grace_expires_bounded() {
                 Duration::from_secs(1),
                 CAPTURE_CAP,
                 |_| false,
+                None,
             );
             assert_eq!(outcome.end, CaptureEnd::GraceExpired);
             assert!(
@@ -189,6 +190,7 @@ fn capture_pty_eio_after_reaped_slave_close() {
                 Duration::from_secs(2),
                 CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("PTY-DONE"),
+                None,
             );
             assert!(
                 outcome.bytes == b"PTY-DONE\n" || outcome.bytes == b"PTY-DONE\r\n",
@@ -258,6 +260,7 @@ fn capture_pty_descendant_holds_slave_grace_expires() {
         Duration::from_secs(1),
         CAPTURE_CAP,
         |_| false,
+        None,
     );
     assert_eq!(outcome.end, CaptureEnd::GraceExpired);
     assert!(
@@ -287,6 +290,7 @@ fn capture_cap_reports_truncation_never_complete() {
                 Duration::from_secs(2),
                 64,
                 |_| false,
+                None,
             );
             assert_eq!(outcome.end, CaptureEnd::CapHit);
             assert!(outcome.truncated, "cap reports truncation");
@@ -381,6 +385,7 @@ fn capture_drains_after_exit_before_first_read() {
                 Duration::from_secs(2),
                 CAPTURE_CAP,
                 |_| false,
+                None,
             );
             assert_eq!(outcome.bytes, expected, "post-exit drain keeps every byte");
             assert_eq!(outcome.end, CaptureEnd::Eof);
@@ -450,6 +455,7 @@ fn capture_unreadable_fd_reports_read_error() {
         Duration::from_secs(2),
         CAPTURE_CAP,
         |_| false,
+        None,
     );
     reap_child(child);
     match &outcome.end {
@@ -484,6 +490,7 @@ fn capture_split_writes_reassemble() {
                 Duration::from_secs(2),
                 CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("THIRD"),
+                None,
             );
             assert_eq!(outcome.bytes, b"FIRST-SECOND-THIRD");
             assert!(
@@ -534,6 +541,7 @@ fn capture_silent_nonzero_exit_is_empty_eof() {
                 Duration::from_secs(2),
                 CAPTURE_CAP,
                 |_| false,
+                None,
             );
             assert!(
                 outcome.bytes.is_empty(),
@@ -552,20 +560,23 @@ fn capture_silent_nonzero_exit_is_empty_eof() {
 /// Retired stop-on-exit read loop: a faithful relevant
 /// fragment of the retired production shape — read first,
 /// then break on an observed exit, never draining past it.
-/// Test-only differences from retired production, stated:
-/// bounded 10ms convergence polls instead of the old sleeps,
-/// a hook slot fired once after the first WouldBlock (used
-/// below to force the implicated window deterministically),
-/// and an ECHILD break (a reaped-elsewhere pid is an observed
-/// exit too). The read-then-poll-then-break order itself is
-/// the shape under test. Kept ONLY as the failing half of the
-/// comparison; never use this shape.
+/// The wait arm preserves the retired behavior exactly:
+/// `is_ok_and` on any error (including ECHILD) is false, so
+/// only a waitpid that returns an actual terminal status
+/// breaks. Test-only differences from retired production,
+/// stated: bounded 10ms convergence polls instead of the old
+/// sleeps, and a hook slot fired once after the first
+/// WouldBlock (used below to stage the implicated window
+/// deterministically — it schedules, it never consumes the
+/// child's status). The read-then-poll-then-break order
+/// itself is the shape under test. Kept ONLY as the failing
+/// half of the comparison; never use this shape.
 fn retired_stop_on_exit(
     master: &std::fs::File,
     child: nix::unistd::Pid,
     bound: Duration,
     on_first_wouldblock: Option<&dyn Fn()>,
-) -> (Vec<u8>, &'static str) {
+) -> (Vec<u8>, Option<i32>, &'static str) {
     let mut fd = master;
     let mut buf = [0u8; 4096];
     let mut acc = Vec::new();
@@ -573,40 +584,77 @@ fn retired_stop_on_exit(
     let start = Instant::now();
     loop {
         if start.elapsed() > bound {
-            return (acc, "timeout");
+            return (acc, None, "timeout");
         }
         match std::io::Read::read(&mut fd, &mut buf) {
-            Ok(0) => return (acc, "eof"),
+            Ok(0) => return (acc, None, "eof"),
             Ok(n) => acc.extend_from_slice(&buf[..n]),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 // The implicated window opens here: the hook
-                // releases the waiting child and reaps its
-                // exit (bounded, fail-loud) before the old poll
-                // below runs, so the write+exit land between
-                // this read and that poll deterministically —
-                // scheduled, never raced.
-                if let Some(release) = hook.take() {
-                    release();
+                // stages write+exit (leaving the status
+                // pending) before the old poll below runs, so
+                // the write+exit land between this read and
+                // that poll deterministically — scheduled,
+                // never raced, never consumed early.
+                if let Some(stage) = hook.take() {
+                    stage();
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Err(_) => return (acc, "read-error"),
+            Err(_) => return (acc, None, "read-error"),
         }
-        match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
-            Ok(nix::sys::wait::WaitStatus::StillAlive) => {}
-            Ok(_) => return (acc, "saw-exit"),
-            Err(nix::errno::Errno::ECHILD) => return (acc, "saw-exit-echild"),
-            Err(_) => {}
+        // Faithful to retired production: only an actual
+        // terminal status breaks; errors (including ECHILD)
+        // continue the loop.
+        if let Ok(status) =
+            nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG))
+        {
+            match status {
+                nix::sys::wait::WaitStatus::StillAlive => {}
+                nix::sys::wait::WaitStatus::Exited(_, code) => {
+                    return (acc, Some(code), "saw-exit");
+                }
+                _ => return (acc, None, "saw-exit-other"),
+            }
         }
     }
 }
 
-/// Close every fd except `keep` (forked children only, raw
-/// libc — safe post-fork): a gate-blocked child must not hold
-/// sibling tests' pipe ends open across parallel tests, or
-/// their EOF never arrives and they time out. This includes
-/// stdio: the forkpty early-close child closes its slave this
-/// way. Call after `into_raw_fd`, before any blocking wait.
+/// Bounded non-consuming exit observation (parents only):
+/// spins until `child` is a zombie — exited with its status
+/// still pending — without reaping it, so a subsequent
+/// waitpid observes the actual terminal status. Fail-loud on
+/// expiry. Read from /proc: no status is consumed, no signal
+/// sent, no scheduler perturbed.
+fn await_zombie_stat(child: nix::unistd::Pid, bound: Duration) {
+    let path = format!("/proc/{child}/stat");
+    let start = Instant::now();
+    loop {
+        // Comm may contain parens; the state follows the
+        // last one.
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Some(close) = text.rfind(')')
+            && text[close + 1..].split_whitespace().next() == Some("Z")
+        {
+            return;
+        }
+        if start.elapsed() > bound {
+            panic!("released child never reached zombie state");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Close every fd numbered 0..8192 except `keep` (forked
+/// children only, raw libc — safe post-fork): a gate-blocked
+/// child must not hold sibling tests' pipe ends open across
+/// parallel tests, or their EOF never arrives and they time
+/// out. This includes stdio: the forkpty early-close child
+/// closes its slave this way. Bound and assumption, stated:
+/// isolation covers descriptors below 8192 only, which holds
+/// for test pipes and sockets; a descriptor at or above 8192
+/// would escape this loop and is not supported here. Call
+/// after `into_raw_fd`, before any blocking wait.
 pub fn close_unrelated_fds(keep: &[std::os::unix::io::RawFd]) {
     for fd in 0..8192 {
         if keep.contains(&fd) {
@@ -638,15 +686,16 @@ pub fn gate_wait(fd: std::os::unix::io::RawFd, bound: Duration) -> bool {
 
 #[test]
 fn capture_old_shape_loses_bytes_new_shape_retains_them() {
-    // The implicated interleaving, deterministically forced on
+    // The implicated interleaving, deterministically staged on
     // the SAME direct child (no descendants): the child blocks
-    // on a gate before writing; the parent's first WouldBlock
-    // releases it and reaps its exit before the old poll runs,
-    // so the write+exit land inside the read-then-poll window.
-    // The retired shape breaks with an empty buffer; a second,
-    // identically-choreographed direct child proves the
-    // collector retains the bytes. Every step is gated
-    // (release, reap, EOF-terminated drain) or bounded with
+    // on a gate before writing; the first WouldBlock stages
+    // write+exit while leaving the status pending, so the
+    // write+exit land inside the read-then-poll window. The
+    // retired shape breaks with an empty buffer on the actual
+    // terminal Exited result; a second, identically-staged
+    // direct child proves the collector retains the bytes on
+    // its own seam. Every step is gated (release, zombie
+    // observation, EOF-terminated drain) or bounded with
     // fail-loud expiry — no timing, no orphans: both children
     // are owned and reaped, gate waits are bounded with
     // distinct exit codes, and unused ends are closed (never
@@ -660,43 +709,42 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                 drop(gate_read);
                 let file = std::fs::File::from(read);
                 set_nonblocking(&file);
+                // Shared staging: release the gated child and
+                // await its zombie WITHOUT consuming the
+                // status, so the subsequent poll — old or new —
+                // observes the actual terminal Exited result.
+                let stage_exit = || {
+                    let wrote = nix::unistd::write(&gate_write, &[1u8]);
+                    assert!(wrote.is_ok(), "gate release delivers");
+                    await_zombie_stat(child, Duration::from_secs(10));
+                };
                 if !new_shape {
-                    // The hook schedules the loss window: release
-                    // the child, then reap its exit (bounded)
-                    // before the old poll below observes it.
-                    let release_and_reap = || {
-                        let wrote = nix::unistd::write(&gate_write, &[1u8]);
-                        assert!(wrote.is_ok(), "gate release delivers");
-                        let mut reaped = false;
-                        let mut exited_at = None;
-                        let mut disposition = ChildDisposition::Unknown;
-                        spin_until_gone(child, &mut reaped, &mut exited_at, &mut disposition);
-                        assert!(reaped, "released child converges");
-                    };
-                    let (old_bytes, old_why) = retired_stop_on_exit(
+                    let (old_bytes, old_code, old_why) = retired_stop_on_exit(
                         &file,
                         child,
                         Duration::from_secs(10),
-                        Some(&release_and_reap),
+                        Some(&stage_exit),
                     );
                     assert!(
                         old_bytes.is_empty(),
-                        "retired shape breaks before the gated write lands"
+                        "retired shape breaks before the staged write lands"
                     );
                     assert_eq!(
-                        old_why, "saw-exit-echild",
-                        "retired shape breaks on the reaped exit"
+                        old_code,
+                        Some(0),
+                        "child wrote fully and exited 0 — the empty buffer is the retired shape's loss, not a silent child"
+                    );
+                    assert_eq!(
+                        old_why, "saw-exit",
+                        "retired shape breaks on the actual terminal status"
                     );
                     drop(gate_write);
                 } else {
-                    // Same choreography, collector under test:
-                    // release, then drain to EOF. The collector
-                    // has no exit-break, so every schedule
-                    // retains; the gate only orders the write,
-                    // never the verdict.
-                    let wrote = nix::unistd::write(&gate_write, &[1u8]);
-                    assert!(wrote.is_ok(), "gate release delivers");
-                    drop(gate_write);
+                    // Same staged ordering on the actual
+                    // collector seam: the hook above fires
+                    // inside the read-then-poll window, and the
+                    // collector — which never breaks on exit —
+                    // retains the staged bytes.
                     let outcome = capture_master(
                         &file,
                         child,
@@ -704,13 +752,17 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                         Duration::from_secs(2),
                         CAPTURE_CAP,
                         |bytes| String::from_utf8_lossy(bytes).contains("PART2"),
+                        Some(&stage_exit),
                     );
                     assert_eq!(
                         outcome.bytes, b"PART2\n",
-                        "new shape retains the gated bytes"
+                        "new shape retains the staged bytes"
                     );
                     assert_eq!(outcome.end, CaptureEnd::Eof);
-                    assert!(outcome.matched, "settle predicate fires on the gated bytes");
+                    assert!(
+                        outcome.matched,
+                        "settle predicate fires on the staged bytes"
+                    );
                     let fin = finalize_capture(
                         child,
                         "old-vs-new",
@@ -737,7 +789,8 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                 close_unrelated_fds(&[w, gate]);
                 // Wait for the release (bounded: a dead parent
                 // surfaces as exit 2, never a hang and never a
-                // false pass — the parent asserts convergence).
+                // false pass — the parent asserts convergence
+                // and the exit code below).
                 if !gate_wait(gate, Duration::from_secs(15)) {
                     unsafe { libc::_exit(2) };
                 }
@@ -751,6 +804,9 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                     )
                 };
                 unsafe { libc::close(w) };
+                // Exit 0 if and only if the full write landed:
+                // the parent's code assertion cannot pass
+                // vacuously on an unwritten exit.
                 if wrote != message.len() as isize {
                     unsafe { libc::_exit(2) };
                 }

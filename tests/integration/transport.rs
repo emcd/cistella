@@ -182,6 +182,7 @@ fn check_isatty(cname: &str) -> bool {
                 std::time::Duration::from_secs(2),
                 super::capture::CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("isatty:true"),
+                None,
             );
             let fin = super::capture::finalize_capture(
                 child,

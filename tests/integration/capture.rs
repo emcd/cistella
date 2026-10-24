@@ -217,6 +217,13 @@ pub fn child_gone(
 /// settle predicate runs over the retained buffer after every
 /// read; a match is stamped, never a break — capture runs to
 /// a terminal observation.
+///
+/// The `on_first_wouldblock` seam is test-only: when present
+/// it fires once, after the first WouldBlock, so a control
+/// can stage an interleaving (release a gated child, await
+/// its exit without consuming the status) inside the exact
+/// read-then-poll window under test. It schedules; it never
+/// decides. Production call sites pass `None`.
 pub fn capture_master(
     master: &std::fs::File,
     child: nix::unistd::Pid,
@@ -224,6 +231,7 @@ pub fn capture_master(
     grace: Duration,
     cap: usize,
     done: impl Fn(&[u8]) -> bool,
+    on_first_wouldblock: Option<&dyn Fn()>,
 ) -> CaptureOutcome {
     let start = Instant::now();
     let deadline = start + budget;
@@ -244,6 +252,7 @@ pub fn capture_master(
     };
     let mut buf = [0u8; 4096];
     let mut fd_read = master;
+    let mut hook = on_first_wouldblock;
     let end = loop {
         // The absolute deadline is authoritative: an overrun
         // is Timeout, never GraceExpired, and the grace never
@@ -287,6 +296,11 @@ pub fn capture_master(
                 attempts += 1;
                 if past_grace {
                     break CaptureEnd::GraceExpired;
+                }
+                // Test-only seam: stage the interleaving once,
+                // inside the read-then-poll window.
+                if let Some(stage) = hook.take() {
+                    stage();
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }

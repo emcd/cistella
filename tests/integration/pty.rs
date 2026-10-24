@@ -91,6 +91,7 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 Duration::from_secs(5),
                 super::capture::CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("DONE"),
+                None,
             );
             let deadline = start + Duration::from_secs(30);
             let fin = super::capture::finalize_capture(child, "enter pty", &outcome, deadline);

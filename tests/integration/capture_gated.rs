@@ -47,6 +47,7 @@ fn gated_post_closure_round(
                 Duration::from_secs(2),
                 CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains(marker_text),
+                None,
             );
             assert_eq!(outcome.bytes, marker, "marker bytes complete");
             assert!(outcome.matched, "settle predicate fires");
@@ -217,6 +218,7 @@ fn capture_pty_early_close_admitted_after_clean_exit() {
                 Duration::from_secs(2),
                 CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("PTY-EARLY-CLOSE"),
+                None,
             );
             assert!(
                 outcome.bytes == b"PTY-EARLY-CLOSE\n" || outcome.bytes == b"PTY-EARLY-CLOSE\r\n",
