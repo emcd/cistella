@@ -5,6 +5,7 @@
 //! and residue semantics, never the enter edge.
 
 use super::helpers::*;
+use super::parked::ParkedConduct;
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
@@ -192,29 +193,33 @@ fn describe_state_contradictory_commitment_refuses_typed() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let profile = fixture_profile("default.toml");
-    let (mut conduct, id, mut guard) = spawn_conduct_full(
-        &home,
-        &profile,
-        &worktree_str,
-        &[],
-        &["sleep", "300"],
-        &[("CISTELLA_CONDUCT_START_DELAY_MS", "30000")],
-        None,
-    );
+    // Causal pre-initiate hold: the gate parks the conduct
+    // after install, so the session provably never launches —
+    // no container, no native attestation — and the write-once
+    // fixture below cannot race a native publication. The id
+    // is discovered at install, never from post-stall stdout.
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate");
+    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    let id = parked.discover_id();
+    let container = format!("cistella-{id}");
     let unit = unit_path(&home, &id);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !unit.exists() {
-        if std::time::Instant::now() > deadline {
-            panic!("unit file never installed for stalled conduct {id}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+    assert!(
+        unit.exists(),
+        "parked conduct installs its unit before the gate"
+    );
     let base = cistella::lock::runtime_base();
+    assert!(
+        cistella::attestation::read(&base, &id)
+            .expect("attestation reads")
+            .is_none(),
+        "no native attestation exists while parked pre-initiate"
+    );
     cistella::attestation::publish(
         &base,
         &cistella::attestation::Attestation {
             session_id: id.clone(),
-            container_name: format!("cistella-{id}"),
+            container_name: container.clone(),
             attempt_key: "fixture-key".to_string(),
             argv: vec!["sleep".to_string()],
             execution_handle: "fixture-exec".to_string(),
@@ -232,27 +237,29 @@ fn describe_state_contradictory_commitment_refuses_typed() {
         stderr.contains("contradictory provenance"),
         "refusal names the contradiction, got: {stderr}"
     );
-    // Cleanup: kill the stalled child; terminate reaps the unit
-    // and the fixture commitment — unless a concurrent `gc`
-    // converged it first. The kill releases the creation lock a
-    // blocked suite-parallel `gc` may wait on, and a stalled
-    // pre-initiate unit (installed, no container, inactive
-    // service) classifies as an orphan unit there. Either
-    // converger leaves the same observable state, so the
-    // no-session-matches report reads as converged ONLY with
-    // the unit file observably gone — never as a bare pass.
-    let _ = conduct.kill();
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
-    let term = run_cistella(&home, &["terminate", &id]);
-    let term_stderr = String::from_utf8_lossy(&term.stderr).to_string();
-    if term.status.success() {
-        // Terminate won the converge.
-    } else if term_stderr.contains("no session matches") && !unit.exists() {
-        // A concurrent `gc` won the converge after the kill
-        // released the creation lock: the unit is observably
-        // gone, so convergence holds regardless of winner.
-    } else {
-        panic!("stalled unit terminates: {term_stderr}");
-    }
-    guard.id = None;
+    // Cleanup: abort converges the installed unit in-conduct
+    // under the held creation lock, so no suite-parallel gc
+    // window opens. The container never started (checked
+    // query, not inference), and the test-created fixture
+    // commitment is reaped through the product per-session
+    // primitive — then proven gone — before disarming.
+    let status = parked.abort();
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "abort disposition is 128+SIGTERM, got: {status:?}"
+    );
+    assert!(!unit.exists(), "aborted startup converges the unit");
+    assert!(
+        container_absent(&container),
+        "parked session never started a container: {container}"
+    );
+    cistella::attestation::reap(&base, &id);
+    assert!(
+        cistella::attestation::read(&base, &id)
+            .expect("attestation reads")
+            .is_none(),
+        "fixture commitment reaped after abort"
+    );
+    parked.settle();
 }
