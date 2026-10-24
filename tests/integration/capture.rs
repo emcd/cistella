@@ -65,6 +65,7 @@ pub struct CaptureOutcome {
     pub matched: bool,
     pub truncated: bool,
     pub child_reaped: bool,
+    pub disposition: ChildDisposition,
     pub phases: CapturePhases,
     pub refusal_hits: Vec<&'static str>,
 }
@@ -116,23 +117,72 @@ pub fn excerpt_capped(bytes: &[u8]) -> String {
     format!("{head}<...{omitted} bytes omitted...>{tail}")
 }
 
+/// How the child ended, as observed. Recorded at first
+/// consumption; a later ECHILD means the status was already
+/// consumed elsewhere — 'reaped elsewhere / status
+/// unavailable', never a successful disposition. Reap
+/// bookkeeping (the pid is unwaitable) stays separate from
+/// disposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildDisposition {
+    /// Nothing terminal observed yet.
+    Unknown,
+    /// Exited with a status code.
+    Exited(i32),
+    /// Killed by a signal.
+    Signaled(i32),
+    /// Reaped elsewhere (ECHILD at reconcile): gone, but the
+    /// disposition is unknown and satisfies no required
+    /// successful disposition.
+    Unavailable,
+}
+
 /// Reconciles one child status: true when no exit is left to
-/// await. A terminal waitpid observation reaps (recorded);
-/// ECHILD means reaped elsewhere (also recorded as reaped —
-/// the pid is unwaitable either way); any other error is
-/// transient and concludes nothing.
-fn child_gone(child: nix::unistd::Pid, reaped: &mut bool, exited_at: &mut Option<Instant>) -> bool {
+/// await. A terminal waitpid observation reaps and records
+/// the disposition at first consumption; ECHILD means reaped
+/// elsewhere (recorded as reaped, disposition Unavailable);
+/// any other error is transient and concludes nothing.
+fn child_gone(
+    child: nix::unistd::Pid,
+    reaped: &mut bool,
+    exited_at: &mut Option<Instant>,
+    disposition: &mut ChildDisposition,
+) -> bool {
     match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
         Ok(nix::sys::wait::WaitStatus::StillAlive) => false,
-        Ok(_) => {
-            *reaped = true;
-            if exited_at.is_none() {
-                *exited_at = Some(Instant::now());
+        Ok(status) => {
+            // Only terminal observations converge: a WNOHANG
+            // poll without stop flags never reports stopped or
+            // continued states, but the match stays total.
+            let terminal = matches!(
+                status,
+                nix::sys::wait::WaitStatus::Exited(_, _)
+                    | nix::sys::wait::WaitStatus::Signaled(_, _, _)
+            );
+            if terminal {
+                *reaped = true;
+                if matches!(disposition, ChildDisposition::Unknown) {
+                    *disposition = match status {
+                        nix::sys::wait::WaitStatus::Exited(_, code) => {
+                            ChildDisposition::Exited(code)
+                        }
+                        nix::sys::wait::WaitStatus::Signaled(_, signal, _) => {
+                            ChildDisposition::Signaled(signal as i32)
+                        }
+                        _ => ChildDisposition::Unknown,
+                    };
+                }
+                if exited_at.is_none() {
+                    *exited_at = Some(Instant::now());
+                }
             }
-            true
+            terminal
         }
         Err(nix::errno::Errno::ECHILD) => {
             *reaped = true;
+            if matches!(disposition, ChildDisposition::Unknown) {
+                *disposition = ChildDisposition::Unavailable;
+            }
             if exited_at.is_none() {
                 *exited_at = Some(Instant::now());
             }
@@ -165,7 +215,7 @@ pub fn capture_master(
     let mut matched = false;
     let mut truncated = false;
     let mut child_reaped = false;
-    let mut gone = false;
+    let mut disposition = ChildDisposition::Unknown;
     let mut phases = CapturePhases {
         started: start,
         first_read: None,
@@ -176,21 +226,18 @@ pub fn capture_master(
     let mut buf = [0u8; 4096];
     let mut fd_read = master;
     let end = loop {
+        // The absolute deadline is authoritative: an overrun
+        // is Timeout, never GraceExpired, and the grace never
+        // extends the budget.
         if Instant::now() > deadline {
             break CaptureEnd::Timeout;
         }
-        // Reconcile child status every iteration (not only on
-        // EIO): the record keeps read observation and
-        // child-status observation in order.
-        if child_gone(child, &mut child_reaped, &mut phases.exit_observed) {
-            gone = true;
-        }
-        if gone
-            && let Some(exited_at) = phases.exit_observed
-            && Instant::now() > exited_at + grace
-        {
-            break CaptureEnd::GraceExpired;
-        }
+        // Grace check before the read, so the grace boundary
+        // still takes one last read while inside the budget.
+        let past_grace = match phases.exit_observed {
+            Some(exited_at) => Instant::now() > exited_at + grace,
+            None => false,
+        };
         match std::io::Read::read(&mut fd_read, &mut buf) {
             Ok(0) => break CaptureEnd::Eof,
             Ok(n) => {
@@ -208,19 +255,39 @@ pub fn capture_master(
                     matched = true;
                     phases.matched = Some(Instant::now());
                 }
+                if past_grace {
+                    break CaptureEnd::GraceExpired;
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if past_grace {
+                    break CaptureEnd::GraceExpired;
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(error) if error.raw_os_error() == Some(libc::EIO) => {
                 // Reconcile at the EIO instant: EIO with a
                 // merely not-yet-observed status proves nothing
                 // about liveness.
-                child_gone(child, &mut child_reaped, &mut phases.exit_observed);
+                child_gone(
+                    child,
+                    &mut child_reaped,
+                    &mut phases.exit_observed,
+                    &mut disposition,
+                );
                 break CaptureEnd::PtyEio { child_reaped };
             }
             Err(error) => break CaptureEnd::ReadErr(error.to_string()),
         }
+        // Reconcile child status every iteration (not only on
+        // EIO): the record keeps read observation and
+        // child-status observation in order.
+        child_gone(
+            child,
+            &mut child_reaped,
+            &mut phases.exit_observed,
+            &mut disposition,
+        );
     };
     phases.ended = Instant::now();
     let refusal_hits = refusal_hits(&bytes);
@@ -231,9 +298,30 @@ pub fn capture_master(
         matched,
         truncated,
         child_reaped,
+        disposition,
         phases,
         refusal_hits,
     }
+}
+
+/// Phase offsets in milliseconds from capture start, for the
+/// diagnostic record: first read, settle match, exit
+/// observation, and capture end. Missing observations render
+/// as unset, never as zero.
+pub fn phase_offsets(phases: &CapturePhases) -> String {
+    fn at(start: Instant, point: Option<Instant>) -> String {
+        match point {
+            Some(instant) => format!("+{}ms", instant.duration_since(start).as_millis()),
+            None => "unset".to_string(),
+        }
+    }
+    format!(
+        "first_read={} matched={} exit={} end=+{}ms",
+        at(phases.started, phases.first_read),
+        at(phases.started, phases.matched),
+        at(phases.started, phases.exit_observed),
+        phases.ended.duration_since(phases.started).as_millis(),
+    )
 }
 
 /// Reaps a forked test child (blocking): the deterministic
@@ -245,6 +333,107 @@ fn reap_child(child: nix::unistd::Pid) {
     match nix::sys::wait::waitpid(child, None) {
         Ok(_) => {}
         Err(error) => panic!("control child failed to reap: {error}"),
+    }
+}
+
+/// Bounded spin until child_gone converges (controls only):
+/// the child code paths below are exit-only, so convergence
+/// is guaranteed; the bound fails loud instead of hanging a
+/// wedged child.
+fn spin_until_gone(
+    child: nix::unistd::Pid,
+    reaped: &mut bool,
+    exited_at: &mut Option<Instant>,
+    disposition: &mut ChildDisposition,
+) {
+    for _ in 0..1000 {
+        if child_gone(child, reaped, exited_at, disposition) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("control child never converged");
+}
+
+#[test]
+fn child_gone_records_exit_code_at_first_consumption() {
+    // Forked child exits 7 (exit-only path, so convergence is
+    // guaranteed): the first terminal observation records the
+    // code, and a later ECHILD (status already consumed)
+    // keeps it — first consumption wins, never overwritten
+    // with Unavailable.
+    match unsafe { nix::unistd::fork().expect("fork") } {
+        nix::unistd::ForkResult::Parent { child } => {
+            let mut reaped = false;
+            let mut exited_at = None;
+            let mut disposition = ChildDisposition::Unknown;
+            spin_until_gone(child, &mut reaped, &mut exited_at, &mut disposition);
+            assert!(reaped, "terminal observation reaps");
+            assert_eq!(disposition, ChildDisposition::Exited(7));
+            assert!(exited_at.is_some(), "exit observation timestamped");
+            // Reap bookkeeping already consumed: ECHILD now,
+            // and the recorded code must survive it.
+            assert!(child_gone(
+                child,
+                &mut reaped,
+                &mut exited_at,
+                &mut disposition
+            ));
+            assert_eq!(disposition, ChildDisposition::Exited(7));
+        }
+        nix::unistd::ForkResult::Child => unsafe { libc::_exit(7) },
+    }
+}
+
+#[test]
+fn child_gone_records_signal_death() {
+    // Forked child raises SIGTERM to itself: disposition is
+    // the signal, distinct from an exit code.
+    match unsafe { nix::unistd::fork().expect("fork") } {
+        nix::unistd::ForkResult::Parent { child } => {
+            let mut reaped = false;
+            let mut exited_at = None;
+            let mut disposition = ChildDisposition::Unknown;
+            spin_until_gone(child, &mut reaped, &mut exited_at, &mut disposition);
+            assert!(reaped, "terminal observation reaps");
+            assert_eq!(
+                disposition,
+                ChildDisposition::Signaled(libc::SIGTERM),
+                "signal death recorded, not an exit code"
+            );
+        }
+        nix::unistd::ForkResult::Child => unsafe {
+            libc::raise(libc::SIGTERM);
+            libc::_exit(3);
+        },
+    }
+}
+
+#[test]
+fn child_gone_reports_live_child_without_consuming() {
+    // Forked child sleeps well past the observation: a single
+    // poll reports not-gone, Unknown preserved, nothing
+    // reaped. Cleanup kills and reaps (bounded, then verified
+    // gone) so no sleeper interferes with sibling tests.
+    match unsafe { nix::unistd::fork().expect("fork") } {
+        nix::unistd::ForkResult::Parent { child } => {
+            let mut reaped = false;
+            let mut exited_at = None;
+            let mut disposition = ChildDisposition::Unknown;
+            assert!(
+                !child_gone(child, &mut reaped, &mut exited_at, &mut disposition),
+                "live child is not gone"
+            );
+            assert!(!reaped, "nothing reaped");
+            assert_eq!(disposition, ChildDisposition::Unknown);
+            assert!(exited_at.is_none(), "no exit observed");
+            let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+            reap_child(child);
+        }
+        nix::unistd::ForkResult::Child => unsafe {
+            libc::sleep(30);
+            libc::_exit(0);
+        },
     }
 }
 
@@ -318,6 +507,11 @@ fn capture_pty_eio_after_reaped_slave_close() {
                 outcome.bytes == b"PTY-DONE\n" || outcome.bytes == b"PTY-DONE\r\n",
                 "queued bytes complete (pty may translate LF to CRLF), got: {:?}",
                 outcome.bytes
+            );
+            assert_eq!(
+                outcome.disposition,
+                ChildDisposition::Unavailable,
+                "pre-reaped child reads as reaped-elsewhere"
             );
             assert!(
                 matches!(
@@ -501,6 +695,11 @@ fn capture_drains_after_exit_before_first_read() {
             );
             assert_eq!(outcome.bytes, expected, "post-exit drain keeps every byte");
             assert_eq!(outcome.end, CaptureEnd::Eof);
+            assert_eq!(
+                outcome.disposition,
+                ChildDisposition::Unavailable,
+                "pre-reaped child reads as reaped-elsewhere, not an exit code"
+            );
             assert!(outcome.reads >= 1, "at least one read delivered");
             assert!(outcome.child_reaped, "reaped before draining");
             assert!(outcome.phases.first_read.is_some(), "read observed");

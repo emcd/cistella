@@ -196,15 +196,30 @@ fn check_isatty(cname: &str) -> bool {
                 super::capture::excerpt_capped(&outcome.bytes)
             );
             eprintln!(
-                "isatty capture: end={:?} reads={} matched={} truncated={} reaped={} hits={:?}",
+                "isatty capture: end={:?} reads={} matched={} truncated={} reaped={} status={:?} phases={} hits={:?}",
                 outcome.end,
                 outcome.reads,
                 outcome.matched,
                 outcome.truncated,
                 outcome.child_reaped,
+                outcome.disposition,
+                super::capture::phase_offsets(&outcome.phases),
                 outcome.refusal_hits
             );
-            txt.contains("isatty:true")
+            // Verdict admits only a clean end of stream with a
+            // successfully exited child and the isatty marker.
+            // Anything else fails loud instead of passing on a
+            // partial capture.
+            let end_ok = matches!(
+                outcome.end,
+                super::capture::CaptureEnd::Eof
+                    | super::capture::CaptureEnd::PtyEio { child_reaped: true }
+            );
+            let status_ok = matches!(
+                outcome.disposition,
+                super::capture::ChildDisposition::Exited(0)
+            );
+            end_ok && status_ok && txt.contains("isatty:true")
         }
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;

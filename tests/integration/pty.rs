@@ -123,15 +123,35 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 super::capture::excerpt_capped(&outcome.bytes)
             );
             eprintln!(
-                "enter pty capture: end={:?} reads={} matched={} truncated={} reaped={} hits={:?}",
+                "enter pty capture: end={:?} reads={} matched={} truncated={} reaped={} status={:?} phases={} hits={:?}",
                 outcome.end,
                 outcome.reads,
                 outcome.matched,
                 outcome.truncated,
                 outcome.child_reaped,
+                outcome.disposition,
+                super::capture::phase_offsets(&outcome.phases),
                 outcome.refusal_hits
             );
-            reaped && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))
+            // Verdict admits only a clean end of stream with a
+            // successfully exited child and the expected content.
+            // Anything else — capture error or timeout,
+            // truncation, an unknown or unsuccessful disposition,
+            // a missing marker — fails loud instead of passing
+            // on a partial capture.
+            let end_ok = matches!(
+                outcome.end,
+                super::capture::CaptureEnd::Eof
+                    | super::capture::CaptureEnd::PtyEio { child_reaped: true }
+            );
+            let status_ok = matches!(
+                outcome.disposition,
+                super::capture::ChildDisposition::Exited(0)
+            );
+            reaped
+                && end_ok
+                && status_ok
+                && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))
         }
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
