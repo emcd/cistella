@@ -4,7 +4,6 @@
 //! Split from `lifecycle.rs` at the file-size limit.
 
 use std::process::Command;
-use std::time::Duration;
 
 use super::helpers::*;
 
@@ -28,26 +27,37 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     // harness ARGV (container PID1 sleeps too, so process counts
     // and bare "sleep" matches fire pre-harness).
     wait_harness(&container, "sleep 300");
+    // Real admission: the launch attestation binds the attempt
+    // (unit, key, argv, execution handle) to this incarnation
+    // after execute_launch returns Ok. Observed commit means the
+    // execution is bound — the ARGV substring above is smoke
+    // that cannot distinguish PID1's sleeper from the harness,
+    // and killing on smoke alone races the execution-less
+    // converge. Kill only past this commit.
+    wait_attestation(&id, &container);
 
     // SIGKILL conduct: no teardown runs, the orphan unit file remains.
+    // Hold the creation lock from BEFORE the kill across every
+    // presence assertion below: SIGKILL is uncatchable so no
+    // teardown path can run by product design, reap orders the
+    // conduct's death, and the lock orders gc-exclusion (gc
+    // blocks on it; a sibling gc in these windows would
+    // legitimately reap our freshly-stopped unit and turn the
+    // assertions into cross-test timing). With the only
+    // deleter excluded, presence asserts immediately — no sleep
+    // proxies "the kill took effect". The freeze MUST drop
+    // before the final gc below: gc acquires the same lock, and
+    // holding it across our own gc would self-deadlock
+    // (separate process, same flock). Stop and the assertions
+    // never take the lock themselves.
+    let _creation_freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
     conduct.kill().expect("kill conduct");
     let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
         .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");
     guard.id = None;
-    std::thread::sleep(Duration::from_millis(500));
     assert!(unit_path(&home, &id).exists(), "orphan unit remains");
 
     // External stop simulating a crash: container gone (--rm), unit orphaned.
-    // Hold the creation lock across stop-then-assert-then-inspect: a
-    // sibling test's gc run in these windows would legitimately reap
-    // our freshly-stopped unit (gc classifies absent-container +
-    // unit-file + inactive-service as orphan), turning the presence
-    // assertion — or the post-mortem inspect — into cross-test
-    // timing. gc blocks on the lock; stop and the assertions never
-    // take it. The freeze MUST drop before the final gc below: gc
-    // acquires the same lock, and holding it across our own gc
-    // would self-deadlock (separate process, same flock).
-    let _creation_freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
     let mut cmd = Command::new("systemctl");
     cmd.args(["--user", "stop", &format!("{container}.service")]);
     let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
@@ -56,7 +66,9 @@ fn inspect_postmortem_and_gc_reap_orphan() {
         "stop {container}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    std::thread::sleep(Duration::from_millis(500));
+    // Stop completion is ordered by the successful stop exit
+    // above; gc-exclusion by the still-held freeze. Assert
+    // immediately — no sleep proxies "the stop landed".
     assert!(
         unit_path(&home, &id).exists(),
         "unit file outlives external stop"

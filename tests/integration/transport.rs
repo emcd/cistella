@@ -420,16 +420,52 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
                 return false;
             }
             std::thread::sleep(std::time::Duration::from_millis(400));
-            let mut cmd = Command::new("podman");
-            cmd.args([
-                "exec",
-                cname,
-                "sh",
-                "-c",
-                "test -f /tmp/sigint_harness && echo present || echo absent",
-            ]);
-            let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("check sigint");
-            let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // Bounded marker observation with exec-failure
+            // terminal semantics. Causality, pinned: READY fired
+            // in-container, 0x03 written, trap ran
+            // `touch /tmp/sigint_harness` before `exit 0`, and the
+            // reap above observed that exit — so the marker
+            // causally precedes this loop. The loop only rides
+            // out exec-subsystem settling; a podman exec failure
+            // is terminal failure evidence (loud, with stderr),
+            // never "absent" and never retried into success. No
+            // blanket retry-125 suppression: any nonzero exec
+            // fails the check.
+            let marker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let txt = loop {
+                let mut cmd = Command::new("podman");
+                cmd.args([
+                    "exec",
+                    cname,
+                    "sh",
+                    "-c",
+                    "test -f /tmp/sigint_harness && echo present || echo absent",
+                ]);
+                match run_bounded(cmd, RUN_CISTELLA_TIMEOUT) {
+                    Err(why) => {
+                        eprintln!("sigint marker exec failed to run: {why}");
+                        break String::new();
+                    }
+                    Ok(out) if !out.status.success() => {
+                        eprintln!(
+                            "sigint marker exec refused: {}",
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                        break String::new();
+                    }
+                    Ok(out) => {
+                        let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if t == "present" {
+                            break t;
+                        }
+                        if std::time::Instant::now() > marker_deadline {
+                            eprintln!("sigint marker never appeared; last exec said: {t}");
+                            break t;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            };
             let mut rm = Command::new("podman");
             rm.args(["exec", cname, "rm", "-f", "/tmp/sigint_harness"]);
             let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
