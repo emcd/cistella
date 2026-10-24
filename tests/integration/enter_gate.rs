@@ -206,9 +206,10 @@ fn live_container_id(container: &str) -> Option<String> {
 }
 
 /// Reads the live (Id, StartedAt) pair with one `podman
-/// inspect`: one command, one observation, parsed exactly
-/// like the commit binding (first two whitespace tokens;
-/// absent or malformed reads as not-yet, never as absence).
+/// inspect`: one command, one observation, parsed with the
+/// product's shared parser (first token plus the whole
+/// remainder — never split StartedAt itself apart).
+/// Absent or malformed reads as not-yet, never as absence.
 fn live_identity(container: &str) -> Option<(String, String)> {
     let out = run_bounded(
         {
@@ -227,13 +228,9 @@ fn live_identity(container: &str) -> Option<(String, String)> {
     if !out.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut parts = text.split_whitespace();
-    match (parts.next(), parts.next()) {
-        (Some(id), Some(started)) if !id.is_empty() && !started.is_empty() => {
-            Some((id.to_string(), started.to_string()))
-        }
-        _ => None,
+    match cistella::attestation::parse_identity(&String::from_utf8_lossy(&out.stdout)) {
+        Ok(identity) => Some((identity.container_id, identity.started_at)),
+        Err(_) => None,
     }
 }
 
