@@ -205,14 +205,20 @@ fn live_container_id(container: &str) -> Option<String> {
     Some(id)
 }
 
-/// Reads the live container StartedAt via the bound template.
-/// None on transient failure — same contract as
-/// `live_container_id`.
-fn live_started_at(container: &str) -> Option<String> {
+/// Reads the live (Id, StartedAt) pair with one `podman
+/// inspect`: one command, one observation, parsed exactly
+/// like the commit binding (first two whitespace tokens;
+/// absent or malformed reads as not-yet, never as absence).
+fn live_identity(container: &str) -> Option<(String, String)> {
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
-            cmd.args(["inspect", "--format", "{{.State.StartedAt}}", container]);
+            cmd.args([
+                "inspect",
+                "--format",
+                "{{.Id}} {{.State.StartedAt}}",
+                container,
+            ]);
             cmd
         },
         RUN_CISTELLA_TIMEOUT,
@@ -221,20 +227,48 @@ fn live_started_at(container: &str) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let started = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if started.is_empty() {
-        return None;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some(id), Some(started)) if !id.is_empty() && !started.is_empty() => {
+            Some((id.to_string(), started.to_string()))
+        }
+        _ => None,
     }
-    Some(started)
+}
+
+/// Waits for a post-surgery incarnation to land as one
+/// coherent observation: a single paired reading differing
+/// from the bound. Transient uninspectability reads as
+/// not-yet, never as absence; the bound fails loud. Landing
+/// is the premise — the product gate renders the verdict.
+fn wait_landed_incarnation(container: &str, bound_id: &str, bound_started: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match live_identity(container) {
+            Some((id, started)) if id != bound_id || started != bound_started => return,
+            _ => {}
+        }
+        if Instant::now() > deadline {
+            panic!("surgery never landed a new incarnation for {container}");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_enter_refuses_stale_incarnation_after_restart() {
-    // Restart changes StartedAt under a stable name: the
-    // pre-restart commitment must not ready the new
-    // incarnation. Ownerless setup (helper above) removes the
-    // conduct-teardown race — the only writer is the restart.
+    // Live arm of the stale-incarnation split: after a restart
+    // lands, entry into the replacement must be refused at
+    // the readiness edge — never executed. This arm asserts
+    // the refusal, not the word: both the stale and the
+    // unestablishable refusals satisfy the safety property,
+    // and the receipt reports which one fired. The stale
+    // classification itself is pinned deterministically
+    // beside `gate_enter` (no backend). Ownerless setup
+    // (helper above) removes the conduct-teardown race — the
+    // only writer is the restart.
     if !systemd_gate() {
         return;
     }
@@ -246,14 +280,25 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     let before = cistella::attestation::read(&base, &id)
         .expect("attestation reads")
         .expect("committed");
-    // Sanity: the edge passes while the incarnation is current
-    // (ownerless direct exec of a no-op proves ProceedNative).
-    let fresh = run_cistella(&home, &["enter", &id, "--", "true"]);
+    let bound = before
+        .incarnation
+        .as_ref()
+        .expect("native commitment carries incarnation");
+    let marker = "enter-probe";
+    let probe = worktree.path().join(marker);
+    // Positive current-incarnation entry evidence: the payload
+    // executes and its side effect lands before the surgery.
+    let fresh = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
     assert!(
         fresh.status.success(),
         "edge passes pre-restart: {}",
         String::from_utf8_lossy(&fresh.stderr)
     );
+    assert!(probe.exists(), "pre-restart entry executes the payload");
+    std::fs::remove_file(&probe).expect("clear the pre-restart marker");
     let out = run_bounded(
         {
             let mut cmd = Command::new("podman");
@@ -268,54 +313,35 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Bounded wait for the new incarnation to settle (fail loud
-    // on a restart that never lands — never assume the swap).
-    // An out-of-band `podman restart` under systemd returns
-    // while the container is still transitioning, so the first
-    // differing StartedAt may precede a window where the next
-    // inspect fails — which the single-pass enter gate reports
-    // as unestablishable, not stale. Only consecutive identical
-    // identity readings (same Id and StartedAt, StartedAt
-    // differing from the bound) prove the backend quiescent;
-    // transient failures reset the streak, never read as absence.
-    let bound_started = before
-        .incarnation
-        .as_ref()
-        .expect("native commitment carries incarnation")
-        .started_at
-        .clone();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut streak: u32 = 0;
-    let mut last: Option<(String, String)> = None;
-    loop {
-        let current = match (live_container_id(&container), live_started_at(&container)) {
-            (Some(id), Some(started)) if started != bound_started => Some((id, started)),
-            _ => None,
-        };
-        if current.is_some() && current == last {
-            streak += 1;
-            if streak >= 3 {
-                break;
-            }
-        } else {
-            streak = u32::from(current.is_some());
-            last = current;
-        }
-        if Instant::now() > deadline {
-            panic!("restart never settled a new incarnation for {container}");
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    let out = run_cistella(&home, &["enter", &id, "--", "true"]);
+    // Bounded wait for the replacement to land as one
+    // coherent observation: a single paired reading differing
+    // from the bound. Transient uninspectability reads as
+    // not-yet, never as absence; the bound fails loud.
+    // Landing is the premise — the product gate below renders
+    // the verdict.
+    wait_landed_incarnation(&container, &bound.container_id, &bound.started_at);
+    // Readiness-edge negative control: the same payload must
+    // not execute — its side effect stays absent — and the
+    // refusal must come from the edge (stale or
+    // unestablishable), never a selector or launch failure.
+    let out = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         !out.status.success(),
         "post-restart enter must refuse, not exec"
     );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("stale"),
-        "refusal names staleness, got: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(!probe.exists(), "refused entry executes no payload");
+    let verdict = if stderr.contains("stale") {
+        "stale"
+    } else if stderr.contains("unestablishable") {
+        "unestablishable"
+    } else {
+        panic!("post-restart refusal must come from the readiness edge, got: {stderr}");
+    };
+    eprintln!("post-restart refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
     assert!(
         term.status.success(),
