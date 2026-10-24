@@ -386,10 +386,14 @@ fn conduct_enter_after_teardown_reports_selector_not_readiness() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn conduct_enter_refuses_stale_incarnation_after_recreate() {
-    // Out-of-band rm under Restart=on-failure: systemd recreates
-    // the same name with a NEW container ID. The old commitment
-    // must not ready the replacement. Same ownerless shape as
-    // the restart test (ID change instead of StartedAt).
+    // Live arm of the stale-incarnation split for the recreate
+    // mutation: after systemd recreates the same name with a
+    // NEW container ID, entry into the replacement must be
+    // refused at the readiness edge — never executed. Same
+    // three-part shape as the restart arm: positive entry
+    // evidence before the surgery, payload non-execution
+    // after, and the edge refusal reported rather than
+    // asserted as a specific word.
     if !systemd_gate() {
         return;
     }
@@ -401,12 +405,26 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     let before = cistella::attestation::read(&base, &id)
         .expect("attestation reads")
         .expect("committed");
-    let bound_id = before
+    let bound = before
         .incarnation
         .as_ref()
-        .expect("native commitment carries incarnation")
-        .container_id
-        .clone();
+        .expect("native commitment carries incarnation");
+    let bound_id = bound.container_id.clone();
+    let marker = "enter-probe";
+    let probe = worktree.path().join(marker);
+    // Positive current-incarnation entry evidence: the payload
+    // executes and its side effect lands before the surgery.
+    let fresh = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
+    assert!(
+        fresh.status.success(),
+        "edge passes pre-recreate: {}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    assert!(probe.exists(), "pre-recreate entry executes the payload");
+    std::fs::remove_file(&probe).expect("clear the pre-recreate marker");
     // Pre-surgery identity, tolerantly: a transient inspect
     // failure here must retry, not fail — the loop below
     // already owns the fail-loud bound, this just establishes
@@ -444,32 +462,35 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Bounded wait for systemd's replacement (fail loud if the
-    // service never recreates — never assume the swap).
-    // Transient inspect failures (kill/recreate window) read as
-    // not-yet: only a successful query naming a different ID
-    // breaks the loop.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        match live_container_id(&container) {
-            Some(current) if current != bound_id => break,
-            _ => {}
-        }
-        if Instant::now() > deadline {
-            panic!("recreate never landed a new ID for {container}");
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    let out = run_cistella(&home, &["enter", &id, "--", "true"]);
+    // Bounded wait for systemd's replacement to land as one
+    // coherent observation: a single paired reading differing
+    // from the bound. Transient uninspectability reads as
+    // not-yet, never as absence; the bound fails loud.
+    // Landing is the premise — the product gate below renders
+    // the verdict.
+    wait_landed_incarnation(&container, &bound_id, &bound.started_at);
+    // Readiness-edge negative control: the same payload must
+    // not execute — its side effect stays absent — and the
+    // refusal must come from the edge (stale or
+    // unestablishable), never a selector or launch failure.
+    let out = run_cistella(
+        &home,
+        &["enter", &id, "--", "touch", &format!("/work/{marker}")],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         !out.status.success(),
         "post-recreate enter must refuse, not exec"
     );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("stale"),
-        "refusal names staleness, got: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(!probe.exists(), "refused entry executes no payload");
+    let verdict = if stderr.contains("stale") {
+        "stale"
+    } else if stderr.contains("unestablishable") {
+        "unestablishable"
+    } else {
+        panic!("post-recreate refusal must come from the readiness edge, got: {stderr}");
+    };
+    eprintln!("post-recreate refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
     assert!(
         term.status.success(),
