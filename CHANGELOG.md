@@ -9,6 +9,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Launch-incarnation identity parses the full StartedAt remainder
+  instead of the second whitespace token: on backends rendering a
+  space-separated timestamp (observed: podman 5.7), same-day restarts
+  were invisible to the enter gate and a replacement container could
+  be entered (fail-open). Restart/recreate now refuse stale as
+  committed. Sessions attested date-only by the old parser read
+  stale under the fixed reader (fail-closed liveness cost;
+  relaunch the session); single-token renderings are unaffected.
 - Concurrent unit-file removers converge: a filesystem `NotFound`
   on unlink (the losing remover racing CLI `terminate` against an
   attached `conduct` teardown) is converged absence, never an error.
