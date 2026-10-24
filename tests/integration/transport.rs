@@ -369,6 +369,196 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
     }
 }
 
+/// What the SIGINT probe observed, as facts. The probe
+/// collects; `sigint_verdict` decides — the capture
+/// collector's facts-vs-verdict split, applied to this
+/// probe's causal chain (READY → delivered 0x03 → clean
+/// exit → marker present).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerState {
+    /// `test -f` saw the trap's marker inside the deadline.
+    Present,
+    /// Deadline passed with the marker still absent.
+    AbsentExpired,
+    /// A podman exec failed: marker state unknown, which is
+    /// failure evidence, never absence.
+    ExecFailed,
+    /// The marker was never looked for (an earlier premise
+    /// already failed). Refuses like absence.
+    Unchecked,
+}
+
+/// One SIGINT probe run, as facts. No I/O here.
+#[derive(Debug, Clone, Copy)]
+struct SigintFacts {
+    ready: bool,
+    delivered: bool,
+    disposition: super::capture::ChildDisposition,
+    marker: MarkerState,
+}
+
+impl SigintFacts {
+    fn new() -> Self {
+        Self {
+            ready: false,
+            delivered: false,
+            disposition: super::capture::ChildDisposition::Unknown,
+            marker: MarkerState::Unchecked,
+        }
+    }
+}
+
+/// The probe's causal rule, as a testable pure function:
+/// READY observed, 0x03 delivered, natural Exited(0), marker
+/// present, no exec failure. Every missing premise refuses.
+fn sigint_verdict(facts: &SigintFacts) -> bool {
+    facts.ready
+        && facts.delivered
+        && matches!(
+            facts.disposition,
+            super::capture::ChildDisposition::Exited(0)
+        )
+        && facts.marker == MarkerState::Present
+}
+
+/// The verdict rule, pinned without a backend: the full
+/// causal chain verifies, and every missing premise refuses.
+/// Backend-free (pure facts in, bool out), so these run in
+/// the fast suite.
+#[test]
+fn sigint_verdict_admits_only_the_complete_chain() {
+    use super::capture::ChildDisposition;
+    let good = SigintFacts {
+        ready: true,
+        delivered: true,
+        disposition: ChildDisposition::Exited(0),
+        marker: MarkerState::Present,
+    };
+    assert!(sigint_verdict(&good), "complete chain verifies");
+    for (name, facts) in [
+        (
+            "missing READY",
+            SigintFacts {
+                ready: false,
+                ..good
+            },
+        ),
+        (
+            "undelivered 0x03",
+            SigintFacts {
+                delivered: false,
+                ..good
+            },
+        ),
+        (
+            "nonzero exit",
+            SigintFacts {
+                disposition: ChildDisposition::Exited(1),
+                ..good
+            },
+        ),
+        (
+            "signal death",
+            SigintFacts {
+                disposition: ChildDisposition::Signaled(libc::SIGTERM),
+                ..good
+            },
+        ),
+        (
+            "unknown disposition",
+            SigintFacts {
+                disposition: ChildDisposition::Unknown,
+                ..good
+            },
+        ),
+        (
+            "reaped elsewhere",
+            SigintFacts {
+                disposition: ChildDisposition::Unavailable,
+                ..good
+            },
+        ),
+        (
+            "marker absent at expiry",
+            SigintFacts {
+                marker: MarkerState::AbsentExpired,
+                ..good
+            },
+        ),
+        (
+            "exec failed",
+            SigintFacts {
+                marker: MarkerState::ExecFailed,
+                ..good
+            },
+        ),
+        (
+            "marker unchecked",
+            SigintFacts {
+                marker: MarkerState::Unchecked,
+                ..good
+            },
+        ),
+    ] {
+        assert!(!sigint_verdict(&facts), "{name} refuses");
+    }
+}
+
+/// Bounded marker observation with exec-failure terminal
+/// semantics. The trap writes the marker before `exit 0` and
+/// the caller reaps that exit first, so a present marker
+/// causally precedes this loop; the loop only rides out
+/// exec-subsystem settling. No new poll starts after the
+/// outer deadline (remaining-budget exec), and a `present`
+/// that arrives past the deadline is refused as overrun
+/// evidence. A podman exec failure is terminal failure
+/// evidence (loud, with stderr), never "absent" and never
+/// retried into success: no blanket retry-125 suppression.
+/// Cleanup is the caller's separate allowance.
+fn observe_sigint_marker(cname: &str) -> MarkerState {
+    let marker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if std::time::Instant::now() > marker_deadline {
+            eprintln!("sigint marker never appeared within 10s");
+            return MarkerState::AbsentExpired;
+        }
+        let mut cmd = Command::new("podman");
+        cmd.args([
+            "exec",
+            cname,
+            "sh",
+            "-c",
+            "test -f /tmp/sigint_harness && echo present || echo absent",
+        ]);
+        match run_bounded_at(cmd, marker_deadline) {
+            Err(why) => {
+                eprintln!("sigint marker exec failed: {why:?}");
+                return MarkerState::ExecFailed;
+            }
+            Ok(out) if !out.status.success() => {
+                eprintln!(
+                    "sigint marker exec refused: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                return MarkerState::ExecFailed;
+            }
+            Ok(out) => {
+                let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if t == "present" {
+                    if std::time::Instant::now() > marker_deadline {
+                        eprintln!(
+                            "sigint marker arrived past its deadline; refusing overrun evidence"
+                        );
+                        return MarkerState::AbsentExpired;
+                    }
+                    return MarkerState::Present;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+}
+
 fn check_sigint_via_forkpty(cname: &str) -> bool {
     match unsafe { forkpty(None, None) } {
         Ok(ForkptyResult::Parent { child, master }) => {
@@ -393,12 +583,25 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
             }
             let mut buf = vec![0u8; 4096];
             let mut acc = Vec::new();
-            let start = std::time::Instant::now();
-            while start.elapsed() < std::time::Duration::from_secs(3) {
+            // Pre-clean stale markers: the only writer after
+            // this point is this run's trap; a previous run's
+            // marker must not satisfy this run's check.
+            {
+                let mut rm = Command::new("podman");
+                rm.args(["exec", cname, "rm", "-f", "/tmp/sigint_harness"]);
+                let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
+            }
+            // READY must be observed, never assumed: expiry or
+            // a read error without READY fails the probe — 0x03
+            // is only delivered to a ready shell.
+            let mut saw_ready = false;
+            let ready_start = std::time::Instant::now();
+            while ready_start.elapsed() < std::time::Duration::from_secs(3) {
                 match f.read(&mut buf) {
                     Ok(n) if n > 0 => {
                         acc.extend_from_slice(&buf[..n]);
                         if String::from_utf8_lossy(&acc).contains("READY") {
+                            saw_ready = true;
                             break;
                         }
                     }
@@ -409,68 +612,60 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
                     Err(_) => break,
                 }
             }
-            let _ = f.write_all(&[0x03]);
-            let _ = f.flush();
-            eprintln!("SIGINT wrote 0x03");
-            // Bounded reap: the INT-trapped child exits promptly;
-            // SIGKILL past the bound, never a blocking waitpid. An
-            // unreaped child is unproven evidence, never ignored.
-            if !reap_pty_child(child) {
-                eprintln!("sigint pty child would not reap");
-                return false;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(400));
-            // Bounded marker observation with exec-failure
-            // terminal semantics. Causality, pinned: READY fired
-            // in-container, 0x03 written, trap ran
-            // `touch /tmp/sigint_harness` before `exit 0`, and the
-            // reap above observed that exit — so the marker
-            // causally precedes this loop. The loop only rides
-            // out exec-subsystem settling; a podman exec failure
-            // is terminal failure evidence (loud, with stderr),
-            // never "absent" and never retried into success. No
-            // blanket retry-125 suppression: any nonzero exec
-            // fails the check.
-            let marker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let txt = loop {
-                let mut cmd = Command::new("podman");
-                cmd.args([
-                    "exec",
-                    cname,
-                    "sh",
-                    "-c",
-                    "test -f /tmp/sigint_harness && echo present || echo absent",
-                ]);
-                match run_bounded(cmd, RUN_CISTELLA_TIMEOUT) {
-                    Err(why) => {
-                        eprintln!("sigint marker exec failed to run: {why}");
-                        break String::new();
-                    }
-                    Ok(out) if !out.status.success() => {
-                        eprintln!(
-                            "sigint marker exec refused: {}",
-                            String::from_utf8_lossy(&out.stderr)
-                        );
-                        break String::new();
-                    }
-                    Ok(out) => {
-                        let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        if t == "present" {
-                            break t;
-                        }
-                        if std::time::Instant::now() > marker_deadline {
-                            eprintln!("sigint marker never appeared; last exec said: {t}");
-                            break t;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(200));
+            // Facts collected here, decided once below: the
+            // verdict rule is a tested pure function, not an
+            // inline narration.
+            let mut facts = SigintFacts::new();
+            facts.ready = saw_ready;
+            if !saw_ready {
+                eprintln!("sigint pty: READY never observed; 0x03 not delivered");
+                kill_reap_pty_child(child);
+            } else if f.write_all(&[0x03]).and(f.flush()).is_err() {
+                eprintln!("sigint pty: 0x03 delivery refused; trap never signaled");
+                kill_reap_pty_child(child);
+            } else {
+                eprintln!("SIGINT wrote 0x03");
+                facts.delivered = true;
+                // Bounded reap capturing the actual
+                // disposition: only a natural Exited(0)
+                // proceeds. A forced kill past the bound, a
+                // signal death, or an unreaped child is
+                // unproven evidence, never success.
+                let mut reaped = false;
+                let mut exited_at = None;
+                let reap_end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !reaped && std::time::Instant::now() <= reap_end {
+                    super::capture::child_gone(
+                        child,
+                        &mut reaped,
+                        &mut exited_at,
+                        &mut facts.disposition,
+                    );
+                    if !reaped {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                 }
-            };
-            let mut rm = Command::new("podman");
-            rm.args(["exec", cname, "rm", "-f", "/tmp/sigint_harness"]);
-            let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
-            eprintln!("sigint marker {txt}");
-            txt == "present"
+                if !reaped {
+                    eprintln!("sigint pty child would not reap");
+                    kill_reap_pty_child(child);
+                } else if facts.disposition != super::capture::ChildDisposition::Exited(0) {
+                    eprintln!(
+                        "sigint pty disposition {:?} is not a clean exit",
+                        facts.disposition
+                    );
+                } else {
+                    facts.marker = observe_sigint_marker(cname);
+                }
+            }
+            // Cleanup allowance, separate from every verdict
+            // bound: best-effort, never decides.
+            {
+                let mut rm = Command::new("podman");
+                rm.args(["exec", cname, "rm", "-f", "/tmp/sigint_harness"]);
+                let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
+            }
+            eprintln!("sigint marker {:?}", facts.marker);
+            sigint_verdict(&facts)
         }
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
