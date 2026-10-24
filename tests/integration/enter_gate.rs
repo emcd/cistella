@@ -513,11 +513,16 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Bounded wait for the new incarnation (fail loud on a
-    // restart that never lands — never assume the swap).
-    // Transient inspect failures (remove/recreate window) read
-    // as not-yet, not as readings: only a successful query
-    // naming a different StartedAt breaks the loop.
+    // Bounded wait for the new incarnation to settle (fail loud
+    // on a restart that never lands — never assume the swap).
+    // An out-of-band `podman restart` under systemd returns
+    // while the container is still transitioning, so the first
+    // differing StartedAt may precede a window where the next
+    // inspect fails — which the single-pass enter gate reports
+    // as unestablishable, not stale. Only consecutive identical
+    // identity readings (same Id and StartedAt, StartedAt
+    // differing from the bound) prove the backend quiescent;
+    // transient failures reset the streak, never read as absence.
     let bound_started = before
         .incarnation
         .as_ref()
@@ -525,13 +530,24 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         .started_at
         .clone();
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut streak: u32 = 0;
+    let mut last: Option<(String, String)> = None;
     loop {
-        match live_started_at(&container) {
-            Some(current) if current != bound_started => break,
-            _ => {}
+        let current = match (live_container_id(&container), live_started_at(&container)) {
+            (Some(id), Some(started)) if started != bound_started => Some((id, started)),
+            _ => None,
+        };
+        if current.is_some() && current == last {
+            streak += 1;
+            if streak >= 3 {
+                break;
+            }
+        } else {
+            streak = u32::from(current.is_some());
+            last = current;
         }
         if Instant::now() > deadline {
-            panic!("restart never landed a new StartedAt for {container}");
+            panic!("restart never settled a new incarnation for {container}");
         }
         std::thread::sleep(Duration::from_millis(500));
     }

@@ -233,14 +233,26 @@ fn describe_state_contradictory_commitment_refuses_typed() {
         "refusal names the contradiction, got: {stderr}"
     );
     // Cleanup: kill the stalled child; terminate reaps the unit
-    // and the fixture commitment.
+    // and the fixture commitment — unless a concurrent `gc`
+    // converged it first. The kill releases the creation lock a
+    // blocked suite-parallel `gc` may wait on, and a stalled
+    // pre-initiate unit (installed, no container, inactive
+    // service) classifies as an orphan unit there. Either
+    // converger leaves the same observable state, so the
+    // no-session-matches report reads as converged ONLY with
+    // the unit file observably gone — never as a bare pass.
     let _ = conduct.kill();
     let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
     let term = run_cistella(&home, &["terminate", &id]);
-    assert!(
-        term.status.success(),
-        "stalled unit terminates: {}",
-        String::from_utf8_lossy(&term.stderr)
-    );
+    let term_stderr = String::from_utf8_lossy(&term.stderr).to_string();
+    if term.status.success() {
+        // Terminate won the converge.
+    } else if term_stderr.contains("no session matches") && !unit.exists() {
+        // A concurrent `gc` won the converge after the kill
+        // released the creation lock: the unit is observably
+        // gone, so convergence holds regardless of winner.
+    } else {
+        panic!("stalled unit terminates: {term_stderr}");
+    }
     guard.id = None;
 }
