@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub use super::blocking::{release_fifo, wait_lock_blocked};
 pub use super::bounded::*;
+pub use super::event_wait::{wait_attestation, wait_readiness_file};
 pub use super::gates::*;
 pub use super::pty::*;
 

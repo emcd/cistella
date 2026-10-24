@@ -1,13 +1,21 @@
 //! Integration tests entry point.
 
+#[path = "integration/blocking.rs"]
+mod blocking;
 #[path = "integration/bounded.rs"]
 mod bounded;
 #[path = "integration/conduct_taps.rs"]
 mod conduct_taps;
 #[path = "integration/conformance.rs"]
 mod conformance;
+#[path = "integration/describe_gate.rs"]
+mod describe_gate;
 #[path = "integration/design_vectors.rs"]
 mod design_vectors;
+#[path = "integration/enter_gate.rs"]
+mod enter_gate;
+#[path = "integration/event_wait.rs"]
+mod event_wait;
 #[path = "integration/gates.rs"]
 mod gates;
 #[path = "integration/guest_hello.rs"]
@@ -48,6 +56,8 @@ mod selectors;
 mod signals;
 #[path = "integration/ssh_guest.rs"]
 mod ssh_guest;
+#[path = "integration/teardown_reload.rs"]
+mod teardown_reload;
 #[path = "integration/terminate_converge.rs"]
 mod terminate_converge;
 #[path = "integration/tmp_alias.rs"]

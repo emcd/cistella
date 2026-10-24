@@ -4,6 +4,8 @@
 //! Bin-crate module (declared in `main.rs`, NOT part of the library):
 //! moved verbatim from `main.rs` along verb seams, no logic changes.
 
+use cistella::framework::isolator::Isolator;
+use cistella::isolators::podman::PodmanIsolator;
 use cistella::registry::{list_sessions, resolve_exact};
 use cistella::session::parse_cli_label;
 
@@ -39,4 +41,184 @@ pub(crate) fn canonical_directory(dir: &str) -> Result<String, cistella::error::
     Ok(cistella::mount::canonicalize_host_source(dir)
         .to_string_lossy()
         .to_string())
+}
+
+/// Reports launch commitment plus backend snapshot for one
+/// selector (`describe state`). Ownerless by construction: a
+/// fresh backend holds no executions, so the snapshot never
+/// claims `executing`. Resolution mirrors `select_exact`
+/// exactly; only a full-shape id with zero record matches
+/// falls to the derived-name probe (prefix/directory/label
+/// no-match and ambiguity keep their canonical errors).
+pub(crate) fn describe_state(
+    id: Option<&str>,
+    directory: Option<&str>,
+    labels: &[String],
+) -> Result<(), cistella::error::CistellaError> {
+    match select_exact(id, directory, labels) {
+        Ok(record) => describe_record(&record),
+        Err(error) => {
+            let Some(prefix) = id else {
+                return Err(error);
+            };
+            if directory.is_some() || !labels.is_empty() {
+                return Err(error);
+            }
+            if !cistella::describe::full_id_shape(prefix) {
+                return Err(error);
+            }
+            // Recount from a fresh listing to separate true
+            // no-match (probe) from ambiguity (canonical error)
+            // without matching on error text.
+            let records = list_sessions()?;
+            let count = records
+                .iter()
+                .filter(|record| record.id.starts_with(prefix))
+                .count();
+            if count == 0 {
+                describe_probe(prefix)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Renders one record-known session: commitment bit plus
+/// adopted-backend snapshot (or the foreign shape for
+/// unincarnated commitments).
+fn describe_record(
+    record: &cistella::registry::SessionRecord,
+) -> Result<(), cistella::error::CistellaError> {
+    let base = cistella::lock::runtime_base();
+    let attestation = cistella::attestation::read(&base, &record.id)?;
+    let Some(bound_attestation) = attestation.as_ref() else {
+        // No commitment: the backend is unproven — explicitly
+        // uncertain with no snapshot. A record alone proves
+        // nothing about which backend, if any, is live, so no
+        // backend is claimed and no lifecycle is invented.
+        println!(
+            "{} commitment=unattested backend=unknown",
+            record.container_name,
+        );
+        return Ok(());
+    };
+    // Container binding before anything else: the attestation
+    // must bind THIS record's container (tamper or out-of-band
+    // recreate), or every later fact is attributed wrongly.
+    if bound_attestation.container_name != record.container_name {
+        return Err(cistella::error::CistellaError::Runtime(format!(
+            "describe state: attestation container mismatch for {} (possible out-of-band recreate)",
+            record.container_name,
+        )));
+    }
+    let Some(bound) = bound_attestation.incarnation.as_ref() else {
+        // Contradictory provenance: an unincarnated (foreign)
+        // commitment for a record-holding session cannot occur
+        // in production (foreign conducts create no unit
+        // files), so fail closed loud instead of rendering.
+        return Err(cistella::error::CistellaError::Runtime(format!(
+            "describe state: foreign commitment for native record {} (contradictory provenance)",
+            record.container_name,
+        )));
+    };
+    let backend = PodmanIsolator::new();
+    let handle = backend.adopt(&record.container_name, &record.id);
+    let snapshot = backend.inspect(&handle)?;
+    let state = cistella::describe::snapshot_checked(&snapshot)?;
+    let rendered = cistella::describe::render_state(&state);
+    let incarnation = match cistella::attestation::query_incarnation(&record.container_name) {
+        Ok(live) if &live == bound => "current",
+        Ok(_) => "stale",
+        Err(_) => "unknown",
+    };
+    println!(
+        "{container} state={rendered} commitment=attested backend=native incarnation={incarnation}",
+        container = record.container_name,
+    );
+    Ok(())
+}
+
+/// Resolves a full id with no record via the derived container
+/// name: live backend residue errors typed (never `absent`);
+/// inert attestation residue and all-absent resolve `absent`.
+fn describe_probe(id: &str) -> Result<(), cistella::error::CistellaError> {
+    let container_name = format!("cistella-{id}");
+    let evidence = cistella::describe::probe_native(&container_name)?;
+    let attestation = cistella::attestation::read(&cistella::lock::runtime_base(), id)?;
+    // Unincarnated (foreign) commitment with no local residue:
+    // foreign absence cannot be established from local Podman
+    // evidence — unsupported, never an inferred `absent`.
+    // Local residue still dominates (backend fact first).
+    if attestation
+        .as_ref()
+        .is_some_and(|attested| attested.incarnation.is_none())
+        && !evidence.container_present
+        && !evidence.unit_present
+    {
+        return Err(cistella::error::CistellaError::Runtime(
+            "describe state: foreign session identity not establishable from local evidence (unsupported)".to_string(),
+        ));
+    }
+    match cistella::describe::probe_table(&container_name, &evidence, attestation.is_some()) {
+        cistella::describe::ProbeOutcome::Residue { container_name } => {
+            Err(cistella::error::CistellaError::Runtime(format!(
+                "describe state: residue {container_name} present with no record; terminate or gc to converge"
+            )))
+        }
+        cistella::describe::ProbeOutcome::AbsentAttested => {
+            // Scope, not backend: the query probed the native
+            // backend and found inert commitment residue there.
+            // No claim about any other backend is made.
+            println!("{container_name} state=absent commitment=attested scope=native");
+            Ok(())
+        }
+        cistella::describe::ProbeOutcome::AbsentClean => {
+            // Scope, not backend: absent from the probed native
+            // backend. A session unknown anywhere else is not
+            // distinguished from never-existing — the scope
+            // marker is the honesty mechanism.
+            println!("{container_name} state=absent commitment=unattested scope=native");
+            Ok(())
+        }
+    }
+}
+
+/// Single-pass enter readiness edge for one resolved record:
+/// commitment + incarnation + native admittability, refusing
+/// typed on the first unmet condition. No retries, no polls.
+/// Foreign (unincarnated) commitments route to the legacy
+/// direct exec with no gate and no readiness claim.
+pub(crate) fn gate_enter(
+    record: &cistella::registry::SessionRecord,
+) -> Result<cistella::describe::EnterDecision, cistella::error::CistellaError> {
+    use cistella::describe::{EnterDecision, LiveIncarnation, decide_enter};
+    let base = cistella::lock::runtime_base();
+    let attestation = cistella::attestation::read(&base, &record.id)?;
+    // Unattested sessions refuse before any backend contact:
+    // there is no commitment whose admittability could be
+    // checked, and the refusal must not depend on podman.
+    // Unincarnated (foreign) commitments route legacy-direct
+    // with no gate and no claim, likewise contact-free.
+    let Some(bound) = attestation.as_ref().and_then(|a| a.incarnation.as_ref()) else {
+        return Ok(match attestation.as_ref() {
+            None => EnterDecision::Refuse("no launch attestation committed".to_string()),
+            Some(_) => EnterDecision::ProceedLegacyDirect,
+        });
+    };
+    // Bound session: compare live incarnation, then gather
+    // admittability. Backend query failures error typed (never
+    // silent absence); unknown identity refuses, never proceeds.
+    let live = match cistella::attestation::query_incarnation(&record.container_name) {
+        Ok(observed) if &observed == bound => LiveIncarnation::Current,
+        Ok(_) => LiveIncarnation::Stale,
+        Err(_) => LiveIncarnation::Unknown,
+    };
+    let admittability = cistella::describe::exec_admittability(&record.container_name)?;
+    Ok(decide_enter(
+        attestation.as_ref(),
+        &record.container_name,
+        &live,
+        &admittability,
+    ))
 }

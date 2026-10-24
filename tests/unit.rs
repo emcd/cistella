@@ -5,6 +5,8 @@
 //! picks up `tests/unit.rs`; the `#[path]` attribute directs each
 //! submodule to its file in the subdirectory.
 
+#[path = "unit/attestation.rs"]
+mod attestation;
 #[path = "unit/cleanup.rs"]
 mod cleanup;
 #[path = "unit/cli_args.rs"]
@@ -15,6 +17,8 @@ mod compile_binding;
 mod conduct_eval;
 #[path = "unit/credentials.rs"]
 mod credentials;
+#[path = "unit/describe.rs"]
+mod describe;
 #[path = "unit/discovery.rs"]
 mod discovery;
 #[path = "unit/environment_acceptances.rs"]

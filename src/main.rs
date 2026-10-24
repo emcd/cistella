@@ -4,8 +4,10 @@ mod cli_conduct;
 mod cli_util;
 
 use crate::cli_conduct::conduct_session;
-use crate::cli_util::{canonical_directory, parse_label_filters, select_exact};
-use cistella::cli::{Cli, Command};
+use crate::cli_util::{
+    canonical_directory, describe_state, gate_enter, parse_label_filters, select_exact,
+};
+use cistella::cli::{Cli, Command, DescribeTarget};
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
 use cistella::framework::isolator::Isolator;
 use cistella::isolators::podman::PodmanIsolator;
@@ -69,6 +71,21 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             command,
         } => {
             let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
+            // Readiness edge (single pass, no retries): commitment
+            // + incarnation + native admittability, refusing typed
+            // on the first unmet condition. Foreign commitments
+            // route to the legacy direct exec below with no gate
+            // and no readiness claim.
+            match gate_enter(&record)? {
+                cistella::describe::EnterDecision::ProceedNative => {}
+                cistella::describe::EnterDecision::ProceedLegacyDirect => {}
+                cistella::describe::EnterDecision::Refuse(reason) => {
+                    return Err(cistella::error::CistellaError::Runtime(format!(
+                        "enter refuses (session {}): {reason}",
+                        record.container_name,
+                    )));
+                }
+            }
             // Companion exec is deliberately OUTSIDE the Landlock
             // guarantee (operator decision): the operator is
             // trusted and already holds host-equivalent access, so
@@ -154,9 +171,17 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             isolator.terminate(&handle, grace, &key)?;
             isolator.remove(&handle, &key)?;
             cistella::cleanup::reap_and_report(&cistella::lock::runtime_base(), &record.id);
+            cistella::attestation::reap(&cistella::lock::runtime_base(), &record.id);
             println!("terminate {}", record.container_name);
             Ok(())
         }
+        Command::Describe { target } => match target {
+            DescribeTarget::State {
+                id,
+                directory,
+                labels,
+            } => describe_state(id.as_deref(), directory.as_deref(), &labels),
+        },
         Command::Gc => {
             let res = gc_exited()?;
             if res.reaped.is_empty() {

@@ -35,7 +35,7 @@ pub fn complete_close(
     let shutdown = match reply.recv() {
         Ok(result) => result,
         Err(_) => Err(CistellaError::Protocol(
-            "dispatcher dropped shutdown".to_string(),
+            crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string(),
         )),
     };
     if let Some(worker) = worker {

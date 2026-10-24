@@ -19,6 +19,105 @@ pub(crate) fn run(
     mut stdout_lock: &mut StdoutLock<'_>,
 ) -> Option<ExitCode> {
     Some(match mode {
+        "isolator-concurrent-handshake" => {
+            // Readiness/release handshake variant of the
+            // concurrent proof: after the await op arrives, the
+            // peer publishes a readiness file (op name) into the
+            // --fd-watch dir, then BLOCKS on the second frame —
+            // no sleep. The host sends terminate only after
+            // observing readiness, so admission is structural;
+            // the terminate frame releases the await terminal.
+            // A non-terminate second op exits nonzero (ordering
+            // violation, never silent).
+            if read_frame_from_stdin(&mut stdin_lock).is_err() {
+                return Some(protocol_error_exit());
+            }
+            let hello = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": "hello",
+                "op": "hello",
+                "payload": {
+                    "version": PROTOCOL_MAJOR,
+                    "capabilities": ["isolator"],
+                    "max_frame": 1024u32
+                }
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
+            let op1 = match read_frame_from_stdin(&mut stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return Some(protocol_error_exit()),
+            };
+            let (op1_id, op1_name) = serde_json::from_slice::<Value>(&op1)
+                .ok()
+                .map(|env| {
+                    (
+                        env.get("id").cloned().unwrap_or(json!("await-0")),
+                        env.get("op")
+                            .and_then(|op| op.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    )
+                })
+                .unwrap_or((json!("await-0"), String::new()));
+            let watch_dir = std::env::args()
+                .skip(1)
+                .find_map(|arg| arg.strip_prefix("--fd-watch=").map(str::to_string));
+            if let Some(dir) = watch_dir {
+                let _ =
+                    std::fs::write(std::path::Path::new(&dir).join("await-admitted"), &op1_name);
+            }
+            let op2 = match read_frame_from_stdin(&mut stdin_lock) {
+                Ok(body) => body,
+                Err(_) => return Some(protocol_error_exit()),
+            };
+            let (op2_id, op2_name) = serde_json::from_slice::<Value>(&op2)
+                .ok()
+                .map(|env| {
+                    (
+                        env.get("id").cloned().unwrap_or(json!("op2-0")),
+                        env.get("op")
+                            .and_then(|op| op.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    )
+                })
+                .unwrap_or((json!("op2-0"), String::new()));
+            if op2_name != "isolator.terminate" {
+                return Some(protocol_error_exit());
+            }
+            let reply2 = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": op2_id,
+                "op": "isolator.terminate",
+                "payload": {"ok": {"stopped_attestation": {"unit_identity": "concurrent01"}}}
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &reply2, 64 * 1024);
+            // Two heartbeat frames before the terminal: the client
+            // must keep the await entry (counting, forwarding
+            // nothing) and redeem only on the terminal.
+            for _ in 0..2 {
+                let pending = serde_json::to_vec(&json!({
+                    "protocol": PROTOCOL_MAJOR,
+                    "id": op1_id,
+                    "op": "isolator.await_result",
+                    "payload": {"pending": true}
+                }))
+                .expect("serialize");
+                let _ = write_frame(&mut stdout_lock, &pending, 64 * 1024);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let reply1 = serde_json::to_vec(&json!({
+                "protocol": PROTOCOL_MAJOR,
+                "id": op1_id,
+                "op": "isolator.await_result",
+                "payload": {"ok": {"exit_status": 0}}
+            }))
+            .expect("serialize");
+            let _ = write_frame(&mut stdout_lock, &reply1, 64 * 1024);
+            ExitCode::SUCCESS
+        }
         "isolator-concurrent" => {
             // Scripted isolator ops for client-dispatcher proofs:
             // hello with the isolator role cap, then a slow await
@@ -441,8 +540,8 @@ pub(crate) fn run(
                 let _ = write_frame(&mut stdout_lock, &response, 256);
             }
         }
-        "isolator-lingering-descendant" => {
-            // Hello, read one op frame (left pending forever), then
+        "isolator-lingering-descendant" | "isolator-lingering-admitted" => {
+            // Hello, read op frames (left pending forever), then
             // fork a setsid grandchild holding stdout while the
             // parent exits immediately: the framework's group kill
             // (SIGTERM, grace, SIGKILL to the parent's group) cannot
@@ -453,6 +552,20 @@ pub(crate) fn run(
             // failure. Child uses raw libc only (fork in a
             // multithreaded process): setsid, close stdin, sleep,
             // _exit. Bounded 10s self-exit; nothing leaks past it.
+            //
+            // Frame count is the admission contract: the
+            // single-frame mode leaves the second host op to race
+            // teardown (EPIPE timing), while the admitted mode
+            // reads both frames before exiting — every host send
+            // lands while the guest is alive, so admission is
+            // structural and the fatal terminal arrives via the
+            // expiry/peer-exited discrimination, never via send
+            // timing.
+            let ops_to_hold = if mode == "isolator-lingering-admitted" {
+                2
+            } else {
+                1
+            };
             if read_frame_from_stdin(&mut stdin_lock).is_err() {
                 return Some(protocol_error_exit());
             }
@@ -468,7 +581,9 @@ pub(crate) fn run(
             }))
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
-            let _ = read_frame_from_stdin(&mut stdin_lock);
+            for _ in 0..ops_to_hold {
+                let _ = read_frame_from_stdin(&mut stdin_lock);
+            }
             let _ = stdout_lock.flush();
             let forked = unsafe { ::libc::fork() };
             if forked < 0 {

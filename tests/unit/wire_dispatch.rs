@@ -784,7 +784,15 @@ fn complete_close_joins_dead_worker_and_unlinks() {
     let error = cistella::isolators::close::complete_close(Some(worker), &socket, reply_rx)
         .expect_err("dead worker close must report");
     assert!(
-        error.to_string().contains("dispatcher dropped shutdown"),
+        matches!(
+            &error,
+            cistella::error::CistellaError::Protocol(message)
+                if message == cistella::isolators::dispatch::POST_TERMINAL_ERROR
+        ),
+        "orphaned shutdown reply is the unified post-terminal error, got: {error}"
+    );
+    assert!(
+        error.to_string().contains("dispatcher terminated"),
         "typed termination, got: {error}"
     );
     assert!(
@@ -808,4 +816,16 @@ fn complete_close_reports_live_shutdown() {
     cistella::isolators::close::complete_close(Some(worker), &socket, reply_rx)
         .expect("live close reports Ok");
     assert!(!socket.exists(), "path unlinked on clean close");
+}
+
+#[test]
+fn post_terminal_error_is_single_documented_string() {
+    // Op send-refusal, op orphaned-disconnect, and orphaned
+    // shutdown reply all emit exactly this string — one
+    // contract for callers to pin. Asserted literal so a
+    // wording change is an explicit test update, never drift.
+    assert_eq!(
+        cistella::isolators::dispatch::POST_TERMINAL_ERROR,
+        "dispatcher terminated: no further ops admitted",
+    );
 }

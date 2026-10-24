@@ -658,6 +658,10 @@ pub fn teardown_inner(container_name: &str, session_id: &str) -> Result<()> {
         for litter in crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id) {
             eprintln!("warning: cleanup litter: {litter}");
         }
+        // Launch attestation reaps AFTER the unit file is gone
+        // (removed above): record-gone dominates stale residue by
+        // structure, never by check order.
+        crate::attestation::reap(&crate::lock::runtime_base(), session_id);
     }
     Ok(())
 }
@@ -953,5 +957,12 @@ pub fn gc_exited_locked() -> Result<GcResult> {
     // so sessions absent from the live set are dead — orphans with
     // live leases or live guest groups still skip inside.
     reaped.extend(crate::cleanup::reap_tmpdir_orphans(&live_sessions));
+    // Phase 3b: attestation orphans (sessions with no live unit:
+    // crashed conducts, pre-teardown kills). Same live-set gate;
+    // reaped names report alongside containers.
+    reaped.extend(crate::attestation::reap_orphans(
+        &crate::lock::runtime_base(),
+        &live_sessions,
+    ));
     Ok(GcResult { reaped })
 }

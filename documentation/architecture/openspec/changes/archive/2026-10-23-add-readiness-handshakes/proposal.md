@@ -4,8 +4,8 @@ CI run 39053388013 (ubuntu-26.04, both arches) exposes two timer/ordering races 
 
 ## What Changes
 
-- Dedicated `state` CLI verb reporting commitment plus snapshot, never `executing`; default `inspect` byte-identical.
-- Owner-written host-private launch attestation binding session + container + attempt + argv + handle + backend incarnation (pre-capture before launch, post-check after Ok, publish ONLY on equality; mismatch/unknown refuses + converges — false-negative-only, no blessed false positives), published via the established anchored state-root discipline.
+- `describe state` CLI verb (operator-locked verb-noun; proposal text said `state`) reporting commitment plus snapshot where proven, never `executing`; default `inspect` byte-identical.
+- Owner-written host-private launch attestation binding session + container + attempt + argv + handle + backend incarnation (pre-capture before launch, post-check after Ok, publish ONLY on equality via atomic temp+linkat with EEXIST-preserving write-once; mismatch/unknown refuses + converges — false-negative-only, no blessed false positives), published via the established anchored state-root discipline.
 - Exact residue/selection table: live backend residue dominates record absence (typed residue error); inert attestation-only residue resolves Absent; full-id probe enables postmortem Absent; fuzzy forms keep Selector errors.
 - `enter` single-pass check on commitment + incarnation + backend-appropriate admittability; foreign sessions keep the legacy direct-exec path with no readiness claim (readiness guarantee is native-Podman-scoped).
 - Dispatcher linearization with unified post-terminal error and preserved `death_checked` dominance; first-terminal defined as fatal-exchange terminal.
@@ -20,7 +20,7 @@ CI run 39053388013 (ubuntu-26.04, both arches) exposes two timer/ordering races 
 
 ### Modified Capabilities
 
-- `framework-lifecycle`: `state` verb with commitment/snapshot separation and residue table; attestation durability + incarnation contract; native-scoped `enter` edge; per-unit `executing` scoping; selection/postmortem semantics.
+- `framework-lifecycle`: `describe state` verb with commitment/snapshot separation, backend-provenance gating (proven native / unknown / unsupported + query scope), and residue table; attestation durability (temp+linkat) + incarnation contract; native-scoped `enter` edge; per-unit `executing` scoping; selection/postmortem semantics.
 - `guest-hosting`: dispatcher linearization (admitted vs queued-unadmitted vs post-terminal), unified post-terminal error, `death_checked` dominance, fatal-terminal definition.
 
 ## Impact

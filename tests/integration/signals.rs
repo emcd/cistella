@@ -148,7 +148,11 @@ fn sighup_conduct_tears_down() {
 
     let (mut conduct, id, mut guard) =
         spawn_conduct(&home, &worktree_str, &["--identity", "alice"]);
-    wait_active(&id);
+    let container = format!("cistella-{id}");
+    // Gate the HUP on launch commitment (attestation appearance),
+    // not service-active: HUP during startup takes the abort path
+    // (different disposition), so the 129 pin needs post-launch.
+    wait_attestation(&id, &container);
     let pid = conduct.id();
     // SIGHUP (not SIGTERM — startup-abort already pins the TERM
     // path): the conduct-level HUP trap tears down, exit 128+1.
@@ -201,7 +205,18 @@ fn gc_reaps_handwritten_orphan_after_lock_release() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn gc");
-    std::thread::sleep(Duration::from_millis(1500));
+    // Lock-contention synchronization (no sleep-tuned settle):
+    // /proc/locks must show this gc blocked on this exact lock
+    // file (pid + dev:ino), so the observation proves contention
+    // — not mere fd-presence, which a bypassed flock would also
+    // produce. try_wait after that proves the block is live
+    // (an unscheduled child shows no blocked entry). Test-side
+    // lock is held throughout.
+    wait_lock_blocked(&mut gc, Duration::from_secs(10));
+    // Blockage is structural (lock held ⇒ gc cannot proceed),
+    // so no settle sleep: try_wait after a proven attempt is
+    // correct in every case (blocked → None passes; crashed →
+    // Some fails loud). The lock is the synchronization.
     assert!(
         gc.try_wait().expect("poll gc").is_none(),
         "gc blocks on the lock with a half-created session present"
@@ -240,7 +255,9 @@ fn gc_creation_window_reaps_nothing() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn gc");
-    std::thread::sleep(Duration::from_millis(1500));
+    // Same lock-contention synchronization as above.
+    wait_lock_blocked(&mut gc, Duration::from_secs(10));
+    // Same structural blockage as above: no settle sleep.
     assert!(
         gc.try_wait().expect("poll gc").is_none(),
         "gc blocks on the lock"

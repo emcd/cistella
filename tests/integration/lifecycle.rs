@@ -167,6 +167,16 @@ fn conduct_lifecycle_terminate_while_attached() {
     wait_active(&id);
 
     let container = format!("cistella-{id}");
+    // Commit-event edge: the launch attestation is
+    // the readiness fact — service-active fires before podman
+    // exec can succeed, so the test gates enter on attestation
+    // appearance (inotify-anchored, fail-loud bound), not on
+    // the service proxy.
+    let attested = wait_attestation(&id, &container);
+    assert_eq!(
+        attested.container_name, container,
+        "attestation binds this session's container"
+    );
     let unit = unit_path(&home, &id);
     assert!(unit.exists(), "unit missing after conduct start");
     let content = std::fs::read_to_string(&unit).unwrap();

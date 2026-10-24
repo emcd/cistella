@@ -98,6 +98,18 @@ pub struct Pending {
     pub(crate) exec: Option<String>,
 }
 
+/// Unified typed error for ops issued after the dispatcher's
+/// first fatal-exchange terminal: send-refused and
+/// orphaned-disconnect shapes alike (a later send can never be
+/// admitted — the fatal arm drains `pending`, sets stopping, and
+/// exits before the first terminal is delivered, so both raw
+/// shapes collapse here). Admitted ops instead receive their
+/// genuine terminal (e.g. the shutdown-failure terminal), never
+/// this error. Ordinary per-request ok/error replies never mark
+/// terminal; only `fatal_terminal`/orderly Shutdown transitions.
+/// Single documented string so callers pin one contract.
+pub const POST_TERMINAL_ERROR: &str = "dispatcher terminated: no further ops admitted";
+
 /// Dispatcher commands from client threads.
 pub(crate) enum Command {
     /// Send one op; terminal response (or expiry) goes to `reply`.

@@ -370,10 +370,13 @@ fn wire_client_maps_backend_error_envelope() {
 fn wire_client_terminate_serves_during_pending_await() {
     // Dispatcher concurrency through WireClient: a slow await
     // pends while terminate sends on the same client — the await
-    // must not wedge the control plane. The scripted peer sleeps
-    // 3s after the await op and requires the terminate op inside
-    // that window (it exits 2 otherwise), then answers terminate
-    // first and the await terminal second.
+    // must not wedge the control plane. Readiness/release is
+    // structural, not timed: the scripted peer publishes
+    // await-admission into the rendezvous dir, then BLOCKS on
+    // the next frame; the host sends terminate only after
+    // observing admission, and the terminate frame releases
+    // the await terminal (peer answers terminate first, await
+    // terminal second). No sleeps anywhere.
     use cistella::framework::contract::ReconciliationKey;
     use cistella::framework::isolator::{ExecutionOutcome, Isolator};
     use cistella::isolators::client::WireClient;
@@ -391,7 +394,7 @@ fn wire_client_terminate_serves_during_pending_await() {
             &dir,
             &name,
             &[
-                "--mode=isolator-concurrent".to_string(),
+                "--mode=isolator-concurrent-handshake".to_string(),
                 format!("--fd-watch={}", rendezvous.path().to_string_lossy()),
             ],
             rendezvous.path(),
@@ -408,10 +411,16 @@ fn wire_client_terminate_serves_during_pending_await() {
             client.await_result(&execution, &cancel)
         })
     };
-    // Let the await op reach the peer and pend, then terminate
-    // through the same client: the dispatcher must send it while
-    // the await is still outstanding.
-    std::thread::sleep(Duration::from_millis(500));
+    // Readiness: the peer published await admission (content
+    // names the admitted op — identity, not mere CREATE).
+    // Only then does terminate send; the dispatcher must serve
+    // it while the await is still outstanding.
+    wait_readiness_file(
+        rendezvous.path(),
+        "await-admitted",
+        "isolator.await_result",
+        Duration::from_secs(10),
+    );
     let key = ReconciliationKey::generate();
     let unit = cistella::framework::contract::UnitHandle::mint();
     let stopped = client

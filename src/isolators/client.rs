@@ -402,10 +402,12 @@ impl WireClient {
                 timeout: Some(timeout),
                 reply: reply_tx,
             })
-            .map_err(|_| CistellaError::Protocol("dispatcher gone".to_string()))?;
-        let response = reply_rx
-            .recv()
-            .map_err(|_| CistellaError::Protocol("dispatcher dropped the call".to_string()))??;
+            .map_err(|_| {
+                CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+            })?;
+        let response = reply_rx.recv().map_err(|_| {
+            CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+        })??;
         Self::redeem(op, response)
     }
 
@@ -582,6 +584,9 @@ impl WireClient {
                 // same omission class as the terminate arm.
                 // Litter reports, never fails the disposition.
                 crate::cleanup::reap_and_report(&crate::lock::runtime_base(), session_id);
+                // Attestation reaps with the session (unit gone via
+                // terminate+remove above — record-gone dominates).
+                crate::attestation::reap(&crate::lock::runtime_base(), session_id);
                 Ok(())
             }
             Err(error) => {

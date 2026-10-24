@@ -412,21 +412,51 @@ pub(crate) fn conduct_session(
                 }
                 // Test-hook stall between install and start: a deterministic window for
                 // signal-during-startup regression, polling so signals abort promptly.
-                let delay = start_delay_ms();
-                let waited = std::time::Instant::now();
-                while waited.elapsed() < std::time::Duration::from_millis(delay) {
-                    if let Some(signum) = signals::pending_signal() {
-                        drop(guard);
-                        return Ok(abort_startup(
-                            client,
-                            &rendezvous_dir,
-                            Some(&handle),
-                            &container_name,
-                            &id,
-                            signum,
-                        ));
+                // A release marker (CISTELLA_CONDUCT_START_GATE) replaces the
+                // timed wait with a causal hold when set: the test
+                // creates the named file to release; a pending
+                // signal aborts through the identical path as the
+                // timed stall. The check repeats every 50ms with no
+                // overall timeout — absence of the file never
+                // advances the session; the test's own bound fails
+                // the test instead. This is explicitly a test-hook
+                // poll (honest description): the interval bounds
+                // signal-detection latency, never the launch.
+                if let Some(gate) = start_gate() {
+                    loop {
+                        if gate.exists() {
+                            break;
+                        }
+                        if let Some(signum) = signals::pending_signal() {
+                            drop(guard);
+                            return Ok(abort_startup(
+                                client,
+                                &rendezvous_dir,
+                                Some(&handle),
+                                &container_name,
+                                &id,
+                                signum,
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                } else {
+                    let delay = start_delay_ms();
+                    let waited = std::time::Instant::now();
+                    while waited.elapsed() < std::time::Duration::from_millis(delay) {
+                        if let Some(signum) = signals::pending_signal() {
+                            drop(guard);
+                            return Ok(abort_startup(
+                                client,
+                                &rendezvous_dir,
+                                Some(&handle),
+                                &container_name,
+                                &id,
+                                signum,
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
                 }
                 match client.initiate(&handle, &key) {
                     Ok(_) => break handle,
@@ -620,6 +650,35 @@ pub(crate) fn conduct_session(
     // an empty execution. A wrapper exec failure (attested
     // applied:false post-spawn) reports wrapper failure below,
     // never a harness outcome.
+    // Launch-commit pre-capture (readiness attestation): the native
+    // incarnation bound at publication. Foreign sessions skip
+    // entirely (identity unestablishable — no readiness conferred).
+    // A failed pre-capture converges exactly like a launch failure
+    // below (refuse + typed teardown, nothing published).
+    let backend_native = matches!(isolator, cistella::profile::IsolatorResolution::Podman);
+    let pre_incarnation = if backend_native {
+        match cistella::attestation::query_incarnation(&container_name) {
+            Ok(incarnation) => Some(incarnation),
+            Err(error) => {
+                let refusal = cistella::error::CistellaError::Runtime(format!(
+                    "launch incarnation unestablishable (refusing): {error}"
+                ));
+                if let Err(teardown_err) =
+                    client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+                {
+                    report_release(release_client(client, &rendezvous_dir));
+                    eprintln!(
+                        "error: teardown after incarnation refusal ({refusal}): {teardown_err}"
+                    );
+                    return Ok(1);
+                }
+                report_release(release_client(client, &rendezvous_dir));
+                return Err(refusal);
+            }
+        }
+    } else {
+        None
+    };
     let attempt = match hook_plan {
         None => client
             .death_checked(client.execute_launch(
@@ -652,6 +711,84 @@ pub(crate) fn conduct_session(
             return Err(error);
         }
     };
+    // Launch-commit publication (readiness attestation): the
+    // pure pre/post bound decides — publish ONLY the pre-bound
+    // identity on exact equality, refuse + converge with nothing
+    // published otherwise (false-negative-only: no blessed false
+    // positive). Foreign sessions publish an unincarnated
+    // commitment (no readiness conferred).
+    if backend_native {
+        let post_result = cistella::attestation::query_incarnation(&container_name);
+        let committed = match cistella::attestation::commit_decision(
+            pre_incarnation.as_ref(),
+            post_result.as_ref().ok(),
+        ) {
+            cistella::attestation::CommitDecision::Publish(bound) => {
+                let attestation = cistella::attestation::Attestation {
+                    session_id: id.clone(),
+                    container_name: container_name.clone(),
+                    attempt_key: key.as_str().to_string(),
+                    argv: argv.clone(),
+                    execution_handle: execution.as_str().to_string(),
+                    incarnation: Some(bound),
+                };
+                cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation)
+            }
+            cistella::attestation::CommitDecision::Refuse(reason) => {
+                // Preserve the query failure detail when the
+                // post-check itself errored (diagnostics, not
+                // control flow — the decision is already made).
+                let detail = match &post_result {
+                    Err(error) => format!("{reason} (refusing): {error}"),
+                    Ok(_) => format!("{reason} (refusing)"),
+                };
+                Err(cistella::error::CistellaError::Runtime(detail))
+            }
+        };
+        if let Err(refusal) = committed {
+            if let Err(teardown_err) =
+                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+            {
+                report_release(release_client(client, &rendezvous_dir));
+                eprintln!("error: teardown after incarnation refusal ({refusal}): {teardown_err}");
+                return Ok(1);
+            }
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(refusal);
+        }
+    } else {
+        // Foreign commitment (no incarnation establishable):
+        // records the launch provenance without conferring
+        // readiness. Write failure converges like any commit
+        // failure — no silent live-unattested session.
+        let attestation = cistella::attestation::Attestation {
+            session_id: id.clone(),
+            container_name: container_name.clone(),
+            attempt_key: key.as_str().to_string(),
+            argv: argv.clone(),
+            execution_handle: execution.as_str().to_string(),
+            incarnation: None,
+        };
+        if let Err(refusal) =
+            cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation).map_err(
+                |e| {
+                    cistella::error::CistellaError::Runtime(format!(
+                        "foreign commitment publish failed (refusing): {e}"
+                    ))
+                },
+            )
+        {
+            if let Err(teardown_err) =
+                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+            {
+                report_release(release_client(client, &rendezvous_dir));
+                eprintln!("error: teardown after commitment refusal ({refusal}): {teardown_err}");
+                return Ok(1);
+            }
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(refusal);
+        }
+    }
     let status =
         match client.death_checked(client.await_result(&execution, signals::conduct_cancel())) {
             Ok(outcome) => outcome,
@@ -720,7 +857,6 @@ pub(crate) fn conduct_session(
         // Local absence proof attests only native-backend cleanup:
         // a registered guest's resources are invisible to local
         // queries, so its report refuses explicitly inside.
-        let backend_native = matches!(isolator, cistella::profile::IsolatorResolution::Podman);
         return Ok(finalize_unobservable(
             client,
             &rendezvous_dir,
@@ -789,4 +925,21 @@ fn start_delay_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
+}
+
+/// Test hook: path of a release marker file. When set, the
+/// install/start stall polls for that file instead of sleeping
+/// a fixed duration: release is the test creating the file,
+/// abort is a pending signal. This is explicitly a
+/// test-only synchronization hook next to
+/// `start_delay_ms` — a bounded-interval existence check plus
+/// a per-iteration signal check, with no overall timeout and
+/// no bearing on the enter/readiness policy. Absence of the
+/// file never advances the session; the test's own bound
+/// fails the test instead.
+fn start_gate() -> Option<std::path::PathBuf> {
+    std::env::var("CISTELLA_CONDUCT_START_GATE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
 }
