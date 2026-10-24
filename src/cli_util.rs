@@ -271,7 +271,7 @@ mod gate_tests {
     // maps supplied identities to decisions; the live arm
     // proves the CLI's own query reaches it.
     use super::gate_enter_with;
-    use cistella::attestation::{Attestation, Incarnation};
+    use cistella::attestation::{Attestation, Incarnation, parse_identity};
     use cistella::describe::{Admittability, EnterDecision};
 
     fn record() -> cistella::registry::SessionRecord {
@@ -353,6 +353,44 @@ mod gate_tests {
             outcome => {
                 panic!("unsuppliable identity must refuse unestablishable, got: {outcome:?}")
             }
+        }
+        // Direct regression pin for the truncation defect: two
+        // full renderings with the same date but different
+        // times — the committed bound and the supplied live
+        // identity — must refuse stale. The old second-token
+        // parse collapsed both to the same date and proceeded.
+        let bound_rendering =
+            parse_identity("id-9 2026-10-24 14:51:00 +0000 UTC").expect("bound rendering parses");
+        let live_rendering =
+            parse_identity("id-9 2026-10-24 15:06:00 +0000 UTC").expect("live rendering parses");
+        assert_ne!(
+            bound_rendering, live_rendering,
+            "renderings with different times stay distinct"
+        );
+        let read = |_: &str| {
+            Ok(Some(attested(Some(bound_rendering.clone()))))
+                as Result<Option<Attestation>, cistella::error::CistellaError>
+        };
+        let query = |_: &str| {
+            Ok(live_rendering.clone()) as Result<Incarnation, cistella::error::CistellaError>
+        };
+        match gate_enter_with(&record, &read, &query, &probe) {
+            Ok(EnterDecision::Refuse(why)) if why.contains("stale") => {}
+            outcome => panic!("same-date restart must refuse stale, got: {outcome:?}"),
+        }
+        // Old-marker control (named separately): a date-only
+        // marker from a lossy old writer, read by the fixed
+        // reader against a full live rendering, refuses
+        // conservative (stale) — a liveness cost, not a safety
+        // hole.
+        let old_marker = parse_identity("id-9 2026-10-24").expect("date-only marker parses");
+        let read = |_: &str| {
+            Ok(Some(attested(Some(old_marker.clone()))))
+                as Result<Option<Attestation>, cistella::error::CistellaError>
+        };
+        match gate_enter_with(&record, &read, &query, &probe) {
+            Ok(EnterDecision::Refuse(why)) if why.contains("stale") => {}
+            outcome => panic!("lossy old marker must refuse stale, got: {outcome:?}"),
         }
     }
 }

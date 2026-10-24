@@ -275,11 +275,11 @@ pub fn reap_orphans(base: &Path, live_sessions: &std::collections::HashSet<Strin
 /// {{.State.StartedAt}}"` rendering: the container ID is the
 /// first whitespace-delimited field and StartedAt is the
 /// entire remainder (trimmed). StartedAt rendering is
-/// backend-version-dependent (a single token on podman 4.9, a
-/// space-separated clock reading on 5.7), so only the first
-/// token boundary is structural — splitting StartedAt itself
-/// apart would make same-day restarts invisible on spaceful
-/// renderings.
+/// backend-version-dependent (observed: a single token on
+/// podman 4.9, a space-separated clock reading on 5.7), so
+/// only the first token boundary is structural — splitting
+/// StartedAt itself apart would make same-day restarts
+/// invisible on spaceful renderings.
 ///
 /// # Errors
 ///
@@ -327,7 +327,10 @@ pub fn query_incarnation(container_name: &str) -> Result<Incarnation> {
     }
     let text = String::from_utf8_lossy(&out.stdout);
     parse_identity(&text).map_err(|error| {
-        CistellaError::Runtime(format!("incarnation inspect {container_name}: {error}"))
+        CistellaError::Runtime(format!(
+            "incarnation inspect {container_name}: {}",
+            error.inner()
+        ))
     })
 }
 
