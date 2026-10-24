@@ -741,6 +741,37 @@ fn capture_drains_after_exit_before_first_read() {
 }
 
 #[test]
+fn capture_unreadable_fd_reports_read_error() {
+    // Deterministic read failure: reading a directory fd
+    // fails EISDIR on Linux — the only way to produce
+    // ReadErr here, so the end-state classification F3 hinges
+    // on is pinned, not merely present. (A Ws counterpart
+    // cannot exist: WouldBlock never terminates a capture.)
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let file = std::fs::File::open(dir.path()).expect("open dir reads");
+    set_nonblocking(&file);
+    let child = match unsafe { nix::unistd::fork().expect("fork") } {
+        nix::unistd::ForkResult::Parent { child } => child,
+        nix::unistd::ForkResult::Child => unsafe { libc::_exit(0) },
+    };
+    let outcome = capture_master(
+        &file,
+        child,
+        Duration::from_secs(10),
+        Duration::from_secs(2),
+        CAPTURE_CAP,
+        |_| false,
+    );
+    reap_child(child);
+    assert!(
+        matches!(outcome.end, CaptureEnd::ReadErr(_)),
+        "directory read fails as ReadErr, got: {:?}",
+        outcome.end
+    );
+    assert!(outcome.bytes.is_empty(), "failed read captures nothing");
+}
+
+#[test]
 fn capture_split_writes_reassemble() {
     // Three chunks, one EOF: the retained buffer is the
     // concatenation, and the marker search runs over all of
