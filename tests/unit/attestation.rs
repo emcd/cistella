@@ -6,6 +6,7 @@
 
 use cistella::attestation::{
     Attestation, CommitDecision, Currency, Incarnation, commit_decision, decide_currency,
+    parse_identity,
 };
 
 fn sample() -> Attestation {
@@ -358,5 +359,31 @@ fn orphan_sweep_skips_unparseable_and_absent_dir() {
     assert!(
         reaped.is_empty(),
         "unparseable names must skip, got: {reaped:?}"
+    );
+}
+
+#[test]
+fn parse_identity_keeps_spaceful_startedat_whole() {
+    // Backend-version pin: podman 4.9 renders StartedAt as a
+    // single token, 5.7 as a space-separated clock reading.
+    // Only the first token boundary is structural; StartedAt
+    // is the entire remainder, so same-day restarts stay
+    // visible on spaceful renderings.
+    let single =
+        parse_identity("abc123 2026-10-24T14:51:00Z\n").expect("single-token rendering parses");
+    assert_eq!(single.container_id, "abc123");
+    assert_eq!(single.started_at, "2026-10-24T14:51:00Z");
+    let spaced = parse_identity("abc123 2026-10-24 14:51:00 +0000 UTC\n")
+        .expect("space-separated rendering parses whole");
+    assert_eq!(spaced.container_id, "abc123");
+    assert_eq!(spaced.started_at, "2026-10-24 14:51:00 +0000 UTC");
+    assert!(
+        parse_identity("abc123\n").is_err(),
+        "id without StartedAt refuses"
+    );
+    assert!(parse_identity("   \n").is_err(), "blank rendering refuses");
+    assert!(
+        parse_identity("abc123   \n").is_err(),
+        "id with blank StartedAt refuses"
     );
 }
