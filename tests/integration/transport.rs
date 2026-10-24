@@ -183,27 +183,31 @@ fn check_isatty(cname: &str) -> bool {
                 super::capture::CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("isatty:true"),
             );
-            // Bounded reap of the forkpty child: never a blocking
-            // waitpid. An unreaped child is unproven evidence; a
-            // forced kill (even reaped) is a timeout, not success.
-            if !outcome.child_reaped && !reap_pty_child(child) {
-                eprintln!("isatty pty child would not reap");
-                return false;
-            }
+            let fin = super::capture::finalize_capture(
+                child,
+                "isatty",
+                &outcome,
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+            );
             let txt = String::from_utf8_lossy(&outcome.bytes).to_string();
+            let final_exit = super::capture::ms_since(outcome.phases.started, fin.exit_observed);
             eprintln!(
                 "isatty forkpty acc: {}",
                 super::capture::excerpt_capped(&outcome.bytes)
             );
             eprintln!(
-                "isatty capture: end={:?} reads={} matched={} truncated={} reaped={} status={:?} phases={} hits={:?}",
+                "isatty capture: end={:?} reads={} attempts={} matched={} truncated={} reaped={} status={:?} final={:?} forced_kill={} phases={} final_exit={} hits={:?}",
                 outcome.end,
                 outcome.reads,
+                outcome.attempts,
                 outcome.matched,
                 outcome.truncated,
                 outcome.child_reaped,
                 outcome.disposition,
+                fin.disposition,
+                fin.forced_kill,
                 super::capture::phase_offsets(&outcome.phases),
+                final_exit,
                 outcome.refusal_hits
             );
             // Verdict admits only a clean end of stream with a
@@ -215,11 +219,7 @@ fn check_isatty(cname: &str) -> bool {
                 super::capture::CaptureEnd::Eof
                     | super::capture::CaptureEnd::PtyEio { child_reaped: true }
             );
-            let status_ok = matches!(
-                outcome.disposition,
-                super::capture::ChildDisposition::Exited(0)
-            );
-            end_ok && status_ok && txt.contains("isatty:true")
+            super::capture::verdict_ready(end_ok, &fin, txt.contains("isatty:true"))
         }
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;

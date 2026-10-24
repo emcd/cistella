@@ -47,7 +47,6 @@ pub fn kill_reap_pty_child(child: nix::unistd::Pid) {
 
 pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
     use nix::pty::{ForkptyResult, Winsize, forkpty};
-    use nix::sys::wait::{self, WaitStatus};
     let winsize = Winsize {
         ws_row: 30,
         ws_col: 100,
@@ -81,7 +80,10 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
             let start = Instant::now();
             // Bounded capture owns the read loop (facts only):
             // drain to a terminal observation with the settle
-            // predicate on DONE. The verdict below is unchanged.
+            // predicate on DONE. The shared finalization below
+            // carries the first actually consumed disposition
+            // into the verdict; the verdict itself is unchanged
+            // in shape, now decided on complete facts.
             let outcome = super::capture::capture_master(
                 &f,
                 child,
@@ -90,68 +92,44 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 super::capture::CAPTURE_CAP,
                 |bytes| String::from_utf8_lossy(bytes).contains("DONE"),
             );
-            // Bounded final reap against the REMAINING window (never
-            // a fresh wait). Already-observed exits skip the second
-            // waitpid (ECHILD there IS the reap). A child that
-            // outlives the session is killed and reports unattested
-            // — forced-kill success never reads as success.
             let deadline = start + Duration::from_secs(30);
-            let reaped = outcome.child_reaped
-                || loop {
-                    match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
-                        Ok(WaitStatus::StillAlive) => {
-                            if Instant::now() > deadline {
-                                eprintln!(
-                                    "enter pty child outlived its window; forcing SIGKILL (timeout, not success)"
-                                );
-                                let _ = nix::sys::signal::kill(
-                                    child,
-                                    nix::sys::signal::Signal::SIGKILL,
-                                );
-                                let _ = reap_bounded_pid(child, Duration::from_secs(10));
-                                break false;
-                            }
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        Ok(_) => break true,
-                        Err(_) => break false,
-                    }
-                };
+            let fin = super::capture::finalize_capture(child, "enter pty", &outcome, deadline);
             let txt = String::from_utf8_lossy(&outcome.bytes).to_string();
+            let final_exit = super::capture::ms_since(outcome.phases.started, fin.exit_observed);
             eprintln!(
                 "enter pty acc: {}",
                 super::capture::excerpt_capped(&outcome.bytes)
             );
             eprintln!(
-                "enter pty capture: end={:?} reads={} matched={} truncated={} reaped={} status={:?} phases={} hits={:?}",
+                "enter pty capture: end={:?} reads={} attempts={} matched={} truncated={} reaped={} status={:?} final={:?} forced_kill={} phases={} final_exit={} hits={:?}",
                 outcome.end,
                 outcome.reads,
+                outcome.attempts,
                 outcome.matched,
                 outcome.truncated,
                 outcome.child_reaped,
                 outcome.disposition,
+                fin.disposition,
+                fin.forced_kill,
                 super::capture::phase_offsets(&outcome.phases),
+                final_exit,
                 outcome.refusal_hits
             );
             // Verdict admits only a clean end of stream with a
             // successfully exited child and the expected content.
             // Anything else — capture error or timeout,
-            // truncation, an unknown or unsuccessful disposition,
-            // a missing marker — fails loud instead of passing
-            // on a partial capture.
+            // truncation, an unknown or unsuccessful disposition
+            // (including a disposition first observed here, in
+            // finalization), a missing marker — fails loud
+            // instead of passing on a partial capture.
             let end_ok = matches!(
                 outcome.end,
                 super::capture::CaptureEnd::Eof
                     | super::capture::CaptureEnd::PtyEio { child_reaped: true }
             );
-            let status_ok = matches!(
-                outcome.disposition,
-                super::capture::ChildDisposition::Exited(0)
-            );
-            reaped
-                && end_ok
-                && status_ok
-                && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))
+            let content_ok =
+                txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0"));
+            super::capture::verdict_ready(end_ok, &fin, content_ok)
         }
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
