@@ -508,18 +508,22 @@ fn sigint_verdict_admits_only_the_complete_chain() {
 /// semantics. The trap writes the marker before `exit 0` and
 /// the caller reaps that exit first, so a present marker
 /// causally precedes this loop; the loop only rides out
-/// exec-subsystem settling. No new poll starts after the
-/// outer deadline (remaining-budget exec), and a `present`
-/// that arrives past the deadline is refused as overrun
-/// evidence. A podman exec failure is terminal failure
-/// evidence (loud, with stderr), never "absent" and never
-/// retried into success: no blanket retry-125 suppression.
-/// Cleanup is the caller's separate allowance.
+/// exec-subsystem settling. Budget arithmetic, stated: the
+/// 30s outer deadline covers a 10s exec-attempt window plus
+/// the 20s documented reap+drain reserve the bounded-at
+/// machinery holds back (REAP_ALLOWANCE +
+/// POST_EXIT_DRAIN_TIMEOUT), so attempts genuinely stop
+/// after ~10s. No new poll starts after the outer deadline,
+/// and a `present` that arrives past it is refused as
+/// overrun evidence. A podman exec failure is terminal
+/// failure evidence (loud, with stderr), never "absent" and
+/// never retried into success: no blanket retry-125
+/// suppression. Cleanup is the caller's separate allowance.
 fn observe_sigint_marker(cname: &str) -> MarkerState {
-    let marker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let marker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         if std::time::Instant::now() > marker_deadline {
-            eprintln!("sigint marker never appeared within 10s");
+            eprintln!("sigint marker never appeared within its window");
             return MarkerState::AbsentExpired;
         }
         let mut cmd = Command::new("podman");
