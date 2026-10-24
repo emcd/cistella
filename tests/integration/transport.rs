@@ -151,9 +151,8 @@ fn check_isatty(cname: &str) -> bool {
     // forkpty
     match unsafe { forkpty(None, None) } {
         Ok(ForkptyResult::Parent { child, master }) => {
-            use std::io::Read;
             use std::os::unix::io::AsRawFd;
-            let mut f = std::fs::File::from(master);
+            let f = std::fs::File::from(master);
             // Nonblocking master: the WouldBlock arm below only
             // bounds the window on a nonblocking fd; a blocking
             // read would sit past it on a silent child. Setup
@@ -172,43 +171,39 @@ fn check_isatty(cname: &str) -> bool {
                 kill_reap_pty_child(child);
                 return false;
             }
-            let mut buf = [0u8; 4096];
-            let start = std::time::Instant::now();
-            let mut acc = Vec::new();
-            // Exit observed here already reaps (WNOHANG reports
-            // only once): remember it so the final reap does not
-            // mistake the resulting ECHILD for failure.
-            let mut exited = false;
-            while start.elapsed() < std::time::Duration::from_secs(5) {
-                match f.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        acc.extend_from_slice(&buf[..n]);
-                        if String::from_utf8_lossy(&acc).contains("isatty:true") {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    Err(_) => break,
-                }
-                if wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
-                    .is_ok_and(|s| s != WaitStatus::StillAlive)
-                {
-                    exited = true;
-                    break;
-                }
-            }
+            // Bounded capture owns the read loop (facts only):
+            // drain to a terminal observation with the settle
+            // predicate on the isatty marker. The verdict below
+            // is unchanged.
+            let outcome = super::capture::capture_master(
+                &f,
+                child,
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(2),
+                super::capture::CAPTURE_CAP,
+                |bytes| String::from_utf8_lossy(bytes).contains("isatty:true"),
+            );
             // Bounded reap of the forkpty child: never a blocking
             // waitpid. An unreaped child is unproven evidence; a
             // forced kill (even reaped) is a timeout, not success.
-            if !exited && !reap_pty_child(child) {
+            if !outcome.child_reaped && !reap_pty_child(child) {
                 eprintln!("isatty pty child would not reap");
                 return false;
             }
-            let txt = String::from_utf8_lossy(&acc).to_string();
-            eprintln!("isatty forkpty acc: {txt}");
+            let txt = String::from_utf8_lossy(&outcome.bytes).to_string();
+            eprintln!(
+                "isatty forkpty acc: {}",
+                super::capture::excerpt_capped(&outcome.bytes)
+            );
+            eprintln!(
+                "isatty capture: end={:?} reads={} matched={} truncated={} reaped={} hits={:?}",
+                outcome.end,
+                outcome.reads,
+                outcome.matched,
+                outcome.truncated,
+                outcome.child_reaped,
+                outcome.refusal_hits
+            );
             txt.contains("isatty:true")
         }
         Ok(ForkptyResult::Child) => {

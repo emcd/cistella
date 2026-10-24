@@ -48,7 +48,6 @@ pub fn kill_reap_pty_child(child: nix::unistd::Pid) {
 pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
     use nix::pty::{ForkptyResult, Winsize, forkpty};
     use nix::sys::wait::{self, WaitStatus};
-    use std::io::Read;
     let winsize = Winsize {
         ws_row: 30,
         ws_col: 100,
@@ -78,45 +77,26 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 kill_reap_pty_child(child);
                 return false;
             }
-            let mut f = f;
-            let mut buf = [0u8; 4096];
-            let mut acc = Vec::new();
+            let f = f;
             let start = Instant::now();
-            // Exit observed in the read phase counts as REAPED: a
-            // WNOHANG poll reporting non-StillAlive reaps the
-            // zombie, so a later waitpid would say ECHILD — which
-            // is the reap, not a failure. Without this flag the
-            // final stage mistakes ECHILD for an unreaped child
-            // and fails a cleanly-exited session.
-            let mut exited = false;
-            while start.elapsed() < Duration::from_secs(30) {
-                match f.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        acc.extend_from_slice(&buf[..n]);
-                        if String::from_utf8_lossy(&acc).contains("DONE") {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(_) => break,
-                }
-                if wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG))
-                    .is_ok_and(|s| s != WaitStatus::StillAlive)
-                {
-                    exited = true;
-                    break;
-                }
-            }
+            // Bounded capture owns the read loop (facts only):
+            // drain to a terminal observation with the settle
+            // predicate on DONE. The verdict below is unchanged.
+            let outcome = super::capture::capture_master(
+                &f,
+                child,
+                Duration::from_secs(30),
+                Duration::from_secs(5),
+                super::capture::CAPTURE_CAP,
+                |bytes| String::from_utf8_lossy(bytes).contains("DONE"),
+            );
             // Bounded final reap against the REMAINING window (never
             // a fresh wait). Already-observed exits skip the second
             // waitpid (ECHILD there IS the reap). A child that
             // outlives the session is killed and reports unattested
             // — forced-kill success never reads as success.
             let deadline = start + Duration::from_secs(30);
-            let reaped = exited
+            let reaped = outcome.child_reaped
                 || loop {
                     match wait::waitpid(child, Some(wait::WaitPidFlag::WNOHANG)) {
                         Ok(WaitStatus::StillAlive) => {
@@ -137,8 +117,20 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                         Err(_) => break false,
                     }
                 };
-            let txt = String::from_utf8_lossy(&acc).to_string();
-            eprintln!("enter pty acc: {txt}");
+            let txt = String::from_utf8_lossy(&outcome.bytes).to_string();
+            eprintln!(
+                "enter pty acc: {}",
+                super::capture::excerpt_capped(&outcome.bytes)
+            );
+            eprintln!(
+                "enter pty capture: end={:?} reads={} matched={} truncated={} reaped={} hits={:?}",
+                outcome.end,
+                outcome.reads,
+                outcome.matched,
+                outcome.truncated,
+                outcome.child_reaped,
+                outcome.refusal_hits
+            );
             reaped && (txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0")))
         }
         Ok(ForkptyResult::Child) => {
