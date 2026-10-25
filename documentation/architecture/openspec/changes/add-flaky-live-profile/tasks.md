@@ -27,3 +27,7 @@
 - [x] 4.2 Command-builder pins: baseline bypasses tier/roster/default without a profile; tier listings carry -P and no bypass; execution build flags everywhere
 - [x] 4.3 Backend-free self-test fixtures for all of the above plus decide-flaky anchoring and effective-subset computation; --self-test wired as a required CI step
 - [x] 4.4 Effective diagnostic subset computed in-leg with omitted identities named; full-audit dispatch route implemented and documented
+- [x] 4.5 F1: gating suite.log uploaded as artifact with if: always() on both workflows
+- [x] 4.6 F3: recorded argv asserted per production listing call (bypass/profile composition pinned, not just the constructor)
+- [x] 4.7 F4: dead duplicate cmd_effective_subset removed; single implementation retained and tested
+- [ ] 4.8 F2: audit-failure policy decision (operator/advisor call — see packet)

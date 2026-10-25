@@ -490,94 +490,109 @@ def cmd_self_test():
     )
     check(
         "decide-spoofed-summary-uses-final",
-        lambda: find_final_summary(
-            "some output\nSummary [ 0.1s] 3 passed\ntail line\n"
-            "flaky (x) Test 2026 Z Summary [  0.2s] 5 tests run: 3 passed, 2 failed\n"
-        )
-        == (True, False)
-        or _fail(),
+        lambda: (
+            find_final_summary(
+                "some output\nSummary [ 0.1s] 3 passed\ntail line\n"
+                "flaky (x) Test 2026 Z Summary [  0.2s] 5 tests run: 3 passed, 2 failed\n"
+            )
+            == (True, False)
+            or _fail()
+        ),
         True,
     )
     check(
         "decide-spoof-only-has-no-summary",
-        lambda: find_final_summary("some output\nno marker here\ntail\n")
-        == (False, False)
-        or _fail(),
+        lambda: (
+            find_final_summary("some output\nno marker here\ntail\n") == (False, False)
+            or _fail()
+        ),
         True,
     )
     check(
         "decide-zero-read-from-final-line",
-        lambda: find_final_summary(
-            "Summary [ 0.1s] 7 tests run\nflaky (x) Test Z Summary [  0.0s] 0 tests run: 0 passed\n"
-        )
-        == (True, True)
-        or _fail(),
+        lambda: (
+            find_final_summary(
+                "Summary [ 0.1s] 7 tests run\nflaky (x) Test Z Summary [  0.0s] 0 tests run: 0 passed\n"
+            )
+            == (True, True)
+            or _fail()
+        ),
         True,
     )
     check(
         "decide-ansi-stripped-before-match",
-        lambda: find_final_summary(
-            "flaky (x) Test\x1b[33;1m     Summary\x1b[0m [  0.1s] 1 tests run: 1 passed\n"
-        )
-        == (True, False)
-        or _fail(),
+        lambda: (
+            find_final_summary(
+                "flaky (x) Test\x1b[33;1m     Summary\x1b[0m [  0.1s] 1 tests run: 1 passed\n"
+            )
+            == (True, False)
+            or _fail()
+        ),
         True,
     )
 
     # -- filters_for --
     check(
         "filters-empty",
-        lambda: filters_for([])
-        == ("test(__no_such_test__)", "not (test(__no_such_test__))")
-        or _fail(),
+        lambda: (
+            filters_for([])
+            == ("test(__no_such_test__)", "not (test(__no_such_test__))")
+            or _fail()
+        ),
         True,
     )
     check(
         "filters-pair",
-        lambda: filters_for(["a::b", "c::d"])
-        == ("test(a::b) or test(c::d)", "not (test(a::b) or test(c::d))")
-        or _fail(),
+        lambda: (
+            filters_for(["a::b", "c::d"])
+            == ("test(a::b) or test(c::d)", "not (test(a::b) or test(c::d))")
+            or _fail()
+        ),
         True,
     )
     check(
         "list_argv-baseline-bypasses-default-filters",
-        lambda: list_argv("C.toml", None, None, True)
-        == [
-            "cargo",
-            "nextest",
-            "list",
-            "--config-file",
-            "C.toml",
-            "--release",
-            "--locked",
-            "--run-ignored=all",
-            "--ignore-default-filter",
-            "--message-format",
-            "json",
-        ]
-        or _fail(),
+        lambda: (
+            list_argv("C.toml", None, None, True)
+            == [
+                "cargo",
+                "nextest",
+                "list",
+                "--config-file",
+                "C.toml",
+                "--release",
+                "--locked",
+                "--run-ignored=all",
+                "--ignore-default-filter",
+                "--message-format",
+                "json",
+            ]
+            or _fail()
+        ),
         True,
     )
     check(
         "list_argv-tier-carries-profile-no-bypass",
-        lambda: list_argv("C.toml", "live", "test(m::t)", False)
-        == [
-            "cargo",
-            "nextest",
-            "list",
-            "--config-file",
-            "C.toml",
-            "--release",
-            "--locked",
-            "-P",
-            "live",
-            "--run-ignored=all",
-            "-E",
-            "test(m::t)",
-            "--message-format",
-            "json",
-        ]
-        or _fail(),
+        lambda: (
+            list_argv("C.toml", "live", "test(m::t)", False)
+            == [
+                "cargo",
+                "nextest",
+                "list",
+                "--config-file",
+                "C.toml",
+                "--release",
+                "--locked",
+                "-P",
+                "live",
+                "--run-ignored=all",
+                "-E",
+                "test(m::t)",
+                "--message-format",
+                "json",
+            ]
+            or _fail()
+        ),
         True,
     )
     check(
@@ -587,9 +602,11 @@ def cmd_self_test():
     )
     check(
         "effective-filter-intersects-manual",
-        lambda: effective_flaky_filter("test(a::b)", "test(c::d)")
-        == "( test(a::b) ) and ( test(c::d) )"
-        or _fail(),
+        lambda: (
+            effective_flaky_filter("test(a::b)", "test(c::d)")
+            == "( test(a::b) ) and ( test(c::d) )"
+            or _fail()
+        ),
         True,
     )
     check(
@@ -607,8 +624,10 @@ def cmd_self_test():
     )
     check(
         "decide-spoof-only-has-no-summary",
-        lambda: (not find_final_summary("some output\nno marker here\ntail\n")[0])
-        or _fail(),
+        lambda: (
+            (not find_final_summary("some output\nno marker here\ntail\n")[0])
+            or _fail()
+        ),
         True,
     )
     check(
@@ -779,6 +798,94 @@ def cmd_self_test():
         # tier calls are exactly: 2 predicate checks + 2 selection checks
         return True
 
+    def _e2e_production_argv_pinned():
+        # F3, production side: the real Lister must emit the
+        # exact same composition. Stub subprocess only (no
+        # cargo); assert every recorded argv verbatim.
+        canned = {
+            "rust-suites": {
+                "s": {
+                    "binary-id": "b",
+                    "testcases": {
+                        "m::t": {
+                            "kind": "test",
+                            "ignored": True,
+                            "filter-match": {"status": "matches"},
+                        }
+                    },
+                }
+            }
+        }
+
+        class _Out:
+            stdout = json.dumps(canned)
+            stderr = ""
+
+        real_run = subprocess.run
+        seen = []
+
+        def fake_run(cmd, **kw):
+            assert kw.get("capture_output") and kw.get("text") and kw.get("check"), kw
+            seen.append(cmd)
+            return _Out()
+
+        subprocess.run = fake_run  # noqa: E402 -- test-only seam
+        try:
+            lst = Lister("C.toml")
+            lst.baseline()
+            lst.selection("live", "test(m::t)")
+            lst.predicate("flaky", "m::t")
+        finally:
+            subprocess.run = real_run
+        assert seen == [
+            [
+                "cargo",
+                "nextest",
+                "list",
+                "--config-file",
+                "C.toml",
+                "--release",
+                "--locked",
+                "--run-ignored=all",
+                "--ignore-default-filter",
+                "--message-format",
+                "json",
+            ],
+            [
+                "cargo",
+                "nextest",
+                "list",
+                "--config-file",
+                "C.toml",
+                "--release",
+                "--locked",
+                "-P",
+                "live",
+                "--run-ignored=all",
+                "-E",
+                "test(m::t)",
+                "--message-format",
+                "json",
+            ],
+            [
+                "cargo",
+                "nextest",
+                "list",
+                "--config-file",
+                "C.toml",
+                "--release",
+                "--locked",
+                "-P",
+                "flaky",
+                "--run-ignored=all",
+                "-E",
+                "test(m::t)",
+                "--message-format",
+                "json",
+            ],
+        ], seen
+        return True
+
     check(
         "e2e-ordinary-loss",
         lambda: _e2e_ordinary_loss(),
@@ -792,6 +899,11 @@ def cmd_self_test():
     check(
         "e2e-argv-pinned-per-call-site",
         lambda: _e2e_argv_pinned_per_call_site(),
+        True,
+    )
+    check(
+        "e2e-production-argv-pinned",
+        lambda: _e2e_production_argv_pinned(),
         True,
     )
 
