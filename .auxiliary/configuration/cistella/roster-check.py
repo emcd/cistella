@@ -354,6 +354,94 @@ def decide_flaky_for_log(log_path, exit_code, expect_empty):
         raise SystemExit(1)
 
 
+def split_workflow_jobs(text):
+    """Split a workflow file into top-level jobs: {name: block}.
+    Lightweight line scan (no yaml dependency): a job starts at
+    a two-space `name:` line after the `jobs:` section."""
+    jobs = {}
+    current = None
+    in_jobs = False
+    for line in text.splitlines():
+        if re.match(r"^jobs:\s*$", line):
+            in_jobs = True
+            continue
+        m = re.match(r"^  ([A-Za-z0-9_/-]+):\s*$", line)
+        if in_jobs and m:
+            current = m.group(1)
+            jobs[current] = []
+            continue
+        if current is not None:
+            jobs[current].append(line)
+    return {k: "\n".join(v) for k, v in jobs.items()}
+
+
+def check_workflow_identities(text):
+    """Pin the required-check identity invariant (tier-1 G1).
+    The required `test` job must always execute the full
+    live-minus-roster selection: its steps must never reference
+    the manual `inputs.filter`, and its job-level `if:` must
+    never skip on diagnostics (a skipped required check reads
+    as success). The `audit` job must not reference the manual
+    filter either. When the workflow defines a `filter` input,
+    filtered gating diagnostics must live in a distinct job
+    (never under a required name). Raises SystemExit on any
+    violation."""
+    jobs = split_workflow_jobs(text)
+    if "test" not in jobs:
+        fail("workflow identity: no required `test` job found")
+    test_block = jobs["test"]
+    # Job-level `if:` line is the first `if:` before any step.
+    head = test_block.split("steps:")[0] if "steps:" in test_block else test_block
+    if "inputs.filter" in head:
+        fail(
+            "workflow identity: required `test` job is conditional on "
+            "inputs.filter (skipped required checks report success)"
+        )
+    # Only scan executable lines: strip `#` comments so prose
+    # mentioning the input name cannot trip the gate.
+    code_lines = [ln.split("#", 1)[0] for ln in test_block.splitlines()]
+    if any("inputs.filter" in ln for ln in code_lines):
+        fail(
+            "workflow identity: required `test` job references "
+            "inputs.filter (filtered runs must use the distinct "
+            "diagnostic job)"
+        )
+    if "audit" in jobs:
+        audit_code = [ln.split("#", 1)[0] for ln in jobs["audit"].splitlines()]
+        if any("inputs.filter" in ln for ln in audit_code):
+            fail(
+                "workflow identity: `audit` job references "
+                "inputs.filter (audit always runs the complete set)"
+            )
+    defines_filter_input = bool(re.search(r"^\s*filter:\s*$", text, re.M))
+    if defines_filter_input:
+        if "diagnostic" not in jobs:
+            fail(
+                "workflow identity: workflow defines a `filter` input "
+                "but has no distinct `diagnostic` job"
+            )
+        for reserved in ("test", "audit", "flaky", "roster", "lint"):
+            if "diagnostic" == reserved:
+                fail(
+                    "workflow identity: diagnostic job name collides "
+                    "with a required check identity"
+                )
+        diag_code = [ln.split("#", 1)[0] for ln in jobs["diagnostic"].splitlines()]
+        if not any("inputs.filter" in ln for ln in diag_code):
+            fail(
+                "workflow identity: `diagnostic` job does not consume "
+                "inputs.filter (the filtered run lives there, not in "
+                "the required job)"
+            )
+
+
+def cmd_check_workflow(path):
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    check_workflow_identities(text)
+    print(f"workflow identity OK: {path}")
+
+
 def cmd_self_test():
     """Backend-free fixtures: pure core plus injected-backend
     orchestration. No cargo, no network."""
@@ -990,6 +1078,93 @@ def cmd_self_test():
         True,
     )
 
+    GOOD_WORKFLOW = """name: qa
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'x'
+        required: false
+        default: ''
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test (live profile)
+        run: |
+          cargo nextest run -E 'exclusion' 2>&1 | tee suite.log
+  diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.filter != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test (targeted diagnostic, non-gating)
+        run: |
+          cargo nextest run -E "( inputs.filter ) and exclusion" 2>&1 | tee diagnostic.log
+  audit:
+    if: inputs.full_audit == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test (full live audit)
+        run: |
+          cargo nextest run --no-fail-fast 2>&1 | tee audit.log
+"""
+    check(
+        "workflow-good",
+        lambda: check_workflow_identities(GOOD_WORKFLOW),
+        True,
+    )
+    check(
+        "workflow-required-references-filter",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "cargo nextest run -E 'exclusion'",
+                'cargo nextest run -E "( inputs.filter ) and exclusion"',
+            )
+        ),
+        False,
+        "required `test` job references inputs.filter",
+    )
+    check(
+        "workflow-required-skipped-on-filter",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "  test:\n    runs-on:",
+                "  test:\n    if: inputs.filter == ''\n    runs-on:",
+            )
+        ),
+        False,
+        "conditional on inputs.filter",
+    )
+    def _without_diagnostic(text):
+        out, skip = [], False
+        for ln in text.splitlines():
+            if ln.startswith("  diagnostic:"):
+                skip = True
+                continue
+            if skip and ln.startswith("  audit:"):
+                skip = False
+            if not skip:
+                out.append(ln)
+        return "\n".join(out) + "\n"
+
+    check(
+        "workflow-missing-diagnostic",
+        lambda: check_workflow_identities(_without_diagnostic(GOOD_WORKFLOW)),
+        False,
+        "no distinct `diagnostic` job",
+    )
+    check(
+        "workflow-audit-references-filter",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "cargo nextest run --no-fail-fast",
+                'cargo nextest run -E "( inputs.filter )" --no-fail-fast',
+            )
+        ),
+        False,
+        "`audit` job references inputs.filter",
+    )
+
     passed = total[0] - len(failed)
     if failed:
         fail(f"self-test failures: {failed}")
@@ -1022,6 +1197,9 @@ def main():
         return
     if len(args) >= 1 and args[0] == "decide-flaky":
         cmd_decide_flaky(args[1:])
+        return
+    if len(args) == 2 and args[0] == "check-workflow":
+        cmd_check_workflow(args[1])
         return
     if rest_is_generate(args):
         cmd_generate(args[0])

@@ -129,6 +129,16 @@ jobs:
           set -euo pipefail
           python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
 
+      - name: Prove workflow check identities
+        # REQUIRED gate (tier-1 G1): the required `test` job
+        # always runs the full live-minus-roster selection and
+        # never references the manual `filter` input; filtered
+        # gating diagnostics live in the distinct `diagnostic`
+        # job; the `audit` job never references the filter.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/tester.yaml
+
   test:
     needs: [initialize, lint, roster]
     strategy:
@@ -190,30 +200,19 @@ jobs:
         run: cargo build --release --locked
 
       - name: Test (live profile)
-        # Runs the FULL suite including the live tier (`-P live
-        # --run-ignored=all`) across the pinned 4-leg matrix
-        # (24.04/26.04 × x64/arm): hosted runners satisfy it
-        # (systemd user manager plus rootless Podman proven
-        # green on all four legs). Quarantined tests are excluded
-        # via the roster-derived filter (empty roster = the
-        # filter matches everything, so the run is
-        # byte-identical to the unfiltered gate). A manual
-        # dispatch may pass a `filter` input for one targeted
-        # cohort (marker capture for capability-probe tests);
-        # empty input is byte-identical to the full gate run.
-        # The exclusion always applies, so quarantined tests
-        # never gate — not even under a manual filter. (For a
-        # full live audit, dispatch with full_audit=true and
+        # REQUIRED gate identity: test(platform) ALWAYS means the
+        # FULL live-minus-roster selection on this leg. It NEVER
+        # honors the manual `filter` dispatch input — a filtered
+        # run under this check name would read as required-green
+        # without proving the gate. Filtered gating diagnostics
+        # run in the distinct `diagnostic` job below, never here.
+        # (For a full live audit, dispatch with full_audit=true and
         # see the dedicated `audit` job below.)
         env:
           RUST_BACKTRACE: '1'
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.filter }}" ]; then
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "( ${{ inputs.filter }} ) and ${{ needs.roster.outputs.exclusion }}" --success-output=immediate 2>&1 | tee suite.log
-          else
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
-          fi
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
 
       - name: Upload gating log
         # The retained audit artifact for the gating tier: full
@@ -224,6 +223,77 @@ jobs:
         with:
           name: suite-log-${{ matrix.platform }}
           path: suite.log
+
+  diagnostic:
+    # Filtered gating diagnostic: runs the manual `filter`
+    # intersected with the roster exclusion under a DISTINCT
+    # check name (`diagnostic (platform)`), so a small cohort
+    # can never read as a required-green `test (platform)`.
+    # The required `test` job above always runs the full
+    # live-minus-roster selection regardless of inputs.
+    if: github.event_name == 'workflow_dispatch' && inputs.filter != ''
+    needs: [initialize, lint, roster]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Prove roster accounting (this leg)
+        # Same required proof as every other leg before its
+        # selection is used.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+      - name: Enable systemd lingering
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install -y podman uidmap
+
+      - name: Verify session prerequisites
+        run: |
+          set -eu
+          podman --version
+          systemctl --user is-system-running --wait
+
+      - name: Build example images
+        run: ./data/dockerfiles/validate.sh
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test (targeted diagnostic, non-gating)
+        # Filtered subset: ( manual ) and exclusion. Distinct
+        # check name, honest exit code; never mistaken for the
+        # required gate.
+        env:
+          RUST_BACKTRACE: '1'
+        run: |
+          set -euo pipefail
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "( ${{ inputs.filter }} ) and ${{ needs.roster.outputs.exclusion }}" --success-output=immediate 2>&1 | tee diagnostic.log
+
+      - name: Upload diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-log-${{ matrix.platform }}
+          path: diagnostic.log
 
   flaky:
     # Informational quarantine tier: runs exactly the rostered

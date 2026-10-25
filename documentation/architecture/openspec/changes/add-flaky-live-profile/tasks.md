@@ -12,7 +12,7 @@
 - [x] 2.4 Add the roster-check step: strict TOML parsing; independent `--ignore-default-filter` baseline (no profile) by composite identity; per-predicate verification via real `nextest list -E` under both tier profiles (exactly one live-eligible identity; reject duplicates/zero/overmatch/non-full-name); informational-equals-roster check; disjointness; union against the full pre-change gating selection (ignored and non-ignored); negative substring-collision and default-filter-omission handling
 - [x] 2.5 Add committed backend-free controls (`roster-check.py --self-test`): schema/malformed/duplicate fixtures, stale/overmatch/ordinary-collision/non-live/leaf fixtures
 - [x] 2.6 Prove roster accounting on every matrix leg (gating and flaky, qa and release) before its selections are used
-- [x] 2.7 Flaky leg discriminates completion from infra failure (no continue-on-error; missing Summary fails loud; `--no-tests pass` only on proven-empty roster; `--no-fail-fast`; full log uploaded as artifact); manual dispatch filter intersects both tiers
+- [x] 2.7 Flaky leg discriminates completion from infra failure (no continue-on-error; missing Summary fails loud; `--no-tests pass` only on proven-empty roster; `--no-fail-fast`; full log uploaded as artifact); required `test` legs never honor the manual dispatch filter — filtered gating subsets run in the distinct `diagnostic` job; workflow identity check (`check-workflow`) gates the roster job
 
 ## 3. Verification
 
