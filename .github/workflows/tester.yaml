@@ -11,6 +11,11 @@ on:
         description: 'Nextest -E filter for a targeted run (empty = full suite)'
         required: false
         default: ''
+      full_audit:
+        description: 'Run the complete intended live set on every leg with no quarantine exclusion (full live audit route, informational intent but gating legs stay gating)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
 
@@ -196,18 +201,24 @@ jobs:
         # dispatch may pass a `filter` input for one targeted
         # cohort (marker capture for capability-probe tests);
         # empty input is byte-identical to the full gate run.
+        # Full live audit route: dispatch with full_audit=true to
+        # run the complete intended live set on every leg with no
+        # exclusion and no fail-fast, so the executed union is the
+        # whole universe. The audit run's reds are evidence, not
+        # gate failures; per-leg logs are retained.
         # The exclusion always applies, so quarantined tests
         # never gate — not even under a manual filter.
         env:
           RUST_BACKTRACE: '1'
         run: |
           set -euo pipefail
-          FILTER='${{ needs.roster.outputs.exclusion }}'
-          if [ -n "${{ inputs.filter }}" ]; then
-            FILTER="( ${{ inputs.filter }} ) and $FILTER"
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$FILTER" --success-output=immediate 2>&1 | tee suite.log
+          if [ "${{ inputs.full_audit }}" = "true" ]; then
+            echo "full live audit: no exclusion, no fail-fast; every live-gated test executes"
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log
+          elif [ -n "${{ inputs.filter }}" ]; then
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "( ${{ inputs.filter }} ) and ${{ needs.roster.outputs.exclusion }}" --success-output=immediate 2>&1 | tee suite.log
           else
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$FILTER"
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}'
           fi
 
   flaky:
@@ -215,8 +226,8 @@ jobs:
     # tests under the `flaky` profile on the same 4-leg matrix.
     # Non-gating by construction — failures here are tracked
     # evidence, never a red gate and never retried to green.
-    # Only the test step itself is continue-on-error: setup and
-    # infra failures still fail the run loudly.
+    # The test step itself discriminates infra failures from
+    # test failures (see below); setup failures fail the job.
     needs: [initialize, lint, roster]
     strategy:
       fail-fast: false
@@ -267,6 +278,24 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Resolve effective subset
+        # The manual dispatch filter (if any) intersects the
+        # roster inclusion. The effective selection and its
+        # emptiness are computed with the leg's own flags, and
+        # omitted roster identities are named explicitly — so a
+        # legitimately empty diagnostic selection is
+        # distinguishable from an unexpected empty selection.
+        id: effective
+        run: |
+          set -euo pipefail
+          OUT="$(python3 .auxiliary/configuration/cistella/roster-check.py effective-subset .auxiliary/configuration/cistella/test-exclusions.toml --manual '${{ inputs.filter }}' --config-file .auxiliary/configuration/nextest.toml)"
+          echo "$OUT"
+          {
+            echo "filter=$(printf '%s' "$OUT" | sed -n 's/^effective_filter=//p')"
+            echo "empty=$(printf '%s' "$OUT" | sed -n 's/^empty=//p')"
+            echo "omitted=$(printf '%s' "$OUT" | sed -n 's/^omitted=//p')"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Test (flaky profile, informational)
         # Informational leg: test failures are tracked evidence,
         # never a red gate and never retried to green. There is
@@ -279,12 +308,10 @@ jobs:
         env:
           RUST_BACKTRACE: '1'
         run: |
-          FILTER='${{ needs.roster.outputs.inclusion }}'
-          if [ -n "${{ inputs.filter }}" ]; then
-            FILTER="( $FILTER ) and ( ${{ inputs.filter }} )"
-          fi
+          FILTER='${{ steps.effective.outputs.filter }}'
+          echo "effective flaky selection (omitted roster entries: ${{ steps.effective.outputs.omitted }})"
           ARGS=(--release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E "$FILTER" --no-fail-fast)
-          if [ "${{ needs.roster.outputs.empty }}" = "true" ]; then
+          if [ "${{ steps.effective.outputs.empty }}" = "true" ]; then
             ARGS+=(--no-tests pass)
           fi
           # The exit-code + Summary discriminator lives in the
@@ -297,7 +324,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           tail -30 flaky.log
-          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ needs.roster.outputs.empty }}"
+          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ steps.effective.outputs.empty }}"
 
       - name: Upload flaky log
         # The retained audit artifact: full run output for every

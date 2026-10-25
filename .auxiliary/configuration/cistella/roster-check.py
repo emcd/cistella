@@ -77,25 +77,28 @@ def parse_roster(text, source="<roster>"):
     return list(names)
 
 
-def check_predicate_raw(name, baseline_live):
+def check_predicate_raw(name, baseline_all):
     """Validate one roster entry against the RAW discovered set
-    (every live-gated test in every binary, before any profile
-    projection): exactly one composite identity whose full test
-    name equals the entry. Stale, overmatching (including an
+    (every test in every binary — ignored or not — before any
+    profile projection): exactly one composite identity whose
+    full test name equals the entry, and it must be
+    live-eligible. Stale, overmatching (including an
     ordinary-test collision), non-live, and leaf/partial
     entries fail here — profile filtering cannot hide them."""
-    holders = sorted({(b, t) for b, t in baseline_live if name in t})
+    holders = sorted({(b, t, ign) for (b, t, ign) in baseline_all if name in t})
     if len(holders) != 1:
         fail(
-            f"roster entry {name!r} matches {len(holders)} live tests in raw set, "
-            f"want exactly one: {[f'{b}::{t}' for b, t in holders]}"
+            f"roster entry {name!r} matches {len(holders)} tests in raw set, "
+            f"want exactly one: {[f'{b}::{t}' for b, t, _ in holders]}"
         )
-    (binary, tname) = holders[0]
+    (binary, tname, live) = holders[0]
     if tname != name:
         fail(
             f"roster entry {name!r} is not a full test name "
             f"(matched {binary}::{tname}); leaf/partial names rejected"
         )
+    if not live:
+        fail(f"roster entry {name!r} is not live-eligible ({binary}::{tname})")
     return (binary, tname)
 
 
@@ -143,6 +146,17 @@ def filters_for(names):
     return inclusion, f"not ({inclusion})"
 
 
+def effective_flaky_filter(inclusion, manual):
+    """The flaky leg's effective selection: the roster
+    inclusion, intersected with a manual dispatch filter when
+    one is given. Documented route for deliberately targeting
+    quarantined tests."""
+    manual = (manual or "").strip()
+    if manual:
+        return f"( {inclusion} ) and ( {manual} )"
+    return inclusion
+
+
 def decide_flaky_exit(exit_code, has_summary, zero_tests_run, expect_empty):
     """Classify a flaky-leg outcome. Informational test failures
     pass; anything else fails loud:
@@ -185,17 +199,30 @@ def base_list_cmd(config):
     ]
 
 
-def run_nextest_list(config, profile_flags, extra_args):
+def list_argv(config, profile, filt, bypass):
+    """Pure constructor for every nextest listing invocation.
+    profile=None means the neutral default profile (baseline
+    only); bypass adds --ignore-default-filter. Pinned by
+    self-test: baseline carries bypass and no -P, tier listings
+    carry -P and no bypass, all carry the execution build
+    flags."""
+    cmd = base_list_cmd(config)
+    if profile is not None:
+        cmd += ["-P", profile]
+    cmd += ["--run-ignored=all"]
+    if bypass:
+        cmd += ["--ignore-default-filter"]
+    if filt is not None:
+        cmd += ["-E", filt]
+    cmd += ["--message-format", "json"]
+    return cmd
+
+
+def run_nextest_list(config, profile, filt, bypass):
     """Run one listing; return {(binary, name, ignored)} for
     SELECTED tests only (filter-match.status == "matches").
     Anything malformed fails instead of defaulting."""
-    cmd = (
-        base_list_cmd(config)
-        + profile_flags
-        + ["--run-ignored=all"]
-        + extra_args
-        + ["--message-format", "json"]
-    )
+    cmd = list_argv(config, profile, filt, bypass)
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
     except subprocess.CalledProcessError as e:
@@ -241,15 +268,15 @@ class Lister:
 
     def baseline(self):
         self.calls.append(("baseline",))
-        return run_nextest_list(self.config, [], ["--ignore-default-filter"])
+        return run_nextest_list(self.config, None, None, True)
 
     def selection(self, profile, filt):
         self.calls.append(("selection", profile, filt))
-        return run_nextest_list(self.config, ["-P", profile], ["-E", filt])
+        return run_nextest_list(self.config, profile, filt, False)
 
     def predicate(self, profile, name):
         self.calls.append(("predicate", profile, name))
-        return run_nextest_list(self.config, ["-P", profile], ["-E", f"test({name})"])
+        return run_nextest_list(self.config, profile, f"test({name})", False)
 
 
 def evaluate(lister, names, inclusion, exclusion):
@@ -261,10 +288,12 @@ def evaluate(lister, names, inclusion, exclusion):
 
     # 1. Raw-set predicate validation (before any profile
     # projection), then generated-predicate verification under
-    # each tier profile.
+    # each tier profile. The raw check runs on the FULL
+    # discovered set (ignored or not) so an ordinary-test
+    # collision cannot hide behind a profile filter.
     expected = {}
     for name in names:
-        holders = check_predicate_raw(name, {(b, t) for b, t, ign in baseline if ign})
+        holders = check_predicate_raw(name, baseline)
         expected[name] = holders
         for profile in ("live", "flaky"):
             sel = {(b, t) for b, t, ign in lister.predicate(profile, name) if ign}
@@ -296,35 +325,27 @@ def evaluate(lister, names, inclusion, exclusion):
     }
 
 
-def cmd_check(roster_path, inclusion, exclusion, config):
-    with open(roster_path, "rb") as f:
-        names = parse_roster(f.read().decode("utf-8"), roster_path)
-    ev = evaluate(Lister(config), names, inclusion, exclusion)
-    print(
-        f"roster-check OK: roster={ev['roster']} "
-        f"gating-live={ev['gating_live']} flaky-live={ev['flaky_live']} "
-        f"ordinary-preserved={ev['ordinary_preserved']}"
-    )
+def find_final_summary(text):
+    """Locate the final nextest summary region: the last line
+    matching the Summary shape. Test stdout can spoof the words
+    anywhere, but only the runner's final summary decides the
+    outcome — earlier lookalikes are ignored. Returns
+    (found, zero_tests) where zero_tests is read from that
+    same final line."""
+    stripped = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    last = None
+    for line in stripped.splitlines():
+        if re.search(r"Summary\s*\[", line):
+            last = line
+    if last is None:
+        return False, False
+    return True, bool(re.search(r"(^| )0 tests run", last))
 
 
-def cmd_generate(roster_path):
-    with open(roster_path, "rb") as f:
-        names = parse_roster(f.read().decode("utf-8"), roster_path)
-    inclusion, exclusion = filters_for(names)
-    print(f"inclusion={inclusion}")
-    print(f"exclusion={exclusion}")
-    print(f"empty={'true' if not names else 'false'}")
-
-
-def cmd_decide_flaky(log_path, exit_code, expect_empty):
+def decide_flaky_for_log(log_path, exit_code, expect_empty):
     with open(log_path, errors="replace") as f:
         text = f.read()
-    # Strip ANSI escapes first: CI prefixes every line and nextest
-    # colorizes the Summary marker, so anchors must run on clean
-    # text. The Summary shape is matched anywhere in the line.
-    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
-    has_summary = bool(re.search(r"Summary\s*\[", text))
-    zero_tests = bool(re.search(r"(^| )0 tests run", text, re.MULTILINE))
+    has_summary, zero_tests = find_final_summary(text)
     ok, reason = decide_flaky_exit(exit_code, has_summary, zero_tests, expect_empty)
     print(f"flaky leg decision: {'PASS (informational)' if ok else 'FAIL'}: {reason}")
     if not ok:
@@ -390,29 +411,35 @@ def cmd_self_test():
     )
 
     # -- check_predicate (pure) --
-    live = lambda b, t: [(b, t, True)]
-    dead = lambda b, t: [(b, t, False)]
+    live = lambda b, t: {(b, t, True)}
+    dead = lambda b, t: {(b, t, False)}
     check(
         "predicate-exact-one",
-        lambda: check_predicate_raw("m::t", {("b", "m::t")}),
+        lambda: check_predicate_raw("m::t", live("b", "m::t")),
         True,
     )
     check("predicate-stale", lambda: check_predicate_raw("m::t", set()), False)
     check(
         "predicate-overmatch",
-        lambda: check_predicate_raw("m::t", {("b1", "m::t"), ("b2", "m::t_x")}),
+        lambda: check_predicate_raw("m::t", live("b1", "m::t") | live("b2", "m::t_x")),
         False,
     )
     check(
         "predicate-ordinary-collision",
-        lambda: check_predicate_raw("m::t", {("b1", "m::t"), ("b2", "m::t_extra")}),
+        lambda: check_predicate_raw(
+            "m::t", live("b1", "m::t") | dead("b2", "m::t_extra")
+        ),
         False,
     )
-    check("predicate-non-live", lambda: check_predicate_raw("m::t", set()), False)
-    check("predicate-leaf", lambda: check_predicate_raw("t", {("b", "m::t")}), False)
+    check(
+        "predicate-non-live",
+        lambda: check_predicate_raw("m::t", dead("b", "m::t")),
+        False,
+    )
+    check("predicate-leaf", lambda: check_predicate_raw("t", live("b", "m::t")), False)
     check(
         "predicate-cross-binary",
-        lambda: check_predicate_raw("m::t", {("b1", "m::t"), ("b2", "m::t")}),
+        lambda: check_predicate_raw("m::t", live("b1", "m::t") | live("b2", "m::t")),
         False,
     )
 
@@ -473,6 +500,90 @@ def cmd_self_test():
         lambda: filters_for(["a::b", "c::d"])
         == ("test(a::b) or test(c::d)", "not (test(a::b) or test(c::d))")
         or _fail(),
+        True,
+    )
+    check(
+        "list_argv-baseline-bypasses-default-filters",
+        lambda: list_argv("C.toml", None, None, True)
+        == [
+            "cargo",
+            "nextest",
+            "list",
+            "--config-file",
+            "C.toml",
+            "--release",
+            "--locked",
+            "--run-ignored=all",
+            "--ignore-default-filter",
+            "--message-format",
+            "json",
+        ]
+        or _fail(),
+        True,
+    )
+    check(
+        "list_argv-tier-carries-profile-no-bypass",
+        lambda: list_argv("C.toml", "live", "test(m::t)", False)
+        == [
+            "cargo",
+            "nextest",
+            "list",
+            "--config-file",
+            "C.toml",
+            "--release",
+            "--locked",
+            "-P",
+            "live",
+            "--run-ignored=all",
+            "-E",
+            "test(m::t)",
+            "--message-format",
+            "json",
+        ]
+        or _fail(),
+        True,
+    )
+    check(
+        "effective-filter-no-manual",
+        lambda: effective_flaky_filter("test(a::b)", "") == "test(a::b)" or _fail(),
+        True,
+    )
+    check(
+        "effective-filter-intersects-manual",
+        lambda: effective_flaky_filter("test(a::b)", "test(c::d)")
+        == "( test(a::b) ) and ( test(c::d) )"
+        or _fail(),
+        True,
+    )
+    check(
+        "decide-spoofed-summary-uses-final",
+        lambda: (
+            find_final_summary(
+                "some output\n"
+                "Summary [ 0.1s] 3 passed\n"
+                "tail line\n"
+                "flaky (x) Test 2026 Z Summary [  0.2s] 5 tests run: 3 passed, 2 failed\n"
+            )[0]
+            or _fail()
+        ),
+        True,
+    )
+    check(
+        "decide-spoof-only-has-no-summary",
+        lambda: (not find_final_summary("some output\nno marker here\ntail\n")[0])
+        or _fail(),
+        True,
+    )
+    check(
+        "decide-zero-read-from-final-line",
+        lambda: (
+            find_final_summary(
+                "Summary [ 0.1s] 3 passed\n"
+                "flaky (x) Test 2026 Z Summary [  0.0s] 0 tests run: 0 passed\n"
+            )
+            == (True, True)
+            or _fail()
+        ),
         True,
     )
 
@@ -610,6 +721,25 @@ def main():
     if args == ["--self-test"]:
         cmd_self_test()
         return
+    if len(args) >= 1 and args[0] == "effective-subset":
+        # roster-check.py effective-subset <roster> [--manual EXPR] [--config-file P]
+        manual = ""
+        rest = list(args[1:])
+        if "--manual" in rest:
+            i = rest.index("--manual")
+            manual = rest[i + 1]
+            rest = rest[:i] + rest[i + 2 :]
+        config = ".auxiliary/configuration/nextest.toml"
+        if "--config-file" in rest:
+            i = rest.index("--config-file")
+            config = rest[i + 1]
+            rest = rest[:i] + rest[i + 2 :]
+        if len(rest) != 1:
+            sys.exit(
+                "usage: roster-check.py effective-subset <roster> [--manual EXPR] [--config-file P]"
+            )
+        cmd_effective_subset(rest[0], manual, config)
+        return
     if len(args) >= 1 and args[0] == "decide-flaky":
         cmd_decide_flaky(args[1:])
         return
@@ -653,6 +783,47 @@ def cmd_generate(roster_path):
     print(f"empty={'true' if not names else 'false'}")
 
 
+def cmd_effective_subset(roster_path, manual, config):
+    """Resolve the flaky leg's effective selection: roster
+    inclusion intersected with an optional manual dispatch
+    filter, evaluated with the leg's actual flags. Prints the
+    effective filter, whether it selects anything, and which
+    rostered identities the manual filter omitted (explicit
+    omission accounting)."""
+    with open(roster_path, "rb") as f:
+        names = parse_roster(f.read().decode("utf-8"), roster_path)
+    inclusion, _ = filters_for(names)
+    effective = effective_flaky_filter(inclusion, manual)
+    selected = run_nextest_list(config, "flaky", effective, False)
+    selected_names = sorted({t for _, t, _ in selected})
+    omitted = sorted(n for n in names if n not in selected_names)
+    print(f"effective_filter={effective}")
+    print(f"empty={'true' if not selected else 'false'}")
+    print(f"omitted={','.join(omitted)}")
+    print(f"selected={len(selected)}")
+
+
+def cmd_effective_subset(roster_path, manual, config):
+    """Resolve the flaky leg's effective selection: the roster
+    inclusion intersected with an optional manual dispatch
+    filter, evaluated with the leg's actual flags. Prints the
+    effective filter, whether it selects anything, and which
+    rostered identities a manual filter omitted (explicit
+    omission accounting so an empty diagnostic selection is
+    distinguishable from an unexpected empty selection)."""
+    with open(roster_path, "rb") as f:
+        names = parse_roster(f.read().decode("utf-8"), roster_path)
+    inclusion, _ = filters_for(names)
+    effective = effective_flaky_filter(inclusion, manual or "")
+    selected = run_nextest_list(config, "flaky", effective, False)
+    selected_names = sorted({t for _, t, _ in selected})
+    omitted = sorted(n for n in names if n not in selected_names)
+    print(f"effective_filter={effective}")
+    print(f"empty={'true' if not selected else 'false'}")
+    print(f"omitted={','.join(omitted)}")
+    print(f"selected={len(selected)}")
+
+
 def cmd_decide_flaky(args):
     log_path = None
     exit_code = None
@@ -675,18 +846,7 @@ def cmd_decide_flaky(args):
         sys.exit(
             "usage: roster-check.py decide-flaky <log> --exit-code N --expect-empty true|false"
         )
-    with open(positional[0], errors="replace") as f:
-        text = f.read()
-    # Strip ANSI escapes first: CI prefixes every line and nextest
-    # colorizes the Summary marker, so anchors must run on clean
-    # text. The Summary shape is matched anywhere in the line.
-    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
-    has_summary = bool(re.search(r"Summary\s*\[", text))
-    zero_tests = bool(re.search(r"(^| )0 tests run", text, re.MULTILINE))
-    ok, reason = decide_flaky_exit(exit_code, has_summary, zero_tests, expect_empty)
-    print(f"flaky leg decision: {'PASS (informational)' if ok else 'FAIL'}: {reason}")
-    if not ok:
-        raise SystemExit(1)
+    decide_flaky_for_log(positional[0], exit_code, expect_empty)
 
 
 def rest_is_generate(args):

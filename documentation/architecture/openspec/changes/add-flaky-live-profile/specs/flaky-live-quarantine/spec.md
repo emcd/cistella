@@ -98,3 +98,10 @@ Targeted diagnostic runs SHALL use the intended profile/filter combination or `-
 #### Scenario: Diagnostics cover what they claim
 - **WHEN** a diagnostic run filters the live suite
 - **THEN** its packet states the effective selected set, and any omission of quarantined paths is explicit
+
+### Requirement: Full live audit route
+An explicit, invocable full-live audit route SHALL exist: dispatching with `full_audit` runs the complete intended live set on every matrix leg with no quarantine exclusion and no fail-fast, so the executed union is the whole universe and every live-gated test is actually executed on each platform. Per-leg logs are retained as the audit evidence.
+
+#### Scenario: The full set is executable on demand
+- **WHEN** an auditor dispatches with `full_audit`
+- **THEN** every leg runs the complete live-gated set with no exclusion, failures are recorded as evidence with per-leg logs, and no test is skipped by selection
