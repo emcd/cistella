@@ -222,25 +222,17 @@ jobs:
           if [ "${{ needs.roster.outputs.empty }}" = "true" ]; then
             ARGS+=(--no-tests pass)
           fi
+          # The exit-code + Summary discriminator lives in the
+          # tested roster-check classifier (see --self-test), not
+          # in shell one-liners: informational test failures pass,
+          # anything else (infra/config/discovery/build failure,
+          # unexpected empty selection) fails the step loudly.
           set +e
           cargo nextest run "${ARGS[@]}" 2>&1 | tee flaky.log
           code=${PIPESTATUS[0]}
           set -e
-          # Strip ANSI escapes first: CI prefixes every line and
-          # nextest colorizes the Summary marker itself, so anchors
-          # must run on clean text.
-          sed -i 's/\x1b\[[0-9;]*m//g' flaky.log
           tail -30 flaky.log
-          if ! grep -qE '^ *Summary' flaky.log; then
-            echo "flaky leg did not complete (nextest exit=$code): infrastructure/config failure"
-            exit 1
-          fi
-          if grep -qE '(^| )0 tests run' flaky.log && [ "${{ needs.roster.outputs.empty }}" != "true" ]; then
-            echo "flaky leg selected zero tests despite a non-empty roster"
-            exit 1
-          fi
-          echo "flaky leg completed (nextest exit=$code); failures are informational and tracked, not gating"
-          exit 0
+          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --roster-empty '${{ needs.roster.outputs.empty }}'
 
       - name: Upload flaky log
         # The retained audit artifact: full run output for every
