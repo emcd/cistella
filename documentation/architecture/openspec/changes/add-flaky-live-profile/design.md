@@ -14,7 +14,7 @@ Non-goals: fixing any specific flake (separate per-test work); changing what the
 
 ### 1. Selection by explicit name roster, not by ignore reason
 
-The roster is a versioned text file (one fully-qualified test path per line) under `.auxiliary/configuration/`. CI builds two nextest `-E` expressions from it: an inclusion filter for the flaky leg, an exclusion filter for the gating legs. Verified by execution (`nextest list` showing the actual selection), never by reading config.
+The roster is a versioned text file (one fully-qualified test path per line) under `.auxiliary/configuration/`. CI builds two nextest `-E` expressions from it: an inclusion filter for the flaky leg (`test(<name>)` joined by `or`), an exclusion filter for the gating legs (`not (<inclusion>)`). Verified against nextest 0.9 at this tip: full test names as shown by `nextest list` (module path without binary prefix) are unique across the workspace, and no live-gated name is a substring of any other test name — so plain `test(<full-name>)` matches exactly one test, with no regex anchoring needed. Leaf-only names are forbidden (one leaf collides across two binaries today). The roster check re-verifies uniqueness implicitly: a rename surfaces as a membership/count failure. Generation is mechanical; exactness is proven by `nextest list` output, never asserted from the file.
 
 Alternatives: selecting by `#[ignore]` reason — rejected, the nextest CLI cannot select on the ignore string; moving tests to quarantine files — rejected, churns history and renames break the roster anyway; deleting flaky tests — rejected, coverage loss the reviewers forbid.
 
@@ -47,5 +47,4 @@ Land mechanics + empty roster in one packet (no behavioral gate change; rollback
 
 ## Open Questions
 
-- Exact `-E` exclusion syntax against the installed nextest 0.9 (`not (…)` vs alternatives) — resolved during implementation against `nextest list`, not assumed.
-- Exit status of a zero-match selection — verified during implementation; fallback documented above.
+(none open - resolved during design: the `-E` syntax is plain `test(<full-name>)` joined by `or`, with `not (...)` for exclusion, verified against nextest 0.9; the empty-selection exit code is verified during implementation with a parse-only fallback.)

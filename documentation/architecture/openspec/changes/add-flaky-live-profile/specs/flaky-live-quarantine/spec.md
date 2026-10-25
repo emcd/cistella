@@ -8,21 +8,39 @@ The quarantined live-test set SHALL be enumerated in exactly one versioned roste
 - **THEN** the answer is exactly the roster file's contents at that tip, and CI selection is derived from it
 
 ### Requirement: Disjoint gating and informational sets
-The gating live selection and the informational flaky selection SHALL be disjoint: no live-gated test runs in both tiers at the same tip.
+The gating live selection and the informational flaky selection SHALL be disjoint: no live-gated test runs in both tiers at the same tip. Both selections are computed over the live-gated subset only: a test counts as selected if and only if its `filter-match.status` is `matches` AND its `ignored` flag is true, under the same profile and `--run-ignored=all` invocation as the legs (a roster check that omits the profile or the flag enumerates no live-gated tests and proves nothing).
 
 #### Scenario: No test runs gated and informational simultaneously
 - **WHEN** the roster is resolved into the two nextest `-E` selection expressions at a tip
-- **THEN** their intersection is empty, verified by execution output, not by reading config
+- **THEN** their intersection over the live-gated subset is empty, verified by execution output, not by reading config
+
+### Requirement: Informational selection equals the roster
+The informational selection SHALL equal the roster exactly, in membership and in count. A roster entry that matches nothing (typo, stale path, renamed test) MUST fail the roster check even when the union check would otherwise pass — otherwise a stale entry silently quarantines nothing while claiming coverage is preserved.
+
+#### Scenario: Stale roster entry fails closed
+- **WHEN** the roster contains a path no live-gated test has at the tip
+- **THEN** the informational selection is missing that member, the equality check fails, and the workflow fails loudly instead of running an empty quarantine
 
 ### Requirement: Union covers the live universe
-The union of the gating and informational selections SHALL equal the full live-gated universe (currently 90 tests: 89 in `tests/integration/`, 1 in `tests/unit/lock_teardown.rs`).
+The union of the gating and informational selections SHALL equal the full live-gated universe (currently 90 tests: 89 in `tests/integration/`, 1 in `tests/unit/lock_teardown.rs`), computed over the live-gated subset (filter-match `matches` AND ignored) under the same profile and flags as the legs.
 
 #### Scenario: Roster accounts for every live-gated test
 - **WHEN** `cargo nextest list` enumerates the live profile at the tip
 - **THEN** every listed live test is selected by exactly one of the two tiers, and the counts reconcile (no silent omissions)
 
+### Requirement: Roster format is exactly selectable
+Roster entries SHALL be full test names as shown by `cargo nextest list` (module path without binary prefix, e.g. `transport::transport_harness`). Plain `test(<full-name>)` selection MUST match exactly one test: full names are unique across the workspace and no live-gated name is a substring of any other test name (verified at this tip; re-verified by the roster check, since a collision or rename surfaces as a count or equality failure). Leaf-only names MUST NOT be used: leaf names collide across binaries (e.g. `hello_version_mismatch_refuses` exists in two suites) and partial module qualification does not match.
+
+#### Scenario: Roster entries select exactly one test each
+- **WHEN** the roster is resolved into per-entry `test(<name>)` predicates joined by `or`
+- **THEN** each predicate matches exactly one live-gated test, and the informational selection count equals the roster line count
+
+#### Scenario: Stale or colliding entry fails closed
+- **WHEN** a roster entry matches zero tests (stale path) or more than one test (collision after a rename)
+- **THEN** the membership/count equality check fails and the workflow fails loudly
+
 ### Requirement: Execution proof at the exact tip
-Roster accounting SHALL be proved by execution, not by reading configuration: the CI record must show the selected sets actually running (or explicitly skipped with reason) at the exact tip under review.
+Roster accounting SHALL be proved by execution, not by reading configuration: the CI record must show the selected sets actually running (or explicitly skipped with reason) at the exact tip under review, computed over the live-gated subset under the same profile and `--run-ignored=all` as the legs.
 
 #### Scenario: Selection is demonstrated, not asserted
 - **WHEN** a review packet claims a given roster

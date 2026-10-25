@@ -1,6 +1,6 @@
 ## Why
 
-The live tier fails stochastically on rotating backend interactions (podman/systemd user-manager on CI runners), documented in `issues/17` and confirmed across four branch-CI runs in October 2026. Every failure so far clears in isolation and none repeats deterministically, so the gate cannot distinguish a product regression from backend weather — and re-running to green proves nothing. Coverage cannot simply be deleted either: the flaking tests pin real failure modes. A quarantine tier preserves execution and evidence while restoring a meaningful gate signal.
+The live tier fails stochastically on rotating backend interactions (podman/systemd user-manager on CI runners), documented in `issues/17` and confirmed across branch-CI runs in October 2026. Every failure in that stochastic class clears in isolation and none repeats deterministically — the deterministic orphan failure was a distinct, fixed test bug, not backend weather — so the gate cannot distinguish a product regression from backend weather, and re-running to green proves nothing. Coverage cannot simply be deleted either: the flaking tests pin real failure modes. A quarantine tier preserves execution and evidence while restoring a meaningful gate signal.
 
 ## What Changes
 
