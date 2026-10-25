@@ -22,6 +22,6 @@ The live tier fails stochastically on rotating backend interactions (podman/syst
 
 ## Impact
 
-- `.auxiliary/configuration/`: new roster file + nextest profile; `tester.yaml`: gating `-E` exclusions + informational leg.
+- `.auxiliary/configuration/cistella/test-exclusions.toml`: quarantine roster (`quarantined` array, empty initially) + nextest `flaky` profile; `tester.yaml` and `releaser.yaml`: gating `-E` exclusions + informational flaky leg on all four matrix legs (required roster-check gate in both workflows).
 - No `src/` changes. No product API, CLI, or spec changes.
 - CI signal change (intended): gating legs stop failing on quarantined backend weather; the informational leg surfaces it instead, tracked, never retried to green.
