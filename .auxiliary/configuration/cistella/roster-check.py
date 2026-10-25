@@ -42,7 +42,7 @@ CONFIG = ".auxiliary/configuration/nextest.toml"
 
 def fail(msg):
     print(f"roster-check FAILED: {msg}")
-    raise SystemExit(1)
+    raise SystemExit(msg)
 
 
 # ------------------------------------------------------------------
@@ -360,14 +360,24 @@ def cmd_self_test():
     total = [0]
     failed = []
 
-    def check(name, fn, expect_pass=True):
+    def check(name, fn, expect_pass=True, expect_msg=None):
         total[0] += 1
+        got_msg = None
         try:
             fn()
             result = True
-        except SystemExit:
+        except SystemExit as e:
             result = False
+            got_msg = str(e)
         ok = result == expect_pass
+        if ok and not expect_pass and expect_msg is not None:
+            # The fixture must fail FOR THE STATED REASON, not merely
+            # fail: an incidental later check rejecting the same
+            # input does not prove the mechanism under test.
+            ok = expect_msg in (got_msg or "")
+            if not ok:
+                print(f"    expected failure reason containing: {expect_msg!r}")
+                print(f"    actual failure reason: {got_msg!r}")
         if not ok:
             failed.append(name)
         print(f"{'ok' if ok else 'FAIL'}: {name} -> {'PASS' if result else 'EXIT'}")
@@ -420,11 +430,17 @@ def cmd_self_test():
         lambda: check_predicate_raw("m::t", live("b", "m::t")),
         True,
     )
-    check("predicate-stale", lambda: check_predicate_raw("m::t", set()), False)
+    check(
+        "predicate-stale",
+        lambda: check_predicate_raw("m::t", set()),
+        False,
+        "matches 0 tests in raw set",
+    )
     check(
         "predicate-overmatch",
         lambda: check_predicate_raw("m::t", live("b1", "m::t") | live("b2", "m::t_x")),
         False,
+        "matches 2 tests in raw set",
     )
     check(
         "predicate-ordinary-collision",
@@ -432,17 +448,25 @@ def cmd_self_test():
             "m::t", live("b1", "m::t") | dead("b2", "m::t_extra")
         ),
         False,
+        "matches 2 tests in raw set",
     )
     check(
         "predicate-non-live",
         lambda: check_predicate_raw("m::t", dead("b", "m::t")),
         False,
+        "is not live-eligible",
     )
-    check("predicate-leaf", lambda: check_predicate_raw("t", live("b", "m::t")), False)
+    check(
+        "predicate-leaf",
+        lambda: check_predicate_raw("t", live("b", "m::t")),
+        False,
+        "is not a full test name",
+    )
     check(
         "predicate-cross-binary",
         lambda: check_predicate_raw("m::t", live("b1", "m::t") | live("b2", "m::t")),
         False,
+        "matches 2 tests in raw set",
     )
 
     # -- decide_flaky_exit --
@@ -713,21 +737,29 @@ def cmd_self_test():
     base90 = [I("m::live1"), I("m::live2"), U("m::ord1")]
     check("e2e-empty-roster", lambda: e2e([], base90), True)
     check("e2e-one-entry", lambda: e2e(["m::live1"], base90), True)
-    check("e2e-stale", lambda: e2e(["m::gone"], base90), False)
+    check(
+        "e2e-stale",
+        lambda: e2e(["m::gone"], base90),
+        False,
+        "matches 0 tests in raw set",
+    )
     check(
         "e2e-ordinary-collision",
         lambda: e2e(["m::live1"], base90 + [U("m::live1_extra")]),
         False,
+        "matches 2 tests in raw set",
     )
     check(
         "e2e-duplicate-identities",
         lambda: e2e(["m::live1"], [I("m::live1"), ("bin2", "m::live1", True)]),
         False,
+        "matches 2 tests in raw set",
     )
     check(
         "e2e-default-filter-omission",
         lambda: e2e(["m::live1"], base90, live_df=("m::live2",)),
         False,
+        "union != baseline",
     )
     check(
         "e2e-flaky-only-omission",
@@ -735,6 +767,7 @@ def cmd_self_test():
             ["m::live1"], [I("m::live1"), U("m::ord1")], flaky_df=("m::live1",)
         ),
         False,
+        "does not select exactly itself under -P flaky",
     )
 
     def _e2e_ordinary_loss():
@@ -890,6 +923,7 @@ def cmd_self_test():
         "e2e-ordinary-loss",
         lambda: _e2e_ordinary_loss(),
         False,
+        "gating dropped ordinary tests",
     )
     check(
         "e2e-command-builder-flags",
@@ -908,9 +942,9 @@ def cmd_self_test():
     )
 
     passed = total[0] - len(failed)
-    print(f"self-test OK: {passed} fixtures passed")
     if failed:
         fail(f"self-test failures: {failed}")
+    print(f"self-test OK: {passed} fixtures passed")
 
 
 def main():
