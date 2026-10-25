@@ -77,6 +77,15 @@ jobs:
           set -euo pipefail
           python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
 
+      - name: Prove workflow check identities
+        # REQUIRED gate (tier-1 G1): the required `test` job
+        # always runs the full live-minus-roster selection and
+        # never references a manual filter input; the `audit`
+        # job never references it either.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/releaser.yaml
+
   test:
     needs: [initialize, roster]
     strategy:

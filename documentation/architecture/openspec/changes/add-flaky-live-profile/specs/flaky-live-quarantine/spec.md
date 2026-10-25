@@ -92,6 +92,17 @@ A quarantined test SHALL return to the gating set only when its fix lands with e
 - **WHEN** a quarantined test's root cause is fixed
 - **THEN** reentry cites the fix and the green runs; expiry alone never returns a test
 
+### Requirement: Required-check identity invariance
+The required `test (platform)` check identity SHALL always attest to the complete live-minus-roster selection, regardless of dispatch inputs. A manual `filter` input MUST NOT narrow the required job, and the required job SHALL NOT be skipped on diagnostic dispatches (a skipped required check reports success). Filtered gating subsets SHALL execute only under the distinct `diagnostic (platform)` check identity. A machine check parsing the workflow SHALL enforce this: the required job references no manual input, the diagnostic identity is distinct from every required name, and the audit job references no manual filter.
+
+#### Scenario: Filtered dispatch keeps the gate complete
+- **WHEN** the workflow is dispatched with a manual `filter` (with or without `full_audit`)
+- **THEN** every required `test (platform)` leg still executes the full live-minus-roster selection, and the filtered subset executes only in the `diagnostic (platform)` legs
+
+#### Scenario: Identity violation fails closed
+- **WHEN** the required job references a manual input, is conditional on one, has no distinct diagnostic job while a filter input exists, or the audit job references the filter
+- **THEN** the workflow identity check fails and the run fails loudly before any test executes
+
 ### Requirement: Filter discipline for diagnostics
 Targeted diagnostic runs SHALL use the intended profile/filter combination or `--ignore-default-filter`: a bare `-E` expression MUST NOT silently omit quarantined tests from the intended universe.
 
