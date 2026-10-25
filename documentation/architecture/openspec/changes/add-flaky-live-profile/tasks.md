@@ -16,7 +16,14 @@
 
 ## 3. Verification
 
-- [ ] 3.1 `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `openspec validate --all --strict` clean at the tip
-- [ ] 3.2 Fast suite green; roster proof demonstrated at the exact tip (list output showing disjoint selections covering all 90)
+- [x] 3.1 `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `openspec validate --all --strict` clean at the tip
+- [x] 3.2 Fast suite green; roster proof demonstrated at the exact tip (list output showing disjoint selections covering all 90)
 - [ ] 3.3 Targeted branch CI run green (gating legs unaffected with empty roster; flaky leg passes vacuously)
 - [ ] 3.4 Route the packet through tier-1, then tier-2 (no gate moves in this packet; membership changes are separate per-test packets)
+
+## 4. Tier-2 M8 follow-up (implementation review findings)
+
+- [x] 4.1 Raw-set predicate validation on the full discovered set (ordinary-test collisions cannot hide behind profiles)
+- [x] 4.2 Command-builder pins: baseline bypasses tier/roster/default without a profile; tier listings carry -P and no bypass; execution build flags everywhere
+- [x] 4.3 Backend-free self-test fixtures for all of the above plus decide-flaky anchoring and effective-subset computation; --self-test wired as a required CI step
+- [x] 4.4 Effective diagnostic subset computed in-leg with omitted identities named; full-audit dispatch route implemented and documented

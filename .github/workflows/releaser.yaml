@@ -162,8 +162,8 @@ jobs:
     # tests under the `flaky` profile on the same matrix.
     # Non-gating by construction — failures here are tracked
     # evidence, never a red gate and never retried to green.
-    # Only the test step itself is continue-on-error: setup and
-    # infra failures still fail the run loudly.
+    # The test step itself discriminates infra failures from
+    # test failures (see below); setup failures fail the job.
     needs: [initialize, roster]
     strategy:
       fail-fast: false
@@ -214,6 +214,23 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Resolve effective subset
+        # No manual filter on this workflow: the effective
+        # selection is the roster inclusion, computed with the
+        # leg's own flags. Omitted is always empty here; the
+        # explicit accounting lives in the qa workflow, which
+        # carries the dispatch filter.
+        id: effective
+        run: |
+          set -euo pipefail
+          OUT="$(python3 .auxiliary/configuration/cistella/roster-check.py effective-subset .auxiliary/configuration/cistella/test-exclusions.toml --config-file .auxiliary/configuration/nextest.toml)"
+          echo "$OUT"
+          {
+            echo "filter=$(printf '%s' "$OUT" | sed -n 's/^effective_filter=//p')"
+            echo "empty=$(printf '%s' "$OUT" | sed -n 's/^empty=//p')"
+            echo "omitted=$(printf '%s' "$OUT" | sed -n 's/^omitted=//p')"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Test (flaky profile, informational)
         # Informational leg: test failures are tracked evidence,
         # never a red gate and never retried to green. There is
@@ -226,9 +243,10 @@ jobs:
         env:
           RUST_BACKTRACE: '1'
         run: |
-          FILTER='${{ needs.roster.outputs.inclusion }}'
+          FILTER='${{ steps.effective.outputs.filter }}'
+          echo "effective flaky selection (omitted roster entries: ${{ steps.effective.outputs.omitted }})"
           ARGS=(--release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E "$FILTER" --no-fail-fast)
-          if [ "${{ needs.roster.outputs.empty }}" = "true" ]; then
+          if [ "${{ steps.effective.outputs.empty }}" = "true" ]; then
             ARGS+=(--no-tests pass)
           fi
           # The exit-code + Summary discriminator lives in the
@@ -241,7 +259,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           tail -30 flaky.log
-          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ needs.roster.outputs.empty }}"
+          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ steps.effective.outputs.empty }}"
 
       - name: Upload flaky log
         # The retained audit artifact: full run output for every
