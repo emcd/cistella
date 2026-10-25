@@ -9,7 +9,7 @@
 - [ ] 2.1 Add roster resolution to `tester.yaml`: build inclusion and exclusion `-E` expressions from the roster file
 - [ ] 2.2 Apply the exclusion expression to the gating live legs
 - [ ] 2.3 Add the informational flaky leg (non-gating, runs inclusion expression, failures retained in logs)
-- [ ] 2.4 Add the roster-check step: `nextest list --message-format json` for both selections, fail on intersection or union gaps
+- [ ] 2.4 Add the roster-check step: independent `--ignore-default-filter` baseline by composite identity; per-predicate raw-set validation (exactly one live-eligible identity; reject duplicates/zero/overmatch); informational-equals-roster check; disjointness; union against the full pre-change gating selection (ignored and non-ignored); negative substring-collision and default-filter-omission fixtures
 
 ## 3. Verification
 

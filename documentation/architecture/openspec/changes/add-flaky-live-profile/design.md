@@ -1,6 +1,6 @@
 ## Context
 
-The live tier (89 tests in `tests/integration/`, 1 in `tests/unit/lock_teardown.rs`, all `#[ignore = "live: ..."]`) runs on the four-leg CI matrix via `cargo nextest run -P live --run-ignored=all`. Rotating backend weather (podman/systemd user-manager on hosted runners) fails random tests run to run; every observed failure clears in isolation. The gate therefore cannot distinguish product regressions from backend weather. Prior remediation (capture/diagnostic hardening, ASSUME-shape fixes) removed test-side flakiness but cannot fix the backend. Stakeholders: reviewers (gate authority), operator (merge authority), QA (live evidence).
+The live tier (89 tests in `tests/integration/`, 1 in `tests/unit/lock_teardown.rs`, all `#[ignore = "live: ..."]`) runs on the four-leg CI matrix via `cargo nextest run -P live --run-ignored=all`. Rotating backend weather (podman/systemd user-manager on hosted runners) fails random tests run to run; observed stochastic failures clear in isolation and known harness bugs were corrected, while residual causation for the rotation is unresolved. The gate therefore cannot distinguish product regressions from backend weather. Prior remediation (capture/diagnostic hardening, ASSUME-shape fixes) removed the identified test-side flakiness; backend-attributed reds remain open. Stakeholders: reviewers (gate authority), operator (merge authority), QA (live evidence).
 
 Constraints: no src/ changes; no test deletions; no rerun-to-green; per-test reviewer approval for any gate move; roster proof by execution at the exact tip.
 
@@ -14,7 +14,7 @@ Non-goals: fixing any specific flake (separate per-test work); changing what the
 
 ### 1. Selection by explicit name roster, not by ignore reason
 
-The roster is a versioned text file (one fully-qualified test path per line) under `.auxiliary/configuration/`. CI builds two nextest `-E` expressions from it: an inclusion filter for the flaky leg (`test(<name>)` joined by `or`), an exclusion filter for the gating legs (`not (<inclusion>)`). Verified against nextest 0.9 at this tip: full test names as shown by `nextest list` (module path without binary prefix) are unique across the workspace, and no live-gated name is a substring of any other test name — so plain `test(<full-name>)` matches exactly one test, with no regex anchoring needed. Leaf-only names are forbidden (one leaf collides across two binaries today). The roster check re-verifies uniqueness implicitly: a rename surfaces as a membership/count failure. Generation is mechanical; exactness is proven by `nextest list` output, never asserted from the file.
+The roster is a versioned text file (one full test name per line, exactly as `nextest list` shows it) under `.auxiliary/configuration/`. CI builds two nextest `-E` expressions from it: an inclusion filter for the flaky leg (`test(<name>)` joined by `or`), an exclusion filter for the gating legs (`not (<inclusion>)`). Verified against nextest 0.9 at this tip: full test names as shown by `nextest list` (module path without binary prefix) are unique across the workspace, and no live-gated name is a substring of any other test name — so plain `test(<full-name>)` matches exactly one test, with no regex anchoring needed. Leaf-only names are forbidden (one leaf collides across two binaries today). The roster check re-verifies uniqueness implicitly: a rename surfaces as a membership/count failure. Generation is mechanical; exactness is proven by `nextest list` output, never asserted from the file.
 
 Alternatives: selecting by `#[ignore]` reason — rejected, the nextest CLI cannot select on the ignore string; moving tests to quarantine files — rejected, churns history and renames break the roster anyway; deleting flaky tests — rejected, coverage loss the reviewers forbid.
 
@@ -24,7 +24,7 @@ Alternatives: selecting by `#[ignore]` reason — rejected, the nextest CLI cann
 
 ### 3. Roster proof as a CI step, not a human check
 
-A roster-check step compares `cargo nextest list --message-format json` output for both selections at the exact tip: intersection must be empty, union must equal the full live universe (90 today). Failure fails the workflow loudly. Test renames surface as union gaps, not silent omissions — drift fails closed.
+A roster-check step compares `cargo nextest list --message-format json` output at the exact tip. It first builds the independent baseline with `--ignore-default-filter`, identifying tests by composite identity (binary plus full test name); then it resolves both tier selections under the legs' actual profile and flags. It asserts, in order: (1) each roster predicate matches exactly one composite identity across the raw discovered set, that identity is live-eligible, with duplicates, duplicate lines, zero matches, and overmatches rejected; (2) the informational selection equals the roster in membership and count; (3) the tiers are disjoint; (4) their union plus the preserved ordinary (non-ignored) tests equals the full pre-change gating selection. Failure fails the workflow loudly — the check itself is a required gate, outside any informational continue-on-error boundary. Test renames surface as union gaps, not silent omissions; a default-filter that hides a test surfaces as a baseline mismatch — drift fails closed either way. A negative fixture (a roster-adjacent ordinary-test name that must not match) pins the substring-collision rule; a default-filter-omission fixture pins the baseline independence.
 
 ### 4. Empty initial roster
 
@@ -32,7 +32,7 @@ The mechanics land with zero quarantined tests: gating behavior is bit-identical
 
 ### 5. Informational leg semantics
 
-The flaky leg never gates. Its failures are retained in logs, recorded against the owning issue with run ID and raw output, and never retried to green. Cleanup allowance and diagnostics rules are unchanged from the gating legs.
+The flaky leg never gates — but it runs the full four-leg matrix, so every quarantined test still executes on each formerly covered OS/arch. Platform coverage is preserved by default; a per-test decision may explicitly accept a platform reduction with the same explicit approval as any other coverage delta. The checker and roster proof are required gates outside any informational continue-on-error boundary; only test failures inside explicitly informational executions may be non-gating. Flaky-leg failures are retained in logs, recorded against the owning issue with run ID and raw output, and never retried to green. Cleanup allowance and diagnostics rules are unchanged from the gating legs.
 
 ## Risks / Trade-offs
 
