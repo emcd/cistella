@@ -404,6 +404,11 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
             // the reap, a natural Exited(0) gates the marker
             // observation. Every step is bounded; the verdict
             // below decides once on the collected facts.
+            // Budgets stated plainly: the 30s marker outer bound
+            // is ~9s of actual exec attempts plus the ~21s
+            // remaining-reserve the poll_at preflight holds
+            // back, so attempts stop while the outer bound
+            // still covers a reap.
             let budgets = SigintBudgets {
                 ready: std::time::Duration::from_secs(3),
                 reap: std::time::Duration::from_secs(5),

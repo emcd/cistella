@@ -185,7 +185,14 @@ pub trait SigintOps {
     fn read(&mut self) -> PtyRead;
     fn deliver(&mut self) -> bool;
     fn poll_exit(&mut self) -> Option<super::capture::ChildDisposition>;
-    fn exec_marker(&mut self, iter_end: std::time::Instant) -> MarkerExec;
+    /// One marker-exec attempt. The Instant is the
+    /// observation time — when the caller received the
+    /// outcome — and the driver accepts a `present` only at
+    /// or before the overall marker deadline. Both bounds
+    /// govern: the per-attempt `iter_end` bounds exec
+    /// execution (via run_bounded_at), the overall
+    /// `marker_end` governs evidence acceptance.
+    fn exec_marker(&mut self, iter_end: std::time::Instant) -> (MarkerExec, std::time::Instant);
 }
 
 /// Budgets for one collection run. Tests pass tiny values;
@@ -250,9 +257,14 @@ pub fn run_sigint_collection<O: SigintOps>(ops: &mut O, budgets: &SigintBudgets)
         );
         return facts;
     }
-    // Marker observation against a fixed outer deadline. The
-    // remaining-reserve preflight means no exec starts that
-    // cannot be reaped: exhaustion reads as expiry (no
+    // Marker observation against a fixed outer deadline.
+    // Both bounds govern, stated: each exec runs inside its
+    // per-attempt `iter_end` (remaining-budget composition),
+    // and a `present` is accepted only when observed at or
+    // before the overall `marker_end` — overrun evidence is
+    // refused even from an exec that ran inside its bound.
+    // The remaining-reserve preflight means no exec starts
+    // that cannot be reaped: exhaustion reads as expiry (no
     // marker seen in budget), distinct from an
     // attempted-command failure. Only an exact `absent` is
     // polled again; a `present` verifies.
@@ -263,9 +275,15 @@ pub fn run_sigint_collection<O: SigintOps>(ops: &mut O, budgets: &SigintBudgets)
             facts.marker = MarkerState::AbsentExpired;
             break;
         };
-        match ops.exec_marker(iter_end) {
+        let (outcome, observed_at) = ops.exec_marker(iter_end);
+        match outcome {
             MarkerExec::Present => {
-                facts.marker = MarkerState::Present;
+                if observed_at > marker_end {
+                    eprintln!("sigint marker arrived past its deadline; refusing overrun evidence");
+                    facts.marker = MarkerState::AbsentExpired;
+                } else {
+                    facts.marker = MarkerState::Present;
+                }
                 break;
             }
             MarkerExec::Absent => std::thread::sleep(budgets.marker_interval),
@@ -291,8 +309,11 @@ impl SigintOps for PtySigintOps {
     fn read(&mut self) -> PtyRead {
         let mut buf = vec![0u8; 4096];
         match std::io::Read::read(&mut self.file, &mut buf) {
-            Ok(n) if n > 0 => PtyRead::Data(buf[..n].to_vec()),
-            Ok(_) => PtyRead::WouldBlock,
+            // EOF on the master is terminal for the READY
+            // wait: a closed stream will never deliver READY,
+            // so fail fast instead of polling to the bound.
+            Ok(0) => PtyRead::Eof,
+            Ok(n) => PtyRead::Data(buf[..n].to_vec()),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => PtyRead::WouldBlock,
             Err(_) => PtyRead::Error,
         }
@@ -316,7 +337,7 @@ impl SigintOps for PtySigintOps {
         }
     }
 
-    fn exec_marker(&mut self, iter_end: std::time::Instant) -> MarkerExec {
+    fn exec_marker(&mut self, iter_end: std::time::Instant) -> (MarkerExec, std::time::Instant) {
         let mut cmd = Command::new("podman");
         cmd.args([
             "exec",
@@ -325,14 +346,21 @@ impl SigintOps for PtySigintOps {
             "-c",
             "test -f /tmp/sigint_harness && echo present || echo absent",
         ]);
-        match run_bounded_at(cmd, iter_end) {
+        // The observation time is stamped at consumption: a
+        // `present` consumed past the overall deadline is
+        // overrun evidence, even if the exec itself ran inside
+        // its per-attempt bound. wait_bounded_at attests the
+        // child's exit, not the moment this caller consumes
+        // the result (drain + join can land after iter_end).
+        let outcome = match run_bounded_at(cmd, iter_end) {
             Err(why) => MarkerExec::Failed(format!("exec failed to run: {why:?}")),
             Ok(out) if !out.status.success() => MarkerExec::Failed(format!(
                 "exec refused: {}",
                 String::from_utf8_lossy(&out.stderr)
             )),
             Ok(out) => classify_marker_output(&String::from_utf8_lossy(&out.stdout)),
-        }
+        };
+        (outcome, std::time::Instant::now())
     }
 }
 
@@ -345,7 +373,7 @@ struct ScriptOps {
     reads: Vec<PtyRead>,
     deliver: bool,
     exits: Vec<Option<super::capture::ChildDisposition>>,
-    execs: Vec<MarkerExec>,
+    execs: Vec<(MarkerExec, std::time::Instant)>,
     calls: Vec<&'static str>,
 }
 
@@ -379,7 +407,7 @@ impl SigintOps for ScriptOps {
             .expect("script exhausted: unexpected exit poll")
     }
 
-    fn exec_marker(&mut self, _iter_end: std::time::Instant) -> MarkerExec {
+    fn exec_marker(&mut self, _iter_end: std::time::Instant) -> (MarkerExec, std::time::Instant) {
         self.calls.push("exec");
         self.execs.pop().expect("script exhausted: unexpected exec")
     }
@@ -469,7 +497,8 @@ fn sigint_collection_absent_then_present_passes() {
     ops.reads = vec![PtyRead::Data(b"READY\n".to_vec())];
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
-    ops.execs = vec![MarkerExec::Present, MarkerExec::Absent];
+    let fresh = std::time::Instant::now();
+    ops.execs = vec![(MarkerExec::Present, fresh), (MarkerExec::Absent, fresh)];
     let facts = run_sigint_collection(&mut ops, &test_budgets());
     assert_eq!(facts.marker, MarkerState::Present);
     assert_eq!(
@@ -491,7 +520,8 @@ fn sigint_collection_final_absent_expires() {
     ops.reads = vec![PtyRead::Data(b"READY\n".to_vec())];
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
-    ops.execs = vec![MarkerExec::Absent; 100_000];
+    let fresh = std::time::Instant::now();
+    ops.execs = vec![(MarkerExec::Absent, fresh); 100_000];
     let facts = run_sigint_collection(&mut ops, &budgets);
     assert_eq!(facts.marker, MarkerState::AbsentExpired);
     assert!(!sigint_verdict(&facts));
@@ -506,8 +536,14 @@ fn sigint_collection_unknown_stops_without_second_exec() {
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
     ops.execs = vec![
-        MarkerExec::Present,
-        MarkerExec::Failed("unexpected marker output: \"garbled\"".to_string()),
+        (
+            MarkerExec::Present,
+            std::time::Instant::now() + std::time::Duration::from_secs(3600),
+        ),
+        (
+            MarkerExec::Failed("unexpected marker output: \"garbled\"".to_string()),
+            std::time::Instant::now(),
+        ),
     ];
     let facts = run_sigint_collection(&mut ops, &test_budgets());
     assert_eq!(facts.marker, MarkerState::ExecFailed);
@@ -520,14 +556,41 @@ fn sigint_collection_unknown_stops_without_second_exec() {
 }
 
 #[test]
+fn sigint_collection_late_present_refuses_at_consumption() {
+    // The overrun case, reaching the actual branch: the exec
+    // reports `present`, but the observation instant is past
+    // the overall deadline, so the driver refuses it. No
+    // timing dependence — the observation time is explicit
+    // script data, and the deadline is the same 25s test
+    // budget the passing tests use.
+    let mut ops = ScriptOps::new();
+    ops.reads = vec![PtyRead::Data(b"READY\n".to_vec())];
+    ops.deliver = true;
+    ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
+    ops.execs = vec![(
+        MarkerExec::Present,
+        std::time::Instant::now() + std::time::Duration::from_secs(3600),
+    )];
+    let facts = run_sigint_collection(&mut ops, &test_budgets());
+    assert_eq!(facts.marker, MarkerState::AbsentExpired);
+    assert_eq!(
+        ops.calls.iter().filter(|c| **c == "exec").count(),
+        1,
+        "one exec runs; its late present is refused, not retried"
+    );
+    assert!(!sigint_verdict(&facts));
+}
+
+#[test]
 fn sigint_collection_exec_refused_is_terminal() {
     // Nonzero exec status: terminal, single attempt.
     let mut ops = ScriptOps::new();
     ops.reads = vec![PtyRead::Data(b"READY\n".to_vec())];
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
-    ops.execs = vec![MarkerExec::Failed(
-        "exec refused: exit status: 125".to_string(),
+    ops.execs = vec![(
+        MarkerExec::Failed("exec refused: exit status: 125".to_string()),
+        std::time::Instant::now(),
     )];
     let facts = run_sigint_collection(&mut ops, &test_budgets());
     assert_eq!(facts.marker, MarkerState::ExecFailed);
@@ -548,7 +611,7 @@ fn sigint_collection_past_deadline_refuses_without_exec() {
     ops.reads = vec![PtyRead::Data(b"READY\n".to_vec())];
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
-    ops.execs = vec![MarkerExec::Present];
+    ops.execs = vec![(MarkerExec::Present, std::time::Instant::now())];
     let facts = run_sigint_collection(&mut ops, &budgets);
     assert_eq!(facts.marker, MarkerState::AbsentExpired);
     assert!(
@@ -566,7 +629,7 @@ fn sigint_collection_full_chain_verifies_end_to_end() {
     ops.reads = vec![PtyRead::Data(b"READY\n".to_vec())];
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
-    ops.execs = vec![MarkerExec::Present];
+    ops.execs = vec![(MarkerExec::Present, std::time::Instant::now())];
     let facts = run_sigint_collection(&mut ops, &test_budgets());
     assert!(sigint_verdict(&facts), "complete collected chain verifies");
 }
