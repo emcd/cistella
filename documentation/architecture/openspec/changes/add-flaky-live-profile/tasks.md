@@ -9,7 +9,10 @@
 - [x] 2.1 Add roster resolution to `tester.yaml` AND `releaser.yaml`: build inclusion and exclusion `-E` expressions from the TOML roster (both workflows gate on the live suite today)
 - [x] 2.2 Apply the exclusion expression to the gating live legs
 - [x] 2.3 Add the informational flaky leg (non-gating, runs inclusion expression, failures retained in logs)
-- [x] 2.4 Add the roster-check step: independent `--ignore-default-filter` baseline by composite identity; per-predicate raw-set validation (exactly one live-eligible identity; reject duplicates/zero/overmatch); informational-equals-roster check; disjointness; union against the full pre-change gating selection (ignored and non-ignored); negative substring-collision and default-filter-omission fixtures
+- [x] 2.4 Add the roster-check step: strict TOML parsing; independent `--ignore-default-filter` baseline (no profile) by composite identity; per-predicate verification via real `nextest list -E` under both tier profiles (exactly one live-eligible identity; reject duplicates/zero/overmatch/non-full-name); informational-equals-roster check; disjointness; union against the full pre-change gating selection (ignored and non-ignored); negative substring-collision and default-filter-omission handling
+- [x] 2.5 Add committed backend-free controls (`roster-check.py --self-test`): schema/malformed/duplicate fixtures, stale/overmatch/ordinary-collision/non-live/leaf fixtures
+- [x] 2.6 Prove roster accounting on every matrix leg (gating and flaky, qa and release) before its selections are used
+- [x] 2.7 Flaky leg discriminates completion from infra failure (no continue-on-error; missing Summary fails loud; `--no-tests pass` only on proven-empty roster; `--no-fail-fast`; full log uploaded as artifact); manual dispatch filter intersects both tiers
 
 ## 3. Verification
 
