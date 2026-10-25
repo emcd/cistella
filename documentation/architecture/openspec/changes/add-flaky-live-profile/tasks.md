@@ -30,4 +30,4 @@
 - [x] 4.5 F1: gating suite.log uploaded as artifact with if: always() on both workflows
 - [x] 4.6 F3: recorded argv asserted per production listing call (bypass/profile composition pinned, not just the constructor)
 - [x] 4.7 F4: dead duplicate cmd_effective_subset removed; single implementation retained and tested
-- [ ] 4.8 F2: audit-failure policy decision (operator/advisor call — see packet)
+- [x] 4.8 F2: audit-failure policy decision — honest reds, no advisory status (operator decision 2026-10-25; auditor concurring guidance)

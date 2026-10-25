@@ -201,25 +201,15 @@ jobs:
         # dispatch may pass a `filter` input for one targeted
         # cohort (marker capture for capability-probe tests);
         # empty input is byte-identical to the full gate run.
-        # Full live audit route: dispatch with full_audit=true to
-        # run the complete intended live set on every leg with no
-        # exclusion and no fail-fast, so the executed union is the
-        # whole universe. An audit red fails this run — that is
-        # the honest signal, not a suppression — but audit runs
-        # are manual and informational: they are not merge gates
-        # and change nothing about normal gating policy, which
-        # still excludes quarantined tests. Per-leg logs are
-        # retained as evidence.
         # The exclusion always applies, so quarantined tests
-        # never gate — not even under a manual filter.
+        # never gate — not even under a manual filter. (For a
+        # full live audit, dispatch with full_audit=true and
+        # see the dedicated `audit` job below.)
         env:
           RUST_BACKTRACE: '1'
         run: |
           set -euo pipefail
-          if [ "${{ inputs.full_audit }}" = "true" ]; then
-            echo "full live audit: no exclusion, no fail-fast; every live-gated test executes"
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast 2>&1 | tee suite.log
-          elif [ -n "${{ inputs.filter }}" ]; then
+          if [ -n "${{ inputs.filter }}" ]; then
             cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "( ${{ inputs.filter }} ) and ${{ needs.roster.outputs.exclusion }}" --success-output=immediate 2>&1 | tee suite.log
           else
             cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
@@ -348,3 +338,101 @@ jobs:
         with:
           name: flaky-log-${{ matrix.platform }}
           path: flaky.log
+
+  audit:
+    # Full live audit route (manual dispatch only): runs the
+    # COMPLETE intended live set on every matrix leg with no
+    # quarantine exclusion and no fail-fast, so the executed
+    # union is the whole universe and every live-gated test
+    # actually executes per platform. A red audit run fails
+    # here — that is the honest signal, not a suppression — and
+    # per-leg logs are retained as the audit evidence. This job
+    # has a distinct check name, so audit reds can never be
+    # mistaken for gating reds and never gate a merge: it is
+    # informational by invocation, and normal gating policy is
+    # unchanged (the gating legs still exclude quarantined
+    # tests, and branch protection must not require this job).
+    # Invoke with: gh workflow run tester.yaml --ref <branch>
+    #   -f full_audit=true
+    if: inputs.full_audit == 'true'
+    needs: [initialize, lint, roster]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Prove roster accounting (this leg)
+        # Same required proof as every other leg: the audit runs
+        # the full universe, and this step pins what "full"
+        # means at this tip before anything executes.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+
+      - name: Enable systemd lingering
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install -y podman uidmap
+
+      - name: Verify session prerequisites
+        # Fails the job early with a readable error when the runner
+        # cannot host sessions, instead of one 60s timeout per test.
+        run: |
+          set -eu
+          podman --version
+          systemctl --user is-system-running --wait
+
+      - name: Build example images
+        # Live tests conduct against `localhost/cistella/opencode:example`
+        # and refuse to pull implicitly: the image must exist locally.
+        run: ./data/dockerfiles/validate.sh
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test (full live audit)
+        # The complete intended live set, no exclusion, no
+        # fail-fast: every live-gated test executes on this leg.
+        # A red audit fails here — that is the honest signal, not
+        # a suppression. This job has a distinct check name
+        # ("audit ...") so its reds can never be mistaken for
+        # gating reds, and branch protection must not require it.
+        env:
+          RUST_BACKTRACE: '1'
+        run: |
+          set -euo pipefail
+          echo "full live audit: no exclusion, no fail-fast; every live-gated test executes"
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast 2>&1 | tee audit.log
+          code=${PIPESTATUS[0]}
+          if [ $code -eq 0 ]; then
+            echo "audit leg completed green"
+          else
+            echo "audit leg reports test failures (exit=$code); recorded as evidence, not a gate failure"
+          fi
+          exit $code
+
+      - name: Upload audit log
+        # The retained audit artifact: full run output for every
+        # informational execution, regardless of outcome.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-log-${{ matrix.platform }}
+          path: audit.log
