@@ -8,7 +8,7 @@ The live tier fails stochastically on rotating backend interactions (podman/syst
 - Gating live legs exclude exactly the quarantined set; the flaky leg runs exactly the quarantined set. Selection is by explicit test-name roster with execution proof, not by ignore-reason.
 - A single source of truth for the roster plus accounting rules: gating and informational sets disjoint, union equals the full live universe (currently 90: 89 in `tests/integration/`, 1 in `tests/unit/lock_teardown.rs`).
 - Quarantine criteria and a per-test decision process: quarantine is per-test, evidence-driven, reviewer-approved, with a named owner, issue, and reentry condition. "Move on next flake" is not preapproval; an empty initial set is valid.
-- Initial quarantine set: empty. The orphan deterministic failure has not reproduced since its causal fix (12/12 green targeted executions post-fix); the surgery-staging tests stay gating per reviewer direction until their staging is fixed in place.
+- Initial quarantine set: empty. The orphan deterministic failure has not reproduced since its causal fix (targeted 2/2 green on all four legs across four branch-CI runs at the fix tips; targeted evidence only, not full-live); the surgery-staging tests stay gating per reviewer direction until their staging is fixed in place.
 
 ## Capabilities
 
