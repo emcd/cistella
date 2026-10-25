@@ -59,6 +59,15 @@ jobs:
             echo "empty=$(printf '%s' "$GEN" | sed -n 's/^empty=//p')"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prove test doubles (backend-free controls)
+        # The 40 self-test fixtures pin parsing, predicate
+        # validation, union/disjoint/ordinary rules, filter
+        # generation, and the flaky-leg decision table — without
+        # cargo. New roster-check logic must extend them.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py --self-test
+
       - name: Prove roster accounting
         # Fails loudly on: stale/duplicate/overmatching entries,
         # tier overlap, union gaps, ordinary-test removal. The
@@ -232,7 +241,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           tail -30 flaky.log
-          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --roster-empty '${{ needs.roster.outputs.empty }}'
+          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ needs.roster.outputs.empty }}"
 
       - name: Upload flaky log
         # The retained audit artifact: full run output for every
