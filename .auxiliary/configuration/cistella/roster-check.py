@@ -770,6 +770,55 @@ def cmd_self_test():
         "does not select exactly itself under -P flaky",
     )
 
+    def _e2e_overlap_only():
+        # Gating selection ignores the exclusion: raw, predicate,
+        # and informational checks all pass, so disjointness is
+        # the ONLY failing check.
+        class NoExclusion(FakeLister):
+            def selection(self, profile, filt):
+                if profile == "live":
+                    return {i for i in self._baseline if i[1] not in self.live_df}
+                return super().selection(profile, filt)
+
+        return evaluate(
+            NoExclusion(base90),
+            ["m::live1"],
+            "test(m::live1)",
+            "not (test(m::live1))",
+        )
+
+    check(
+        "e2e-overlap-only",
+        lambda: _e2e_overlap_only(),
+        False,
+        "tiers overlap",
+    )
+
+    def _e2e_informational_mismatch_only():
+        # Flaky selection drops a rostered test while raw and
+        # per-profile predicate checks pass: informational
+        # equality is the ONLY failing check.
+        class DropFlaky(FakeLister):
+            def selection(self, profile, filt):
+                got = super().selection(profile, filt)
+                if profile == "flaky":
+                    got = {i for i in got if i[1] != "m::live1"}
+                return got
+
+        return evaluate(
+            DropFlaky(base90),
+            ["m::live1"],
+            "test(m::live1)",
+            "not (test(m::live1))",
+        )
+
+    check(
+        "e2e-informational-mismatch-only",
+        lambda: _e2e_informational_mismatch_only(),
+        False,
+        "informational selection != roster",
+    )
+
     def _e2e_ordinary_loss():
         # Gating selection drops an ordinary test: preserved
         # check must fail.
