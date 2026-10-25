@@ -282,8 +282,12 @@ jobs:
           cargo nextest run "${ARGS[@]}" 2>&1 | tee flaky.log
           code=${PIPESTATUS[0]}
           set -e
+          # Strip ANSI escapes first: CI prefixes every line and
+          # nextest colorizes the Summary marker itself, so anchors
+          # must run on clean text.
+          sed -i 's/\x1b\[[0-9;]*m//g' flaky.log
           tail -30 flaky.log
-          if ! grep -qE 'Summary \[[ 0-9]' flaky.log; then
+          if ! grep -qE '^ *Summary' flaky.log; then
             echo "flaky leg did not complete (nextest exit=$code): infrastructure/config failure"
             exit 1
           fi
