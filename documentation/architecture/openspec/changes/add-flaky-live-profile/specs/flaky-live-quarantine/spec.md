@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Single roster source of truth
-The quarantined live-test set SHALL be enumerated in exactly one versioned roster file listing full test names as shown by `cargo nextest list` (module path without binary prefix, e.g. `transport::transport_harness`), one per line. No other file may define membership.
+The quarantined live-test set SHALL be enumerated in exactly one versioned roster file: the `quarantined` TOML array in `.auxiliary/configuration/cistella/test-exclusions.toml`, holding full test names as shown by `cargo nextest list` (module path without binary prefix, e.g. `transport::transport_harness`), one string per entry. No other file may define membership.
 
 #### Scenario: Roster is the sole membership authority
 - **WHEN** a reviewer asks which tests are quarantined at a given tip
