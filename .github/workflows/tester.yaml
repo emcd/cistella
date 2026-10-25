@@ -419,10 +419,13 @@ jobs:
         env:
           RUST_BACKTRACE: '1'
         run: |
-          set -euo pipefail
+          set -uo pipefail
           echo "full live audit: no exclusion, no fail-fast; every live-gated test executes"
+          set +e
           cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all --no-fail-fast 2>&1 | tee audit.log
           code=${PIPESTATUS[0]}
+          set -e
+          tail -30 audit.log
           if [ $code -eq 0 ]; then
             echo "audit leg completed green"
           else
