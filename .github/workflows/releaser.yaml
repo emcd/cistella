@@ -29,6 +29,7 @@ jobs:
     outputs:
       inclusion: ${{ steps.filters.outputs.inclusion }}
       exclusion: ${{ steps.filters.outputs.exclusion }}
+      empty: ${{ steps.filters.outputs.empty }}
     steps:
 
       - name: Checkout
@@ -55,6 +56,7 @@ jobs:
           {
             echo "inclusion=$(printf '%s' "$GEN" | sed -n 's/^inclusion=//p')"
             echo "exclusion=$(printf '%s' "$GEN" | sed -n 's/^exclusion=//p')"
+            echo "empty=$(printf '%s' "$GEN" | sed -n 's/^empty=//p')"
           } >> "$GITHUB_OUTPUT"
 
       - name: Prove roster accounting
@@ -64,7 +66,7 @@ jobs:
         # informational leg below may be non-gating.
         run: |
           set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml --profile live
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
 
   test:
     needs: [initialize, roster]
@@ -101,6 +103,16 @@ jobs:
         with:
           tool: cargo-nextest@0.9
 
+
+      - name: Prove roster accounting (this leg)
+        # Required gate on every matrix leg: re-proves the roster
+        # check under this platform before its selections are
+        # used, and retains this platform's evidence. Fails the
+        # job (and the run) on stale/duplicate/overmatching
+        # entries, overlap, union gaps, or ordinary-test removal.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
       - name: Enable systemd lingering
         # Live sessions run under the runner user's systemd user
         # manager; lingering starts it without an active login.
@@ -165,6 +177,16 @@ jobs:
         with:
           tool: cargo-nextest@0.9
 
+
+      - name: Prove roster accounting (this leg)
+        # Required gate on every matrix leg: re-proves the roster
+        # check under this platform before its selections are
+        # used, and retains this platform's evidence. Fails the
+        # job (and the run) on stale/duplicate/overmatching
+        # entries, overlap, union gaps, or ordinary-test removal.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
       - name: Enable systemd lingering
         run: sudo loginctl enable-linger "$USER"
 
@@ -184,14 +206,46 @@ jobs:
         run: cargo build --release --locked
 
       - name: Test (flaky profile, informational)
-        # An empty roster selects zero tests; --no-tests pass
-        # keeps the leg green by construction (the roster check
-        # already proved the set is genuinely empty).
-        continue-on-error: true
+        # Informational leg: test failures are tracked evidence,
+        # never a red gate and never retried to green. There is
+        # deliberately NO continue-on-error here — the step
+        # itself discriminates: it exits non-zero ONLY when the
+        # run did not complete (infrastructure, config-parse,
+        # discovery, or build failure) or when the selection is
+        # unexpectedly empty. Completed runs, green or red, exit
+        # zero; reds are recorded from the retained log below.
         env:
           RUST_BACKTRACE: '1'
         run: |
-          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E '${{ needs.roster.outputs.inclusion }}' --no-tests pass
+          FILTER='${{ needs.roster.outputs.inclusion }}'
+          ARGS=(--release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E "$FILTER" --no-fail-fast)
+          if [ "${{ needs.roster.outputs.empty }}" = "true" ]; then
+            ARGS+=(--no-tests pass)
+          fi
+          set +e
+          cargo nextest run "${ARGS[@]}" 2>&1 | tee flaky.log
+          code=${PIPESTATUS[0]}
+          set -e
+          tail -30 flaky.log
+          if ! grep -qE '^ *Summary' flaky.log; then
+            echo "flaky leg did not complete (nextest exit=$code): infrastructure/config failure"
+            exit 1
+          fi
+          if grep -qE '(^| )0 tests run' flaky.log && [ "${{ needs.roster.outputs.empty }}" != "true" ]; then
+            echo "flaky leg selected zero tests despite a non-empty roster"
+            exit 1
+          fi
+          echo "flaky leg completed (nextest exit=$code); failures are informational and tracked, not gating"
+          exit 0
+
+      - name: Upload flaky log
+        # The retained audit artifact: full run output for every
+        # informational execution, regardless of outcome.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-log-${{ matrix.platform }}
+          path: flaky.log
 
   pre-push:
     # The release workflow is a superset of the qa workflow: in addition
