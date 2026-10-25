@@ -354,7 +354,9 @@ jobs:
     # tests, and branch protection must not require this job).
     # Invoke with: gh workflow run tester.yaml --ref <branch>
     #   -f full_audit=true
-    if: inputs.full_audit == 'true'
+    # (Boolean dispatch inputs arrive as booleans or strings
+    # depending on the caller; accept either spelling.)
+    if: inputs.full_audit == true || inputs.full_audit == 'true'
     needs: [initialize, lint, roster]
     strategy:
       fail-fast: false
