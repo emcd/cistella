@@ -40,3 +40,14 @@ test-group = "user-manager"
 [[profile.live.overrides]]
 filter = "binary(integration)"
 test-group = "user-manager"
+
+# Flaky profile: quarantine tier for live-gated tests with known
+# backend-weather flakiness. Identical execution semantics to `live`
+# (same overrides, same flags); only the `-E` selection differs, drawn
+# from `.auxiliary/configuration/cistella/test-exclusions.toml` by CI.
+# Runs as an informational, non-gating leg — never as the gate.
+[profile.flaky]
+
+[[profile.flaky.overrides]]
+filter = "binary(integration)"
+test-group = "user-manager"
