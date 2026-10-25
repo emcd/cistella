@@ -375,43 +375,93 @@ def split_workflow_jobs(text):
     return {k: "\n".join(v) for k, v in jobs.items()}
 
 
+def normalise_inputs(text):
+    """Rewrite bracket-notation manual inputs to dot notation:
+    inputs['filter'] and inputs["filter"] mean the same as
+    inputs.filter in GitHub expressions, so the gate scans the
+    normalised form and no spelling evades it."""
+    return re.sub(r"inputs\s*\[\s*['\"](\w+)['\"]\s*\]", r"inputs.\1", text)
+
+
+def job_display_template(job_id, block):
+    """Effective check-run name template for a matrix job: a
+    job-level `name:` override (four-space indent, before any
+    step) wins; otherwise GitHub reports `job_id (platform)`."""
+    head = block.split("steps:")[0] if "steps:" in block else block
+    m = re.search(r"^    name:\s*(.+?)\s*$", head, re.M)
+    if m:
+        return m.group(1)
+    if "matrix.platform" in block:
+        return job_id + " (${{ matrix.platform }})"
+    return job_id
+
+
 def check_workflow_identities(text):
     """Pin the required-check identity invariant (tier-1 G1).
     The required `test` job must always execute the full
     live-minus-roster selection: its steps must never reference
-    the manual `inputs.filter`, and its job-level `if:` must
-    never skip on diagnostics (a skipped required check reads
-    as success). The `audit` job must not reference the manual
-    filter either. When the workflow defines a `filter` input,
-    filtered gating diagnostics must live in a distinct job
-    (never under a required name). Raises SystemExit on any
+    ANY manual input (all `inputs.` spellings, normalised), its
+    job-level `if:` must never skip on diagnostics (a skipped
+    required check reads as success), and its nextest selection
+    must positively be exactly the roster exclusion. The
+    `audit` job must not reference any manual filter. When the
+    workflow defines a `filter` input, filtered gating
+    diagnostics must live in a distinct job whose rendered check
+    name collides with no other job. Raises SystemExit on any
     violation."""
+    text = normalise_inputs(text)
     jobs = split_workflow_jobs(text)
     if "test" not in jobs:
         fail("workflow identity: no required `test` job found")
     test_block = jobs["test"]
-    # Job-level `if:` line is the first `if:` before any step.
+    # Job-level `if:` lives before any step.
     head = test_block.split("steps:")[0] if "steps:" in test_block else test_block
-    if "inputs.filter" in head:
+    m = re.search(r"inputs\.(\w+)", head)
+    if m:
         fail(
             "workflow identity: required `test` job is conditional on "
-            "inputs.filter (skipped required checks report success)"
+            f"inputs.{m.group(1)} (skipped required checks report success)"
         )
     # Only scan executable lines: strip `#` comments so prose
     # mentioning the input name cannot trip the gate.
-    code_lines = [ln.split("#", 1)[0] for ln in test_block.splitlines()]
-    if any("inputs.filter" in ln for ln in code_lines):
+    test_code = "\n".join(ln.split("#", 1)[0] for ln in test_block.splitlines())
+    m = re.search(r"inputs\.(\w+)", test_code)
+    if m:
         fail(
             "workflow identity: required `test` job references "
-            "inputs.filter (filtered runs must use the distinct "
+            f"inputs.{m.group(1)} (filtered runs must use the distinct "
             "diagnostic job)"
         )
+    if not re.search(
+        r"-E\s+['\"]\$\{\{\s*needs\.roster\.outputs\.exclusion\s*\}\}['\"]",
+        test_code,
+    ):
+        fail(
+            "workflow identity: required `test` job does not run "
+            "exactly the roster exclusion"
+        )
     if "audit" in jobs:
-        audit_code = [ln.split("#", 1)[0] for ln in jobs["audit"].splitlines()]
-        if any("inputs.filter" in ln for ln in audit_code):
+        audit_block = jobs["audit"]
+        audit_head = (
+            audit_block.split("steps:")[0] if "steps:" in audit_block else audit_block
+        )
+        for name in re.findall(r"inputs\.(\w+)", audit_head):
+            if name != "full_audit":
+                fail(
+                    "workflow identity: `audit` job references "
+                    f"inputs.{name} (audit always runs the complete set)"
+                )
+        audit_steps = (
+            audit_block.split("steps:", 1)[1]
+            if "steps:" in audit_block
+            else audit_block
+        )
+        audit_code = "\n".join(ln.split("#", 1)[0] for ln in audit_steps.splitlines())
+        m = re.search(r"inputs\.(\w+)", audit_code)
+        if m:
             fail(
                 "workflow identity: `audit` job references "
-                "inputs.filter (audit always runs the complete set)"
+                f"inputs.{m.group(1)} (audit always runs the complete set)"
             )
     defines_filter_input = bool(re.search(r"^\s*filter:\s*$", text, re.M))
     if defines_filter_input:
@@ -420,19 +470,24 @@ def check_workflow_identities(text):
                 "workflow identity: workflow defines a `filter` input "
                 "but has no distinct `diagnostic` job"
             )
-        for reserved in ("test", "audit", "flaky", "roster", "lint"):
-            if "diagnostic" == reserved:
-                fail(
-                    "workflow identity: diagnostic job name collides "
-                    "with a required check identity"
-                )
-        diag_code = [ln.split("#", 1)[0] for ln in jobs["diagnostic"].splitlines()]
-        if not any("inputs.filter" in ln for ln in diag_code):
+        diag_code = "\n".join(
+            ln.split("#", 1)[0] for ln in jobs["diagnostic"].splitlines()
+        )
+        if "inputs.filter" not in diag_code:
             fail(
                 "workflow identity: `diagnostic` job does not consume "
                 "inputs.filter (the filtered run lives there, not in "
                 "the required job)"
             )
+        diag_template = job_display_template("diagnostic", jobs["diagnostic"])
+        for other, block in jobs.items():
+            if other == "diagnostic":
+                continue
+            if job_display_template(other, block) == diag_template:
+                fail(
+                    "workflow identity: `diagnostic` check name collides "
+                    f"with `{other}` ({diag_template})"
+                )
 
 
 def cmd_check_workflow(path):
@@ -1088,11 +1143,11 @@ on:
         default: ''
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
     steps:
       - name: Test (live profile)
         run: |
-          cargo nextest run -E 'exclusion' 2>&1 | tee suite.log
+          cargo nextest run -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
   diagnostic:
     if: github.event_name == 'workflow_dispatch' && inputs.filter != ''
     runs-on: ubuntu-latest
@@ -1117,12 +1172,66 @@ jobs:
         "workflow-required-references-filter",
         lambda: check_workflow_identities(
             GOOD_WORKFLOW.replace(
-                "cargo nextest run -E 'exclusion'",
+                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
                 'cargo nextest run -E "( inputs.filter ) and exclusion"',
             )
         ),
         False,
         "required `test` job references inputs.filter",
+    )
+    check(
+        "workflow-required-bracket-step-evades",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
+                "cargo nextest run -E \"( inputs['filter'] ) and exclusion\"",
+            )
+        ),
+        False,
+        "required `test` job references inputs.filter",
+    )
+    check(
+        "workflow-required-bracket-if-evades",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "  test:\n    runs-on:",
+                "  test:\n    if: inputs[\"filter\"] == ''\n    runs-on:",
+            )
+        ),
+        False,
+        "conditional on inputs.filter",
+    )
+    check(
+        "workflow-required-wrong-selection",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
+                "cargo nextest run -E 'something-else'",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-diagnostic-name-collision",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                "  diagnostic:\n    if:",
+                "  diagnostic:\n    name: test (${{ matrix.platform }})\n    if:",
+            )
+        ),
+        False,
+        "check name collides",
+    )
+    check(
+        "workflow-diagnostic-not-consuming",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace("inputs.filter != ''", "inputs.other != ''").replace(
+                "( inputs.filter )", "( inputs.other )"
+            )
+        ),
+        False,
+        "does not consume inputs.filter",
     )
     check(
         "workflow-required-skipped-on-filter",
@@ -1135,6 +1244,7 @@ jobs:
         False,
         "conditional on inputs.filter",
     )
+
     def _without_diagnostic(text):
         out, skip = [], False
         for ln in text.splitlines():

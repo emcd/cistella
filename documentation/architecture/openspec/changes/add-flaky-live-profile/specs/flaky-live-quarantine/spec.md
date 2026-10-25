@@ -93,14 +93,14 @@ A quarantined test SHALL return to the gating set only when its fix lands with e
 - **THEN** reentry cites the fix and the green runs; expiry alone never returns a test
 
 ### Requirement: Required-check identity invariance
-The required `test (platform)` check identity SHALL always attest to the complete live-minus-roster selection, regardless of dispatch inputs. A manual `filter` input MUST NOT narrow the required job, and the required job SHALL NOT be skipped on diagnostic dispatches (a skipped required check reports success). Filtered gating subsets SHALL execute only under the distinct `diagnostic (platform)` check identity. A machine check parsing the workflow SHALL enforce this: the required job references no manual input, the diagnostic identity is distinct from every required name, and the audit job references no manual filter.
+The required `test (platform)` check identity SHALL always attest to the complete live-minus-roster selection, regardless of dispatch inputs. A manual `filter` input MUST NOT narrow the required job, and the required job SHALL NOT be skipped on diagnostic dispatches (a skipped required check reports success). Filtered gating subsets SHALL execute only under the distinct `diagnostic (platform)` check identity. A machine check parsing the workflow SHALL enforce this: the required job references no manual input in any spelling (bracket notation normalised before scanning) and its nextest selection is positively exactly the roster exclusion, the diagnostic rendered check name (job-level `name:` override or `job_id (platform)`) is distinct from every other job's, and the audit job references no manual input outside its `full_audit` gate.
 
 #### Scenario: Filtered dispatch keeps the gate complete
 - **WHEN** the workflow is dispatched with a manual `filter` (with or without `full_audit`)
 - **THEN** every required `test (platform)` leg still executes the full live-minus-roster selection, and the filtered subset executes only in the `diagnostic (platform)` legs
 
 #### Scenario: Identity violation fails closed
-- **WHEN** the required job references a manual input, is conditional on one, has no distinct diagnostic job while a filter input exists, or the audit job references the filter
+- **WHEN** the required job references a manual input in any spelling, is conditional on one, runs a selection other than exactly the roster exclusion, has no distinct diagnostic job while a filter input exists, the diagnostic check name collides with a required name, or the audit job references a manual input
 - **THEN** the workflow identity check fails and the run fails loudly before any test executes
 
 ### Requirement: Filter discipline for diagnostics
