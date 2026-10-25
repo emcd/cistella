@@ -66,8 +66,55 @@ jobs:
         # Cargo.toml's explicit include allowlist before a release tag does.
         run: cargo package
 
+  roster:
+    # Quarantine roster resolution and proof. REQUIRED gate (not
+    # informational): validates the generated selections and
+    # exposes the -E filters. Needs no podman or systemd
+    # (`nextest list` enumerates without executing).
+    needs: [initialize]
+    runs-on: ubuntu-latest
+    outputs:
+      inclusion: ${{ steps.filters.outputs.inclusion }}
+      exclusion: ${{ steps.filters.outputs.exclusion }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Resolve quarantine filters
+        id: filters
+        # Generated from the single-source roster, never
+        # hand-written: the roster-check below proves they mean
+        # what the roster says.
+        run: |
+          set -euo pipefail
+          GEN="$(python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml GENERATE GENERATE)"
+          {
+            echo "inclusion=$(printf '%s' "$GEN" | sed -n 's/^inclusion=//p')"
+            echo "exclusion=$(printf '%s' "$GEN" | sed -n 's/^exclusion=//p')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prove roster accounting
+        # Fails loudly on: stale/duplicate/overmatching entries,
+        # tier overlap, union gaps, ordinary-test removal. The
+        # check itself gates; only test failures in the
+        # informational leg below may be non-gating.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml --profile live
+
   test:
-    needs: [initialize, lint]
+    needs: [initialize, lint, roster]
     strategy:
       fail-fast: false
       matrix:
@@ -121,16 +168,80 @@ jobs:
         # --run-ignored=all`) across the pinned 4-leg matrix
         # (24.04/26.04 × x64/arm): hosted runners satisfy it
         # (systemd user manager plus rootless Podman proven
-        # green on all four legs). A manual dispatch may pass
-        # a `filter` input for one targeted cohort (marker
-        # capture for capability-probe tests); empty input is
-        # byte-identical to the full gate run.
+        # green on all four legs). Quarantined tests are excluded
+        # via the roster-derived filter (empty roster = the
+        # filter matches everything, so the run is
+        # byte-identical to the unfiltered gate). A manual
+        # dispatch may pass a `filter` input for one targeted
+        # cohort (marker capture for capability-probe tests);
+        # empty input is byte-identical to the full gate run.
+        # The exclusion always applies, so quarantined tests
+        # never gate — not even under a manual filter.
         env:
           RUST_BACKTRACE: '1'
         run: |
           set -euo pipefail
+          FILTER='${{ needs.roster.outputs.exclusion }}'
           if [ -n "${{ inputs.filter }}" ]; then
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "${{ inputs.filter }}" --success-output=immediate 2>&1 | tee suite.log
+            FILTER="( ${{ inputs.filter }} ) and $FILTER"
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$FILTER" --success-output=immediate 2>&1 | tee suite.log
           else
-            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
+            cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$FILTER"
           fi
+
+  flaky:
+    # Informational quarantine tier: runs exactly the rostered
+    # tests under the `flaky` profile on the same 4-leg matrix.
+    # Non-gating by construction — failures here are tracked
+    # evidence, never a red gate and never retried to green.
+    # Only the test step itself is continue-on-error: setup and
+    # infra failures still fail the run loudly.
+    needs: [initialize, lint, roster]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Enable systemd lingering
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install -y podman uidmap
+
+      - name: Verify session prerequisites
+        run: |
+          set -eu
+          podman --version
+          systemctl --user is-system-running --wait
+
+      - name: Build example images
+        run: ./data/dockerfiles/validate.sh
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test (flaky profile, informational)
+        # An empty roster selects zero tests; --no-tests pass
+        # keeps the leg green by construction (the roster check
+        # already proved the set is genuinely empty).
+        continue-on-error: true
+        env:
+          RUST_BACKTRACE: '1'
+        run: |
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E '${{ needs.roster.outputs.inclusion }}' --no-tests pass

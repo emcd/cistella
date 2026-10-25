@@ -47,4 +47,4 @@ Land mechanics + empty roster in one packet (no behavioral gate change; rollback
 
 ## Open Questions
 
-(none open - resolved during design: the `-E` syntax is plain `test(<full-name>)` joined by `or`, with `not (...)` for exclusion, verified against nextest 0.9; the empty-selection exit code is verified during implementation with a parse-only fallback.)
+(none open - resolved during design and verified in implementation: the `-E` syntax is plain `test(<full-name>)` joined by `or`, with `not (...)` for exclusion, verified against nextest 0.9; an empty selection runs zero tests and exits 0 via `--no-tests pass`, with the roster check as the proof the set is genuinely empty.)
