@@ -227,7 +227,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           tail -30 flaky.log
-          if ! grep -qE '^ *Summary' flaky.log; then
+          if ! grep -qE 'Summary \[[ 0-9]' flaky.log; then
             echo "flaky leg did not complete (nextest exit=$code): infrastructure/config failure"
             exit 1
           fi
