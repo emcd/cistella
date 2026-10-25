@@ -341,7 +341,7 @@ def main():
         else:
             rest.append(args[i])
             i += 1
-    if len(rest) == 2 and rest[1] == "GENERATE":
+    if rest[1:] == ["GENERATE"] or rest[1:] == ["GENERATE", "GENERATE"]:
         cmd_generate(rest[0])
         return
     if len(rest) != 3:
