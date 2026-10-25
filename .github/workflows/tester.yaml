@@ -204,8 +204,12 @@ jobs:
         # Full live audit route: dispatch with full_audit=true to
         # run the complete intended live set on every leg with no
         # exclusion and no fail-fast, so the executed union is the
-        # whole universe. The audit run's reds are evidence, not
-        # gate failures; per-leg logs are retained.
+        # whole universe. An audit red fails this run — that is
+        # the honest signal, not a suppression — but audit runs
+        # are manual and informational: they are not merge gates
+        # and change nothing about normal gating policy, which
+        # still excludes quarantined tests. Per-leg logs are
+        # retained as evidence.
         # The exclusion always applies, so quarantined tests
         # never gate — not even under a manual filter.
         env:
