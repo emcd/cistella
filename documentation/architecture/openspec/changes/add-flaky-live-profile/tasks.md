@@ -21,7 +21,7 @@
 - [ ] 3.3 Targeted branch CI run green (gating legs unaffected with empty roster; flaky leg passes vacuously)
 - [ ] 3.4 Route the packet through tier-1, then tier-2 (no gate moves in this packet; membership changes are separate per-test packets)
 
-## 4. Tier-2 M8 follow-up (implementation review findings)
+## 4. R1-R3 follow-up (tier-2 M1-M4 implementation review findings and tier-1 F1-F4)
 
 - [x] 4.1 Raw-set predicate validation on the full discovered set (ordinary-test collisions cannot hide behind profiles)
 - [x] 4.2 Command-builder pins: baseline bypasses tier/roster/default without a profile; tier listings carry -P and no bypass; execution build flags everywhere

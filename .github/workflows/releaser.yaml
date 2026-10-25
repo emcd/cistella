@@ -155,7 +155,17 @@ jobs:
         # so the run is byte-identical to the unfiltered gate).
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}'
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
+
+      - name: Upload gating log
+        # The retained audit artifact for the gating tier: full
+        # run output for every matrix leg, regardless of outcome,
+        # mirroring the flaky-leg upload below.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-log-${{ matrix.platform }}
+          path: suite.log
 
   flaky:
     # Informational quarantine tier: runs exactly the rostered

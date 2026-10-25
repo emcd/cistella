@@ -266,17 +266,19 @@ class Lister:
         self.config = config
         self.calls = []
 
+    def _run(self, profile, filt, bypass):
+        argv = list_argv(self.config, profile, filt, bypass)
+        self.calls.append(argv)
+        return run_nextest_list(self.config, profile, filt, bypass)
+
     def baseline(self):
-        self.calls.append(("baseline",))
-        return run_nextest_list(self.config, None, None, True)
+        return self._run(None, None, True)
 
     def selection(self, profile, filt):
-        self.calls.append(("selection", profile, filt))
-        return run_nextest_list(self.config, profile, filt, False)
+        return self._run(profile, filt, False)
 
     def predicate(self, profile, name):
-        self.calls.append(("predicate", profile, name))
-        return run_nextest_list(self.config, profile, f"test({name})", False)
+        return self._run(profile, f"test({name})", False)
 
 
 def evaluate(lister, names, inclusion, exclusion):
@@ -486,6 +488,41 @@ def cmd_self_test():
         lambda: D(4, True, False, False)[0] and _fail(),
         True,
     )
+    check(
+        "decide-spoofed-summary-uses-final",
+        lambda: find_final_summary(
+            "some output\nSummary [ 0.1s] 3 passed\ntail line\n"
+            "flaky (x) Test 2026 Z Summary [  0.2s] 5 tests run: 3 passed, 2 failed\n"
+        )
+        == (True, False)
+        or _fail(),
+        True,
+    )
+    check(
+        "decide-spoof-only-has-no-summary",
+        lambda: find_final_summary("some output\nno marker here\ntail\n")
+        == (False, False)
+        or _fail(),
+        True,
+    )
+    check(
+        "decide-zero-read-from-final-line",
+        lambda: find_final_summary(
+            "Summary [ 0.1s] 7 tests run\nflaky (x) Test Z Summary [  0.0s] 0 tests run: 0 passed\n"
+        )
+        == (True, True)
+        or _fail(),
+        True,
+    )
+    check(
+        "decide-ansi-stripped-before-match",
+        lambda: find_final_summary(
+            "flaky (x) Test\x1b[33;1m     Summary\x1b[0m [  0.1s] 1 tests run: 1 passed\n"
+        )
+        == (True, False)
+        or _fail(),
+        True,
+    )
 
     # -- filters_for --
     check(
@@ -592,7 +629,10 @@ def cmd_self_test():
         """Canned discovery/selection. Selection honors the
         generated -E shape closely enough to prove the
         orchestration: exact full-name test() predicates over
-        the raw set, then per-profile projection."""
+        the raw set, then per-profile projection. Records the
+        exact argv each call would have used, so the
+        bypass/profile/build-flag composition is pinned, not
+        just the boolean outcome."""
 
         def __init__(self, baseline, live_default_filter=(), flaky_default_filter=()):
             self._baseline = set(baseline)
@@ -607,11 +647,11 @@ def cmd_self_test():
             return {(b, t, ign) for (b, t, ign) in idents if name in t}
 
         def baseline(self):
-            self.recorded.append(("baseline",))
+            self.recorded.append(list_argv("C.toml", None, None, True))
             return set(self._baseline)
 
         def predicate(self, profile, name):
-            self.recorded.append(("predicate", profile, name))
+            self.recorded.append(list_argv("C.toml", profile, f"test({name})", False))
             pool = {
                 i
                 for i in self._baseline
@@ -620,7 +660,7 @@ def cmd_self_test():
             return self._predicate_match(name, pool)
 
         def selection(self, profile, filt):
-            self.recorded.append(("selection", profile, filt))
+            self.recorded.append(list_argv("C.toml", profile, filt, False))
             import re as _re
 
             pats = _re.findall(r"test\(([^)]+)\)", filt)
@@ -640,11 +680,16 @@ def cmd_self_test():
 
     def run_eval(names, baseline, inclusion, exclusion, live_df=(), flaky_df=()):
         fl = FakeLister(baseline, live_df, flaky_df)
-        return evaluate(fl, names, inclusion, exclusion)
+        out = evaluate(fl, names, inclusion, exclusion)
+        return fl, out
 
     def e2e(names, baseline, live_df=(), flaky_df=()):
         inc, exc = filters_for(names)
-        return run_eval(names, baseline, inc, exc, live_df, flaky_df)
+        fl, _ = run_eval(names, baseline, inc, exc, live_df, flaky_df)
+        return fl
+
+    def has_flag(calls, want, without):
+        return any(want in c and all(x not in c for x in without) for c in calls)
 
     base90 = [I("m::live1"), I("m::live2"), U("m::ord1")]
     check("e2e-empty-roster", lambda: e2e([], base90), True)
@@ -699,6 +744,41 @@ def cmd_self_test():
         assert "--release" in got and "--locked" in got, got
         return True
 
+    def _e2e_argv_pinned_per_call_site():
+        # F3: the recorded argv of every listing call proves the
+        # bypass/profile composition — baseline bypasses without
+        # -P; tier listings carry -P and no bypass. Mutating any
+        # of these (e.g. adding --ignore-default-filter to a
+        # tier, or -P to the baseline) must fail here.
+        fl = FakeLister(base90)
+        inc, exc = filters_for(["m::live1"])
+        evaluate(fl, ["m::live1"], inc, exc)
+        by_kind = {}
+        for argv in fl.recorded:
+            assert argv[:5] == [
+                "cargo",
+                "nextest",
+                "list",
+                "--config-file",
+                "C.toml",
+            ], argv
+            assert "--release" in argv and "--locked" in argv, argv
+            assert argv[-2:] == ["--message-format", "json"], argv
+            assert argv.count("--run-ignored=all") == 1, argv
+            if (
+                argv[-4] == "--ignore-default-filter"
+                or "--ignore-default-filter" in argv
+            ):
+                assert "-P" not in argv, argv
+                by_kind.setdefault("baseline", []).append(argv)
+            else:
+                assert "-P" in argv, argv
+                by_kind.setdefault("tier", []).append(argv)
+        assert by_kind.get("baseline"), "baseline listing missing"
+        assert len(by_kind.get("tier", [])) >= 3, by_kind.keys()
+        # tier calls are exactly: 2 predicate checks + 2 selection checks
+        return True
+
     check(
         "e2e-ordinary-loss",
         lambda: _e2e_ordinary_loss(),
@@ -707,6 +787,11 @@ def cmd_self_test():
     check(
         "e2e-command-builder-flags",
         lambda: _e2e_command_builder_flags(),
+        True,
+    )
+    check(
+        "e2e-argv-pinned-per-call-site",
+        lambda: _e2e_argv_pinned_per_call_site(),
         True,
     )
 
@@ -781,26 +866,6 @@ def cmd_generate(roster_path):
     print(f"inclusion={inclusion}")
     print(f"exclusion={exclusion}")
     print(f"empty={'true' if not names else 'false'}")
-
-
-def cmd_effective_subset(roster_path, manual, config):
-    """Resolve the flaky leg's effective selection: roster
-    inclusion intersected with an optional manual dispatch
-    filter, evaluated with the leg's actual flags. Prints the
-    effective filter, whether it selects anything, and which
-    rostered identities the manual filter omitted (explicit
-    omission accounting)."""
-    with open(roster_path, "rb") as f:
-        names = parse_roster(f.read().decode("utf-8"), roster_path)
-    inclusion, _ = filters_for(names)
-    effective = effective_flaky_filter(inclusion, manual)
-    selected = run_nextest_list(config, "flaky", effective, False)
-    selected_names = sorted({t for _, t, _ in selected})
-    omitted = sorted(n for n in names if n not in selected_names)
-    print(f"effective_filter={effective}")
-    print(f"empty={'true' if not selected else 'false'}")
-    print(f"omitted={','.join(omitted)}")
-    print(f"selected={len(selected)}")
 
 
 def cmd_effective_subset(roster_path, manual, config):
