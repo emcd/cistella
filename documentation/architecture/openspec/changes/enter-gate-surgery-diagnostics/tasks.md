@@ -1,8 +1,9 @@
 ## 1. Poll record and history
 
-- [ ] 1.1 Extend `live_identity` to return capped escaped stdout AND stderr plus exit/signal/timeout disposition; keep raw StartedAt intact
+- [ ] 1.1 Extend `live_identity` to return per-command start/end monotonic offsets and query order, capped escaped stdout AND stderr, plus exit/signal/timeout disposition; keep raw StartedAt intact
 - [ ] 1.2 Add per-poll `podman container exists` probe with the same bounded allowance; record its 0/1/125 code next to the inspect outcome
 - [ ] 1.3 Retain first-anomaly time, outcome counts/transitions, and bounded first/last N poll records in `wait_landed_incarnation`; report all in the bound panic
+- [ ] 1.4 Capture the bounded pre-surgery baseline (bound pair, one inspect+exists outcome pair, one `systemctl --user show` snapshot) before the surgery command
 
 ## 2. Timeout post-mortem
 
@@ -17,6 +18,6 @@
 
 ## 4. Pins and validation
 
-- [ ] 4.1 Add backend-free taxonomy fixtures to `roster-check.py --self-test` (exists codes, stderr shapes, truncation/timeout markers)
+- [ ] 4.1 Add backend-free taxonomy fixtures to `roster-check.py --self-test` (exists codes, unqueryable labeling with no absence aggregation, stderr shapes, truncation/timeout markers, original-verdict retention)
 - [ ] 4.2 `cargo fmt`, `clippy`, `openspec validate --all --strict` clean; self-test green; `git diff --check` clean
 - [ ] 4.3 Route the packet through tier-1, then tier-2 (diagnostics only; no verdict, roster, workflow, or product changes)
