@@ -258,7 +258,9 @@ fn changed_identity_with_small_remaining_budget_lands() {
     // surgery 1, t0 1, iter1 check+poll 6).
     let mut steps = vec![Duration::ZERO; 12];
     steps.extend_from_slice(&[Duration::from_secs(40), Duration::ZERO]);
-    let clock = ManualClock::scripted(steps, Duration::ZERO);
+    // Fallback advances: a landing regression times out
+    // instead of hanging a frozen clock.
+    let clock = ManualClock::scripted(steps, Duration::from_secs(1));
     let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
     let (surgery, maybe_evidence) =
         run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
@@ -304,7 +306,9 @@ fn changed_identity_past_deadline_is_rejected() {
     // the recheck observes the jumped clock.
     let mut steps = vec![Duration::ZERO; 16];
     steps.extend_from_slice(&[Duration::from_secs(70), Duration::ZERO]);
-    let clock = ManualClock::scripted(steps, Duration::ZERO);
+    // Fallback advances: any path that stops landing still
+    // reaches the timeout verdict instead of hanging.
+    let clock = ManualClock::scripted(steps, Duration::from_secs(1));
     let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
@@ -462,4 +466,62 @@ fn probe_reserve_matches_bounded_allowances() {
     // The composition stays honest only while the
     // reserve equals the harness cleanup allowances.
     assert_eq!(PROBE_RESERVE, REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT);
+}
+
+#[test]
+fn spawn_error_survives_through_actual_report() {
+    // The spawn error text must reach the rendered
+    // report, not be collapsed into a bare failure class.
+    let runner = FakeRunner::new(vec![Err(BoundedRunError::Spawn(
+        "no daemon: connection refused".to_string(),
+    ))]);
+    let clock = ManualClock::new(Duration::ZERO);
+    let out = run_diagnostic(
+        &runner,
+        &clock,
+        vec!["podman".to_string()],
+        "probe",
+        clock.now() + Duration::from_secs(60),
+        Duration::from_secs(5),
+        diag::RENDER_CAP,
+    );
+    assert!(out.contains("no daemon: connection refused"), "{out}");
+    assert!(out.contains("SpawnFailed"), "{out}");
+}
+
+#[test]
+fn wait_detail_survives_through_actual_report() {
+    // waited=/reaped= detail and partials must reach the
+    // rendered report, not be dropped beside the label.
+    let runner = FakeRunner::new(vec![timeout_with("partial-out", "partial-err")]);
+    let clock = ManualClock::new(Duration::ZERO);
+    let out = run_diagnostic(
+        &runner,
+        &clock,
+        vec!["podman".to_string()],
+        "probe",
+        clock.now() + Duration::from_secs(60),
+        Duration::from_secs(5),
+        diag::RENDER_CAP,
+    );
+    assert!(out.contains("timed out after 5s"), "{out}");
+    assert!(out.contains("reaped=true"), "{out}");
+    assert!(out.contains("partial-out"), "{out}");
+    assert!(out.contains("partial-err"), "{out}");
+}
+
+#[test]
+fn signaled_probe_keeps_disposition_and_status() {
+    // A signalled child is neither an exit code nor an
+    // absence: the disposition and raw wait status survive.
+    use std::os::unix::process::ExitStatusExt;
+    let outcome = diag::split_outcome(Ok(Output {
+        status: std::process::ExitStatus::from_raw(9),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    }));
+    assert_eq!(outcome.end, diag::ProbeEnd::Signaled);
+    let rendered = diag::render_outcome("probe", &outcome, diag::RENDER_CAP);
+    assert!(rendered.contains("Signaled"), "{rendered}");
+    assert!(rendered.contains('9'), "{rendered}");
 }
