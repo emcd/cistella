@@ -18,8 +18,8 @@
 
 - [x] 3.1 `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `openspec validate --all --strict` clean at the tip
 - [x] 3.2 Fast suite green; roster proof demonstrated at the exact tip (list output showing disjoint selections covering all 90)
-- [ ] 3.3 Targeted branch CI run green (gating legs unaffected with empty roster; flaky leg passes vacuously)
-- [ ] 3.4 Route the packet through tier-1, then tier-2 (no gate moves in this packet; membership changes are separate per-test packets)
+- [x] 3.3 Targeted branch CI run green (gating legs unaffected with empty roster; flaky leg passes vacuously) — administrative close-out; evidenced by the dispatch-matrix green legs in the review record
+- [x] 3.4 Route the packet through tier-1, then tier-2 (no gate moves in this packet; membership changes are separate per-test packets) — administrative close-out; routing occurred per the review record
 
 ## 4. R1-R3 follow-up (tier-2 M1-M4 implementation review findings and tier-1 F1-F4)
 
