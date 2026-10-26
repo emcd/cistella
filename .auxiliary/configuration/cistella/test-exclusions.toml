@@ -1,0 +1,18 @@
+# Flaky live-test quarantine roster: the single source of truth for
+# which live-gated tests run in the informational tier instead of
+# the gating tier.
+#
+# Entries are full test names exactly as `cargo nextest list` shows
+# them (module path without binary prefix). One string per array
+# element; `#` lines are comments. The roster check derives both
+# CI filters from this file and proves disjointness, roster
+# equality, and union against the independent baseline — see the
+# add-flaky-live-profile change proposal.
+#
+# Empty (no entries) means no quarantined tests: gating behavior
+# is bit-identical to today. Every entry requires an approved
+# per-test decision row (property, failure evidence, attribution,
+# coverage delta, owner, issue, reentry condition).
+quarantined = [
+  # (empty)
+]

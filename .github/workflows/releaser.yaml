@@ -19,8 +19,75 @@ jobs:
   initialize:
     uses: ./.github/workflows/core--initializer.yaml
 
-  test:
+  roster:
+    # Quarantine roster resolution and proof. REQUIRED gate (not
+    # informational): validates the generated selections and
+    # exposes the -E filters. Needs no podman or systemd
+    # (`nextest list` enumerates without executing).
     needs: [initialize]
+    runs-on: ubuntu-latest
+    outputs:
+      inclusion: ${{ steps.filters.outputs.inclusion }}
+      exclusion: ${{ steps.filters.outputs.exclusion }}
+      empty: ${{ steps.filters.outputs.empty }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Resolve quarantine filters
+        id: filters
+        # Generated from the single-source roster, never
+        # hand-written: the roster check below proves they mean
+        # what the roster says.
+        run: |
+          set -euo pipefail
+          GEN="$(python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml GENERATE GENERATE)"
+          {
+            echo "inclusion=$(printf '%s' "$GEN" | sed -n 's/^inclusion=//p')"
+            echo "exclusion=$(printf '%s' "$GEN" | sed -n 's/^exclusion=//p')"
+            echo "empty=$(printf '%s' "$GEN" | sed -n 's/^empty=//p')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prove test doubles (backend-free controls)
+        # The 40 self-test fixtures pin parsing, predicate
+        # validation, union/disjoint/ordinary rules, filter
+        # generation, and the flaky-leg decision table — without
+        # cargo. New roster-check logic must extend them.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py --self-test
+
+      - name: Prove roster accounting
+        # Fails loudly on: stale/duplicate/overmatching entries,
+        # tier overlap, union gaps, ordinary-test removal. The
+        # check itself gates; only test failures in the
+        # informational leg below may be non-gating.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+
+      - name: Prove workflow check identities
+        # REQUIRED gate (tier-1 G1): the required `test` job
+        # always runs the full live-minus-roster selection and
+        # never references a manual filter input; the `audit`
+        # job never references it either.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/releaser.yaml
+
+  test:
+    needs: [initialize, roster]
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +121,16 @@ jobs:
         with:
           tool: cargo-nextest@0.9
 
+
+      - name: Prove roster accounting (this leg)
+        # Required gate on every matrix leg: re-proves the roster
+        # check under this platform before its selections are
+        # used, and retains this platform's evidence. Fails the
+        # job (and the run) on stale/duplicate/overmatching
+        # entries, overlap, union gaps, or ordinary-test removal.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
       - name: Enable systemd lingering
         # Live sessions run under the runner user's systemd user
         # manager; lingering starts it without an active login.
@@ -82,9 +159,135 @@ jobs:
         # unproven ground for systemd user sessions plus rootless
         # Podman, so the authoritative live gate stays the host
         # pre-push hook until a self-hosted runner exists.
+        # Quarantined tests are excluded via the roster-derived
+        # filter (empty roster = the filter matches everything,
+        # so the run is byte-identical to the unfiltered gate).
         env:
           RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all
+        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
+
+      - name: Upload gating log
+        # The retained audit artifact for the gating tier: full
+        # run output for every matrix leg, regardless of outcome,
+        # mirroring the flaky-leg upload below.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-log-${{ matrix.platform }}
+          path: suite.log
+
+  flaky:
+    # Informational quarantine tier: runs exactly the rostered
+    # tests under the `flaky` profile on the same matrix.
+    # Non-gating by construction — failures here are tracked
+    # evidence, never a red gate and never retried to green.
+    # The test step itself discriminates infra failures from
+    # test failures (see below); setup failures fail the job.
+    needs: [initialize, roster]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+
+      - name: Prove roster accounting (this leg)
+        # Required gate on every matrix leg: re-proves the roster
+        # check under this platform before its selections are
+        # used, and retains this platform's evidence. Fails the
+        # job (and the run) on stale/duplicate/overmatching
+        # entries, overlap, union gaps, or ordinary-test removal.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+      - name: Enable systemd lingering
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install -y podman uidmap
+
+      - name: Verify session prerequisites
+        run: |
+          set -eu
+          podman --version
+          systemctl --user is-system-running --wait
+
+      - name: Build example images
+        run: ./data/dockerfiles/validate.sh
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Resolve effective subset
+        # No manual filter on this workflow: the effective
+        # selection is the roster inclusion, computed with the
+        # leg's own flags. Omitted is always empty here; the
+        # explicit accounting lives in the qa workflow, which
+        # carries the dispatch filter.
+        id: effective
+        run: |
+          set -euo pipefail
+          OUT="$(python3 .auxiliary/configuration/cistella/roster-check.py effective-subset .auxiliary/configuration/cistella/test-exclusions.toml --config-file .auxiliary/configuration/nextest.toml)"
+          echo "$OUT"
+          {
+            echo "filter=$(printf '%s' "$OUT" | sed -n 's/^effective_filter=//p')"
+            echo "empty=$(printf '%s' "$OUT" | sed -n 's/^empty=//p')"
+            echo "omitted=$(printf '%s' "$OUT" | sed -n 's/^omitted=//p')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Test (flaky profile, informational)
+        # Informational leg: test failures are tracked evidence,
+        # never a red gate and never retried to green. There is
+        # deliberately NO continue-on-error here — the step
+        # itself discriminates: it exits non-zero ONLY when the
+        # run did not complete (infrastructure, config-parse,
+        # discovery, or build failure) or when the selection is
+        # unexpectedly empty. Completed runs, green or red, exit
+        # zero; reds are recorded from the retained log below.
+        env:
+          RUST_BACKTRACE: '1'
+        run: |
+          FILTER='${{ steps.effective.outputs.filter }}'
+          echo "effective flaky selection (omitted roster entries: ${{ steps.effective.outputs.omitted }})"
+          ARGS=(--release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E "$FILTER" --no-fail-fast)
+          if [ "${{ steps.effective.outputs.empty }}" = "true" ]; then
+            ARGS+=(--no-tests pass)
+          fi
+          # The exit-code + Summary discriminator lives in the
+          # tested roster-check classifier (see --self-test), not
+          # in shell one-liners: informational test failures pass,
+          # anything else (infra/config/discovery/build failure,
+          # unexpected empty selection) fails the step loudly.
+          set +e
+          cargo nextest run "${ARGS[@]}" 2>&1 | tee flaky.log
+          code=${PIPESTATUS[0]}
+          set -e
+          tail -30 flaky.log
+          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ steps.effective.outputs.empty }}"
+
+      - name: Upload flaky log
+        # The retained audit artifact: full run output for every
+        # informational execution, regardless of outcome.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-log-${{ matrix.platform }}
+          path: flaky.log
 
   pre-push:
     # The release workflow is a superset of the qa workflow: in addition
