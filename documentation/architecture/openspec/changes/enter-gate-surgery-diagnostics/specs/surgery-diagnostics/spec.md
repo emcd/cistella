@@ -55,6 +55,11 @@ The diagnostic work SHALL be composed of explicit phases: a bounded pre-surgery 
 - **WHEN** the landing timeout fires and the post-mortem commands cannot all start or complete inside D
 - **THEN** each missing, unscheduled, or timed-out diagnostic is reported as such and the original timeout remains the verdict
 
+#### Scenario: Late changed identity is rejected, not landed
+
+- **WHEN** a changed pairing is observed at or past the W deadline
+- **THEN** the observation is recorded with a late marker and does not count as a landing; the wait times out instead
+
 ### Requirement: One heavy post-mortem on the timeout path
 
 On the timeout path only, inside allowance D and before Guard cleanup, the collector SHALL capture exactly once: `systemctl --user show` machine-readable unit properties (LoadState, ActiveState, SubState, Result, ExecMainCode, ExecMainStatus, NRestarts, InvocationID, StartLimit settings, actual Restart/SuccessExitStatus, monotonic state-change times, main/control PIDs), `podman ps -a` filtered to the test container name and known container ID, and a bounded unit journal slice from the recorded pre-surgery walltime/cursor. The collector SHALL perform no reset-failed, restart, relaunch, prune, gc, lock acquisition, or serialization. Snapshot properties and journal slices support hypotheses; they do not by themselves prove which actor removed a container, and any remaining alternatives are recorded as unresolved with limits.

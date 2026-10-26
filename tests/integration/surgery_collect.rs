@@ -88,6 +88,7 @@ pub struct SurgeryBaseline {
 /// Evidence retained across a successful landing for later
 /// failures to read against (context only — verdicts
 /// unchanged).
+#[derive(Debug)]
 pub struct LandingEvidence {
     pub history_report: String,
     pub baseline_report: String,
@@ -108,13 +109,22 @@ pub fn run_diagnostic<R: ProbeRunner, C: Clock>(
     stream_cap: usize,
 ) -> String {
     let now = clock.now();
-    let Some(deadline) = diag::probe_window(now, phase_deadline, allowance, PROBE_RESERVE) else {
+    let Some((deadline, granted)) =
+        diag::probe_window(now, phase_deadline, allowance, PROBE_RESERVE)
+    else {
         return diag::render_cmd_evidence(label, "MISSING: phase budget exhausted");
     };
-    let label_owned = format!("{label} +{:?}", allowance);
+    let label_owned = format!("{label} +{granted:?}");
     let outcome = diag::split_outcome(runner.run(&argv[..], deadline));
     if outcome.end == diag::ProbeEnd::TimedOut {
-        return diag::render_cmd_evidence(&label_owned, &diag::timeout_mark("probe", allowance));
+        return diag::render_cmd_evidence(
+            &label_owned,
+            &format!(
+                "{} {}",
+                diag::timeout_mark("probe", granted),
+                diag::render_outcome_body(&outcome, stream_cap),
+            ),
+        );
     }
     diag::render_outcome(&label_owned, &outcome, stream_cap)
 }
@@ -156,6 +166,9 @@ pub fn capture_baseline<R: ProbeRunner, C: Clock>(
         BASELINE_PROBE,
         diag::RENDER_CAP,
     ));
+    // The show output carries sixteen selected properties:
+    // render with the post-mortem cap, one property per
+    // escaped line, so no property is truncated away.
     parts.push(run_diagnostic(
         runner,
         clock,
@@ -163,7 +176,7 @@ pub fn capture_baseline<R: ProbeRunner, C: Clock>(
         &format!("systemctl --user show {unit}"),
         b_deadline,
         BASELINE_PROBE,
-        diag::RENDER_CAP,
+        POSTMORTEM_STREAM_CAP,
     ));
     SurgeryBaseline {
         epoch_secs,
@@ -197,15 +210,25 @@ pub fn collect_postmortem<R: ProbeRunner, C: Clock>(
         POSTMORTEM_PROBE,
         POSTMORTEM_STREAM_CAP,
     ));
-    parts.push(run_diagnostic(
-        runner,
-        clock,
-        diag::ps_argv(container),
-        &format!("podman ps -a name={container} (id match checked below)"),
-        d_deadline,
-        POSTMORTEM_PROBE,
-        POSTMORTEM_STREAM_CAP,
-    ));
+    let ps_argv = diag::ps_argv(container);
+    let ps_label = format!("podman ps -a name={container}");
+    match diag::probe_window(clock.now(), d_deadline, POSTMORTEM_PROBE, PROBE_RESERVE) {
+        Some((deadline, _granted)) => {
+            let outcome = diag::split_outcome(runner.run(&ps_argv, deadline));
+            let matched = diag::ps_id_present(&outcome.stdout, bound_id);
+            parts.push(diag::render_cmd_evidence(
+                &format!("{ps_label} +{:?}", POSTMORTEM_PROBE),
+                &format!(
+                    "bound-id-in-listing={matched} {}",
+                    diag::render_outcome_body(&outcome, POSTMORTEM_STREAM_CAP),
+                ),
+            ));
+        }
+        None => parts.push(diag::render_cmd_evidence(
+            &ps_label,
+            "MISSING: phase budget exhausted",
+        )),
+    }
     parts.push(run_diagnostic(
         runner,
         clock,
@@ -245,20 +268,32 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
     // Inspect probe.
     let inspect_start = clock.now();
     let inspect_start_ms = offsets(inspect_start);
-    let inspect_outcome =
-        diag::probe_window(inspect_start, wait_deadline, PER_POLL_PROBE, PROBE_RESERVE).map(
-            |deadline| diag::split_outcome(runner.run(&diag::inspect_argv(container), deadline)),
-        );
+    let (inspect_outcome, inspect_granted) =
+        match diag::probe_window(inspect_start, wait_deadline, PER_POLL_PROBE, PROBE_RESERVE) {
+            Some((deadline, granted)) => (
+                Some(diag::split_outcome(
+                    runner.run(&diag::inspect_argv(container), deadline),
+                )),
+                granted,
+            ),
+            None => (None, Duration::ZERO),
+        };
     let inspect_end_ms = offsets(clock.now());
     let (inspect_class, pair) =
         diag::classify_inspect(inspect_outcome.as_ref(), bound_id, bound_started);
     // Exists probe (same budget discipline, sequential order).
     let exists_start = clock.now();
     let exists_start_ms = offsets(exists_start);
-    let exists_outcome =
-        diag::probe_window(exists_start, wait_deadline, PER_POLL_PROBE, PROBE_RESERVE).map(
-            |deadline| diag::split_outcome(runner.run(&diag::exists_argv(container), deadline)),
-        );
+    let (exists_outcome, exists_granted) =
+        match diag::probe_window(exists_start, wait_deadline, PER_POLL_PROBE, PROBE_RESERVE) {
+            Some((deadline, granted)) => (
+                Some(diag::split_outcome(
+                    runner.run(&diag::exists_argv(container), deadline),
+                )),
+                granted,
+            ),
+            None => (None, Duration::ZERO),
+        };
     let exists_end_ms = offsets(clock.now());
     let exists_class = diag::classify_exists(exists_outcome.as_ref());
     // Human note: per-probe ends, capped streams, timeout
@@ -276,7 +311,7 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
     ) {
         note = format!(
             "{}; {note}",
-            diag::timeout_mark("inspect probe", PER_POLL_PROBE)
+            diag::timeout_mark("inspect probe", inspect_granted)
         );
     }
     if matches!(
@@ -285,7 +320,7 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
     ) {
         note = format!(
             "{note}; {}",
-            diag::timeout_mark("exists probe", PER_POLL_PROBE)
+            diag::timeout_mark("exists probe", exists_granted)
         );
     }
     let mut late_rejected = false;
@@ -346,13 +381,13 @@ fn render_stream(outcome: Option<&diag::ProbeOutcome>, stdout: bool) -> String {
 
 fn render_exists(class: &diag::ExistsClass, outcome: Option<&diag::ProbeOutcome>) -> String {
     match outcome {
-        Some(outcome)
-            if outcome.end != diag::ProbeEnd::Exited(0)
-                && outcome.end != diag::ProbeEnd::Exited(1) =>
-        {
-            format!("{class:?} (end={:?})", outcome.end)
-        }
-        _ => format!("{class:?}"),
+        Some(outcome) => format!(
+            "{class:?} (end={:?} out={} err={})",
+            outcome.end,
+            diag::escape_capped(&outcome.stdout, diag::RENDER_CAP),
+            diag::escape_capped(&outcome.stderr, diag::RENDER_CAP),
+        ),
+        None => format!("{class:?} (MISSING)"),
     }
 }
 
@@ -370,11 +405,24 @@ pub fn run_surgery_cycle<R: ProbeRunner, C: Clock>(
     surgery_argv: &[String],
 ) -> (
     Result<std::process::Output, BoundedRunError>,
-    LandingEvidence,
+    Option<LandingEvidence>,
 ) {
     let baseline = capture_baseline(runner, clock, container, bound_id, bound_started);
-    let surgery_deadline = clock.now() + SURGERY_TIMEOUT;
+    // The mutation keeps its pre-existing allowance: a full
+    // SURGERY_TIMEOUT of execution plus the cleanup reserve,
+    // matching the old run_bounded(60s) composition.
+    let surgery_deadline = clock.now() + SURGERY_TIMEOUT + PROBE_RESERVE;
     let surgery_outcome = runner.run(surgery_argv, surgery_deadline);
+    // A failed mutation never reaches the landing wait: no
+    // polls run, and the original error is returned as-is for
+    // the caller to assert (never absorbed into a timeout).
+    let failed = match &surgery_outcome {
+        Err(_) => true,
+        Ok(out) => !out.status.success(),
+    };
+    if failed {
+        return (surgery_outcome, None);
+    }
     let wait_start = clock.now();
     let wait_deadline = wait_start + LANDING_DEADLINE;
     let mut history = diag::PollHistory::default();
@@ -412,10 +460,10 @@ pub fn run_surgery_cycle<R: ProbeRunner, C: Clock>(
         {
             return (
                 surgery_outcome,
-                LandingEvidence {
+                Some(LandingEvidence {
                     history_report: diag::report_history(&history),
                     baseline_report: baseline.report.clone(),
-                },
+                }),
             );
         }
         index += 1;
@@ -444,7 +492,6 @@ impl EvidenceGuard {
     pub fn disarm(&mut self) {
         self.report = None;
     }
-
     #[cfg(test)]
     pub fn is_armed(&self) -> bool {
         self.report.is_some()
@@ -460,255 +507,5 @@ impl Drop for EvidenceGuard {
 }
 
 #[cfg(all(test, unix))]
-mod surgery_collect_tests {
-    // Orchestration pins through the injected seams: the fake
-    // runner replays scripted subprocess outcomes and records
-    // argv plus deadlines; the manual clock advances
-    // deterministically (no real sleeping past the cadence).
-    use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::collections::VecDeque;
-    use std::os::unix::process::ExitStatusExt;
-
-    fn fake_output(code: i32, stdout: &str, stderr: &str) -> Output {
-        Output {
-            status: std::process::ExitStatus::from_raw(if code == 0 { 0 } else { code << 8 }),
-            stdout: stdout.as_bytes().to_vec(),
-            stderr: stderr.as_bytes().to_vec(),
-        }
-    }
-
-    fn ok(code: i32, stdout: &str, stderr: &str) -> Result<Output, BoundedRunError> {
-        Ok(fake_output(code, stdout, stderr))
-    }
-
-    fn timeout_with(partial_out: &str, partial_err: &str) -> Result<Output, BoundedRunError> {
-        Err(BoundedRunError::Timeout {
-            waited: Duration::from_secs(5),
-            reaped: true,
-            partial_stdout: partial_out.to_string(),
-            partial_stderr: partial_err.to_string(),
-        })
-    }
-
-    struct FakeRunner {
-        script: RefCell<VecDeque<Result<Output, BoundedRunError>>>,
-        recorded: RefCell<Vec<(Vec<String>, Instant)>>,
-    }
-
-    impl FakeRunner {
-        fn new(script: Vec<Result<Output, BoundedRunError>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                recorded: RefCell::new(Vec::new()),
-            }
-        }
-
-        fn argv_seen(&self) -> Vec<Vec<String>> {
-            self.recorded
-                .borrow()
-                .iter()
-                .map(|(a, _)| a.clone())
-                .collect()
-        }
-    }
-
-    impl ProbeRunner for FakeRunner {
-        fn run(&self, argv: &[String], deadline: Instant) -> Result<Output, BoundedRunError> {
-            self.recorded.borrow_mut().push((argv.to_vec(), deadline));
-            self.script
-                .borrow_mut()
-                .pop_front()
-                .expect("script exhausted")
-        }
-    }
-
-    struct ManualClock {
-        t: Cell<Instant>,
-        step: Duration,
-    }
-
-    impl ManualClock {
-        fn new(step: Duration) -> Self {
-            Self {
-                t: Cell::new(Instant::now()),
-                step,
-            }
-        }
-    }
-
-    impl Clock for ManualClock {
-        fn now(&self) -> Instant {
-            let t = self.t.get();
-            self.t.set(t + self.step);
-            t
-        }
-    }
-
-    const BOUND_ID: &str = "abc123";
-    const BOUND_STARTED: &str = "2026-10-26 00:00:00 +0000 UTC";
-
-    fn changed_pair() -> (String, String) {
-        (
-            "abc123".to_string(),
-            "2026-10-26 00:01:00 +0000 UTC".to_string(),
-        )
-    }
-
-    #[test]
-    fn probes_get_full_allowance_plus_reserve_inside_phase() {
-        // Window composition: deadline = now + 5s exec + 20s
-        // reserve, inside the phase. A 10s remaining budget
-        // cannot fit a 25s window: MISSING, never fabricated.
-        let runner = FakeRunner::new(vec![]);
-        let clock = ManualClock::new(Duration::from_millis(100));
-        let t0 = clock.now();
-        let d0 = clock.now() + POSTMORTEM_BUDGET;
-        let before = run_diagnostic(
-            &runner,
-            &clock,
-            vec!["true".to_string()],
-            "probe",
-            t0 + Duration::from_secs(10),
-            POSTMORTEM_PROBE,
-            diag::RENDER_CAP,
-        );
-        assert!(before.contains("MISSING"), "{before}");
-        let _ = d0;
-    }
-
-    #[test]
-    fn budget_windows_fit_inside_the_phase() {
-        let runner = FakeRunner::new(vec![ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", "")]);
-        let clock = ManualClock::new(Duration::from_millis(100));
-        let t0 = clock.now();
-        let phase = t0 + Duration::from_secs(60);
-        let out = run_diagnostic(
-            &runner,
-            &clock,
-            vec!["podman".to_string()],
-            "probe",
-            phase,
-            Duration::from_secs(5),
-            diag::RENDER_CAP,
-        );
-        assert!(out.contains("Exited(0)"), "{out}");
-        let deadline = runner.recorded.borrow()[0].1;
-        // Deadline carries the full 5s execution allowance
-        // plus the 20s cleanup reserve, inside the phase.
-        assert!(deadline <= phase, "{deadline:?}");
-        assert!(deadline >= t0 + Duration::from_secs(25), "{deadline:?}");
-    }
-
-    #[test]
-    fn baseline_runs_before_mutation_with_real_unit() {
-        // Order pin: baseline probes, then the surgery
-        // command, then the landing poll — against the real
-        // `.service` unit with explicit properties.
-        let changed = changed_pair();
-        let runner = FakeRunner::new(vec![
-            // Baseline: inspect (same), exists, show.
-            ok(0, "abc123 2026-10-26 00:00:00 +0000 UTC\n", ""),
-            ok(0, "", ""),
-            ok(0, "LoadState=loaded\n", ""),
-            // Surgery.
-            ok(0, "", ""),
-            // Wait poll: changed identity lands.
-            ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", ""),
-            ok(0, "", ""),
-        ]);
-        let clock = ManualClock::new(Duration::from_millis(100));
-        let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-        let (surgery, evidence) =
-            run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
-        assert!(surgery.expect("surgery runs").status.success());
-        assert!(
-            evidence.history_report.contains("changed=1"),
-            "{}",
-            evidence.history_report
-        );
-        let seen = runner.argv_seen();
-        assert_eq!(seen[0][0], "podman");
-        assert!(seen[0].contains(&"inspect".to_string()), "{seen:?}");
-        assert!(seen[1].contains(&"exists".to_string()), "{seen:?}");
-        assert!(
-            seen[2][0].contains("systemctl") || seen[2][0] == "systemctl",
-            "{seen:?}"
-        );
-        assert!(seen[2].join(" ").contains("c.service"), "{seen:?}");
-        assert!(seen[2].join(" ").contains("LoadState"), "{seen:?}");
-        assert_eq!(seen[3], argv, "{seen:?}");
-        let _ = changed;
-    }
-
-    #[test]
-    fn changed_identity_past_deadline_is_rejected() {
-        // Late evidence never lands: the changed reading
-        // arrives after W and must time out instead.
-        let runner = FakeRunner::new(vec![
-            ok(0, "abc123 2026-10-26 00:00:00 +0000 UTC\n", ""),
-            ok(0, "", ""),
-            ok(0, "LoadState=loaded\n", ""),
-            ok(0, "", ""),
-            ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", ""),
-            ok(0, "", ""),
-            ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", ""),
-            ok(0, "", ""),
-        ]);
-        // Huge steps: the wait deadline passes before any
-        // poll can observe the change in time.
-        let clock = ManualClock::new(Duration::from_secs(120));
-        let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
-        }));
-        let err = result.expect_err("late change must time out, not land");
-        let msg = err
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
-            .expect("panic message");
-        assert!(msg.contains("surgery never landed"), "{msg}");
-    }
-
-    #[test]
-    fn timeout_partials_and_missing_are_labeled() {
-        let runner = FakeRunner::new(vec![
-            timeout_with("partial-out", "partial-err"),
-            ok(125i32.wrapping_neg(), "", ""),
-        ]);
-        let clock = ManualClock::new(Duration::from_millis(100));
-        let t0 = clock.now();
-        let wait_deadline = t0 + Duration::from_secs(60);
-        let mut history = diag::PollHistory::default();
-        let landed = poll_landing(
-            &runner,
-            &clock,
-            "c",
-            BOUND_ID,
-            BOUND_STARTED,
-            t0,
-            wait_deadline,
-            0,
-            &mut history,
-        );
-        assert!(landed.is_none());
-        let report = diag::report_history(&history);
-        assert!(report.contains("unqueryable=1"), "{report}");
-    }
-
-    #[test]
-    fn guard_disarms_cleanly() {
-        let mut guard = EvidenceGuard::armed("evidence".to_string());
-        assert!(guard.is_armed());
-        guard.disarm();
-        assert!(!guard.is_armed());
-    }
-
-    #[test]
-    fn probe_reserve_matches_bounded_allowances() {
-        // The composition stays honest only while the
-        // reserve equals the harness cleanup allowances.
-        assert_eq!(PROBE_RESERVE, REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT);
-    }
-}
+#[path = "surgery_collect/tests.rs"]
+mod surgery_collect_tests;

@@ -270,7 +270,7 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "restart".to_string(),
         container.clone(),
     ];
-    let (surgery_outcome, evidence) = collect::run_surgery_cycle(
+    let (surgery_outcome, maybe_evidence) = collect::run_surgery_cycle(
         &collect::RealRunner,
         &collect::SystemClock,
         &container,
@@ -284,6 +284,7 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let evidence = maybe_evidence.expect("landing evidence present after successful surgery");
     // Post-landing context guard: any failure unwinding past
     // this point prints the retained landing history and
     // baseline. Disarmed only on full convergence below.
@@ -424,7 +425,7 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     // the mutation, then the landing wait whose deadline starts
     // at the mutation-return boundary.
     let surgery_argv = vec!["podman".to_string(), "kill".to_string(), container.clone()];
-    let (surgery_outcome, evidence) = collect::run_surgery_cycle(
+    let (surgery_outcome, maybe_evidence) = collect::run_surgery_cycle(
         &collect::RealRunner,
         &collect::SystemClock,
         &container,
@@ -438,6 +439,7 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let evidence = maybe_evidence.expect("landing evidence present after successful surgery");
     // Post-landing context guard: any failure unwinding past
     // this point prints the retained landing history and
     // baseline. Disarmed only on full convergence below.
