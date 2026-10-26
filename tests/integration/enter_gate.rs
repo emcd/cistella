@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 use super::parked::ParkedConduct;
+use super::surgery_collect as collect;
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
@@ -174,9 +175,15 @@ fn ownerless_committed_session(home: &str, worktree_str: &str) -> (String, Strin
         "attestation binds this session's container"
     );
     // Ownerless from here: the harness outlives its driver, and
-    // the guard owns teardown on every path below.
-    let _ = conduct.kill();
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    // the guard owns teardown on every path below. Kill/reap
+    // results are logged, not assumed: "owner is dead" is an
+    // observed premise for the surgery that follows, and a
+    // failed kill/reap here must stay visible rather than
+    // silently weakening it.
+    let kill_result = conduct.kill();
+    eprintln!("owner kill: {kill_result:?}");
+    let reap_result = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT);
+    eprintln!("owner reap: {reap_result:?}");
     (id, container, guard)
 }
 
@@ -205,71 +212,10 @@ fn live_container_id(container: &str) -> Option<String> {
     Some(id)
 }
 
-/// Reads the live (Id, StartedAt) pair with one `podman
-/// inspect`: one command, one observation, parsed with the
-/// product's shared parser (first token plus the whole
-/// remainder — never split StartedAt itself apart).
-/// Absent or malformed reads as not-yet, never as absence.
-/// The note carries the capped raw rendering for the
-/// fail-loud bound, so a CI-only timeout still reports what
-/// the backend actually showed.
-fn live_identity(container: &str) -> (Option<(String, String)>, String) {
-    let out = run_bounded(
-        {
-            let mut cmd = Command::new("podman");
-            cmd.args([
-                "inspect",
-                "--format",
-                "{{.Id}} {{.State.StartedAt}}",
-                container,
-            ]);
-            cmd
-        },
-        RUN_CISTELLA_TIMEOUT,
-    )
-    .expect("podman inspect runs");
-    let raw: String = String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .chars()
-        .take(160)
-        .collect();
-    if !out.status.success() {
-        return (None, format!("inspect exit {}: {raw}", out.status));
-    }
-    match cistella::attestation::parse_identity(&String::from_utf8_lossy(&out.stdout)) {
-        Ok(identity) => (
-            Some((identity.container_id, identity.started_at)),
-            format!("parsed: {raw}"),
-        ),
-        Err(error) => (None, format!("unparseable {raw}: {error}")),
-    }
-}
-
-/// Waits for a post-surgery incarnation to land as one
-/// coherent observation: a single paired reading differing
-/// from the bound. Transient uninspectability reads as
-/// not-yet, never as absence; the bound fails loud with the
-/// bound pair and the last raw backend observation. Landing
-/// is the premise — the product gate renders the verdict.
-fn wait_landed_incarnation(container: &str, bound_id: &str, bound_started: &str) {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut last = "no inspect completed".to_string();
-    loop {
-        if Instant::now() > deadline {
-            panic!(
-                "surgery never landed a new incarnation for {container}: bound=({bound_id}, {bound_started}), last={last}"
-            );
-        }
-        let (current, note) = live_identity(container);
-        last = note;
-        if let Some((id, started)) = current
-            && (id != bound_id || started != bound_started)
-        {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
+// Surgery diagnostics orchestration (poll loop, baseline,
+// post-mortem, budgets) lives in `surgery_collect`; this file
+// keeps the call sites. The classification/history/budget seam
+// it invokes is pinned backend-free in `surgery_diag`.
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
@@ -328,13 +274,23 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // Pre-surgery baseline (allowance B): the recorded state
+    // the timeout post-mortem reads against. Failure is
+    // recorded, never a new gate.
+    let baseline = collect::capture_baseline(&container, &bound.container_id, &bound.started_at);
     // Bounded wait for the replacement to land as one
     // coherent observation: a single paired reading differing
     // from the bound. Transient uninspectability reads as
-    // not-yet, never as absence; the bound fails loud.
-    // Landing is the premise — the product gate below renders
-    // the verdict.
-    wait_landed_incarnation(&container, &bound.container_id, &bound.started_at);
+    // not-yet, never as absence; the bound fails loud with
+    // the baseline, the bounded poll history, and the timeout
+    // post-mortem. Landing is the premise — the product gate
+    // below renders the verdict.
+    let evidence = collect::wait_landed_incarnation(
+        &container,
+        &bound.container_id,
+        &bound.started_at,
+        &baseline,
+    );
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -354,7 +310,10 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     } else if stderr.contains("unestablishable") {
         "unestablishable"
     } else {
-        panic!("post-restart refusal must come from the readiness edge, got: {stderr}");
+        panic!(
+            "post-restart refusal must come from the readiness edge, got: {stderr}\nlanding evidence: {}\nbaseline: {}",
+            evidence.history_report, evidence.baseline_report
+        );
     };
     eprintln!("post-restart refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
@@ -477,13 +436,19 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // Pre-surgery baseline (allowance B): recorded state for
+    // the timeout post-mortem; failure is recorded, never a
+    // new gate.
+    let baseline = collect::capture_baseline(&container, &bound_id, &bound.started_at);
     // Bounded wait for systemd's replacement to land as one
     // coherent observation: a single paired reading differing
     // from the bound. Transient uninspectability reads as
-    // not-yet, never as absence; the bound fails loud.
-    // Landing is the premise — the product gate below renders
-    // the verdict.
-    wait_landed_incarnation(&container, &bound_id, &bound.started_at);
+    // not-yet, never as absence; the bound fails loud with
+    // the baseline, the bounded poll history, and the timeout
+    // post-mortem. Landing is the premise — the product gate
+    // below renders the verdict.
+    let evidence =
+        collect::wait_landed_incarnation(&container, &bound_id, &bound.started_at, &baseline);
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -503,7 +468,10 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     } else if stderr.contains("unestablishable") {
         "unestablishable"
     } else {
-        panic!("post-recreate refusal must come from the readiness edge, got: {stderr}");
+        panic!(
+            "post-recreate refusal must come from the readiness edge, got: {stderr}\nlanding evidence: {}\nbaseline: {}",
+            evidence.history_report, evidence.baseline_report
+        );
     };
     eprintln!("post-recreate refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
