@@ -21,12 +21,12 @@ Each landing-wait poll SHALL record a diagnostic record containing per-command s
 
 ### Requirement: Unqueryable outcomes labeled as unqueryable
 
-Unqueryable poll outcomes (non-zero inspect with no usable identity, exists 125) SHALL be labeled unqueryable in every report and SHALL NEVER be aggregated into an absence finding. The existing bound verdict wording stays unchanged: no wording fix is folded into this instrumentation-only scope.
+Unqueryable poll outcomes (non-zero inspect with no usable identity, exists 125) SHALL be labeled unqueryable in every report and SHALL NEVER be aggregated into an absence finding. The report SHALL carry a diagnostic evidence section stating the container was not successfully queried; that section is rendered with the bound verdict — adjacent to it, or ahead of it — so the retained verdict wording is not read as proven absence. The verdict wording itself stays exactly as it is: no wording fix is folded into this instrumentation-only scope.
 
 #### Scenario: No absence finding from query failures
 
 - **WHEN** the wait observes only unqueryable outcomes
-- **THEN** the report states the container was not successfully queried (never that it was absent or that surgery never landed)
+- **THEN** the diagnostic evidence section states the container was not successfully queried (never that it was absent), rendered alongside the unchanged verdict text
 
 ### Requirement: Pre-surgery baseline snapshot
 
