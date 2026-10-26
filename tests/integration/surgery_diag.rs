@@ -462,6 +462,14 @@ pub fn timeout_mark(what: &str, allowed: Duration) -> String {
     format!("{what} timed out after {allowed:?}; not a backend outcome")
 }
 
+/// Bounded escaped rendering of an outcome detail string:
+/// poll records and one-line evidence stay one line even when
+/// the detail carries control characters. Pure.
+#[must_use]
+pub fn render_detail(detail: &str) -> String {
+    escape_capped(detail.as_bytes(), RENDER_CAP)
+}
+
 /// Render one collected command's evidence body: end state,
 /// detail, and capped raw streams. Pure.
 #[must_use]
@@ -477,7 +485,7 @@ pub fn render_outcome_body(outcome: &ProbeOutcome, stream_cap: usize) -> String 
         format!(
             "{:?} detail={} stdout={} stderr={}",
             outcome.end,
-            outcome.detail,
+            render_detail(&outcome.detail),
             escape_capped(&outcome.stdout, stream_cap),
             escape_capped(&outcome.stderr, stream_cap),
         )

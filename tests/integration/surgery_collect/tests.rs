@@ -487,6 +487,75 @@ fn poll_note_carries_spawn_error_and_signal_status() {
 }
 
 #[test]
+fn poll_note_carries_raw_signal_status() {
+    // A signalled probe is neither an exit code nor an
+    // absence: the disposition and the raw wait status
+    // survive into the poll note. The expected status
+    // text is computed in-test so a std Debug-format
+    // change cannot break the pin spuriously.
+    use std::os::unix::process::ExitStatusExt;
+    let status = std::process::ExitStatus::from_raw(9);
+    let expected = format!("{status:?}");
+    let runner = FakeRunner::new(vec![
+        Ok(Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }),
+        ok(0, "", ""),
+    ]);
+    let clock = ManualClock::new(Duration::from_millis(100));
+    let t0 = clock.now();
+    let wait_deadline = t0 + Duration::from_secs(60);
+    let mut history = diag::PollHistory::default();
+    let landed = poll_landing(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        t0,
+        wait_deadline,
+        0,
+        &mut history,
+    );
+    assert!(landed.is_none());
+    let report = diag::report_history(&history);
+    assert!(report.contains("Signaled"), "{report}");
+    assert!(report.contains(&expected), "{report}");
+}
+
+#[test]
+fn poll_note_keeps_control_char_detail_one_line() {
+    // A detail carrying control characters must stay
+    // escaped so the poll record remains one line.
+    let runner = FakeRunner::new(vec![
+        Err(BoundedRunError::Spawn("line1\nline2\x07tail".to_string())),
+        ok(1, "", ""),
+    ]);
+    let clock = ManualClock::new(Duration::from_millis(100));
+    let t0 = clock.now();
+    let wait_deadline = t0 + Duration::from_secs(60);
+    let mut history = diag::PollHistory::default();
+    let landed = poll_landing(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        t0,
+        wait_deadline,
+        0,
+        &mut history,
+    );
+    assert!(landed.is_none());
+    let report = diag::report_history(&history);
+    assert!(report.contains("line1\\nline2\\x07tail"), "{report}");
+    // The escaped detail keeps the whole report on one line.
+    assert_eq!(report.lines().count(), 1, "{report:?}");
+}
+
+#[test]
 fn guard_disarms_cleanly() {
     let mut guard = EvidenceGuard::armed("evidence".to_string());
     assert!(guard.is_armed());
