@@ -66,6 +66,10 @@ mod sigint;
 mod signals;
 #[path = "integration/ssh_guest.rs"]
 mod ssh_guest;
+#[path = "integration/surgery_collect.rs"]
+mod surgery_collect;
+#[path = "integration/surgery_diag.rs"]
+mod surgery_diag;
 #[path = "integration/teardown_reload.rs"]
 mod teardown_reload;
 #[path = "integration/terminate_converge.rs"]
