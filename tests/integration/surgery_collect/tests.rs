@@ -450,7 +450,40 @@ fn timeout_partials_and_missing_are_labeled() {
     assert!(report.contains("partial-out"), "{report}");
     assert!(report.contains("partial-err"), "{report}");
     assert!(report.contains("timed out after 5s"), "{report}");
+    assert!(report.contains("reaped=true"), "{report}");
     assert!(report.contains("no such object"), "{report}");
+}
+
+#[test]
+fn poll_note_carries_spawn_error_and_signal_status() {
+    // Spawn failures and signals are typed outcomes with
+    // details, not silent query failures: the poll note
+    // must carry them into the bounded history.
+    let runner = FakeRunner::new(vec![
+        Err(BoundedRunError::Spawn(
+            "no daemon: connection refused".to_string(),
+        )),
+        ok(1, "", ""),
+    ]);
+    let clock = ManualClock::new(Duration::from_millis(100));
+    let t0 = clock.now();
+    let wait_deadline = t0 + Duration::from_secs(60);
+    let mut history = diag::PollHistory::default();
+    let landed = poll_landing(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        t0,
+        wait_deadline,
+        0,
+        &mut history,
+    );
+    assert!(landed.is_none());
+    let report = diag::report_history(&history);
+    assert!(report.contains("SpawnFailed"), "{report}");
+    assert!(report.contains("no daemon: connection refused"), "{report}");
 }
 
 #[test]

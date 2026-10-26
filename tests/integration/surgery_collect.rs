@@ -296,14 +296,20 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
         };
     let exists_end_ms = offsets(clock.now());
     let exists_class = diag::classify_exists(exists_outcome.as_ref());
-    // Human note: per-probe ends, capped streams, timeout
-    // labels with the actual allowance granted.
+    // Human note: full per-probe outcomes (end, detail,
+    // capped streams) plus timeout labels with the actual
+    // allowance granted. Nothing the probes reported is
+    // dropped from the landing history.
     let mut note = format!(
-        "inspect={} out={} err={} exists={}",
-        render_end(inspect_outcome.as_ref()),
-        render_stream(inspect_outcome.as_ref(), true),
-        render_stream(inspect_outcome.as_ref(), false),
-        render_exists(&exists_class, exists_outcome.as_ref()),
+        "inspect=[{}] exists=[{}]",
+        inspect_outcome
+            .as_ref()
+            .map(|o| diag::render_outcome_body(o, diag::RENDER_CAP))
+            .unwrap_or_else(|| "MISSING: phase budget exhausted".to_string()),
+        exists_outcome
+            .as_ref()
+            .map(|o| diag::render_outcome_body(o, diag::RENDER_CAP))
+            .unwrap_or_else(|| "MISSING: phase budget exhausted".to_string()),
     );
     if matches!(
         inspect_outcome.as_ref(),
@@ -356,39 +362,6 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
         inspect_end_ms,
     );
     landed
-}
-
-fn render_end(outcome: Option<&diag::ProbeOutcome>) -> String {
-    match outcome {
-        Some(outcome) => format!("{:?}", outcome.end),
-        None => "MISSING: phase budget exhausted".to_string(),
-    }
-}
-
-fn render_stream(outcome: Option<&diag::ProbeOutcome>, stdout: bool) -> String {
-    match outcome {
-        Some(outcome) => {
-            let bytes = if stdout {
-                &outcome.stdout
-            } else {
-                &outcome.stderr
-            };
-            diag::escape_capped(bytes, diag::RENDER_CAP)
-        }
-        None => "MISSING".to_string(),
-    }
-}
-
-fn render_exists(class: &diag::ExistsClass, outcome: Option<&diag::ProbeOutcome>) -> String {
-    match outcome {
-        Some(outcome) => format!(
-            "{class:?} (end={:?} out={} err={})",
-            outcome.end,
-            diag::escape_capped(&outcome.stdout, diag::RENDER_CAP),
-            diag::escape_capped(&outcome.stderr, diag::RENDER_CAP),
-        ),
-        None => format!("{class:?} (MISSING)"),
-    }
 }
 
 /// Full surgery cycle with the order pinned: baseline, then
