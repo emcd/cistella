@@ -1,13 +1,10 @@
 //! Backend-free diagnostic record core for the enter-gate surgery
-//! paths (`enter_gate.rs`).
-//!
-//! Every function here is pure over its inputs: the test body
-//! runs the subprocesses (podman, systemctl, journalctl) and
-//! hands the outcomes in; classification, history caps, report
-//! rendering, and budget composition never touch a backend.
-//! The `#[cfg(test)]` pins below invoke this same
-//! implementation, so the taxonomy cannot drift from the
-//! collector (no duplicated model).
+//! paths. Every function here is pure over its inputs: the test
+//! body runs the subprocesses and hands the outcomes in, while
+//! classification, history caps, report rendering, and budget
+//! arithmetic never touch a backend. The `#[cfg(test)]` pins
+//! below invoke this same implementation, so the taxonomy
+//! cannot drift from the collector (no duplicated model).
 
 use std::collections::VecDeque;
 use std::process::Output;
@@ -15,8 +12,7 @@ use std::time::{Duration, Instant};
 
 use super::bounded::BoundedRunError;
 
-/// Per-stream render cap: matches the historical note width so
-/// reports stay log-shaped.
+/// Per-stream render cap: keeps one-line notes log-shaped.
 pub const RENDER_CAP: usize = 160;
 
 /// Records retained at each history end (first N and last N).
@@ -35,25 +31,104 @@ pub enum ProbeEnd {
     Overflowed,
 }
 
+/// A bounded probe outcome: end state plus capped raw streams.
+/// Partials from timeouts are kept; nothing is inferred.
+#[derive(Debug, Clone)]
+pub struct ProbeOutcome {
+    pub end: ProbeEnd,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Split a bounded-run outcome into its end state plus owned
+/// stdout/stderr bytes (partials on timeout; empty when the
+/// command never produced output). Pure.
+#[must_use]
+pub fn split_outcome(result: Result<Output, BoundedRunError>) -> ProbeOutcome {
+    match result {
+        Ok(out) => {
+            let end = match out.status.code() {
+                Some(code) => ProbeEnd::Exited(code),
+                None => ProbeEnd::Signaled,
+            };
+            ProbeOutcome {
+                end,
+                stdout: out.stdout,
+                stderr: out.stderr,
+            }
+        }
+        Err(BoundedRunError::Timeout {
+            partial_stdout,
+            partial_stderr,
+            ..
+        }) => ProbeOutcome {
+            end: ProbeEnd::TimedOut,
+            stdout: partial_stdout.into_bytes(),
+            stderr: partial_stderr.into_bytes(),
+        },
+        Err(BoundedRunError::Spawn(_)) => ProbeOutcome {
+            end: ProbeEnd::SpawnFailed,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+        Err(BoundedRunError::DrainTimeout {
+            partial_stdout,
+            partial_stderr,
+        }) => ProbeOutcome {
+            end: ProbeEnd::TimedOut,
+            stdout: partial_stdout.into_bytes(),
+            stderr: partial_stderr.into_bytes(),
+        },
+        Err(BoundedRunError::Wait { .. }) => ProbeOutcome {
+            end: ProbeEnd::WaitFailed,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+        Err(BoundedRunError::Overflow { .. }) => ProbeOutcome {
+            end: ProbeEnd::Overflowed,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+        Err(BoundedRunError::Capture { .. }) => ProbeOutcome {
+            end: ProbeEnd::WaitFailed,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+    }
+}
+
 /// Escape a byte stream for one-line rendering: lossy text,
-/// capped at `cap` characters, with line breaks escaped so one
-/// record stays one line. Verbatim otherwise (no prose
-/// diagnosis of unfamiliar strings).
+/// capped at `cap` kept characters, with line breaks and
+/// terminal controls escaped (`\n`, `\r`, `\t`, `\\`,
+/// `\x1b`, other C0 controls as `\xNN`). Truncation is
+/// explicit: a `...[+N truncated]` marker names the dropped
+/// count. Nothing is diagnosed from the content. Pure.
 #[must_use]
 pub fn escape_capped(bytes: &[u8], cap: usize) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::new();
-    for ch in text.trim().chars() {
-        if out.len() >= cap {
-            break;
+    let mut kept = 0usize;
+    let mut skipped = 0usize;
+    for ch in text.chars() {
+        if kept >= cap {
+            skipped += 1;
+            continue;
         }
+        kept += 1;
         match ch {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             '\\' => out.push_str("\\\\"),
+            '\x1b' => out.push_str("\\x1b"),
+            other if other.is_control() => {
+                out.push_str(&format!("\\x{:02x}", other as u32));
+            }
             other => out.push(other),
         }
+    }
+    if skipped > 0 {
+        out.push_str(&format!("...[+{skipped} truncated]"));
     }
     out
 }
@@ -61,50 +136,59 @@ pub fn escape_capped(bytes: &[u8], cap: usize) -> String {
 /// `podman container exists` classification per the CLI
 /// contract: 0 found, 1 not found, anything else (including
 /// 125 and signals) a storage/access query failure — never
-/// absence.
+/// absence. Unscheduled probes are `Missing`, never a query
+/// failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExistsClass {
     Found,
     NotFound,
     QueryFailure,
+    Missing,
 }
 
-/// Classify an exists probe from its end state. Pure.
+/// Classify an exists outcome. Pure.
 #[must_use]
-pub fn classify_exists(end: ProbeEnd) -> ExistsClass {
-    match end {
-        ProbeEnd::Exited(0) => ExistsClass::Found,
-        ProbeEnd::Exited(1) => ExistsClass::NotFound,
-        _ => ExistsClass::QueryFailure,
+pub fn classify_exists(outcome: Option<&ProbeOutcome>) -> ExistsClass {
+    match outcome {
+        None => ExistsClass::Missing,
+        Some(outcome) => match outcome.end {
+            ProbeEnd::Exited(0) => ExistsClass::Found,
+            ProbeEnd::Exited(1) => ExistsClass::NotFound,
+            _ => ExistsClass::QueryFailure,
+        },
     }
 }
 
 /// Inspect outcome classification against the bound pair.
-/// `Changed` and `CleanSame` require a successful parse of the
-/// whole pair with the shared product parser (StartedAt kept
+/// `Changed` and `CleanSame` require a successful parse of
+/// the whole pair with the product parser (StartedAt kept
 /// intact — never reconstructed from whitespace tokens).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Unscheduled probes are `Missing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectClass {
     CleanSame,
     Changed,
     Unparseable,
     Unqueryable,
+    Missing,
 }
 
-/// Classify an inspect outcome. Pure: parses with the product
-/// parser, compares whole pairs. Returns the class plus the
-/// parsed identity when one exists.
+/// Classify an inspect outcome. Pure; parses with the product
+/// parser and compares whole pairs. Returns the class plus
+/// the parsed identity when one exists.
 #[must_use]
 pub fn classify_inspect(
-    end: ProbeEnd,
-    stdout: &[u8],
+    outcome: Option<&ProbeOutcome>,
     bound_id: &str,
     bound_started: &str,
 ) -> (InspectClass, Option<(String, String)>) {
-    if end != ProbeEnd::Exited(0) {
+    let Some(outcome) = outcome else {
+        return (InspectClass::Missing, None);
+    };
+    if outcome.end != ProbeEnd::Exited(0) {
         return (InspectClass::Unqueryable, None);
     }
-    match cistella::attestation::parse_identity(&String::from_utf8_lossy(stdout)) {
+    match cistella::attestation::parse_identity(&String::from_utf8_lossy(&outcome.stdout)) {
         Ok(identity) => {
             let pair = (identity.container_id, identity.started_at);
             if pair.0 == bound_id && pair.1 == bound_started {
@@ -117,9 +201,9 @@ pub fn classify_inspect(
     }
 }
 
-/// One poll iteration's diagnostic record. Timestamps are
-/// monotonic millisecond offsets from the wait start; order
-/// records which probe ran first.
+/// One poll iteration's diagnostic record. Missing probes are
+/// `None` (unscheduled), rendered as MISSING — never folded
+/// into a backend outcome.
 #[derive(Debug, Clone)]
 pub struct PollRecord {
     pub index: usize,
@@ -127,62 +211,111 @@ pub struct PollRecord {
     pub inspect_end_ms: u64,
     pub exists_start_ms: u64,
     pub exists_end_ms: u64,
-    pub inspect_first: bool,
-    pub inspect: InspectClass,
-    pub exists: ExistsClass,
+    pub inspect: Option<(InspectClass, Option<(String, String)>)>,
+    pub exists: Option<ExistsClass>,
+    pub late_rejected: bool,
     pub note: String,
 }
 
-/// Render one record as one line, including the probe
-/// order (inspect-then-exists). Pure.
+/// Render one record as one line, including the probe order.
+/// Pure.
 #[must_use]
 pub fn render_poll(record: &PollRecord) -> String {
-    let order = if record.inspect_first {
-        "inspect-then-exists"
-    } else {
-        "exists-then-inspect"
+    let inspect = match &record.inspect {
+        Some((class, _)) => format!("{class:?}"),
+        None => "Missing".to_string(),
+    };
+    let exists = match record.exists {
+        Some(class) => format!("{class:?}"),
+        None => "Missing".to_string(),
     };
     format!(
-        "poll#{} t+{}-{}ms inspect then t+{}-{}ms exists order={order} inspect={:?} exists={:?} {}",
+        "poll#{} t+{}-{}ms inspect then t+{}-{}ms exists order=inspect-then-exists inspect={inspect} exists={exists} late={} {}",
         record.index,
         record.inspect_start_ms,
         record.inspect_end_ms,
         record.exists_start_ms,
         record.exists_end_ms,
-        record.inspect,
-        record.exists,
+        record.late_rejected,
         record.note,
     )
 }
 
-/// Bounded poll history: first-anomaly time, per-outcome
-/// counts, transitions, and the first/last capped records.
-/// The full trace is never retained.
+/// Bounded poll history with per-outcome inspect and exists
+/// counts, outcome-transition tracking, first-anomaly offset,
+/// and first/last capped records. The full trace is never
+/// retained.
 #[derive(Debug, Default)]
 pub struct PollHistory {
-    total: usize,
-    first_anomaly: Option<usize>,
-    landed: usize,
-    clean_same: usize,
-    unqueryable: usize,
-    unparseable: usize,
-    transitions: usize,
-    last_is_anomaly: bool,
+    pub total: usize,
+    pub first_anomaly_ms: Option<u64>,
+    pub inspect_clean: usize,
+    pub inspect_changed: usize,
+    pub inspect_unqueryable: usize,
+    pub inspect_unparseable: usize,
+    pub inspect_missing: usize,
+    pub exists_found: usize,
+    pub exists_notfound: usize,
+    pub exists_qf: usize,
+    pub exists_missing: usize,
+    pub late_rejected: usize,
+    pub query_failure_polls: usize,
+    pub transitions: usize,
+    last_key: Option<(InspectClass, ExistsClass)>,
     first: VecDeque<String>,
     last: VecDeque<String>,
 }
 
-/// Push a rendered record. `anomaly` is true for any outcome
-/// that differs from clean success (changed, unqueryable,
-/// unparseable, non-found exists). Pure.
-pub fn history_push(history: &mut PollHistory, rendered: String, anomaly: bool) {
-    if anomaly && history.first_anomaly.is_none() {
-        history.first_anomaly = Some(history.total);
-    }
-    if history.total > 0 && anomaly != history.last_is_anomaly {
+fn anomaly_of(inspect: InspectClass, exists: ExistsClass) -> bool {
+    !matches!(inspect, InspectClass::CleanSame | InspectClass::Changed)
+        || !matches!(exists, ExistsClass::Found)
+}
+
+/// Observe one rendered poll: counts, transitions on the
+/// (inspect, exists) outcome tuple, first-anomaly offset.
+/// Pure.
+pub fn history_observe(
+    history: &mut PollHistory,
+    rendered: String,
+    inspect: InspectClass,
+    exists: ExistsClass,
+    late: bool,
+    t_ms: u64,
+) {
+    let key = (inspect, exists);
+    if let Some(last) = history.last_key
+        && last != key
+    {
         history.transitions += 1;
     }
-    history.last_is_anomaly = anomaly;
+    history.last_key = Some(key);
+    if late {
+        history.late_rejected += 1;
+    }
+    let query_failure = matches!(
+        inspect,
+        InspectClass::Unqueryable | InspectClass::Unparseable
+    ) || matches!(exists, ExistsClass::QueryFailure);
+    if query_failure {
+        history.query_failure_polls += 1;
+    }
+    let anomaly = anomaly_of(inspect, exists) || late;
+    if anomaly && history.first_anomaly_ms.is_none() {
+        history.first_anomaly_ms = Some(t_ms);
+    }
+    match inspect {
+        InspectClass::CleanSame => history.inspect_clean += 1,
+        InspectClass::Changed => history.inspect_changed += 1,
+        InspectClass::Unqueryable => history.inspect_unqueryable += 1,
+        InspectClass::Unparseable => history.inspect_unparseable += 1,
+        InspectClass::Missing => history.inspect_missing += 1,
+    }
+    match exists {
+        ExistsClass::Found => history.exists_found += 1,
+        ExistsClass::NotFound => history.exists_notfound += 1,
+        ExistsClass::QueryFailure => history.exists_qf += 1,
+        ExistsClass::Missing => history.exists_missing += 1,
+    }
     history.total += 1;
     if history.first.len() < HISTORY_KEEP_EACH_END {
         history.first.push_back(rendered.clone());
@@ -193,31 +326,27 @@ pub fn history_push(history: &mut PollHistory, rendered: String, anomaly: bool) 
     }
 }
 
-/// Tally one poll into the outcome counters. Pure.
-pub fn history_tally(history: &mut PollHistory, inspect: &InspectClass, exists: &ExistsClass) {
-    match inspect {
-        InspectClass::Changed => history.landed += 1,
-        InspectClass::CleanSame => history.clean_same += 1,
-        InspectClass::Unqueryable => history.unqueryable += 1,
-        InspectClass::Unparseable => history.unparseable += 1,
-    }
-    let _ = exists;
-}
-
 /// Render the history report. Pure.
 #[must_use]
 pub fn report_history(history: &PollHistory) -> String {
     let mut out = format!(
-        "polls={} landed={} clean_same={} unqueryable={} unparseable={} transitions={}",
+        "polls={} inspect(clean={} changed={} unqueryable={} unparseable={} missing={}) exists(found={} notfound={} queryfail={} missing={}) transitions={} late_rejected={} qf_polls={}",
         history.total,
-        history.landed,
-        history.clean_same,
-        history.unqueryable,
-        history.unparseable,
+        history.inspect_clean,
+        history.inspect_changed,
+        history.inspect_unqueryable,
+        history.inspect_unparseable,
+        history.inspect_missing,
+        history.exists_found,
+        history.exists_notfound,
+        history.exists_qf,
+        history.exists_missing,
         history.transitions,
+        history.late_rejected,
+        history.query_failure_polls,
     );
-    match history.first_anomaly {
-        Some(i) => out.push_str(&format!(" first_anomaly=poll#{i}")),
+    match history.first_anomaly_ms {
+        Some(ms) => out.push_str(&format!(" first_anomaly=+{ms}ms")),
         None => out.push_str(" first_anomaly=none"),
     }
     out.push_str(" first=[");
@@ -235,57 +364,90 @@ pub fn report_history(history: &PollHistory) -> String {
     out
 }
 
-/// Whether any poll observed a query failure (unqueryable
-/// inspect or non-found/non-absent exists). Pure.
-#[must_use]
-pub fn had_query_failure(history: &PollHistory) -> bool {
-    history.unqueryable > 0 || history.unparseable > 0
-}
-
-/// Whether any poll produced a clean successful observation.
+/// Conditional unqueryable section: query failures are stated
+/// as counts over polls (some-vs-all), never as proven
+/// absence; a timeout on unchanged identity is landing-not-
+/// established; a timeout past a rejected late change says so.
 /// Pure.
 #[must_use]
-pub fn had_clean_observation(history: &PollHistory) -> bool {
-    history.clean_same > 0 || history.landed > 0
-}
-
-/// Conditional unqueryable section: the "not successfully
-/// queried" claim requires observed query failures; a timeout
-/// on unchanged identity is "landing not established",
-/// and neither is absence. Pure.
-#[must_use]
 pub fn unqueryable_section(history: &PollHistory) -> String {
-    if had_query_failure(history) {
-        "container not successfully queried; absence not established".to_string()
-    } else if had_clean_observation(history) {
-        "landing not established (identity unchanged); absence not established".to_string()
-    } else {
-        "no poll completed with a usable observation; absence not established".to_string()
+    if history.query_failure_polls > 0 {
+        return format!(
+            "container not successfully queried in {}/{total} polls (first at +{ms}ms); {clean} polls observed unchanged identity; absence not established",
+            history.query_failure_polls,
+            total = history.total,
+            ms = history.first_anomaly_ms.unwrap_or(0),
+            clean = history.inspect_clean,
+        );
     }
+    let missing = history.inspect_missing + history.exists_missing;
+    if history.late_rejected > 0 {
+        return format!(
+            "a changed identity was observed past the deadline and rejected ({}); landing not established; absence not established",
+            history.late_rejected
+        );
+    }
+    if missing > 0 && history.total == missing {
+        return "no probe could be scheduled; absence not established".to_string();
+    }
+    if history.inspect_clean > 0 {
+        return format!(
+            "landing not established (identity unchanged across {} polls); absence not established",
+            history.inspect_clean
+        );
+    }
+    if history.exists_notfound > 0 {
+        return format!(
+            "container observed absent (exists=1) in {}/{} polls",
+            history.exists_notfound, history.total
+        );
+    }
+    "no usable observation; absence not established".to_string()
 }
 
-/// Clamp a per-probe allowance to the remaining phase budget:
-/// the probe gets at most `per_probe` and never past
-/// `phase_deadline`. Returns `None` when no budget remains
-/// (probe unscheduled, reported as missing). Pure.
+/// Absolute probe window: the probe may start at `now` and run
+/// at most `exec_allowance` of execution with `reserve` for
+/// harness cleanup, all inside `phase_deadline`. Returns the
+/// absolute deadline for the command runner, or `None` when
+/// not even one full window fits (probe unscheduled —
+/// reported MISSING, never fabricated). Pure.
 #[must_use]
-pub fn clamp_probe_allowance(
+pub fn probe_window(
     now: Instant,
     phase_deadline: Instant,
-    per_probe: Duration,
-) -> Option<Duration> {
-    if now >= phase_deadline {
-        return None;
+    exec_allowance: Duration,
+    reserve: Duration,
+) -> Option<Instant> {
+    let need = exec_allowance.checked_add(reserve)?;
+    let end = now.checked_add(need)?;
+    if end <= phase_deadline {
+        Some(end)
+    } else {
+        None
     }
-    let remaining = phase_deadline.duration_since(now);
-    Some(remaining.min(per_probe))
 }
 
-/// Render a timeout marker: timeouts are labeled as timeouts,
-/// never counted as backend outcomes. Pure.
+/// Timeout marker: timeouts are labeled as timeouts with the
+/// actual allowance granted, never counted as backend
+/// outcomes. Pure.
 #[must_use]
 pub fn timeout_mark(what: &str, allowed: Duration) -> String {
     format!("{what} timed out after {allowed:?}; not a backend outcome")
+}
+
+/// Render one collected command's evidence line from its end
+/// state and raw streams. Pure.
+#[must_use]
+pub fn render_outcome(argv: &str, outcome: &ProbeOutcome, stream_cap: usize) -> String {
+    render_cmd_evidence(
+        argv,
+        &format!(
+            "{:?} stdout={} stderr={}",
+            outcome.end,
+            escape_capped(&outcome.stdout, stream_cap),
+            escape_capped(&outcome.stderr, stream_cap),
+        ),
+    )
 }
 
 /// Render one collected command's evidence: either its
@@ -296,48 +458,103 @@ pub fn render_cmd_evidence(argv: &str, outcome: &str) -> String {
     format!("cmd[{argv}] :: {outcome}")
 }
 
-/// Split a bounded-run outcome into its end state plus owned
-/// stdout/stderr bytes (partials on timeout, empty when the
-/// command never produced output). Pure.
+/// Render the timeout verdict block: the original verdict
+/// line first, the unqueryable section directly adjacent.
+/// Later-healthy observations can only append after this
+/// block, never replace it. Pure.
 #[must_use]
-pub fn split_outcome(outcome: Result<Output, BoundedRunError>) -> (ProbeEnd, Vec<u8>, Vec<u8>) {
-    match outcome {
-        Ok(out) => {
-            let end = match out.status.code() {
-                Some(code) => ProbeEnd::Exited(code),
-                None => ProbeEnd::Signaled,
-            };
-            (end, out.stdout, out.stderr)
-        }
-        Err(BoundedRunError::Timeout {
-            partial_stdout,
-            partial_stderr,
-            ..
-        }) => (
-            ProbeEnd::TimedOut,
-            partial_stdout.into_bytes(),
-            partial_stderr.into_bytes(),
-        ),
-        Err(BoundedRunError::Spawn(_)) => (ProbeEnd::SpawnFailed, Vec::new(), Vec::new()),
-        Err(BoundedRunError::DrainTimeout { .. }) => (ProbeEnd::TimedOut, Vec::new(), Vec::new()),
-        Err(BoundedRunError::Wait { .. }) => (ProbeEnd::WaitFailed, Vec::new(), Vec::new()),
-        Err(BoundedRunError::Overflow { .. }) => (ProbeEnd::Overflowed, Vec::new(), Vec::new()),
-        Err(BoundedRunError::Capture { .. }) => (ProbeEnd::WaitFailed, Vec::new(), Vec::new()),
-    }
+pub fn render_timeout_report(
+    verdict: &str,
+    section: &str,
+    baseline: &str,
+    history: &str,
+    postmortem: &str,
+) -> String {
+    format!(
+        "{verdict}\n{section}\nbaseline: {baseline}\nhistory: {history}\npostmortem: {postmortem}"
+    )
 }
 
-/// Render one command's evidence line from its end state and
-/// raw streams. Pure.
+/// The running systemd unit for a container name. Quadlet
+/// source files are `<name>.container`; the running unit is
+/// `<name>.service` — querying the source filename reports a
+/// nonexistent unit instead of the service state.
 #[must_use]
-pub fn render_outcome(argv: &str, end: ProbeEnd, stdout: &[u8], stderr: &[u8]) -> String {
-    render_cmd_evidence(
-        argv,
-        &format!(
-            "{end:?} stdout={} stderr={}",
-            escape_capped(stdout, RENDER_CAP),
-            escape_capped(stderr, RENDER_CAP),
-        ),
-    )
+pub fn unit_name(container: &str) -> String {
+    format!("{container}.service")
+}
+
+/// Command builders: the exact argv the collector runs, so
+/// pins assert the real invocation shape (program, flags,
+/// explicit properties, known identities).
+#[must_use]
+pub fn inspect_argv(container: &str) -> Vec<String> {
+    vec![
+        "podman".to_string(),
+        "inspect".to_string(),
+        "--format".to_string(),
+        "{{.Id}} {{.State.StartedAt}}".to_string(),
+        container.to_string(),
+    ]
+}
+
+/// `container exists` has no output contract beyond its code.
+#[must_use]
+pub fn exists_argv(container: &str) -> Vec<String> {
+    vec![
+        "podman".to_string(),
+        "container".to_string(),
+        "exists".to_string(),
+        container.to_string(),
+    ]
+}
+
+/// Unit properties are selected explicitly so they survive
+/// caps: show-everything-then-truncate could drop the fields
+/// the post-mortem must compare.
+#[must_use]
+pub fn show_argv(unit: &str) -> Vec<String> {
+    vec![
+        "systemctl".to_string(),
+        "--user".to_string(),
+        "show".to_string(),
+        unit.to_string(),
+        "--property".to_string(),
+        "LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,MainPID,ControlPID,InvocationID,NRestarts,Restart,SuccessExitStatus,ActiveEnterTimestampMonotonic,InactiveEnterTimestampMonotonic,StartLimitBurst,StartLimitIntervalUSec"
+            .to_string(),
+    ]
+}
+
+/// `ps` narrows by container name; the known container ID is
+/// checked against the output in Rust (both identities
+/// preserved, neither assumed from the other).
+#[must_use]
+pub fn ps_argv(container: &str) -> Vec<String> {
+    vec![
+        "podman".to_string(),
+        "ps".to_string(),
+        "-a".to_string(),
+        "--filter".to_string(),
+        format!("name={container}"),
+        "--format".to_string(),
+        "{{.ID}} {{.Names}} {{.State}}".to_string(),
+    ]
+}
+
+/// Journal slice bounded from the recorded pre-surgery cursor.
+#[must_use]
+pub fn journal_argv(unit: &str, since_epoch_secs: u64) -> Vec<String> {
+    vec![
+        "journalctl".to_string(),
+        "--user".to_string(),
+        "-u".to_string(),
+        unit.to_string(),
+        "--since".to_string(),
+        format!("@{since_epoch_secs}"),
+        "--no-pager".to_string(),
+        "-n".to_string(),
+        "100".to_string(),
+    ]
 }
 
 #[cfg(test)]
@@ -347,30 +564,48 @@ mod surgery_diag_tests {
     // calls, with synthetic inputs (no podman, no systemd).
     use super::*;
 
+    fn ok_out(code: i32, stdout: &str, stderr: &str) -> ProbeOutcome {
+        use std::os::unix::process::ExitStatusExt;
+        let raw = if code == 0 { 0 } else { code << 8 };
+        split_outcome(Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }))
+    }
+
     #[test]
     fn exists_codes_follow_the_cli_contract() {
-        assert_eq!(classify_exists(ProbeEnd::Exited(0)), ExistsClass::Found);
-        assert_eq!(classify_exists(ProbeEnd::Exited(1)), ExistsClass::NotFound);
+        assert_eq!(
+            classify_exists(Some(&ok_out(0, "", ""))),
+            ExistsClass::Found
+        );
+        assert_eq!(
+            classify_exists(Some(&ok_out(1, "", ""))),
+            ExistsClass::NotFound
+        );
         // 125 and every other end state are query failures,
-        // never absence.
+        // never absence. Unscheduled is Missing, never a
+        // fabricated query failure.
         assert_eq!(
-            classify_exists(ProbeEnd::Exited(125)),
+            classify_exists(Some(&ok_out(125, "", ""))),
+            ExistsClass::QueryFailure
+        );
+        assert_eq!(classify_exists(None), ExistsClass::Missing);
+        assert_eq!(
+            classify_exists(Some(&ProbeOutcome {
+                end: ProbeEnd::TimedOut,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })),
             ExistsClass::QueryFailure
         );
         assert_eq!(
-            classify_exists(ProbeEnd::Exited(3)),
-            ExistsClass::QueryFailure
-        );
-        assert_eq!(
-            classify_exists(ProbeEnd::Signaled),
-            ExistsClass::QueryFailure
-        );
-        assert_eq!(
-            classify_exists(ProbeEnd::TimedOut),
-            ExistsClass::QueryFailure
-        );
-        assert_eq!(
-            classify_exists(ProbeEnd::SpawnFailed),
+            classify_exists(Some(&ProbeOutcome {
+                end: ProbeEnd::SpawnFailed,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })),
             ExistsClass::QueryFailure
         );
     }
@@ -381,8 +616,11 @@ mod surgery_diag_tests {
         // field: bound and observation share it exactly.
         let bound = ("abc123", "2026-10-25 23:51:07.581067683 +0000 UTC");
         let (class, pair) = classify_inspect(
-            ProbeEnd::Exited(0),
-            b"abc123 2026-10-25 23:51:07.581067683 +0000 UTC\n",
+            Some(&ok_out(
+                0,
+                "abc123 2026-10-25 23:51:07.581067683 +0000 UTC\n",
+                "",
+            )),
             bound.0,
             bound.1,
         );
@@ -390,16 +628,22 @@ mod surgery_diag_tests {
         assert_eq!(pair, Some(("abc123".to_string(), bound.1.to_string())));
         // Changed StartedAt with the same Id lands.
         let (class, _) = classify_inspect(
-            ProbeEnd::Exited(0),
-            b"abc123 2026-10-25 23:52:00.000000000 +0000 UTC\n",
+            Some(&ok_out(
+                0,
+                "abc123 2026-10-25 23:52:00.000000000 +0000 UTC\n",
+                "",
+            )),
             bound.0,
             bound.1,
         );
         assert_eq!(class, InspectClass::Changed);
         // Changed Id with the same StartedAt also lands.
         let (class, _) = classify_inspect(
-            ProbeEnd::Exited(0),
-            b"def456 2026-10-25 23:51:07.581067683 +0000 UTC\n",
+            Some(&ok_out(
+                0,
+                "def456 2026-10-25 23:51:07.581067683 +0000 UTC\n",
+                "",
+            )),
             bound.0,
             bound.1,
         );
@@ -408,53 +652,83 @@ mod surgery_diag_tests {
 
     #[test]
     fn inspect_nonzero_is_unqueryable_not_absence() {
-        let (class, pair) = classify_inspect(ProbeEnd::Exited(125), b"", "id", "st");
+        let (class, pair) = classify_inspect(Some(&ok_out(125, "", "")), "id", "st");
         assert_eq!(class, InspectClass::Unqueryable);
         assert_eq!(pair, None);
-        let (class, pair) = classify_inspect(ProbeEnd::TimedOut, b"", "id", "st");
+        let (class, pair) = classify_inspect(
+            Some(&ProbeOutcome {
+                end: ProbeEnd::TimedOut,
+                stdout: b"partial".to_vec(),
+                stderr: Vec::new(),
+            }),
+            "id",
+            "st",
+        );
         assert_eq!(class, InspectClass::Unqueryable);
         assert_eq!(pair, None);
     }
 
     #[test]
     fn inspect_unparseable_is_its_own_class() {
-        let (class, pair) = classify_inspect(ProbeEnd::Exited(0), b"\n", "id", "st");
+        let (class, pair) = classify_inspect(Some(&ok_out(0, "\n", "")), "id", "st");
         assert_eq!(class, InspectClass::Unparseable);
         assert_eq!(pair, None);
     }
 
     #[test]
-    fn escape_caps_and_keeps_records_one_line() {
+    fn unscheduled_probes_are_missing_not_query_failures() {
+        let (class, pair) = classify_inspect(None, "id", "st");
+        assert_eq!(class, InspectClass::Missing);
+        assert_eq!(pair, None);
+    }
+
+    #[test]
+    fn escape_keeps_one_line_with_explicit_truncation() {
         assert_eq!(escape_capped(b"abc\ndef", 160), "abc\\ndef");
-        assert_eq!(escape_capped(b"  spaced  \n", 160), "spaced");
-        assert_eq!(escape_capped(b"0123456789", 4), "0123");
-        // Unfamiliar bytes survive verbatim (lossy), capped.
+        // Whitespace is preserved, not trimmed away.
+        assert_eq!(escape_capped(b"  spaced  \n", 160), "  spaced  \\n");
+        // Truncation names the dropped count.
+        assert_eq!(escape_capped(b"0123456789", 4), "0123...[+6 truncated]");
+        // Unfamiliar strings survive verbatim (lossy), capped.
         assert_eq!(
             escape_capped(b"no such object: x", 160),
             "no such object: x"
         );
         assert_eq!(escape_capped(b"", 160), "");
+        // Terminal controls are escaped, never passed through.
+        assert_eq!(escape_capped(b"a\x1bb", 160), "a\\x1bb");
+        assert_eq!(escape_capped(b"a\x07b", 160), "a\\x07b");
     }
 
     #[test]
     fn history_keeps_first_and_last_with_counts() {
         let mut history = PollHistory::default();
-        for i in 0..10 {
-            history_push(&mut history, format!("poll#{i}"), i >= 3);
-            history_tally(
+        for i in 0..10u64 {
+            let rendered = format!("poll#{i}");
+            let inspect = if i >= 3 {
+                InspectClass::Unqueryable
+            } else {
+                InspectClass::CleanSame
+            };
+            history_observe(
                 &mut history,
-                &InspectClass::Unqueryable,
-                &ExistsClass::Found,
+                rendered,
+                inspect,
+                ExistsClass::Found,
+                false,
+                i * 500,
             );
         }
         assert_eq!(history.total, 10);
-        assert_eq!(history.first_anomaly, Some(3));
-        // One clean-to-anomaly transition at poll 3.
+        assert_eq!(history.first_anomaly_ms, Some(1500));
+        // One clean-to-anomaly outcome transition at poll 3.
         assert_eq!(history.transitions, 1);
-        assert_eq!(history.unqueryable, 10);
+        assert_eq!(history.inspect_unqueryable, 7);
+        assert_eq!(history.inspect_clean, 3);
+        assert_eq!(history.exists_found, 10);
         let report = report_history(&history);
         assert!(report.contains("polls=10"), "{report}");
-        assert!(report.contains("first_anomaly=poll#3"), "{report}");
+        assert!(report.contains("first_anomaly=+1500ms"), "{report}");
         assert!(
             report.contains("poll#0") && report.contains("poll#2"),
             "{report}"
@@ -464,89 +738,161 @@ mod surgery_diag_tests {
     }
 
     #[test]
-    fn unqueryable_label_is_conditional_on_observations() {
-        // Query failures observed: not-successfully-queried.
+    fn history_tracks_exists_flaps_as_transitions() {
         let mut history = PollHistory::default();
-        history_push(&mut history, "q".to_string(), true);
-        history_tally(
+        history_observe(
             &mut history,
-            &InspectClass::Unqueryable,
-            &ExistsClass::Found,
+            "a".to_string(),
+            InspectClass::CleanSame,
+            ExistsClass::Found,
+            false,
+            0,
         );
-        assert!(unqueryable_section(&history).contains("not successfully queried"));
-        assert!(unqueryable_section(&history).contains("absence not established"));
-        // Only unchanged identity observed: landing not
+        history_observe(
+            &mut history,
+            "b".to_string(),
+            InspectClass::CleanSame,
+            ExistsClass::NotFound,
+            false,
+            500,
+        );
+        history_observe(
+            &mut history,
+            "c".to_string(),
+            InspectClass::CleanSame,
+            ExistsClass::Found,
+            false,
+            1000,
+        );
+        // Two tuple transitions (Found->NotFound->Found) even
+        // though every inspect stayed clean.
+        assert_eq!(history.transitions, 2);
+        assert_eq!(history.exists_notfound, 1);
+        assert_eq!(history.exists_found, 2);
+    }
+
+    #[test]
+    fn unqueryable_section_is_conditional_and_honest() {
+        // Query failures among clean polls: some-vs-all counts.
+        let mut history = PollHistory::default();
+        history_observe(
+            &mut history,
+            "q".to_string(),
+            InspectClass::Unqueryable,
+            ExistsClass::QueryFailure,
+            false,
+            2500,
+        );
+        history_observe(
+            &mut history,
+            "c".to_string(),
+            InspectClass::CleanSame,
+            ExistsClass::Found,
+            false,
+            3000,
+        );
+        let section = unqueryable_section(&history);
+        assert!(
+            section.contains("not successfully queried in 1/2"),
+            "{section}"
+        );
+        assert!(section.contains("absence not established"), "{section}");
+        // Timeout on unchanged identity only: landing not
         // established, never never-queried.
         let mut clean = PollHistory::default();
-        history_push(&mut clean, "c".to_string(), false);
-        history_tally(&mut clean, &InspectClass::CleanSame, &ExistsClass::Found);
+        history_observe(
+            &mut clean,
+            "c".to_string(),
+            InspectClass::CleanSame,
+            ExistsClass::Found,
+            false,
+            0,
+        );
         let section = unqueryable_section(&clean);
         assert!(section.contains("landing not established"), "{section}");
         assert!(!section.contains("not successfully queried"), "{section}");
     }
 
     #[test]
-    fn clamp_composes_per_probe_with_remaining_budget() {
+    fn probe_window_composes_allowance_inside_phase() {
         let start = Instant::now();
-        // Remaining exceeds the per-probe allowance: probe
-        // gets the allowance.
+        let reserve = Duration::from_secs(20);
+        // Full window fits: absolute deadline carries the
+        // stated execution allowance plus the reserve.
         assert_eq!(
-            clamp_probe_allowance(
+            probe_window(
                 start,
                 start + Duration::from_secs(60),
-                Duration::from_secs(5)
+                Duration::from_secs(5),
+                reserve
             ),
-            Some(Duration::from_secs(5))
+            Some(start + Duration::from_secs(25))
         );
-        // Remaining under the allowance: probe gets the
-        // remainder, never past the deadline.
+        // Not even one full window fits: unscheduled, never a
+        // fabricated short window.
         assert_eq!(
-            clamp_probe_allowance(
+            probe_window(
                 start,
-                start + Duration::from_secs(2),
-                Duration::from_secs(5)
+                start + Duration::from_secs(10),
+                Duration::from_secs(5),
+                reserve
             ),
-            Some(Duration::from_secs(2))
+            None
         );
-        // Expired budget: probe unscheduled.
         assert_eq!(
-            clamp_probe_allowance(start, start, Duration::from_secs(5)),
+            probe_window(start, start, Duration::from_secs(5), reserve),
             None
         );
     }
 
     #[test]
-    fn timeout_mark_never_reads_as_backend_outcome() {
-        let mark = timeout_mark("inspect", Duration::from_secs(5));
-        assert!(mark.contains("timed out"), "{mark}");
+    fn timeout_mark_names_allowance_not_backend() {
+        let mark = timeout_mark("inspect probe", Duration::from_secs(5));
+        assert!(mark.contains("timed out after 5s"), "{mark}");
         assert!(mark.contains("not a backend outcome"), "{mark}");
     }
 
     #[test]
-    fn cmd_evidence_renders_missing_explicitly() {
-        let rendered = render_cmd_evidence("systemctl show x", "MISSING: phase budget exhausted");
-        assert!(rendered.contains("MISSING"), "{rendered}");
-    }
-
-    #[test]
-    fn split_outcome_keeps_timeout_partials() {
-        let out = std::process::Command::new("true")
-            .output()
-            .expect("true runs");
-        let (end, stdout, _) = split_outcome(Ok(out));
-        assert_eq!(end, ProbeEnd::Exited(0));
-        assert!(stdout.is_empty());
-    }
-
-    #[test]
-    fn render_outcome_names_end_and_streams() {
-        let rendered = render_outcome(
-            "podman inspect x",
-            ProbeEnd::Exited(125),
-            b"",
-            b"no such object",
+    fn timeout_report_leads_with_original_verdict() {
+        let report = render_timeout_report(
+            "surgery never landed a new incarnation for X",
+            "container not successfully queried",
+            "base",
+            "hist",
+            "pm",
         );
-        assert!(rendered.contains("Exited(125)"), "{rendered}");
-        assert!(rendered.contains("no such object"), "{rendered}");
+        let verdict_at = report
+            .find("surgery never landed")
+            .expect("verdict present");
+        let section_at = report
+            .find("not successfully queried")
+            .expect("section present");
+        assert!(verdict_at < section_at, "{report}");
+    }
+
+    #[test]
+    fn builders_name_the_real_unit_and_properties() {
+        let unit = unit_name("cistella-abc");
+        assert_eq!(unit, "cistella-abc.service");
+        let show = show_argv(&unit);
+        assert_eq!(show[0], "systemctl");
+        assert!(show.contains(&unit), "{show:?}");
+        for prop in [
+            "LoadState",
+            "ActiveState",
+            "SubState",
+            "Result",
+            "MainPID",
+            "InvocationID",
+            "NRestarts",
+            "StartLimitBurst",
+        ] {
+            assert!(show.join(" ").contains(prop), "missing {prop}: {show:?}");
+        }
+        let ps = ps_argv("cistella-abc");
+        assert!(ps.join(" ").contains("name=cistella-abc"), "{ps:?}");
+        let journal = journal_argv(&unit, 123);
+        assert!(journal.contains(&"@123".to_string()), "{journal:?}");
+        assert!(journal.contains(&unit), "{journal:?}");
     }
 }

@@ -260,37 +260,37 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     );
     assert!(probe.exists(), "pre-restart entry executes the payload");
     std::fs::remove_file(&probe).expect("clear the pre-restart marker");
-    let out = run_bounded(
-        {
-            let mut cmd = Command::new("podman");
-            cmd.args(["restart", &container]);
-            cmd
-        },
-        RUN_CISTELLA_TIMEOUT,
-    )
-    .expect("podman restart runs");
+    // Full surgery cycle with the order pinned: baseline, then
+    // the mutation, then the landing wait whose deadline starts
+    // at the mutation-return boundary. The surgery outcome is
+    // asserted here as before; the evidence rides along for any
+    // later post-landing failure.
+    let surgery_argv = vec![
+        "podman".to_string(),
+        "restart".to_string(),
+        container.clone(),
+    ];
+    let (surgery_outcome, evidence) = collect::run_surgery_cycle(
+        &collect::RealRunner,
+        &collect::SystemClock,
+        &container,
+        &bound.container_id,
+        &bound.started_at,
+        &surgery_argv,
+    );
+    let out = surgery_outcome.expect("podman restart runs");
     assert!(
         out.status.success(),
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Pre-surgery baseline (allowance B): the recorded state
-    // the timeout post-mortem reads against. Failure is
-    // recorded, never a new gate.
-    let baseline = collect::capture_baseline(&container, &bound.container_id, &bound.started_at);
-    // Bounded wait for the replacement to land as one
-    // coherent observation: a single paired reading differing
-    // from the bound. Transient uninspectability reads as
-    // not-yet, never as absence; the bound fails loud with
-    // the baseline, the bounded poll history, and the timeout
-    // post-mortem. Landing is the premise — the product gate
-    // below renders the verdict.
-    let evidence = collect::wait_landed_incarnation(
-        &container,
-        &bound.container_id,
-        &bound.started_at,
-        &baseline,
-    );
+    // Post-landing context guard: any failure unwinding past
+    // this point prints the retained landing history and
+    // baseline. Disarmed only on full convergence below.
+    let mut evidence_guard = collect::EvidenceGuard::armed(format!(
+        "landing evidence:\n{}\nbaseline:\n{}",
+        evidence.history_report, evidence.baseline_report
+    ));
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -310,10 +310,7 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     } else if stderr.contains("unestablishable") {
         "unestablishable"
     } else {
-        panic!(
-            "post-restart refusal must come from the readiness edge, got: {stderr}\nlanding evidence: {}\nbaseline: {}",
-            evidence.history_report, evidence.baseline_report
-        );
+        panic!("post-restart refusal must come from the readiness edge, got: {stderr}");
     };
     eprintln!("post-restart refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
@@ -322,6 +319,7 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "restarted unit terminates: {}",
         String::from_utf8_lossy(&term.stderr)
     );
+    evidence_guard.disarm();
     guard.id = None;
 }
 
@@ -422,33 +420,31 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     // Restart=on-failure fires and systemd recreates the same
     // name with a new container ID. (`rm -f` exits clean and
     // never recreates — the wait below would be unreachable.)
-    let out = run_bounded(
-        {
-            let mut cmd = Command::new("podman");
-            cmd.args(["kill", &container]);
-            cmd
-        },
-        RUN_CISTELLA_TIMEOUT,
-    )
-    .expect("podman kill runs");
+    // Full surgery cycle with the order pinned: baseline, then
+    // the mutation, then the landing wait whose deadline starts
+    // at the mutation-return boundary.
+    let surgery_argv = vec!["podman".to_string(), "kill".to_string(), container.clone()];
+    let (surgery_outcome, evidence) = collect::run_surgery_cycle(
+        &collect::RealRunner,
+        &collect::SystemClock,
+        &container,
+        &bound_id,
+        &bound.started_at,
+        &surgery_argv,
+    );
+    let out = surgery_outcome.expect("podman kill runs");
     assert!(
         out.status.success(),
         "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Pre-surgery baseline (allowance B): recorded state for
-    // the timeout post-mortem; failure is recorded, never a
-    // new gate.
-    let baseline = collect::capture_baseline(&container, &bound_id, &bound.started_at);
-    // Bounded wait for systemd's replacement to land as one
-    // coherent observation: a single paired reading differing
-    // from the bound. Transient uninspectability reads as
-    // not-yet, never as absence; the bound fails loud with
-    // the baseline, the bounded poll history, and the timeout
-    // post-mortem. Landing is the premise — the product gate
-    // below renders the verdict.
-    let evidence =
-        collect::wait_landed_incarnation(&container, &bound_id, &bound.started_at, &baseline);
+    // Post-landing context guard: any failure unwinding past
+    // this point prints the retained landing history and
+    // baseline. Disarmed only on full convergence below.
+    let mut evidence_guard = collect::EvidenceGuard::armed(format!(
+        "landing evidence:\n{}\nbaseline:\n{}",
+        evidence.history_report, evidence.baseline_report
+    ));
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -468,10 +464,7 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     } else if stderr.contains("unestablishable") {
         "unestablishable"
     } else {
-        panic!(
-            "post-recreate refusal must come from the readiness edge, got: {stderr}\nlanding evidence: {}\nbaseline: {}",
-            evidence.history_report, evidence.baseline_report
-        );
+        panic!("post-recreate refusal must come from the readiness edge, got: {stderr}");
     };
     eprintln!("post-recreate refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
@@ -480,6 +473,7 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         "recreated unit terminates: {}",
         String::from_utf8_lossy(&term.stderr)
     );
+    evidence_guard.disarm();
     guard.id = None;
 }
 
