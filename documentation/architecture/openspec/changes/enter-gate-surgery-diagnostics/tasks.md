@@ -21,4 +21,4 @@
 
 - [x] 4.1 Put record/classify/report/history/budget functions in a helper module beside the collector with backend-free `#[cfg(test)]` pins invoking the same implementation (exists codes, stderr shapes, unqueryable labeling with no absence aggregation, truncation/timeout markers, original-verdict retention, history caps, budget composition); no `roster-check.py` changes
 - [x] 4.2 `cargo fmt`, `clippy`, `openspec validate --all --strict` clean; backend-free pins green; `git diff --check` clean
-- [ ] 4.3 Route the packet through tier-1, then tier-2 (diagnostics only; no verdict, roster, workflow, or product changes)
+- [x] 4.3 Route the packet through tier-1, then tier-2 (diagnostics only; no verdict, roster, workflow, or product changes)
