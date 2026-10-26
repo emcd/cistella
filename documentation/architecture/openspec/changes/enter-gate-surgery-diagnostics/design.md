@@ -1,13 +1,13 @@
 ## Context
 
-`wait_landed_incarnation` (`tests/integration/enter_gate.rs:254`) polls `live_identity` every 500ms against a 60s deadline and keeps only the last note; `live_identity` renders stdout only, discarding stderr and the `container exists` code. On timeout the bound panic reports the bound pair plus one stdout fragment — insufficient to separate unit-failed, start-lost, storage/query failure, clean accepted exit, or cross-test GC. The recreate arm shares the helpers. Stakeholders: Owner (diagnosis), tier-1 (packet constraints), tier-2 (consult verdict). Constraint: test-only, no product/gate/roster/workflow changes; observer must not perturb the race.
+`wait_landed_incarnation` (`tests/integration/enter_gate.rs:254`) polls `live_identity` every 500ms against a 60s deadline and keeps only the last note; `live_identity` renders stdout only, discarding stderr and the `container exists` code. On timeout the bound panic reports the bound pair plus one stdout fragment — insufficient to separate unit-failed, start-lost, storage/query failure, clean accepted exit, or cross-test GC. The recreate arm shares the helpers. Stakeholders: Owner (diagnosis), tier-1 (packet constraints), tier-2 (consult verdict). Constraint: test-only, no product/gate/roster/workflow changes; observer perturbation minimized, bounded, and disclosed, never claimed absent.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Next occurrence of either signature carries enough evidence to assign or eliminate each candidate mechanism.
-- Every diagnostic subprocess provably bounded; total wait cannot grow.
-- New classifications pinned backend-free so the collector itself is tested.
+- Next occurrence of either signature carries evidence to support or eliminate hypotheses with stated limits; whatever cannot be separated stays explicitly unresolved.
+- Every phase explicitly bounded under the stated end-to-end bound B+W+D+cleanup; the landing deadline W itself is unchanged.
+- New classifications pinned through the actual Rust implementation (backend-free tests invoking the same functions), so the collector itself is tested.
 
 **Non-Goals:**
 - No product, gate, vocabulary, roster, workflow, or branch-protection changes.

@@ -37,9 +37,18 @@ Before the surgery command runs, the test SHALL capture a bounded baseline under
 - **WHEN** the wait times out
 - **THEN** the report carries both the pre-surgery baseline and the timeout snapshot, so unit-failed, clean-stop, and start-lost read as changes from a recorded state with stated limits
 
+### Requirement: Bounded poll history with first anomaly
+
+The wait loop SHALL retain the first-anomaly time (first poll whose outcome differs from clean success), per-outcome counts and transitions, and the first and last N poll records with N small and fixed. It SHALL NOT retain the full 120-poll trace.
+
+#### Scenario: Flap history survives to the bound
+
+- **WHEN** the wait times out after mixed outcomes
+- **THEN** the failure report names the first-anomaly time, per-outcome counts and transitions, and the bounded first/last records
+
 ### Requirement: Phased bounded budget
 
-The diagnostic work SHALL be composed of explicit phases: a bounded pre-surgery baseline allowance B, the unchanged 60s landing deadline W, then a separately bounded failure-report allowance D that starts only after the original timeout is latched, plus accounted kill/reap/drain cleanup. No new polling SHALL start after W. Collection is exactly-once attempt, not guaranteed bundle: missing, unscheduled, or timed-out diagnostics are reported as such. The stated end-to-end bound is B+W+D+cleanup; a per-command timeout alone does not compose it.
+The diagnostic work SHALL be composed of explicit phases: a bounded pre-surgery baseline allowance B, the unchanged 60s landing deadline W, then a separately bounded failure-report allowance D that starts only after the original timeout is latched, plus accounted kill/reap/drain cleanup. Inside W, every diagnostic subprocess (inspect, exists probe) SHALL run under a small fixed per-probe allowance, so no single probe can consume a fresh window inside the deadline. No new polling SHALL start after W. Collection is exactly-once attempt, not guaranteed bundle: missing, unscheduled, or timed-out diagnostics are reported as such, and timeout-marked evidence SHALL be labeled as timeout, never counted as a backend outcome. The stated end-to-end bound is B+W+D+cleanup; a per-command timeout alone does not compose it.
 
 #### Scenario: Post-timeout work fits its own allowance
 
