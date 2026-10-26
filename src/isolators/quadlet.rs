@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::error::{CistellaError, Result};
 use crate::lock::LockGuard;
-use crate::registry::unit_file_label;
+use crate::operation_log;
 use crate::session::{
     LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_LANDLOCK,
     LABEL_PROFILE, LABEL_PROFILE_DIGEST, LABEL_RECONCILIATION_KEY, Session, command_label,
@@ -560,21 +560,33 @@ pub(crate) fn stop_settle(container_name: &str, grace: Duration) -> Result<()> {
     Ok(())
 }
 
+/// Outcome of one unit-file removal: whether this call unlinked
+/// the file (and therefore reloaded) or found absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnlinkOutcome {
+    /// True when this call unlinked the file (and reloaded).
+    /// False means the file was already absent: converged,
+    /// no reload issued by this call.
+    pub unlinked: bool,
+}
+
 /// Removes the unit file, reloads, and resets failure state (systemd path).
 ///
 /// Absent files succeed without reloading: removing an absent unit is
 /// the converged state, never an error. Concurrent removers converge:
 /// a `NotFound` on unlink means the peer already unlinked, so this
-/// caller made no filesystem change and the unlink winner owns
-/// reload/error reporting.
+/// caller made no filesystem change, issued no reload, and reports
+/// `unlinked: false`. The reload outcome is the call's own: no
+/// inference from a pre-check, which a concurrent remover could
+/// invalidate between check and unlink.
 ///
 /// # Errors
 ///
 /// Returns `CistellaError::Runtime` on removal or reload failure.
 /// `NotFound` on unlink is converged absence, never an error.
-pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<()> {
+pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<UnlinkOutcome> {
     if !systemd_user_available() {
-        return Ok(());
+        return Ok(UnlinkOutcome { unlinked: false });
     }
     let service = format!("{container_name}.service");
     if let Some(dir) = quadlet_dir() {
@@ -590,10 +602,12 @@ pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<
                     String::from_utf8_lossy(&out.stderr)
                 )));
             }
+            let _ = systemctl_user().args(["reset-failed", &service]).output();
+            return Ok(UnlinkOutcome { unlinked: true });
         }
     }
     let _ = systemctl_user().args(["reset-failed", &service]).output();
-    Ok(())
+    Ok(UnlinkOutcome { unlinked: false })
 }
 
 /// Unlinks one unit file without any pre-check.
@@ -643,10 +657,65 @@ pub fn teardown(container_name: &str, session_id: &str) -> Result<()> {
 ///
 /// Returns `CistellaError::Runtime` on systemctl or IO failure.
 pub fn teardown_inner(container_name: &str, session_id: &str) -> Result<()> {
+    teardown_inner_with_parent(container_name, session_id, None)
+}
+
+/// Shared teardown with an explicit parent operation id, so a
+/// caller-owned operation (for example gc's) connects to the
+/// teardown it triggers. `None` opens a top-level operation.
+pub fn teardown_inner_with_parent(
+    container_name: &str,
+    session_id: &str,
+    parent: Option<&str>,
+) -> Result<()> {
+    operation_log::scoped("teardown", parent, |op| {
+        teardown_inner_impl(container_name, session_id, op)
+    })
+}
+
+/// Shared teardown body: records each step it took; any logging
+/// failure is silent and the business outcome is unchanged.
+fn teardown_inner_impl(
+    container_name: &str,
+    session_id: &str,
+    op: &mut Option<operation_log::Operation>,
+) -> Result<()> {
     let unit = format!("{container_name}.container");
     if systemd_user_available() {
         stop_settle(container_name, Duration::from_secs(10))?;
-        remove_unit_file(container_name, &unit)?;
+        operation_log::record_step(
+            op,
+            serde_json::json!({
+                "step": "stop-settled",
+                "container": container_name,
+            }),
+        );
+        // The reload claim comes from the call's own outcome,
+        // never from a pre-check a concurrent remover could
+        // invalidate: `unlinked` means this call removed and
+        // reloaded, `already-absent` means a peer won the unlink
+        // and issued no reload here.
+        match remove_unit_file(container_name, &unit) {
+            Ok(outcome) => operation_log::record_step(
+                op,
+                serde_json::json!({
+                    "step": "unit-removed",
+                    "container": container_name,
+                    "reload": if outcome.unlinked { "ok" } else { "not-required" },
+                }),
+            ),
+            Err(error) => {
+                operation_log::record_step(
+                    op,
+                    serde_json::json!({
+                        "step": "unit-remove-failed",
+                        "container": container_name,
+                        "detail": operation_log::cap_str(&error.to_string(), 500),
+                    }),
+                );
+                return Err(error);
+            }
+        }
     } else {
         // Fallback for environments without systemd user instance (tests)
         stop_settle(container_name, Duration::from_secs(2))?;
@@ -655,13 +724,23 @@ pub fn teardown_inner(container_name: &str, session_id: &str) -> Result<()> {
         // Declared cleanup roots reap post-convergence: litter
         // reports without failing teardown (the unit is gone
         // either way — removal failure is litter, never residue).
+        let mut litter_count = 0usize;
         for litter in crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id) {
+            litter_count += 1;
             eprintln!("warning: cleanup litter: {litter}");
         }
         // Launch attestation reaps AFTER the unit file is gone
         // (removed above): record-gone dominates stale residue by
         // structure, never by check order.
         crate::attestation::reap(&crate::lock::runtime_base(), session_id);
+        operation_log::record_step(
+            op,
+            serde_json::json!({
+                "step": "attestation-reaped",
+                "session": session_id,
+                "litter": litter_count,
+            }),
+        );
     }
     Ok(())
 }
@@ -758,211 +837,4 @@ pub(crate) fn container_exists_code(name: &str) -> Result<i32> {
             String::from_utf8_lossy(&exists.stderr)
         ))),
     }
-}
-
-/// GC result.
-#[derive(Debug, Clone)]
-pub struct GcResult {
-    /// Reaped container names plus removed orphaned slice dirs.
-    pub reaped: Vec<String>,
-}
-
-/// Reaps orphaned cistella units and stray non-systemd containers.
-///
-/// Under Quadlet `--rm` a stopped/crashed service has no `podman ps` entry,
-/// so GC enumerates BOTH `~/.config/containers/systemd/cistella-*.container`
-/// files and `podman ps --all` `cistella.id` labels. For each candidate: if
-/// `ActiveState` is inactive/failed/not-found the shared teardown runs;
-/// active units are left. Holds the creation-window lock around the whole
-/// scan-and-teardown so a concurrent `conduct` install is never reaped.
-/// Fail-closed on any inspect error.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Runtime` if podman list fails; on inspect error
-/// returns empty Ok (fail-closed).
-pub fn gc_exited() -> Result<GcResult> {
-    let _guard = LockGuard::acquire()?;
-    gc_exited_locked()
-}
-
-/// Lock-held half of `gc_exited` for the creation-window test, which holds
-/// the guard to prove a concurrent `gc` reaps nothing.
-///
-/// # Errors
-///
-/// Returns `CistellaError::Runtime` if podman list fails.
-pub fn gc_exited_locked() -> Result<GcResult> {
-    let mut reaped = Vec::new();
-    let systemd = systemd_user_available();
-    // Enumerate candidates from both sources: unit files + podman ps
-    let mut candidates: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // From podman ps --all
-    let out = Command::new("podman")
-        .args([
-            "ps",
-            "--all",
-            "--filter",
-            "label=cistella.id",
-            "--format",
-            "{{.Names}}",
-        ])
-        .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman ps: {e}")))?;
-    if !out.status.success() {
-        return Err(CistellaError::Runtime(format!(
-            "ps failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )));
-    }
-    for n in String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        candidates.insert(n);
-    }
-    // From Quadlet unit directory (orphaned files invisible to ps due to --rm)
-    if let Some(dir) = quadlet_dir()
-        && let Ok(entries) = std::fs::read_dir(&dir)
-    {
-        for e in entries.flatten() {
-            let fname = e.file_name().to_string_lossy().to_string();
-            if fname.starts_with("cistella-") && fname.ends_with(".container") {
-                let cname = fname.trim_end_matches(".container").to_string();
-                candidates.insert(cname);
-            }
-        }
-    }
-    // Phase 1: classify every candidate before mutating anything. Any
-    // inspect/exists failure aborts here with zero teardowns, so "fail
-    // closed on any inspect error" holds regardless of HashSet order.
-    // Each entry is (container name, session id, reap-as-orphan-unit). The
-    // session id comes from the SAME inspect call as the status (plus the
-    // unit file for absent containers): no second inspect whose failure
-    // could be silently swallowed.
-    let mut to_reap: Vec<(String, String, bool)> = Vec::new();
-    // Session ids of units still present after this run (running
-    // or otherwise not selected): tmpdir-orphan eligibility skips
-    // them. A failed unit scan aborts the whole gc before any
-    // mutation (above), so this set never reads failure as
-    // absence — failed scan is not "no unit".
-    let mut live_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut ordered: Vec<String> = candidates.into_iter().collect();
-    ordered.sort();
-    for name in ordered {
-        // Absence primitive is `podman container exists`: exit 0 present,
-        // exit 1 absent, anything else a typed error that reaps nothing.
-        // A failed `inspect` alone must never read as absence (fail closed).
-        let insp = Command::new("podman")
-            .args([
-                "inspect",
-                "--format",
-                "{{.State.Status}} {{index .Config.Labels \"cistella.id\"}}",
-                &name,
-            ])
-            .output();
-        let (inspected, inspect_err) = match insp {
-            Ok(o) if o.status.success() => (
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
-                String::new(),
-            ),
-            Ok(o) => (None, String::from_utf8_lossy(&o.stderr).to_string()),
-            Err(e) => (None, e.to_string()),
-        };
-        // Status and id ride one call: `<status> <id>`, with `<no value>`
-        // (whitespace-split) when the container carries no `cistella.id`
-        // label. Minted ids never contain whitespace, so parts[1] alone is
-        // exact; anything starting with `<` is podman's missing marker.
-        let (status, mut sid) = match inspected.as_deref() {
-            Some(out) => {
-                let parts: Vec<&str> = out.split_whitespace().collect();
-                let status = parts.first().unwrap_or(&"").to_string();
-                let sid = match parts.get(1) {
-                    Some(id) if !id.starts_with('<') => id.to_string(),
-                    _ => String::new(),
-                };
-                (Some(status), sid)
-            }
-            None => (None, String::new()),
-        };
-        let (is_exited_container, is_orphan_unit) = match status.as_deref() {
-            Some(status) => (status == "exited", false),
-            None => {
-                if container_exists(&name)? {
-                    // Present but uninspectable: a real invocation failure,
-                    // not Quadlet `--rm` absence. Fail closed.
-                    return Err(CistellaError::Runtime(format!(
-                        "podman inspect {name} failed while container exists: {inspect_err}"
-                    )));
-                }
-                // Expected absence under Quadlet --rm — check if unit file exists and service is inactive/failed/not-found.
-                // The session id comes from the unit file (pure fs read, no
-                // podman): the only source for `--rm`'d orphans.
-                let mut orphan = false;
-                if let Some(dir) = quadlet_dir() {
-                    let path = dir.join(format!("{name}.container"));
-                    if path.exists() {
-                        if sid.is_empty() {
-                            sid = unit_file_label(&path, LABEL_ID)
-                                .ok()
-                                .flatten()
-                                .unwrap_or_default();
-                        }
-                        if systemd {
-                            let service = format!("{name}.service");
-                            let props = query_unit_props(&service);
-                            let active = props
-                                .get("ActiveState")
-                                .map(|s| s.as_str())
-                                .unwrap_or("inactive");
-                            let load = props
-                                .get("LoadState")
-                                .map(|s| s.as_str())
-                                .unwrap_or("not-found");
-                            if load == "not-found" || active == "inactive" || active == "failed" {
-                                orphan = true;
-                            }
-                        }
-                    }
-                }
-                (false, orphan)
-            }
-        };
-        if is_exited_container || is_orphan_unit {
-            to_reap.push((name, sid, is_orphan_unit));
-        } else if !sid.is_empty() {
-            live_sessions.insert(sid);
-        }
-    }
-    // Phase 2: teardown only classified orphans. A teardown failure still
-    // propagates, but every candidate was classified before the first
-    // mutation, so no inspect error can follow a deletion.
-    for (name, sid, is_orphan_unit) in to_reap {
-        if systemd {
-            teardown_inner(&name, &sid)?;
-        }
-        // Try podman rm for stray non-systemd containers; for Quadlet orphans there is no container so this is no-op.
-        let rm = Command::new("podman").args(["rm", "-f", &name]).output();
-        if let Ok(rmo) = rm
-            && rmo.status.success()
-        {
-            reaped.push(name.clone());
-        } else if is_orphan_unit {
-            reaped.push(name.clone());
-        }
-    }
-    // Phase 3: tmpdir orphans attributable to dead sessions. Unit
-    // teardowns above converged (any failure propagated instead),
-    // so sessions absent from the live set are dead — orphans with
-    // live leases or live guest groups still skip inside.
-    reaped.extend(crate::cleanup::reap_tmpdir_orphans(&live_sessions));
-    // Phase 3b: attestation orphans (sessions with no live unit:
-    // crashed conducts, pre-teardown kills). Same live-set gate;
-    // reaped names report alongside containers.
-    reaped.extend(crate::attestation::reap_orphans(
-        &crate::lock::runtime_base(),
-        &live_sessions,
-    ));
-    Ok(GcResult { reaped })
 }

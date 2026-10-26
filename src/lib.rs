@@ -20,6 +20,7 @@ pub mod lock;
 pub mod mount;
 pub mod mount_alias;
 pub mod mount_init;
+pub mod operation_log;
 pub mod preflight;
 pub mod prepare;
 pub mod profile;

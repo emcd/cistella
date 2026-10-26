@@ -8,11 +8,11 @@
 
 pub(crate) use crate::isolators::quadlet::query_unit_props;
 pub use crate::isolators::quadlet::{
-    GcResult, escape_percent, gc_exited, gc_exited_locked, generate_quadlet_unit, install_quadlet,
-    logs_container, quadlet_dir, quote_systemd, residue_gone, residue_gone_for_paths,
-    resolve_image_digest, start_quadlet, systemd_user_available, teardown, teardown_inner,
-    unquote_systemd,
+    escape_percent, generate_quadlet_unit, install_quadlet, logs_container, quadlet_dir,
+    quote_systemd, residue_gone, residue_gone_for_paths, resolve_image_digest, start_quadlet,
+    systemd_user_available, teardown, teardown_inner, teardown_inner_with_parent, unquote_systemd,
 };
+pub use crate::isolators::quadlet_gc::{GcResult, gc_exited, gc_exited_locked};
 
 use crate::framework::isolator::{AbsenceObservation, RawClientResult};
 

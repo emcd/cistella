@@ -13,4 +13,5 @@ pub mod hook;
 pub mod podman;
 pub(crate) mod podman_await;
 pub mod quadlet;
+pub mod quadlet_gc;
 pub mod wire;

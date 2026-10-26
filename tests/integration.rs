@@ -44,6 +44,8 @@ mod landlock_wrapper;
 mod lifecycle;
 #[path = "integration/mountprep.rs"]
 mod mountprep;
+#[path = "integration/operation_log.rs"]
+mod operation_log;
 #[path = "integration/orphan.rs"]
 mod orphan;
 #[path = "integration/parked.rs"]

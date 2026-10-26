@@ -51,6 +51,14 @@ mod mount_alias;
 mod mount_init;
 #[path = "unit/mount_permissions.rs"]
 mod mount_permissions;
+#[path = "unit/operation_log.rs"]
+mod operation_log;
+#[path = "unit/operation_log_gc.rs"]
+mod operation_log_gc;
+#[path = "unit/operation_log_prune.rs"]
+mod operation_log_prune;
+#[path = "unit/operation_log_reader.rs"]
+mod operation_log_reader;
 #[path = "unit/policy_prepare.rs"]
 mod policy_prepare;
 #[path = "unit/prepare.rs"]
@@ -65,6 +73,8 @@ mod prepare_permissions;
 mod profile_resolution;
 #[path = "unit/protocol.rs"]
 mod protocol;
+#[path = "unit/quadlet_gc_classify.rs"]
+mod quadlet_gc_classify;
 #[path = "unit/quadlet_remove.rs"]
 mod quadlet_remove;
 #[path = "unit/registry.rs"]
