@@ -2,7 +2,7 @@
 
 ### Requirement: Durable per-operation log layout
 
-Each mutating lifecycle operation SHALL append records under `XDG_STATE_HOME/cistella/logs/<operation-id>/` (fallback `~/.local/state/cistella/logs/` when XDG_STATE_HOME is unset). Directories SHALL be created anchored with mode 0700 and files with mode 0600, following the repo's existing secure-path discipline (no symlink follow, uid-keyed ownership). New logs SHALL NOT live inside `cistella-state-<uid>` and SHALL NOT mirror the lease layout. The runtime directory MAY stage bounded coordination metadata only; any runtime-only retention SHALL name its weaker lifetime and require export before teardown.
+Each mutating lifecycle operation SHALL append records under `XDG_STATE_HOME/cistella/logs/<operation-id>/` (fallback `~/.local/state/cistella/logs/` when XDG_STATE_HOME is unset). Directories SHALL be created anchored with mode 0700 and files with mode 0600, following the repo's existing secure-path discipline (no symlink follow, uid-keyed ownership). Missing ancestors of the log root SHALL be created with the same discipline (verified, not hardened); a symlink at any level refuses the open. A fresh seat with no state chain MUST still open its first operation log. New logs SHALL NOT live inside `cistella-state-<uid>` and SHALL NOT mirror the lease layout. The runtime directory MAY stage bounded coordination metadata only; any runtime-only retention SHALL name its weaker lifetime and require export before teardown.
 
 #### Scenario: Operation opens its own directory
 

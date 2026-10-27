@@ -30,7 +30,7 @@ Alternative considered: single shared log file. Rejected: concurrent writers fro
 
 ### 2. Reuse the secure-path discipline, not an existing tree
 
-Creation reuses the repo's anchored-creation helpers (0700 directories, 0600 files, no symlink follow, uid-keyed ownership). New logs do NOT go inside `cistella-state-<uid>` and do not mirror the lease layout: purpose-built tree, same discipline.
+Creation reuses the repo's anchored-creation helpers (0700 directories, 0600 files, no symlink follow, uid-keyed ownership). The log root builds missing ancestors with the same discipline through a component-wise descriptor-anchored walk: every child is created with `mkdirat` and opened with `openat(O_NOFOLLOW|O_DIRECTORY)` against the retained verified parent descriptor, so intermediate symlinks refuse and no checked path is ever re-resolved; only created levels and the target receive the private-directory hardening. A symlink at any level refuses the open and nothing is created through a link. New logs do NOT go inside `cistella-state-<uid>` and do not mirror the lease layout: purpose-built tree, same discipline.
 
 Logger-owned control and evidence files (the admission lock, eviction markers) are created and opened nofollow with regular-file verification: a planted symlink or FIFO fails the operation closed without touching anything outside the log tree.
 

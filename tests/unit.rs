@@ -27,6 +27,8 @@ mod environment_acceptances;
 mod fdpass;
 #[path = "unit/framework_contract.rs"]
 mod framework_contract;
+#[path = "unit/guest_anchor_state.rs"]
+mod guest_anchor_state;
 #[path = "unit/guest_composition.rs"]
 mod guest_composition;
 #[path = "unit/guest_hosting.rs"]

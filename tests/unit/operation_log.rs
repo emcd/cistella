@@ -294,3 +294,24 @@ fn close_records_a_locked_finalization() {
         "close held the admission lock across finalization"
     );
 }
+
+#[test]
+fn open_builds_a_missing_parent_chain() {
+    // Fresh-seat regression (CI live legs): the log root's
+    // parents may not exist at all. The open must build the
+    // chain with anchored discipline rather than refuse every
+    // operation into silence. The existing suite only ever
+    // missed the final level, which is why this escaped.
+    let root = state_root();
+    let log_root = root.path().join("nope").join("logs");
+    let op =
+        Operation::open(&log_root, "gc", None, &Injected::default()).expect("fresh chain opens");
+    let dir = op.dir().to_path_buf();
+    op.close("success");
+    assert!(dir.exists(), "operation landed under the built chain");
+    let read = read_operation(&dir).expect("read");
+    assert!(
+        matches!(read.outcome, Outcome::Completed(ref s) if s == "success"),
+        "fresh-chain operation completes normally"
+    );
+}

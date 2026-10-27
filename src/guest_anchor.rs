@@ -391,6 +391,172 @@ pub fn open_state_dir(path: &Path) -> std::result::Result<AnchoredDir, String> {
     })
 }
 
+/// Checks seat-or-root ownership on an already-open directory
+/// description. Used at every level of the anchored walk,
+/// including the root anchor itself.
+fn check_dir_owner(fd: &OwnedFd, path: &Path) -> std::result::Result<(), String> {
+    let stat =
+        fstat(fd.as_raw_fd()).map_err(|errno| format!("state dir {}: {errno}", path.display()))?;
+    // SAFETY: getuid is inherently safe.
+    let seat = unsafe { nix::libc::getuid() };
+    if stat.st_uid != seat && stat.st_uid != 0 {
+        return Err(format!(
+            "state dir {} must be seat- or root-owned",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Opens a state directory, creating missing ancestors with the
+/// same discipline. A fresh seat has no state chain yet, and the
+/// non-recursive [`open_state_dir`] would refuse all logging
+/// there — silently, since logging failures never propagate.
+///
+/// The walk is component-wise and descriptor-anchored: starting
+/// from the filesystem root, every child is created with
+/// `mkdirat` and opened with `openat(O_NOFOLLOW|O_DIRECTORY)`
+/// relative to the retained, already-verified parent descriptor,
+/// and the ownership of each opened directory is checked before
+/// descending. Intermediate symlinks therefore refuse at the
+/// `openat` itself, and a checked ancestor cannot be renamed and
+/// replaced between check and use — each step is anchored to an
+/// open descriptor, never to a re-resolved path. Only newly
+/// created levels and the intended target receive the
+/// private-directory hardening; pre-existing ancestors keep
+/// their mode. A symlink at any level refuses the whole open.
+///
+/// Returns `Err` on symlink, non-directory, ownership, or I/O
+/// refusal with a message naming the path.
+pub fn open_state_dir_all(path: &Path) -> std::result::Result<AnchoredDir, String> {
+    open_state_dir_all_with_hook(path, None)
+}
+
+/// Test observation hook for the anchored walk: invoked with
+/// the verified parent's logical path and open descriptor. See
+/// [`open_state_dir_all_with_hook`].
+pub type WalkHook<'a> = dyn Fn(&Path, RawFd) + 'a;
+
+/// Opens a state directory like [`open_state_dir_all`], with a
+/// test observation hook invoked for every verified parent —
+/// with that parent's logical path and open descriptor — after
+/// its ownership check and before the next child is created.
+/// `None` in production. The hook lets a test replace a checked
+/// parent with a symlink mid-walk and prove the walk stays on
+/// the held directory identity instead of traversing the link.
+pub fn open_state_dir_all_with_hook(
+    path: &Path,
+    hook: Option<&WalkHook>,
+) -> std::result::Result<AnchoredDir, String> {
+    use std::path::Component;
+    // Strictly absolute, single-tree paths: every component is
+    // pinned from the filesystem root, so a relative path — or
+    // one containing `.` or `..` — has no anchor and is refused.
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::RootDir) => {}
+        _ => {
+            return Err(format!("state dir {} must be absolute", path.display()));
+        }
+    }
+    let mut names: Vec<&std::ffi::OsStr> = Vec::new();
+    for component in components {
+        match component {
+            Component::Normal(name) => names.push(name),
+            _ => {
+                return Err(format!(
+                    "state dir {} must not contain . or ..",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if names.is_empty() {
+        return Err(format!(
+            "state dir {} has no directory name",
+            path.display()
+        ));
+    }
+    // The filesystem root is the initial trust anchor: a fixed
+    // path no attacker can substitute.
+    let mut parent: OwnedFd = unsafe {
+        OwnedFd::from_raw_fd(
+            open(
+                "/",
+                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|errno| format!("state dir {}: {errno}", path.display()))?,
+        )
+    };
+    check_dir_owner(&parent, path)?;
+    let mut prefix = PathBuf::from("/");
+    for (index, name) in names.iter().enumerate() {
+        if let Some(hook) = hook {
+            hook(&prefix, parent.as_raw_fd());
+        }
+        let is_final = index + 1 == names.len();
+        prefix.push(name);
+        // `mkdirat` never traverses a symlink for its final
+        // component: an existing link (or anything else) at this
+        // name reports EEXIST and the `openat` below refuses it.
+        let created = match nix::sys::stat::mkdirat(
+            Some(parent.as_raw_fd()),
+            Path::new(name),
+            Mode::from_bits_truncate(0o700),
+        ) {
+            Ok(()) => true,
+            Err(nix::errno::Errno::EEXIST) => false,
+            Err(errno) => return Err(format!("state dir {}: {errno}", path.display())),
+        };
+        let raw = openat(
+            Some(parent.as_raw_fd()),
+            Path::new(name),
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|errno| {
+            if errno == nix::errno::Errno::ELOOP {
+                format!("state dir {} must not be a symlink", path.display())
+            } else if errno == nix::errno::Errno::ENOTDIR {
+                // A symlink opened with O_DIRECTORY reports
+                // ENOTDIR rather than ELOOP: disambiguate with an
+                // fd-anchored lstat. Diagnostic only — the
+                // refusal is already decided and no trust rides
+                // this second look.
+                let is_link = nix::sys::stat::fstatat(
+                    Some(parent.as_raw_fd()),
+                    Path::new(name),
+                    nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+                )
+                .map(|stat| {
+                    stat.st_mode as nix::libc::mode_t & nix::libc::S_IFMT == nix::libc::S_IFLNK
+                })
+                .unwrap_or(false);
+                if is_link {
+                    format!("state dir {} must not be a symlink", path.display())
+                } else {
+                    format!("state dir {} must be a directory", path.display())
+                }
+            } else {
+                format!("state dir {}: {errno}", path.display())
+            }
+        })?;
+        // SAFETY: freshly opened above, owned here, wrapped exactly once.
+        let child: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+        check_dir_owner(&child, path)?;
+        if created || is_final {
+            nix::sys::stat::fchmod(child.as_raw_fd(), Mode::from_bits_truncate(0o700))
+                .map_err(|errno| format!("state dir {}: {errno}", path.display()))?;
+        }
+        parent = child;
+    }
+    Ok(AnchoredDir {
+        fd: parent,
+        path: path.to_path_buf(),
+    })
+}
+
 /// Open verified private directory: every file operation inside
 /// runs directory-FD-relative (openat/renameat/unlinkat), so path
 /// substitution between check and use is structural, not checked.

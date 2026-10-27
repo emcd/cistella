@@ -244,6 +244,16 @@ fn open_verified_dir(path: &Path) -> Result<crate::guest_anchor::AnchoredDir> {
         .map_err(|error| CistellaError::Runtime(format!("operation log dir: {error}")))
 }
 
+/// Opens the log root, creating missing ancestors with the same
+/// anchored discipline. A fresh seat has no state chain yet;
+/// the non-recursive [`open_verified_dir`] would refuse every
+/// open there and no log would ever exist. Only the root uses
+/// this: everything beneath it has a guaranteed parent from here.
+fn open_verified_root(path: &Path) -> Result<crate::guest_anchor::AnchoredDir> {
+    crate::guest_anchor::open_state_dir_all(path)
+        .map_err(|error| CistellaError::Runtime(format!("operation log dir: {error}")))
+}
+
 /// Reports whether metadata describes a seat- or root-owned
 /// non-symlink. Anything else is never trusted, counted, or
 /// reaped: unowned or linked paths stay invisible to the log
@@ -380,7 +390,7 @@ impl Operation {
         } else {
             "unknown"
         };
-        let root_dir = open_verified_dir(root)?;
+        let root_dir = open_verified_root(root)?;
         // Admission under a nonblocking lock: contention skips
         // logging rather than stalling the business operation.
         // Same-process concurrent opens serialize on the flock
