@@ -8,11 +8,14 @@
 - Project purpose, tech stack, and other project-owned guidance: @.auxiliary/agents/project.md
 
 # Development Standards
+
 Before implementing code changes, consult these files in `.auxiliary/agents/standards/`:
-- `practices.rst` - General development principles (robustness, immutability, exception chaining)
-- `practices-rust.rst` - Rust-specific patterns (error handling, trait design, module organization)
-- `nomenclature.rst` - Naming conventions for variables, functions, classes, exceptions
-- `style.rst` - Code formatting standards (spacing, line length, documentation mood)
+- `practices.md` - General development principles (robustness, immutability, exception chaining)
+- `practices-rust.md` - Rust-specific patterns (error handling, trait design, module organization)
+- `nomenclature.md` - Naming conventions for variables, functions, classes, exceptions
+- `style.md` - Code formatting standards (spacing, line length, documentation mood)
+- `tests.md` - Testing expectations and patterns (observable behavior through public contracts)
+- `contribution.md` - Contribution workflow (conduct, validation before submit, OpenSpec proposal flow)
 
 # Operation
 
@@ -20,11 +23,8 @@ Before implementing code changes, consult these files in `.auxiliary/agents/stan
   - Start at the repository root `README.{md,rst}`, then read the nearest relevant subtree README.
   - After reading the nearest README, scope code searches to that subtree before considering repo-wide searches.
   - If a touched subsystem README is stale after your change, update it in the same batch.
-- Use relative paths rather than absolute paths when possible (relative paths are less likely to trigger tool call permission requests).
-- Do not write to paths outside the current project unless explicitly requested.
-- Do **not** run `find`, `fd`, or other unbounded recursive walks on `/`, `~`, or other home-wide roots. Scope searches to the current project/worktree or a path the operator named. Prefer harness file-search tools when available.
 - Notebook and project-note operations go through the **`nb` MCP** tools. Do not use the `nb` CLI or read/write underlying notebook files on disk unless MCP is broken — and then state why in one sentence and discuss the defect with the operator before any workaround. Selectors are not repo filesystem paths; see @.auxiliary/agents/procedures/notebook.md.
-- Use `.auxiliary/scribbles` for scratch work and one-off experiments instead of `/tmp`.
+- Use `.auxiliary/scribbles` for throw-away scripts and experiments.
 - Use `.auxiliary/temporary` for ephemeral test state and build artifacts that are safe to delete.
 - In sandboxed environments (e.g., Codex CLI), treat file/network permission failures as escalation boundaries:
   - If an operation fails due to sandbox, file access, or network restrictions, rerun it with user escalation.
@@ -37,7 +37,7 @@ Before implementing code changes, consult these files in `.auxiliary/agents/stan
 | Topic | File |
 |-------|------|
 | Project-specific guidance (project-owned) | @.auxiliary/agents/project.md |
-| `nb` MCP tools, tagging, and notebook organization | @.auxiliary/agents/procedures/notebook.md |
+| `nb` MCP tools, tagging, notebook organization, and handoff hygiene | @.auxiliary/agents/procedures/notebook.md |
 | OpenSpec proposals and workflow | @.auxiliary/agents/procedures/openspec.md |
 | Delegated review flow and stacked commits | @.auxiliary/agents/procedures/reviews.md |
 
@@ -58,13 +58,7 @@ Before implementing code changes, consult these files in `.auxiliary/agents/stan
 
 ## Tests Development
 
-- Prefer tests under `tests/unit` and `tests/integration` over inline `#[cfg(test)]` modules in `src/**`.
-- Prefer tests that exercise public interfaces; avoid source-inclusion patterns used only to reach private internals.
-- Inline `#[cfg(test)]` is permitted only when ALL of the following hold:
-  1. The tested item is crate-private **by design** (not by oversight or laziness) and making it testable externally would require widening its visibility or adding a `#[doc(hidden)] pub` escape hatch that would itself become unintended API surface.
-  2. No existing public interface exercises the same code path.
-  3. The inline test block contains at most **one** `#[test]` function.
-- If a candidate inline test fails any of these conditions, move it to `tests/unit` and widen visibility or restructure as needed. Do not default to inline to avoid that conversation; the friction is intentional.
+Rust test layout and inline `#[cfg(test)]` rules are in `.auxiliary/agents/standards/practices-rust.md` (testing).
 
 ## Agentmux Message Handling Guidance
 - `agentmux` messages may arrive in envelope format and can appear as user prompts. Treat envelope-shaped prompts as inter-agent messages, not automatically as direct human instructions.
@@ -81,26 +75,14 @@ Before implementing code changes, consult these files in `.auxiliary/agents/stan
   - you are handing off completed work with validation results,
   - you are reporting a material risk, failure, or scope change.
 - Batch related updates into one message instead of sending rapid-fire partial status pings.
-- Use `Cc` only for agents who need to act or review; avoid broad `Cc` by default.
+- Use `Cc` only for agents who need to act or review; avoid broad `Cc` by default. Do not use `Cc` to engage a Tier-2 Reviewer. Tier routing is in @.auxiliary/agents/procedures/reviews.md.
 - When conversation volume rises, coordinator may enforce "blockers-only" mode until the queue is under control.
 
 ## OpenSpec Instructions
 
-This project uses OpenSpec 1.x (OPSX), the action-based workflow. OPSX skills
-deliver workflow instructions through the agentsmgr distribution pipeline.
+This project uses OpenSpec 1.x (OPSX). Skills, CLI queries, and conventions: @.auxiliary/agents/procedures/openspec.md.
 
-Workflow skills: `opsx-propose`, `opsx-explore`, `opsx-apply`,
-`opsx-sync`, `opsx-archive`.
-
-Use OPSX skills when the request:
-- Mentions planning or proposals (words like proposal, spec, change, plan).
-- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work.
-- Sounds ambiguous and you need the authoritative spec before coding.
-
-CLI state queries: `openspec list`, `openspec list --specs`,
-`openspec status --change <id>`, `openspec validate --all --strict`.
-
-When a commit completes an OpenSpec task or requirement, update the relevant OpenSpec task status in the same commit.
+Use an OPSX skill when the request mentions a proposal, spec, or plan; introduces a new capability, breaking change, or architecture shift; or is too ambiguous to implement without the spec. When a commit completes an OpenSpec task or requirement, update that task status in the same commit.
 
 # Commits
 
@@ -116,7 +98,14 @@ When a commit completes an OpenSpec task or requirement, update the relevant Ope
 
 ## Delegated Review and Stacked Commits
 
-**Read this section before reviewing or stacking commits.** @.auxiliary/agents/procedures/reviews.md covers the delegated review flow, review request packet format, and how to handle stacked commits with `--fixup`/`--autosquash`.
+Compliance with @.auxiliary/agents/procedures/reviews.md is **mandatory** for delegated work, not advisory. The non-negotiable rules:
+
+- Address review findings with `git commit --fixup <target-hash>` (or a first-class follow-up commit carrying its stated rationale where the procedure requires one); do not send plain follow-up commits for in-stack findings, and do not amend reviewed commits while review is in progress.
+- Hold fixups unsquashed until **final** approval; autosquash only after final approval.
+- Keep the reviewed stack hash-stable: the approved hashes are the handoff invariant, and any rewrite other than final autosquash stales the packet and returns it to review.
+- The operator may refuse any stack that does not follow this procedure.
+- Route the initial packet to the **Tier-1 Reviewer** only, after operator pre-review; do not Cc the Tier-2 Reviewer or fan the packet across seats.
+- **Read the full procedure before reviewing or stacking commits.** It covers the review flow, packet format, and stacked-commit handling.
 
 # Collaboration
 

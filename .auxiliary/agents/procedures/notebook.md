@@ -17,7 +17,7 @@ The `nb` MCP server provides LLM-friendly access to the `nb` note-taking system 
 Use consistent tags for discoverability:
 - **Project Component**: `#component-<name>` (e.g., `#component-data-models`)
 - **Task Type**: `#task-<type>` (e.g., `#task-design`, `#task-bug`)
-- **Status**: `#status-<state>` (e.g., `#status-in-progress`, `#status-review`)
+- **Status**: `#status-<state>` (e.g., `#status-in-progress`, `#status-review`) on notes that have no checkbox. Do not put status tags on todos. The title checkbox is the completion state. Use `do` and `tasks`.
 - **Coordination**: `#handoff`, `#coordination`
 - **Assignment**: Avoid owner tags (for example `#llm-*`) for task ownership. Use lane/folder ownership and explicit owner text in the note body when needed.
 
@@ -63,7 +63,7 @@ Use consistent tags for discoverability:
 - For each active OpenSpec proposal, keep **exactly one** linked `nb` todo as the tracking anchor (with proposal reference), rather than duplicating full task trees in both systems.
 
 ## Handoff Hygiene
-- **Who maintains handoffs:** coordinators and sole owners maintain project-level rolling handoffs (typically `coordination/general`). Tech leads maintain handoffs for lanes under their purview (`coordination/<component>` or equivalent). No one else maintains a rolling handoff. Coordinated multi-agent teams may be multi-tier (for example coordinator above several tech leads); each tier owns only its scope.
+- **Who maintains handoffs:** coordinators and sole owners maintain project-level rolling handoffs (typically `coordination/general`). Tech leads maintain handoffs for lanes under their purview (`coordination/<component>` or equivalent). No one else maintains a rolling handoff. A coordinated team may have several coordination levels (for example a coordinator above several tech leads); each level owns only its scope. These are not review tiers.
 - Keep rolling handoff notes separate from OpenSpec proposal content. Do not repurpose or overwrite rolling handoff notes with proposal content.
 - **When to update:** before compaction or planned seat transfer; when the coordinator or operator requests it; or when material state would otherwise be lost (active blocker, uncommitted work, non-obvious decision, external dependency, required next action with no durable task record). Do not update routinely after ordinary commits, merges, tests, review rounds, or status pings when those outcomes are already visible from Git, `nb`, or packets.
 - **What goes in a handoff:** a brief summary of recent accomplishments and the current agenda (next accountable action). Include blockers or decisions only when material. Link to todos, issues, commits, or proposals instead of reproducing history.
