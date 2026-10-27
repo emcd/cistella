@@ -627,3 +627,107 @@ fn signaled_probe_keeps_disposition_and_status() {
     assert!(rendered.contains("Signaled"), "{rendered}");
     assert!(rendered.contains('9'), "{rendered}");
 }
+
+#[test]
+fn successful_mutation_identity_is_retained_for_later_failures() {
+    // The gap this change closes: a later post-landing failure
+    // must be able to name what ran. The retained set carries
+    // the mutation's argv, status, and streams alongside the
+    // history and baseline.
+    let runner = FakeRunner::new(vec![
+        // Baseline: inspect (same), exists, show.
+        ok(0, "abc123 2026-10-26 00:00:00 +0000 UTC\n", ""),
+        ok(0, "", ""),
+        ok(0, show_output(), ""),
+        // Surgery with observable streams.
+        ok(0, "restarting c\n", "note: nonlinear history\n"),
+        // Wait poll: changed identity lands.
+        ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", ""),
+        ok(0, "", ""),
+    ]);
+    let clock = ManualClock::new(Duration::from_millis(100));
+    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (surgery, maybe_evidence) =
+        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    assert!(surgery.expect("surgery runs").status.success());
+    let evidence = maybe_evidence.expect("landing evidence on success");
+    assert!(
+        evidence.mutation_report.contains("podman restart c"),
+        "argv retained: {}",
+        evidence.mutation_report
+    );
+    assert!(
+        evidence.mutation_report.contains("exit status: 0"),
+        "status retained: {}",
+        evidence.mutation_report
+    );
+    assert!(
+        evidence.mutation_report.contains("restarting c"),
+        "stdout retained: {}",
+        evidence.mutation_report
+    );
+    assert!(
+        evidence.mutation_report.contains("nonlinear history"),
+        "stderr retained: {}",
+        evidence.mutation_report
+    );
+    assert!(
+        evidence
+            .mutation_report
+            .contains("rendered, not re-runnable"),
+        "section labelled lossy: {}",
+        evidence.mutation_report
+    );
+}
+
+#[test]
+fn retained_mutation_streams_cap_with_truncation_marker() {
+    // Over-cap streams are headed with an explicit marker naming
+    // the dropped character count, never the full unbounded
+    // bytes — the same bound the post-mortem rendering uses.
+    let big = "x".repeat(5000);
+    let runner = FakeRunner::new(vec![
+        ok(0, "abc123 2026-10-26 00:00:00 +0000 UTC\n", ""),
+        ok(0, "", ""),
+        ok(0, show_output(), ""),
+        ok(0, &big, ""),
+        ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", ""),
+        ok(0, "", ""),
+    ]);
+    let clock = ManualClock::new(Duration::from_millis(100));
+    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (_, maybe_evidence) =
+        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let evidence = maybe_evidence.expect("landing evidence on success");
+    assert!(
+        evidence.mutation_report.contains("[+1000 truncated]"),
+        "marker names the dropped count: {}",
+        evidence.mutation_report
+    );
+    assert!(
+        !evidence.mutation_report.contains(&big),
+        "full unbounded stream is not retained"
+    );
+}
+
+#[test]
+fn guard_report_carries_all_sections_mutation_first() {
+    // The printed report is pinned, not just the retained
+    // field: it carries the mutation identity, the history and
+    // the baseline, in that order, through the one shared
+    // helper both arming sites call — so dropping or reordering
+    // a section breaks this pin rather than regressing silently.
+    let evidence = LandingEvidence {
+        history_report: "HISTORY-BODY".to_string(),
+        baseline_report: "BASELINE-BODY".to_string(),
+        mutation_report: "MUTATION-IDENTITY".to_string(),
+    };
+    let report = render_landing_report(&evidence);
+    let mut_pos = report.find("MUTATION-IDENTITY").expect("mutation section");
+    let hist_pos = report.find("HISTORY-BODY").expect("history section");
+    let base_pos = report.find("BASELINE-BODY").expect("baseline section");
+    assert!(
+        mut_pos < hist_pos && hist_pos < base_pos,
+        "mutation first, then history, then baseline: {report}"
+    );
+}

@@ -4,7 +4,7 @@ The enter-gate surgery collector (`tests/integration/surgery_collect.rs`) runs b
 
 ## Goals / Non-Goals
 
-Goals: retain the successful mutation's argv, exit status/disposition, and capped streams in `LandingEvidence`; render them in the guard output; pin the seam backend-free through the injected runner/clock. Non-goals: no new probes or backend queries; no verdict-semantics change; no post-mortem on the later path beyond reusing the retained set (the disclosed gap stays disclosed).
+Goals: retain the successful mutation's argv, successful exit status, and capped streams in `LandingEvidence`; render them in the guard output; pin the seam backend-free through the injected runner/clock. Non-goals: no new probes or backend queries; no verdict-semantics change; no post-mortem on the later path beyond reusing the retained set (the disclosed gap stays disclosed).
 
 ## Decisions
 

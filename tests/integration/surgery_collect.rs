@@ -92,6 +92,37 @@ pub struct SurgeryBaseline {
 pub struct LandingEvidence {
     pub history_report: String,
     pub baseline_report: String,
+    /// Rendered successful-mutation identity (rendered, never
+    /// re-runnable): argv as run, exit status, and capped
+    /// streams. A failed mutation retains nothing.
+    pub mutation_report: String,
+}
+
+/// Renders the full guard report: the mutation identity
+/// first (what ran — what a later failure most needs), then
+/// the bounded landing history, then the pre-surgery baseline.
+/// Both arming sites share this helper so the sections cannot
+/// drift apart unnoticed.
+#[must_use]
+pub fn render_landing_report(evidence: &LandingEvidence) -> String {
+    format!(
+        "landing evidence:\nmutation:\n{}\nhistory:\n{}\nbaseline:\n{}",
+        evidence.mutation_report, evidence.history_report, evidence.baseline_report
+    )
+}
+/// Renders one successful mutation for retention: argv joined as
+/// shell words, the exit status, and both streams escaped and
+/// capped at `POSTMORTEM_STREAM_CAP` kept characters — the same
+/// retained-stream bound the post-mortem uses. Rendered identity
+/// only — never re-executed.
+fn render_mutation(argv: &[String], out: &Output) -> String {
+    format!(
+        "mutation (rendered, not re-runnable):\nargv: {}\nstatus: {}\nstdout: {}\nstderr: {}",
+        argv.join(" "),
+        out.status,
+        diag::escape_capped(&out.stdout, POSTMORTEM_STREAM_CAP),
+        diag::escape_capped(&out.stderr, POSTMORTEM_STREAM_CAP),
+    )
 }
 
 /// Run one diagnostic command inside the phase budget: the
@@ -431,11 +462,19 @@ pub fn run_surgery_cycle<R: ProbeRunner, C: Clock>(
         )
         .is_some()
         {
+            // The mutation succeeded (failures return early
+            // above), so its identity is retained for any later
+            // failure to read: argv, status, capped streams.
+            let mutation_report = match &surgery_outcome {
+                Ok(out) => render_mutation(surgery_argv, out),
+                Err(_) => unreachable!("mutation failure returns early above"),
+            };
             return (
                 surgery_outcome,
                 Some(LandingEvidence {
                     history_report: diag::report_history(&history),
                     baseline_report: baseline.report.clone(),
+                    mutation_report,
                 }),
             );
         }

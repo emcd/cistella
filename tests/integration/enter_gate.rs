@@ -286,12 +286,11 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     );
     let evidence = maybe_evidence.expect("landing evidence present after successful surgery");
     // Post-landing context guard: any failure unwinding past
-    // this point prints the retained landing history and
-    // baseline. Disarmed only on full convergence below.
-    let mut evidence_guard = collect::EvidenceGuard::armed(format!(
-        "landing evidence:\n{}\nbaseline:\n{}",
-        evidence.history_report, evidence.baseline_report
-    ));
+    // this point prints the retained mutation identity, landing
+    // history, and baseline. Disarmed only on full convergence
+    // below.
+    let mut evidence_guard =
+        collect::EvidenceGuard::armed(collect::render_landing_report(&evidence));
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -441,12 +440,11 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     );
     let evidence = maybe_evidence.expect("landing evidence present after successful surgery");
     // Post-landing context guard: any failure unwinding past
-    // this point prints the retained landing history and
-    // baseline. Disarmed only on full convergence below.
-    let mut evidence_guard = collect::EvidenceGuard::armed(format!(
-        "landing evidence:\n{}\nbaseline:\n{}",
-        evidence.history_report, evidence.baseline_report
-    ));
+    // this point prints the retained mutation identity, landing
+    // history, and baseline. Disarmed only on full convergence
+    // below.
+    let mut evidence_guard =
+        collect::EvidenceGuard::armed(collect::render_landing_report(&evidence));
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or

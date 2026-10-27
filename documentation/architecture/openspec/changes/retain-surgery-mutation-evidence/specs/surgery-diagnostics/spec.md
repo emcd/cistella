@@ -12,4 +12,4 @@ The successful mutation's identity, bounded landing history, and the pre-surgery
 #### Scenario: Mutation identity is bounded and marked
 
 - **WHEN** the retained mutation produced more than 4000 characters on a stream
-- **THEN** the rendered section carries the head of the stream plus an explicit truncation marker naming the dropped character count, never the full unbounded bytes
+- **THEN** the rendered section carries the head of the stream plus an explicit truncation marker naming the dropped character count, never the full unbounded stream
