@@ -219,7 +219,7 @@ jobs:
         # run output for every matrix leg, regardless of outcome,
         # mirroring the flaky-leg upload below.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: suite-log-${{ matrix.platform }}
           path: suite.log
@@ -306,7 +306,7 @@ jobs:
 
       - name: Upload diagnostic log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: diagnostic-log-${{ matrix.platform }}
           path: diagnostic.log
@@ -420,7 +420,7 @@ jobs:
         # The retained audit artifact: full run output for every
         # informational execution, regardless of outcome.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flaky-log-${{ matrix.platform }}
           path: flaky.log
@@ -523,7 +523,7 @@ jobs:
         # The retained audit artifact: full run output for every
         # informational execution, regardless of outcome.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: audit-log-${{ matrix.platform }}
           path: audit.log
