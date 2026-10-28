@@ -224,6 +224,22 @@ jobs:
           name: suite-log-${{ matrix.platform }}
           path: suite.log
 
+      - name: Upload operation logs
+        # Attribution evidence for live-leg honest-reds (surgery
+        # watch): per-target gc classify/reap receipts live under
+        # the runner state home and die with the runner unless
+        # retained. Console logs carry no gc receipts, so a red
+        # cannot be checked against the operation log afterwards.
+        # Failure-only to bound storage; warn (not fail) when no
+        # operation ever opened a log (early-leg failure).
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: op-log-${{ matrix.platform }}
+          path: ${{ env.HOME }}/.local/state/cistella/logs
+          if-no-files-found: warn
+          retention-days: 14
+
   diagnostic:
     # Filtered gating diagnostic: runs the manual `filter`
     # intersected with the roster exclusion under a DISTINCT
