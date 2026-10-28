@@ -219,10 +219,26 @@ jobs:
         # run output for every matrix leg, regardless of outcome,
         # mirroring the flaky-leg upload below.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: suite-log-${{ matrix.platform }}
           path: suite.log
+
+      - name: Upload operation logs
+        # Attribution evidence for live-leg honest-reds (surgery
+        # watch): per-target gc classify/reap receipts live under
+        # the runner state home and die with the runner unless
+        # retained. Console logs carry no gc receipts, so a red
+        # cannot be checked against the operation log afterwards.
+        # Failure-only to bound storage; warn (not fail) when no
+        # operation ever opened a log (early-leg failure).
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: op-log-${{ matrix.platform }}
+          path: ${{ env.HOME }}/.local/state/cistella/logs
+          if-no-files-found: warn
+          retention-days: 14
 
   diagnostic:
     # Filtered gating diagnostic: runs the manual `filter`
@@ -290,7 +306,7 @@ jobs:
 
       - name: Upload diagnostic log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: diagnostic-log-${{ matrix.platform }}
           path: diagnostic.log
@@ -404,7 +420,7 @@ jobs:
         # The retained audit artifact: full run output for every
         # informational execution, regardless of outcome.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flaky-log-${{ matrix.platform }}
           path: flaky.log
@@ -507,7 +523,7 @@ jobs:
         # The retained audit artifact: full run output for every
         # informational execution, regardless of outcome.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: audit-log-${{ matrix.platform }}
           path: audit.log
