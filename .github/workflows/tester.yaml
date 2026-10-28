@@ -224,20 +224,32 @@ jobs:
           name: suite-log-${{ matrix.platform }}
           path: suite.log
 
-      - name: Upload operation logs
+      - name: Collect operation logs
         # Attribution evidence for live-leg honest-reds (surgery
         # watch): per-target gc classify/reap receipts live under
         # the runner state home and die with the runner unless
         # retained. Console logs carry no gc receipts, so a red
         # cannot be checked against the operation log afterwards.
-        # Failure-only to bound storage; warn (not fail) when no
-        # operation ever opened a log (early-leg failure).
+        # Staged into the workspace with a shell (where $HOME
+        # expands) because action `with: path` expressions have no
+        # runner HOME in scope. Failure-only to bound storage; an
+        # empty source still leaves a marker so the upload always
+        # has something to retain.
+        if: failure()
+        run: |
+          mkdir -p op-log
+          if [ -d "$HOME/.local/state/cistella/logs" ]; then
+            cp -r "$HOME/.local/state/cistella/logs" op-log/logs
+          else
+            echo "no operation logs on this leg" > op-log/README
+          fi
+
+      - name: Upload operation logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: op-log-${{ matrix.platform }}
-          path: ${{ env.HOME }}/.local/state/cistella/logs
-          if-no-files-found: warn
+          path: op-log
           retention-days: 14
 
   diagnostic:
