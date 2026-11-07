@@ -5,13 +5,15 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use super::helpers::*;
+use super::parked::ParkedConduct;
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn signal_during_startup_tears_down() {
-    // SIGTERM landing between install and start (opened deterministically by
-    // the start-delay hook) must tear down the installed unit
-    // and exit 128+SIGTERM instead of dying by default action.
+    // SIGTERM landing between install and start (held open by the
+    // start-gate hook, never by elapsed time) must tear down the
+    // installed unit and exit 128+SIGTERM instead of dying by
+    // default action.
     if !systemd_gate() {
         return;
     }
@@ -19,58 +21,34 @@ fn signal_during_startup_tears_down() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
-    let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
-    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-        .map(|r| {
-            r.flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut child = Command::new(bin())
-        .args([
-            "conduct",
-            "--profile",
-            fixture.as_str(),
-            "--session-directory",
-            &worktree_str,
-            "--identity",
-            "alice",
-            "--",
-            "true",
-        ])
-        .env("HOME", &home)
-        .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_CONDUCT_START_DELAY_MS", "15000")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn conduct");
-    // The installed unit file marks the delay window (no id line is printed
-    // on the abort path, so track the new file, not stdout).
-    let (id, upath) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
-    let mut guard = Guard {
-        id: Some(id.clone()),
-    };
-
-    let pid = child.id();
-    let mut cmd = Command::new("kill");
-    cmd.args(["-TERM", &pid.to_string()]);
-    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
-    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped");
+    // Causal pre-initiate hold: the gate parks the conduct after
+    // install (creation IS the release, which never comes), so the
+    // SIGTERM provably lands in the install/start window no matter
+    // how slow the runner is — no elapsed-time premise.
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate");
+    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &fixture, &gate);
+    let id = parked.discover_id();
+    let upath = unit_path(&home, &id);
+    assert!(upath.exists(), "installed unit marks the hold window");
+    let status = parked.abort();
     assert_eq!(status.code(), Some(143), "128+SIGTERM, got {status:?}");
-    guard.id = None;
     assert!(!upath.exists(), "installed unit removed by startup abort");
+    parked.settle();
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn terminate_races_creation_waits() {
-    // Terminate issued while conduct is still installing must wait for the
-    // creation lock, then tear down the fully installed session — never reap
-    // a half-created unit out from under the start.
+    // Terminate issued while conduct is still inside its creation
+    // window (installed, held pre-initiate by the gate) must wait for
+    // the creation lock, then tear down the fully installed session —
+    // never reap a half-created unit out from under the start.
+    // The gate (not elapsed time) holds the window open: install is
+    // provably complete (unit file present) while initiate provably
+    // has not run. The release-vs-teardown interleave is biased, not
+    // ordered, by a short scheduling sleep — both orders converge to
+    // the asserted end state, so no correctness depends on it.
     if !systemd_gate() {
         return;
     }
@@ -78,14 +56,8 @@ fn terminate_races_creation_waits() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
-    let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
-    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-        .map(|r| {
-            r.flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate");
 
     let conduct = Command::new(bin())
         .args([
@@ -102,21 +74,44 @@ fn terminate_races_creation_waits() {
         ])
         .env("HOME", &home)
         .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_CONDUCT_START_DELAY_MS", "15000")
+        .env("CISTELLA_CONDUCT_START_GATE", &gate)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn conduct");
-    let (id, upath) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
+    let (id, upath) = {
+        let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
+        let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
+            .map(|r| {
+                r.flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        wait_for_unit_file(&unit_dir, &before, &worktree_str)
+    };
     let mut guard = Guard {
         id: Some(id.clone()),
     };
 
-    // Terminate by directory selector while start is still delayed: with the
-    // lock held across scan-and-teardown this blocks until the session is
-    // fully installed, then converges with the attached conduct.
-    let out = run_cistella(&home, &["terminate", "--directory", &worktree_str]);
+    // Terminate by directory selector while start is still held: with
+    // the lock held across scan-and-teardown this blocks until the
+    // session is fully installed, then converges with the attached
+    // conduct.
+    let terminate_home = home.clone();
+    let terminate_dir = worktree_str.clone();
+    let handle = std::thread::spawn(move || {
+        run_cistella(
+            &terminate_home,
+            &["terminate", "--directory", &terminate_dir],
+        )
+    });
+    // Scheduling bias only (see header): let terminate reach the lock
+    // before release. Either order converges below.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    std::fs::write(&gate, b"release").expect("release the gate");
+    let out = handle.join().expect("terminator thread joined");
     assert!(
         out.status.success(),
         "terminate: {}",

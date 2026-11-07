@@ -679,11 +679,16 @@ fn recovery_launch_noack_never_replays() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn recovery_conduct_rehosts_through_guest_kill() {
-    // Full conduct episode under kill: the start-delay hook opens a
-    // deterministic window between install and start (unit file
-    // present, no initiate sent). SIGKILLing the guest there forces
-    // conduct's pre-exec episode to retire, re-host, adopt by key,
-    // and complete — exit 0 with the harness outcome, residue free.
+    // Full conduct episode under kill: the start gate holds a
+    // deterministic window open between install and start (unit file
+    // present, no initiate sent) — never an elapsed-time delay.
+    // SIGKILLing the guest there forces conduct's pre-exec episode
+    // to retire, re-host, adopt by key, and complete — exit 0 with
+    // the harness outcome, residue free. The kill target is the
+    // isolator child (rdv path in argv), spawned pre-create, so it
+    // exists at the gate hold exactly as at the old delay hold; a
+    // missing match fails loudly here, settling the premise
+    // empirically rather than by timing.
     if !systemd_gate() {
         return;
     }
@@ -691,6 +696,8 @@ fn recovery_conduct_rehosts_through_guest_kill() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
     let fixture = fixture_profile("default.toml");
+    let gate_dir = tempfile::tempdir().expect("gate dir");
+    let gate = gate_dir.path().join("start-gate");
     let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
     let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
         .map(|r| {
@@ -714,7 +721,7 @@ fn recovery_conduct_rehosts_through_guest_kill() {
         ])
         .env("HOME", &home)
         .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_CONDUCT_START_DELAY_MS", "8000")
+        .env("CISTELLA_CONDUCT_START_GATE", &gate)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -728,6 +735,9 @@ fn recovery_conduct_rehosts_through_guest_kill() {
         id: Some(id.clone()),
     };
     kill_guest_child_of(child.id());
+    // Release the hold only after the kill: initiate then meets the
+    // dead guest and the pre-exec episode must retire and re-host.
+    std::fs::write(&gate, b"release").expect("release the gate");
     let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped");
     assert_eq!(status.code(), Some(0), "conduct recovers and exits 0");
     assert!(!upath.exists(), "adopted unit removed after recovery");
