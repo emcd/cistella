@@ -15,7 +15,7 @@
 //! (unit files, marker files, latch flags), never sleeps.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -28,6 +28,7 @@ use cistella::mount::{MountMode, MountTriple, podman_volume_args};
 use cistella::session::{Session, mint_session_id};
 
 use super::helpers::*;
+use super::parked::ParkedConduct;
 use super::protocol_peer::peer_path;
 
 const FIXTURE_IMAGE: &str = "localhost/cistella/opencode:example";
@@ -679,16 +680,18 @@ fn recovery_launch_noack_never_replays() {
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
 fn recovery_conduct_rehosts_through_guest_kill() {
-    // Full conduct episode under kill: the start gate holds a
-    // deterministic window open between install and start (unit file
-    // present, no initiate sent) — never an elapsed-time delay.
-    // SIGKILLing the guest there forces conduct's pre-exec episode
-    // to retire, re-host, adopt by key, and complete — exit 0 with
-    // the harness outcome, residue free. The kill target is the
-    // isolator child (rdv path in argv), spawned pre-create, so it
-    // exists at the gate hold exactly as at the old delay hold; a
-    // missing match fails loudly here, settling the premise
-    // empirically rather than by timing.
+    // Full conduct episode under kill, held on the start gate (never
+    // an elapsed-time delay). The isolator guest is spawned
+    // pre-create, so it exists at the gate hold; a missing pkill
+    // match fails loudly here. What the unit file does NOT prove is
+    // which side of create the hold sits on: the kill may land
+    // create-in-flight (create-error branch) or post-create
+    // (initiate-error branch). This test therefore exercises the
+    // broader after-installed-file, before-initiate create-or-initiate
+    // recovery premise — not one exact branch. Positive recovery
+    // evidence is the retirement diagnostic in conduct's own stderr
+    // (emitted only on the re-host path, never on a clean first try)
+    // plus harness exit 0; absence of that marker fails the test.
     if !systemd_gate() {
         return;
     }
@@ -698,48 +701,42 @@ fn recovery_conduct_rehosts_through_guest_kill() {
     let fixture = fixture_profile("default.toml");
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
-    let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
-    let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-        .map(|r| {
-            r.flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
 
-    let mut child = Command::new(bin())
-        .args([
-            "conduct",
-            "--profile",
-            fixture.as_str(),
-            "--session-directory",
-            &worktree_str,
-            "--identity",
-            "alice",
-            "--",
-            "true",
-        ])
-        .env("HOME", &home)
-        .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_CONDUCT_START_GATE", &gate)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn conduct");
-    // The installed unit file marks the delay window: create is
-    // done, initiate unsent — the kill lands pre-exec by
-    // construction, not by timing.
-    let (id, upath) = wait_for_unit_file(&unit_dir, &before, &worktree_str);
-    let mut guard = Guard {
-        id: Some(id.clone()),
-    };
-    kill_guest_child_of(child.id());
+    // Owned from spawn: any failure below (including a discovery
+    // timeout with no unit yet) kills and reaps the child and
+    // converges any discovered unit — never a wedged holder of the
+    // creation lock.
+    let mut parked =
+        ParkedConduct::spawn_with_argv(&home, &worktree_str, &fixture, &gate, &["true"]);
+    let id = parked.discover_id();
+    let upath = unit_path(&home, &id);
+    assert!(upath.exists(), "installed unit marks the hold window");
+    kill_guest_child_of(parked.pid());
     // Release the hold only after the kill: initiate then meets the
     // dead guest and the pre-exec episode must retire and re-host.
     std::fs::write(&gate, b"release").expect("release the gate");
-    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("conduct reaped");
-    assert_eq!(status.code(), Some(0), "conduct recovers and exits 0");
+    let output = parked.reap_output();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "conduct recovers and exits 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("retiring client and re-hosting"),
+        "recovery actually exercised (retirement diagnostic present): {stderr}"
+    );
     assert!(!upath.exists(), "adopted unit removed after recovery");
-    guard.id = None;
+    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    assert!(
+        survey.status.success(),
+        "survey runs: {}",
+        String::from_utf8_lossy(&survey.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&survey.stdout).contains(&id),
+        "recovered session absent from survey"
+    );
+    parked.settle();
 }

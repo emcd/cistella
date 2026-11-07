@@ -1,6 +1,5 @@
 //! Signals and races: startup abort, creation race, SIGHUP, lock window.
 
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -37,18 +36,75 @@ fn signal_during_startup_tears_down() {
     parked.settle();
 }
 
+/// Panic-safe ownership for a racing terminator child: on ANY unwind
+/// path the terminator is killed and reaped so it cannot stay blocked
+/// on the creation lock. The parked conduct next to it is owned by
+/// ParkedConduct, whose Drop kills it (releasing the lock) and
+/// converges the unit — so no gate release is needed on failure
+/// paths either. Past `join`, `wait_bounded` already killed and
+/// reaped inside its own deadline (self-cleaning), so only the
+/// pre-join window needs this guard. Disarm is implicit: a joined
+/// child leaves nothing owned.
+struct TerminatorHold {
+    child: Option<std::process::Child>,
+    done: bool,
+}
+
+impl TerminatorHold {
+    fn spawn(home: &str, worktree: &str) -> Self {
+        let child = Command::new(bin())
+            .args(["terminate", "--directory", worktree])
+            .env("HOME", home)
+            .env("TERM", "xterm-ghostty")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn racing terminate");
+        Self {
+            child: Some(child),
+            done: false,
+        }
+    }
+
+    fn child(&mut self) -> &mut std::process::Child {
+        self.child.as_mut().expect("terminator owned until join")
+    }
+
+    fn join(mut self) -> std::process::Output {
+        let child = self.child.take().expect("terminator owned until join");
+        let out = wait_bounded(child, RUN_CISTELLA_TIMEOUT).expect("terminator reaped");
+        self.done = true;
+        out
+    }
+}
+
+impl Drop for TerminatorHold {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = reap_bounded(&mut child, CHILD_REAP_TIMEOUT);
+        }
+    }
+}
+
 #[ignore = "live: requires systemd user manager and podman"]
 #[test]
-fn terminate_races_creation_waits() {
-    // Terminate issued while conduct is still inside its creation
-    // window (installed, held pre-initiate by the gate) must wait for
-    // the creation lock, then tear down the fully installed session —
-    // never reap a half-created unit out from under the start.
-    // The gate (not elapsed time) holds the window open: install is
-    // provably complete (unit file present) while initiate provably
-    // has not run. The release-vs-teardown interleave is biased, not
-    // ordered, by a short scheduling sleep — both orders converge to
-    // the asserted end state, so no correctness depends on it.
+fn terminate_waits_on_creation_lock_pre_initiate() {
+    // Terminate issued while conduct is held pre-initiate must block
+    // on the creation lock — proven, not slept-for: the actual child
+    // shows as a blocked waiter on the exact lock (pid + dev:ino)
+    // with the process observably alive, all before release. Only
+    // then is the gate released and the fully installed session torn
+    // down. Asserted: termination success, survey success with the
+    // session absent, unit convergence. Conduct's own exit is recorded,
+    // not pinned to a branch: harness execution is witnessed on no
+    // path here, and only witnessed branches may claim it. (The
+    // sleep-300 harness cannot exit 0 inside a bounded test, so a
+    // success status would mean the harness never ran AND conduct
+    // reported clean — that is the one ruled-out outcome.)
     if !systemd_gate() {
         return;
     }
@@ -59,76 +115,52 @@ fn terminate_races_creation_waits() {
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
 
-    let conduct = Command::new(bin())
-        .args([
-            "conduct",
-            "--profile",
-            fixture.as_str(),
-            "--session-directory",
-            &worktree_str,
-            "--identity",
-            "alice",
-            "--",
-            "sleep",
-            "300",
-        ])
-        .env("HOME", &home)
-        .env("TERM", "xterm-ghostty")
-        .env("CISTELLA_CONDUCT_START_GATE", &gate)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn conduct");
-    let (id, upath) = {
-        let unit_dir = PathBuf::from(&home).join(".config/containers/systemd");
-        let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-            .map(|r| {
-                r.flatten()
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        wait_for_unit_file(&unit_dir, &before, &worktree_str)
-    };
-    let mut guard = Guard {
-        id: Some(id.clone()),
-    };
+    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &fixture, &gate);
+    let id = parked.discover_id();
+    let upath = unit_path(&home, &id);
+    assert!(upath.exists(), "installed unit marks the hold window");
 
-    // Terminate by directory selector while start is still held: with
-    // the lock held across scan-and-teardown this blocks until the
-    // session is fully installed, then converges with the attached
-    // conduct.
-    let terminate_home = home.clone();
-    let terminate_dir = worktree_str.clone();
-    let handle = std::thread::spawn(move || {
-        run_cistella(
-            &terminate_home,
-            &["terminate", "--directory", &terminate_dir],
-        )
-    });
-    // Scheduling bias only (see header): let terminate reach the lock
-    // before release. Either order converges below.
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // The actual terminator child (not a helper): lock contention is
+    // observable on THIS pid.
+    let mut holder = TerminatorHold::spawn(&home, &worktree_str);
+    wait_lock_blocked(holder.child(), Duration::from_secs(10));
+    assert!(
+        holder
+            .child()
+            .try_wait()
+            .expect("poll terminator")
+            .is_none(),
+        "terminator blocks on the creation lock with the session half-installed"
+    );
     std::fs::write(&gate, b"release").expect("release the gate");
-    let out = handle.join().expect("terminator thread joined");
+    let out = holder.join();
     assert!(
         out.status.success(),
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let output = wait_bounded(conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
-    guard.id = None;
-    // The harness actually ran (killed with its container), conduct did not
-    // die in start on a reaped unit.
+    let output = parked.reap_output();
+    eprintln!(
+        "conduct exit after raced teardown (record, not verdict): {}",
+        output.status
+    );
     assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("start"),
-        "conduct started cleanly: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "sleep-300 harness cannot exit 0 inside a bounded test: {}",
+        output.status
     );
     assert!(!upath.exists(), "unit removed by raced teardown");
-    let out = run_cistella(&home, &["survey", "--directory", &worktree_str]);
-    assert!(!String::from_utf8_lossy(&out.stdout).contains(&id));
+    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    assert!(
+        survey.status.success(),
+        "survey runs: {}",
+        String::from_utf8_lossy(&survey.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&survey.stdout).contains(&id),
+        "torn-down session absent from survey"
+    );
+    parked.settle();
 }
 
 #[ignore = "live: requires systemd user manager and podman"]
