@@ -728,6 +728,7 @@ fn recovery_conduct_rehosts_through_guest_kill() {
         "recovery actually exercised (retirement diagnostic present): {stderr}"
     );
     assert!(!upath.exists(), "adopted unit removed after recovery");
+    assert!(rdv_gone(&id), "rendezvous dir reaped after recovery");
     let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         survey.status.success(),

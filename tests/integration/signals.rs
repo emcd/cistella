@@ -33,6 +33,7 @@ fn signal_during_startup_tears_down() {
     let status = parked.abort();
     assert_eq!(status.code(), Some(143), "128+SIGTERM, got {status:?}");
     assert!(!upath.exists(), "installed unit removed by startup abort");
+    assert!(rdv_gone(&id), "rendezvous dir reaped on startup abort");
     parked.settle();
 }
 
@@ -150,6 +151,7 @@ fn terminate_waits_on_creation_lock_pre_initiate() {
         output.status
     );
     assert!(!upath.exists(), "unit removed by raced teardown");
+    assert!(rdv_gone(&id), "rendezvous dir reaped by raced teardown");
     let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         survey.status.success(),

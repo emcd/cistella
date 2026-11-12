@@ -127,6 +127,21 @@ pub fn unit_path(home: &str, id: &str) -> PathBuf {
         .join(format!("cistella-{id}.container"))
 }
 
+/// Rendezvous directory for a session: production conduct builds
+/// `cistella-rdv-{id}` directly under the process temp dir, ahead
+/// of the creation lock. Clean teardown removes it; anything left
+/// perished with its owner (SIGKILL bypasses exit-path cleanup).
+pub fn rdv_path(id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("cistella-rdv-{id}"))
+}
+
+/// True when the session's rendezvous directory is gone (or was
+/// never created). Session-scoped: callers pass their own id, so
+/// a leftover names exactly the test that stranded it.
+pub fn rdv_gone(id: &str) -> bool {
+    !rdv_path(id).exists()
+}
+
 /// True only when the container is documented-absent: `podman
 /// container exists` exits 1 for absent, 0 for present.
 /// Anything else (including 125 for command/storage errors)
