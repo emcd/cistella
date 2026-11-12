@@ -31,6 +31,20 @@ impl ParkedConduct {
     /// absent (never pre-created — creation IS the release),
     /// and from here on the Drop owns converge-on-every-path.
     pub fn spawn(home: &str, worktree: &str, profile: &str, gate: &std::path::Path) -> Self {
+        Self::spawn_with_argv(home, worktree, profile, gate, &["sleep", "300"])
+    }
+
+    /// Spawns a gated conduct with an explicit harness argv (same
+    /// ownership as `spawn`): the gate file is test-owned and absent
+    /// (creation IS the release), and from here on the Drop owns
+    /// converge-on-every-path.
+    pub fn spawn_with_argv(
+        home: &str,
+        worktree: &str,
+        profile: &str,
+        gate: &std::path::Path,
+        argv: &[&str],
+    ) -> Self {
         let unit_dir = std::path::PathBuf::from(home).join(".config/containers/systemd");
         let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
             .map(|r| {
@@ -45,17 +59,17 @@ impl ParkedConduct {
         // with no drain thread: the parked conduct writes
         // nothing before the test acts, and Drop drains what
         // little exists after the kill — bounded, never hanging.
-        let child = std::process::Command::new(bin())
-            .args([
-                "conduct",
-                "--profile",
-                profile,
-                "--session-directory",
-                worktree,
-                "--",
-                "sleep",
-                "300",
-            ])
+        let mut cmd = std::process::Command::new(bin());
+        cmd.args([
+            "conduct",
+            "--profile",
+            profile,
+            "--session-directory",
+            worktree,
+            "--",
+        ]);
+        cmd.args(argv);
+        let child = cmd
             .env("HOME", home)
             .env("TERM", "xterm-ghostty")
             .env("CISTELLA_CONDUCT_START_GATE", gate)
@@ -139,7 +153,8 @@ impl ParkedConduct {
     /// context on failure, unlike Drop). The child stays owned
     /// throughout: a panic at any point unwinds into Drop,
     /// which still kills, reaps, drains, and converges.
-    /// Never take it out for an explicit path.
+    /// Take it out only through `reap_output`, which hands it to
+    /// a bounded wait with the same cleanup guarantee.
     pub fn abort(&mut self) -> std::process::ExitStatus {
         let pid = self.child.as_ref().expect("conduct alive for abort").id();
         let mut kill = Command::new("kill");
@@ -150,6 +165,22 @@ impl ParkedConduct {
             CHILD_REAP_TIMEOUT,
         )
         .expect("conduct reaped after abort")
+    }
+
+    /// Process id of the owned conduct, for test-side signalling
+    /// (e.g. pkill by parent): the child stays owned throughout —
+    /// this observes, never transfers.
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().expect("conduct alive for pid").id()
+    }
+
+    /// Reaps the owned conduct with captured output (bounded, like
+    /// `wait_bounded`): for tests that assert on the conduct's own
+    /// streams. The unit is NOT converged here — call `settle()`
+    /// after an explicit converge, exactly as with `reap_child`.
+    pub fn reap_output(&mut self) -> std::process::Output {
+        let child = self.child.take().expect("conduct alive for reap");
+        wait_bounded(child, CHILD_REAP_TIMEOUT).expect("conduct reaped with output")
     }
 
     /// Marks the session converged by an explicit path so
