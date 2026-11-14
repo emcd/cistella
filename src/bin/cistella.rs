@@ -1,6 +1,8 @@
 //! Cistella CLI entry point.
 
+#[path = "../cli_conduct.rs"]
 mod cli_conduct;
+#[path = "../cli_util.rs"]
 mod cli_util;
 
 use crate::cli_conduct::conduct_session;
