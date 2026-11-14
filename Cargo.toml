@@ -23,10 +23,6 @@ include = [
 name = "cistella"
 path = "src/lib.rs"
 
-[[bin]]
-name = "cistella"
-path = "src/main.rs"
-
 # Conformance harness and live-test tooling: the deterministic
 # protocol peer plus characterization probes. These are NOT
 # user-facing examples — they live under `tests/` with explicit

@@ -1,14 +1,14 @@
 # Source layout
 
-The driver (`src/main.rs`, `src/cli.rs`) conducts sessions; the
+The driver (`src/bin/cistella.rs`, `src/cli.rs`) conducts sessions; the
 framework (`src/framework/`) hosts external guests over a versioned
 stdio wire; `src/isolators/` owns the isolator lifecycle;
-`src/bin/` holds the shipped guests.
+`src/bin/` holds the driver CLI plus the shipped guests.
 
 ## Guest hosting architecture
 
 ```
-driver (conduct, src/main.rs)
+driver (conduct, src/bin/cistella.rs)
  ├─ profile ── declares ──▶ [isolator] + [[extensions]]   (names only)
  ├─ registry ── resolves ─▶ verified binary + role + args (seat-local)
  ├─ GuestHost ── spawns ──▶ pinned-FD exec + hello + capabilities
