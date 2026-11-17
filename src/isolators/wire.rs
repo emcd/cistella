@@ -39,7 +39,8 @@ use crate::framework::contract::{
     CancelFlag, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
 };
 use crate::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, RawClientResult, StdioBinding, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, RawClientResult, StdioBinding,
+    UnitSnapshot,
 };
 use crate::isolators::podman::PodmanIsolator;
 
@@ -53,22 +54,33 @@ use crate::isolators::podman::PodmanIsolator;
 /// (exactly current behavior: raw status as harness disposition).
 /// Pure so the negotiation gate pins directly against fixtures.
 #[must_use]
-pub fn encode_await_outcome(outcome: &ExecutionOutcome, negotiated: bool) -> serde_json::Value {
+pub fn encode_await_outcome(
+    outcome: &ExecutionOutcome,
+    negotiated: bool,
+) -> serde_json::Value {
     match outcome {
-        ExecutionOutcome::Exited(code) => serde_json::json!({"exit_status": code}),
-        ExecutionOutcome::Signaled(signum) => serde_json::json!({"signal": signum}),
+        ExecutionOutcome::Exited(code) => {
+            serde_json::json!({"exit_status": code})
+        },
+        ExecutionOutcome::Signaled(signum) => {
+            serde_json::json!({"signal": signum})
+        },
         ExecutionOutcome::Unobservable(unobservable) => {
             if !negotiated {
                 return match unobservable.raw {
-                    RawClientResult::Exited(code) => serde_json::json!({"exit_status": code}),
-                    RawClientResult::Signaled(signum) => serde_json::json!({"signal": signum}),
+                    RawClientResult::Exited(code) => {
+                        serde_json::json!({"exit_status": code})
+                    },
+                    RawClientResult::Signaled(signum) => {
+                        serde_json::json!({"signal": signum})
+                    },
                 };
             }
             serde_json::json!({"unobservable": {
                 "observation": unobservable.observation,
                 "raw": unobservable.raw,
             }})
-        }
+        },
     }
 }
 
@@ -170,9 +182,13 @@ struct TerminateWire {
 /// # Errors
 ///
 /// Returns `CistellaError::Contract` on shape violations.
-fn parse<Wire: for<'de> Deserialize<'de>>(op: &str, payload: &serde_json::Value) -> Result<Wire> {
-    serde_json::from_value(payload.clone())
-        .map_err(|_| CistellaError::Contract(format!("bad {op} payload: shape violation")))
+fn parse<Wire: for<'de> Deserialize<'de>>(
+    op: &str,
+    payload: &serde_json::Value,
+) -> Result<Wire> {
+    serde_json::from_value(payload.clone()).map_err(|_| {
+        CistellaError::Contract(format!("bad {op} payload: shape violation"))
+    })
 }
 
 /// Framework-handle grammar: minted shape only (`[a-z0-9]`, bounded).
@@ -333,9 +349,13 @@ impl<B: Isolator> IsolatorGuest<B> {
     /// diagnostics single when the refused attempt was hooked.
     fn drain_bundles(&self, hooked: bool) {
         if let Some(channel) = self.fd_channel.as_ref() {
-            let _ = crate::framework::fdpass::recv_bundle(channel, DRAIN_BUDGET);
+            let _ =
+                crate::framework::fdpass::recv_bundle(channel, DRAIN_BUDGET);
             if hooked {
-                let _ = crate::framework::fdpass::recv_diagnostics_bundle(channel, DRAIN_BUDGET);
+                let _ = crate::framework::fdpass::recv_diagnostics_bundle(
+                    channel,
+                    DRAIN_BUDGET,
+                );
             }
         }
     }
@@ -403,9 +423,11 @@ impl<B: Isolator> IsolatorGuest<B> {
                 .iter()
                 .filter(|(fw, _)| !live_units.contains(*fw))
                 .filter_map(|(fw, binding)| match binding {
-                    UnitBinding::Live(live) => {
-                        Some((fw.clone(), live.local.clone(), live.key.clone()))
-                    }
+                    UnitBinding::Live(live) => Some((
+                        fw.clone(),
+                        live.local.clone(),
+                        live.key.clone(),
+                    )),
                     UnitBinding::Removed { .. } => None,
                 })
                 .collect()
@@ -462,7 +484,10 @@ impl<B: Isolator> IsolatorGuest<B> {
             .get(handle.as_str())
             .cloned()
             .ok_or_else(|| {
-                CistellaError::Contract(format!("unknown unit handle: {}", handle.as_str()))
+                CistellaError::Contract(format!(
+                    "unknown unit handle: {}",
+                    handle.as_str()
+                ))
             })
     }
 
@@ -481,10 +506,9 @@ impl<B: Isolator> IsolatorGuest<B> {
     fn resolve_unit(&self, handle: &UnitHandle) -> Result<UnitHandle> {
         match self.lookup_unit(handle)? {
             UnitBinding::Live(live) => Ok(live.local.clone()),
-            UnitBinding::Removed { .. } => Err(CistellaError::Contract(format!(
-                "unit handle removed: {}",
-                handle.as_str()
-            ))),
+            UnitBinding::Removed { .. } => Err(CistellaError::Contract(
+                format!("unit handle removed: {}", handle.as_str()),
+            )),
         }
     }
 
@@ -494,7 +518,10 @@ impl<B: Isolator> IsolatorGuest<B> {
     ///
     /// Returns `CistellaError::Contract` on grammar violations or
     /// unknown handles, before any backend call.
-    fn resolve_execution(&self, handle: &ExecutionHandle) -> Result<ExecutionHandle> {
+    fn resolve_execution(
+        &self,
+        handle: &ExecutionHandle,
+    ) -> Result<ExecutionHandle> {
         check_handle_grammar("execution", handle.as_str())?;
         self.tables
             .lock()
@@ -503,7 +530,10 @@ impl<B: Isolator> IsolatorGuest<B> {
             .get(handle.as_str())
             .map(|binding| binding.local.clone())
             .ok_or_else(|| {
-                CistellaError::Contract(format!("unknown execution handle: {}", handle.as_str()))
+                CistellaError::Contract(format!(
+                    "unknown execution handle: {}",
+                    handle.as_str()
+                ))
             })
     }
 
@@ -520,7 +550,11 @@ impl<B: Isolator> IsolatorGuest<B> {
     ///
     /// Returns `CistellaError::Contract` on routing/shape/handle
     /// failures and the backend error otherwise.
-    pub fn dispatch(&self, op: &str, payload: &serde_json::Value) -> Result<serde_json::Value> {
+    pub fn dispatch(
+        &self,
+        op: &str,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         match op {
             OP_CREATE => {
                 let req: CreateWire = parse(op, payload)?;
@@ -539,13 +573,19 @@ impl<B: Isolator> IsolatorGuest<B> {
                                 // the identical attempt; a different key or
                                 // spec refuses instead of rebinding the unit
                                 // out from under the first attempt.
-                                if live.key != req.reconciliation_key || live.spec != req.spec {
-                                    return Err(CistellaError::Contract(format!(
-                                        "unit handle bound to a different attempt: {fw}"
-                                    )));
+                                if live.key != req.reconciliation_key
+                                    || live.spec != req.spec
+                                {
+                                    return Err(CistellaError::Contract(
+                                        format!(
+                                            "unit handle bound to a different attempt: {fw}"
+                                        ),
+                                    ));
                                 }
-                                return Ok(serde_json::json!({"unit_handle": fw}));
-                            }
+                                return Ok(
+                                    serde_json::json!({"unit_handle": fw}),
+                                );
+                            },
                             UnitBinding::Removed { .. } => {
                                 // No re-create over a tombstone: the
                                 // handle's lifecycle ended at remove,
@@ -558,14 +598,17 @@ impl<B: Isolator> IsolatorGuest<B> {
                                 return Err(CistellaError::Contract(format!(
                                     "unit handle removed: {fw}"
                                 )));
-                            }
+                            },
                         }
                     }
                 }
-                let local = match self.backend.locate(&req.reconciliation_key)? {
-                    Some(found) => found,
-                    None => self.backend.create(&req.spec, &req.reconciliation_key)?,
-                };
+                let local =
+                    match self.backend.locate(&req.reconciliation_key)? {
+                        Some(found) => found,
+                        None => self
+                            .backend
+                            .create(&req.spec, &req.reconciliation_key)?,
+                    };
                 self.tables.lock().expect("guest table lock").units.insert(
                     fw.clone(),
                     UnitBinding::Live(Box::new(LiveBinding {
@@ -575,14 +618,15 @@ impl<B: Isolator> IsolatorGuest<B> {
                     })),
                 );
                 Ok(serde_json::json!({"unit_handle": fw}))
-            }
+            },
             OP_INITIATE => {
                 let req: HandleKeyWire = parse(op, payload)?;
                 let local = self.resolve_unit(&req.unit_handle)?;
-                let attestation = self.backend.initiate(&local, &req.reconciliation_key)?;
+                let attestation =
+                    self.backend.initiate(&local, &req.reconciliation_key)?;
                 Ok(serde_json::json!({"started_attestation":
                     serde_json::to_value(attestation).expect("attestation serializes")}))
-            }
+            },
             OP_EXECUTE_LAUNCH => {
                 let req: LaunchWire = match parse(op, payload) {
                     Ok(req) => req,
@@ -593,7 +637,7 @@ impl<B: Isolator> IsolatorGuest<B> {
                         // the next launch.
                         self.drain_bundles(true);
                         return Err(error);
-                    }
+                    },
                 };
                 // Channel first: without it harness stdio has no
                 // route, so the launch refuses before lookup.
@@ -607,9 +651,12 @@ impl<B: Isolator> IsolatorGuest<B> {
                     Err(error) => {
                         self.drain_bundles(req.hook_diagnostics);
                         return Err(error);
-                    }
+                    },
                 };
-                check_handle_grammar("execution", req.execution_handle.as_str())?;
+                check_handle_grammar(
+                    "execution",
+                    req.execution_handle.as_str(),
+                )?;
                 let fw = req.execution_handle.as_str().to_string();
                 {
                     let tables = self.tables.lock().expect("guest table lock");
@@ -643,7 +690,8 @@ impl<B: Isolator> IsolatorGuest<B> {
                                 || bundle.execution_handle != fw
                             {
                                 return Err(CistellaError::Contract(
-                                    "fd bundle bound to a different launch".to_string(),
+                                    "fd bundle bound to a different launch"
+                                        .to_string(),
                                 ));
                             }
                             if req.hook_diagnostics {
@@ -652,7 +700,8 @@ impl<B: Isolator> IsolatorGuest<B> {
                                         channel,
                                         crate::framework::fdpass::LAUNCH_BUNDLE_WAIT,
                                     )?;
-                                if diagnostics.unit_handle != req.unit_handle.as_str()
+                                if diagnostics.unit_handle
+                                    != req.unit_handle.as_str()
                                     || diagnostics.execution_handle != fw
                                 {
                                     return Err(CistellaError::Contract(
@@ -661,7 +710,9 @@ impl<B: Isolator> IsolatorGuest<B> {
                                     ));
                                 }
                             }
-                            return Ok(serde_json::json!({"execution_handle": fw}));
+                            return Ok(
+                                serde_json::json!({"execution_handle": fw}),
+                            );
                         }
                         return Err(CistellaError::Contract(format!(
                             "execution handle bound to a different attempt: {fw}"
@@ -676,27 +727,34 @@ impl<B: Isolator> IsolatorGuest<B> {
                 // spawn. Hook launches stage a second single-FD
                 // bundle (diagnostics write-end) validated the same
                 // way. Channel presence was checked above.
-                let channel = self.fd_channel.as_ref().expect("fd channel checked above");
+                let channel = self
+                    .fd_channel
+                    .as_ref()
+                    .expect("fd channel checked above");
                 let (bundle, fds) = crate::framework::fdpass::recv_bundle(
                     channel,
                     crate::framework::fdpass::LAUNCH_BUNDLE_WAIT,
                 )?;
-                if bundle.unit_handle != req.unit_handle.as_str() || bundle.execution_handle != fw {
+                if bundle.unit_handle != req.unit_handle.as_str()
+                    || bundle.execution_handle != fw
+                {
                     return Err(CistellaError::Contract(
                         "fd bundle bound to a different launch".to_string(),
                     ));
                 }
                 let [stdin, stdout, stderr] = fds;
                 let diagnostics = if req.hook_diagnostics {
-                    let (header, fd) = crate::framework::fdpass::recv_diagnostics_bundle(
-                        channel,
-                        crate::framework::fdpass::LAUNCH_BUNDLE_WAIT,
-                    )?;
+                    let (header, fd) =
+                        crate::framework::fdpass::recv_diagnostics_bundle(
+                            channel,
+                            crate::framework::fdpass::LAUNCH_BUNDLE_WAIT,
+                        )?;
                     if header.unit_handle != req.unit_handle.as_str()
                         || header.execution_handle != fw
                     {
                         return Err(CistellaError::Contract(
-                            "diagnostics bundle bound to a different launch".to_string(),
+                            "diagnostics bundle bound to a different launch"
+                                .to_string(),
                         ));
                     }
                     Some(fd)
@@ -715,14 +773,17 @@ impl<B: Isolator> IsolatorGuest<B> {
                 // (comparing the guest's own pgid would differ by
                 // design and refuse every launch).
                 let parent = std::os::unix::process::parent_id();
-                let pgid = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(parent as i32)))
-                    .ok()
-                    .map(|pgid| pgid.as_raw() as u32);
-                let conductor = crate::framework::isolator::verified_conductor_pgid(
-                    parent,
-                    self.host_pid,
-                    pgid,
-                );
+                let pgid = nix::unistd::getpgid(Some(
+                    nix::unistd::Pid::from_raw(parent as i32),
+                ))
+                .ok()
+                .map(|pgid| pgid.as_raw() as u32);
+                let conductor =
+                    crate::framework::isolator::verified_conductor_pgid(
+                        parent,
+                        self.host_pid,
+                        pgid,
+                    );
                 let launched = self.backend.execute_launch(
                     &local,
                     &req.argv,
@@ -752,21 +813,23 @@ impl<B: Isolator> IsolatorGuest<B> {
                         },
                     );
                 Ok(serde_json::json!({"execution_handle": fw}))
-            }
+            },
             crate::framework::protocol::AWAIT_RESULT_OP => {
                 let req: AwaitWire = parse(op, payload)?;
                 let local = self.resolve_execution(&req.execution_handle)?;
                 let cancel = CancelFlag::new();
-                let outcome: ExecutionOutcome = self.backend.await_result(&local, &cancel)?;
+                let outcome: ExecutionOutcome =
+                    self.backend.await_result(&local, &cancel)?;
                 Ok(encode_await_outcome(&outcome, self.await_interrupted))
-            }
+            },
             OP_INSPECT => {
                 let req: InspectWire = parse(op, payload)?;
                 match self.lookup_unit(&req.unit_handle)? {
                     UnitBinding::Live(live) => {
                         let snapshot = self.backend.inspect(&live.local)?;
-                        Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
-                    }
+                        Ok(serde_json::to_value(snapshot)
+                            .expect("snapshot serializes"))
+                    },
                     UnitBinding::Removed { unit_identity, .. } => {
                         // Tombstone reports absence without backend
                         // contact: the unit is gone, so identity is
@@ -780,10 +843,11 @@ impl<B: Isolator> IsolatorGuest<B> {
                             session_id: String::new(),
                             image: String::new(),
                         };
-                        Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
-                    }
+                        Ok(serde_json::to_value(snapshot)
+                            .expect("snapshot serializes"))
+                    },
                 }
-            }
+            },
             OP_STATE => {
                 let req: InspectWire = parse(op, payload)?;
                 match self.lookup_unit(&req.unit_handle)? {
@@ -791,44 +855,51 @@ impl<B: Isolator> IsolatorGuest<B> {
                         let state = self.backend.state(&live.local)?;
                         Ok(serde_json::json!({"lifecycle":
                             serde_json::to_value(state).expect("state serializes")}))
-                    }
-                    UnitBinding::Removed { .. } => Ok(serde_json::json!({"lifecycle":
+                    },
+                    UnitBinding::Removed { .. } => {
+                        Ok(serde_json::json!({"lifecycle":
                         serde_json::to_value(LifecycleState::Absent)
-                            .expect("state serializes")})),
+                            .expect("state serializes")}))
+                    },
                 }
-            }
+            },
             OP_TERMINATE => {
                 let req: TerminateWire = parse(op, payload)?;
                 match self.lookup_unit(&req.unit_handle)? {
                     UnitBinding::Live(live) => {
                         let grace = Duration::from_millis(req.grace_ms);
-                        let attestation =
-                            self.backend
-                                .terminate(&live.local, grace, &req.reconciliation_key)?;
+                        let attestation = self.backend.terminate(
+                            &live.local,
+                            grace,
+                            &req.reconciliation_key,
+                        )?;
                         Ok(serde_json::json!({"stopped_attestation":
                             serde_json::to_value(attestation).expect("attestation serializes")}))
-                    }
+                    },
                     UnitBinding::Removed { local, .. } => {
                         // Repeatable teardown delegates to the
                         // backend tombstone: idempotent cleanup
                         // contact only (stray settle, never
                         // resurrection).
                         let grace = Duration::from_millis(req.grace_ms);
-                        let attestation =
-                            self.backend
-                                .terminate(&local, grace, &req.reconciliation_key)?;
+                        let attestation = self.backend.terminate(
+                            &local,
+                            grace,
+                            &req.reconciliation_key,
+                        )?;
                         Ok(serde_json::json!({"stopped_attestation":
                             serde_json::to_value(attestation).expect("attestation serializes")}))
-                    }
+                    },
                 }
-            }
+            },
             OP_REMOVE => {
                 let req: HandleKeyWire = parse(op, payload)?;
                 let fw = req.unit_handle.as_str().to_string();
                 match self.lookup_unit(&req.unit_handle)? {
                     UnitBinding::Live(live) => {
-                        let attestation =
-                            self.backend.remove(&live.local, &req.reconciliation_key)?;
+                        let attestation = self
+                            .backend
+                            .remove(&live.local, &req.reconciliation_key)?;
                         // Evict the live binding into a tombstone
                         // only after the backend confirms removal; a
                         // failed remove keeps the live handle for
@@ -838,31 +909,38 @@ impl<B: Isolator> IsolatorGuest<B> {
                         // operations). Executions die with the unit
                         // either way (never resurrected).
                         {
-                            let mut tables = self.tables.lock().expect("guest table lock");
+                            let mut tables =
+                                self.tables.lock().expect("guest table lock");
                             tables.units.insert(
                                 fw.clone(),
                                 UnitBinding::Removed {
                                     local: live.local.clone(),
-                                    unit_identity: attestation.unit_identity.clone(),
+                                    unit_identity: attestation
+                                        .unit_identity
+                                        .clone(),
                                 },
                             );
-                            tables.executions.retain(|_, binding| binding.unit != fw);
+                            tables
+                                .executions
+                                .retain(|_, binding| binding.unit != fw);
                         }
                         Ok(serde_json::json!({"removed_attestation":
                             serde_json::to_value(attestation).expect("attestation serializes")}))
-                    }
+                    },
                     UnitBinding::Removed { local, .. } => {
                         // Idempotent repeat delegates to the backend
                         // tombstone so surviving residue (e.g. unit file
                         // planted after the first remove) still
                         // converges; absence re-attested, nothing
                         // resurrected.
-                        let attestation = self.backend.remove(&local, &req.reconciliation_key)?;
+                        let attestation = self
+                            .backend
+                            .remove(&local, &req.reconciliation_key)?;
                         Ok(serde_json::json!({"removed_attestation":
                             serde_json::to_value(attestation).expect("attestation serializes")}))
-                    }
+                    },
                 }
-            }
+            },
             _ => Err(CistellaError::Contract(
                 "unknown isolator operation".to_string(),
             )),

@@ -101,7 +101,8 @@ fn hold_rendezvous(dir: &str) {
         // values; the connected fd is intentionally never closed
         // (held open for the process lifetime).
         unsafe {
-            let fd = ::libc::socket(::libc::AF_UNIX, ::libc::SOCK_SEQPACKET, 0);
+            let fd =
+                ::libc::socket(::libc::AF_UNIX, ::libc::SOCK_SEQPACKET, 0);
             if fd < 0 {
                 return false;
             }
@@ -118,7 +119,8 @@ fn hold_rendezvous(dir: &str) {
             let connected = ::libc::connect(
                 fd,
                 &addr as *const _ as *const ::libc::sockaddr,
-                (std::mem::size_of::<::libc::sa_family_t>() + bytes.len() + 1) as ::libc::socklen_t,
+                (std::mem::size_of::<::libc::sa_family_t>() + bytes.len() + 1)
+                    as ::libc::socklen_t,
             ) == 0;
             if !connected {
                 ::libc::close(fd);
@@ -132,7 +134,10 @@ fn hold_rendezvous(dir: &str) {
                 let mut names: Vec<_> = entries
                     .flatten()
                     .map(|entry| entry.path())
-                    .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sock"))
+                    .filter(|path| {
+                        path.extension().and_then(|ext| ext.to_str())
+                            == Some("sock")
+                    })
                     .collect();
                 names.sort();
                 for path in names {
@@ -153,7 +158,11 @@ fn protocol_error_exit() -> ExitCode {
 /// Minimal length-prefixed frame writer that respects the pre-negotiation
 /// ceiling. Mirrors `framework::protocol::write_frame`'s shape so the
 /// host's framing code is exercised symmetrically.
-fn write_frame<W: Write>(stdout: &mut W, payload: &[u8], max_frame: usize) -> std::io::Result<()> {
+fn write_frame<W: Write>(
+    stdout: &mut W,
+    payload: &[u8],
+    max_frame: usize,
+) -> std::io::Result<()> {
     if payload.len() > max_frame {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -202,7 +211,11 @@ const HEADER_LEN: usize = 4;
 mod libc {
     use std::ffi::c_void;
     unsafe extern "C" {
-        pub unsafe fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
+        pub unsafe fn write(
+            fd: i32,
+            buf: *const c_void,
+            count: usize,
+        ) -> isize;
         pub unsafe fn close(fd: i32) -> i32;
     }
 }

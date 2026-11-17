@@ -31,9 +31,13 @@ pub(crate) fn await_result(
             Poll,
         }
         let claim = {
-            let mut table = backend.executions.lock().expect("exec table lock");
+            let mut table =
+                backend.executions.lock().expect("exec table lock");
             let pending = table.get_mut(execution).ok_or_else(|| {
-                CistellaError::Contract(format!("unknown execution handle: {}", execution.as_str()))
+                CistellaError::Contract(format!(
+                    "unknown execution handle: {}",
+                    execution.as_str()
+                ))
             })?;
             if let Some(outcome) = pending.outcome.clone() {
                 Step::Cached(outcome)
@@ -44,12 +48,10 @@ pub(crate) fn await_result(
                         Ok(status) => status,
                         Err(_) => {
                             // Reaped elsewhere; fall back to a blocking wait.
-                            Some(
-                                child
-                                    .wait()
-                                    .map_err(|e| CistellaError::Runtime(format!("wait: {e}")))?,
-                            )
-                        }
+                            Some(child.wait().map_err(|e| {
+                                CistellaError::Runtime(format!("wait: {e}"))
+                            })?)
+                        },
                     },
                 };
                 match completed {
@@ -69,10 +71,12 @@ pub(crate) fn await_result(
         match claim {
             Step::Cached(outcome) => return Ok(outcome),
             Step::Finalize(status) => {
-                let outcome = crate::isolators::corroboration::corroborated_outcome(
-                    backend, execution, &status, cancel,
-                );
-                let mut table = backend.executions.lock().expect("exec table lock");
+                let outcome =
+                    crate::isolators::corroboration::corroborated_outcome(
+                        backend, execution, &status, cancel,
+                    );
+                let mut table =
+                    backend.executions.lock().expect("exec table lock");
                 // First claim wins: an already-cached outcome
                 // (an earlier claimer's truth) is replayed, never
                 // overwritten.
@@ -85,15 +89,15 @@ pub(crate) fn await_result(
                             .outcome
                             .clone()
                             .expect("outcome stored or already cached")
-                    }
+                    },
                     // Entry vanished mid-flight (remove raced the
                     // claim): report the fresh outcome uncached.
                     None => outcome,
                 });
-            }
+            },
             Step::WaitCache => {
                 return await_cached_outcome(backend, execution, cancel);
-            }
+            },
             Step::Poll => {
                 if cancel.is_cancelled() || cancel_signum(cancel).is_some() {
                     return Err(CistellaError::Detached(format!(
@@ -102,7 +106,7 @@ pub(crate) fn await_result(
                     )));
                 }
                 std::thread::sleep(Duration::from_millis(50));
-            }
+            },
         }
     }
 }
@@ -129,7 +133,8 @@ fn await_cached_outcome(
     execution: &ExecutionHandle,
     cancel: &CancelFlag,
 ) -> Result<ExecutionOutcome> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         {
             let table = backend.executions.lock().expect("exec table lock");
@@ -166,7 +171,9 @@ fn await_cached_outcome(
 mod replay_tests {
     use std::sync::{Arc, Barrier, mpsc};
 
-    use crate::framework::contract::{CancelFlag, ExecutionHandle, UnitHandle};
+    use crate::framework::contract::{
+        CancelFlag, ExecutionHandle, UnitHandle,
+    };
     use crate::framework::isolator::Isolator;
 
     use crate::isolators::podman::PodmanIsolator;
@@ -241,8 +248,13 @@ mod replay_tests {
             );
             let cancel = CancelFlag::new();
             match backend.await_result(&execution, &cancel) {
-                Ok(replayed) if results[0].as_ref().is_ok_and(|first| first == &replayed) => {}
-                other => panic!("post-race await replays the frozen outcome: {other:?}"),
+                Ok(replayed)
+                    if results[0]
+                        .as_ref()
+                        .is_ok_and(|first| first == &replayed) => {},
+                other => panic!(
+                    "post-race await replays the frozen outcome: {other:?}"
+                ),
             }
         }
     }

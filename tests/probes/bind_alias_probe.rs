@@ -22,7 +22,9 @@ use cistella::framework::hooks::hook_graft_alias_preflight;
 use cistella::mount::{MountMode, MountTriple};
 
 fn usage() -> ! {
-    eprintln!("usage: bind_alias_probe <home> <session-dir> <graft-source> <graft-target>");
+    eprintln!(
+        "usage: bind_alias_probe <home> <session-dir> <graft-source> <graft-target>"
+    );
     std::process::exit(2);
 }
 
@@ -52,8 +54,13 @@ fn main() {
         },
     ];
     let effective =
-        cistella::framework::contract::EffectivePermissions::assemble(&triples, &[], &[], &[])
-            .expect("driver-only assembly");
+        cistella::framework::contract::EffectivePermissions::assemble(
+            &triples,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("driver-only assembly");
     match hook_graft_alias_preflight(&triples, &effective, &session) {
         Ok(()) => println!("ALLOWED"),
         Err(error) => println!("REFUSED:{error}"),

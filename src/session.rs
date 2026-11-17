@@ -70,7 +70,9 @@ pub fn mint_session_id() -> String {
         rand = (rand << 8) | b as u64;
     }
     for shift in (0..8).rev() {
-        out.push(CROCKFORD_LOWER[((rand >> (shift * 5)) & 31) as usize] as char);
+        out.push(
+            CROCKFORD_LOWER[((rand >> (shift * 5)) & 31) as usize] as char,
+        );
     }
     out
 }
@@ -96,8 +98,9 @@ pub fn command_label(argv: &[String]) -> String {
 ///
 /// Returns `CistellaError::Runtime` when the label is not a JSON string array.
 pub fn parse_command_label(label: &str) -> Result<Vec<String>> {
-    serde_json::from_str(label)
-        .map_err(|e| CistellaError::Runtime(format!("cistella.command label: {e}")))
+    serde_json::from_str(label).map_err(|e| {
+        CistellaError::Runtime(format!("cistella.command label: {e}"))
+    })
 }
 
 /// Validates one generic label (`--label k=v` or profile `labels` table).
@@ -109,7 +112,10 @@ pub fn parse_command_label(label: &str) -> Result<Vec<String>> {
 /// # Errors
 ///
 /// Returns a message describing the violation.
-pub fn validate_generic_label(key: &str, value: &str) -> std::result::Result<(), String> {
+pub fn validate_generic_label(
+    key: &str,
+    value: &str,
+) -> std::result::Result<(), String> {
     if key.is_empty() || key.len() > 128 {
         return Err(format!("label key must be 1-128 chars: {key}"));
     }
@@ -130,7 +136,11 @@ pub fn validate_generic_label(key: &str, value: &str) -> std::result::Result<(),
             "label key must not contain control characters: {key}"
         ));
     }
-    if value.contains('=') || value.contains('\n') || value.contains('\r') || value.contains('\0') {
+    if value.contains('=')
+        || value.contains('\n')
+        || value.contains('\r')
+        || value.contains('\0')
+    {
         return Err(format!(
             "label value must not contain '=' or control: {key}"
         ));

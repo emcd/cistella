@@ -106,7 +106,9 @@ fn wire_client_two_inflight_calls_fail_typed_on_death() {
     };
     let creator = {
         let client = std::sync::Arc::clone(&client);
-        std::thread::spawn(move || client.create(&spec, &ReconciliationKey::generate()))
+        std::thread::spawn(move || {
+            client.create(&spec, &ReconciliationKey::generate())
+        })
     };
     let inspector = {
         let client = std::sync::Arc::clone(&client);
@@ -153,7 +155,9 @@ struct LiveUnitGuard {
 
 impl Drop for LiveUnitGuard {
     fn drop(&mut self) {
-        if let (Some(container), Some(id)) = (self.container_name.take(), self.session_id.take()) {
+        if let (Some(container), Some(id)) =
+            (self.container_name.take(), self.session_id.take())
+        {
             let _ = cistella::runtime::teardown(&container, &id);
         }
     }
@@ -220,7 +224,8 @@ fn wire_client_crash_after_create_residue_dominates() {
         .expect("pkill runs")
         .success();
     assert!(killed, "pkill must match the guest");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !client.guest_dead() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -228,7 +233,8 @@ fn wire_client_crash_after_create_residue_dominates() {
     let stated = client.state(&unit).map(|_| ());
     let inspected = client.inspect(&unit).map(|_| ());
     for (which, outcome) in [("state", stated), ("inspect", inspected)] {
-        let error = outcome.expect_err(&format!("{which} after the kill must fail typed"));
+        let error = outcome
+            .expect_err(&format!("{which} after the kill must fail typed"));
         assert!(
             matches!(error, cistella::error::CistellaError::Protocol(_)),
             "{which} must fail as typed Protocol, got: {error}"
@@ -237,7 +243,8 @@ fn wire_client_crash_after_create_residue_dominates() {
     // The conduct gate on a post-death outcome: residue (the unit
     // create installed) dominates the raw death error.
     let dominated = client.death_checked(client.inspect(&unit).map(|_| ()));
-    let error = dominated.expect_err("residue must dominate after crash-after-create");
+    let error =
+        dominated.expect_err("residue must dominate after crash-after-create");
     assert!(
         matches!(error, cistella::error::CistellaError::Contract(_)),
         "residue dominates as Contract, got: {error}"
@@ -250,7 +257,8 @@ fn wire_client_crash_after_create_residue_dominates() {
     // anywhere): the full backend teardown, then gone. The guard
     // disarms only after the residue assertion verifies clean — a
     // teardown-Ok with remaining residue still retries on panic.
-    cistella::runtime::teardown(&container_name, &session_id).expect("direct teardown converges");
+    cistella::runtime::teardown(&container_name, &session_id)
+        .expect("direct teardown converges");
     assert!(
         cistella::runtime::residue_gone(&container_name),
         "no residue after direct converge"
@@ -513,10 +521,16 @@ fn teardown_unit_lock_held_branch_completes_under_guard() {
     let creator = {
         let client = &client;
         std::thread::scope(|scope| {
-            let first =
-                scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
-            let second =
-                scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
+            let first = scope.spawn(|| {
+                client.inspect(
+                        &cistella::framework::contract::UnitHandle::mint(),
+                    )
+            });
+            let second = scope.spawn(|| {
+                client.inspect(
+                        &cistella::framework::contract::UnitHandle::mint(),
+                    )
+            });
             (
                 first.join().expect("first joins"),
                 second.join().expect("second joins"),
@@ -595,10 +609,16 @@ fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
     let waiter = {
         let client = &client;
         std::thread::scope(|scope| {
-            let first =
-                scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
-            let second =
-                scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
+            let first = scope.spawn(|| {
+                client.inspect(
+                        &cistella::framework::contract::UnitHandle::mint(),
+                    )
+            });
+            let second = scope.spawn(|| {
+                client.inspect(
+                        &cistella::framework::contract::UnitHandle::mint(),
+                    )
+            });
             (
                 first.join().expect("first joins"),
                 second.join().expect("second joins"),
@@ -606,7 +626,8 @@ fn wire_client_shutdown_failure_latches_uncertain_not_dead() {
         })
     };
     for (which, outcome) in [("first", waiter.0), ("second", waiter.1)] {
-        let error = outcome.expect_err(&format!("{which} must fail on fatal shutdown"));
+        let error = outcome
+            .expect_err(&format!("{which} must fail on fatal shutdown"));
         assert!(
             matches!(error, cistella::error::CistellaError::Protocol(_)),
             "{which} must fail as typed Protocol, got: {error}"
@@ -701,15 +722,18 @@ fn wire_client_post_terminal_op_gets_unified_error_with_dominance() {
     // admitted ops (same structural admission as the companion
     // test); joining both terminals proves terminal delivery.
     std::thread::scope(|scope| {
-        let first =
-            scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
-        let second =
-            scope.spawn(|| client.inspect(&cistella::framework::contract::UnitHandle::mint()));
+        let first = scope.spawn(|| {
+            client.inspect(&cistella::framework::contract::UnitHandle::mint())
+        });
+        let second = scope.spawn(|| {
+            client.inspect(&cistella::framework::contract::UnitHandle::mint())
+        });
         for (which, outcome) in [
             ("first", first.join().expect("first joins")),
             ("second", second.join().expect("second joins")),
         ] {
-            outcome.expect_err(&format!("{which} must fail on fatal shutdown"));
+            outcome
+                .expect_err(&format!("{which} must fail on fatal shutdown"));
         }
     });
     assert!(

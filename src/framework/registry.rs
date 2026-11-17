@@ -35,7 +35,8 @@ pub const WRAPPER_FILE_NAME: &str = "cistella-supervisor-landlock";
 
 /// Known guest path where the isolator stages the wrapper RO
 /// pre-initiate; the hook `argv_prefix` names exactly this path.
-pub const STAGED_WRAPPER_GUEST_PATH: &str = "/run/cistella/hooks/supervisor-landlock";
+pub const STAGED_WRAPPER_GUEST_PATH: &str =
+    "/run/cistella/hooks/supervisor-landlock";
 
 /// Canonical guest-context probe operation for the Landlock hook.
 pub const LANDLOCK_PROBE_OP: &str = "probe_capabilities";
@@ -122,7 +123,8 @@ pub fn stage_hook_artifact(
             "staging tag must not be empty".to_string(),
         ));
     }
-    let dir = std::env::temp_dir().join(format!("cistella-stage-{safe}-{order}"));
+    let dir =
+        std::env::temp_dir().join(format!("cistella-stage-{safe}-{order}"));
     // Our namespace, our tag: a pre-existing dir is stale crash
     // litter from a dead session, removed before re-staging.
     if dir.exists() {
@@ -134,9 +136,15 @@ pub fn stage_hook_artifact(
     // partial staging, so no post-create failure leaks.
     let host_file = dir.join(WRAPPER_FILE_NAME);
     let guard = StagedHook { dir, host_file };
-    std::fs::set_permissions(&guard.dir, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::set_permissions(
+        &guard.dir,
+        std::fs::Permissions::from_mode(0o700),
+    )?;
     std::fs::write(&guard.host_file, &pinned.bytes)?;
-    std::fs::set_permissions(&guard.host_file, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::set_permissions(
+        &guard.host_file,
+        std::fs::Permissions::from_mode(0o700),
+    )?;
     let staged = std::fs::read(&guard.host_file)?;
     let digest: [u8; 32] = Sha256::digest(&staged).into();
     if digest != pinned.sha256 {
@@ -185,7 +193,8 @@ pub fn resolve(
 ) -> Result<PinnedArtifact> {
     if !ADMITTED.contains(&(registry, path)) {
         return Err(CistellaError::Contract(
-            "registry admission: only the shipped wrapper is admitted".to_string(),
+            "registry admission: only the shipped wrapper is admitted"
+                .to_string(),
         ));
     }
     let expected = parse_sha256(expected_sha256)?;
@@ -220,12 +229,15 @@ pub fn resolve(
 ///
 /// Returns `CistellaError::Io` on open/read/stat failure.
 pub fn digest_sibling(exe_dir: &Path, file_name: &str) -> Result<String> {
-    let bytes = read_pinned(&exe_dir.join(file_name)).map_err(|error| match error {
-        CistellaError::Contract(_) => {
-            CistellaError::Io(std::io::Error::other("registry file refused"))
-        }
-        other => other,
-    })?;
+    let bytes =
+        read_pinned(&exe_dir.join(file_name)).map_err(
+            |error| match error {
+                CistellaError::Contract(_) => CistellaError::Io(
+                    std::io::Error::other("registry file refused"),
+                ),
+                other => other,
+            },
+        )?;
     let digest: [u8; 32] = Sha256::digest(&bytes).into();
     let mut hex = String::with_capacity(64);
     for byte in digest {
@@ -247,12 +259,17 @@ pub fn digest_sibling(exe_dir: &Path, file_name: &str) -> Result<String> {
 fn read_pinned(full: &Path) -> Result<Vec<u8>> {
     let raw = open(
         full,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        OFlag::O_RDONLY
+            | OFlag::O_NOFOLLOW
+            | OFlag::O_NONBLOCK
+            | OFlag::O_CLOEXEC,
         Mode::empty(),
     )
     .map_err(|errno| {
         if errno == nix::errno::Errno::ELOOP {
-            CistellaError::Contract("artifact must not be a symlink".to_string())
+            CistellaError::Contract(
+                "artifact must not be a symlink".to_string(),
+            )
         } else {
             CistellaError::Io(std::io::Error::from(errno))
         }
@@ -260,8 +277,8 @@ fn read_pinned(full: &Path) -> Result<Vec<u8>> {
     // SAFETY: freshly opened above, owned here, wrapped exactly
     // once (same discipline as the fd-channel accept path).
     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
-    let stat =
-        fstat(fd.as_raw_fd()).map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+    let stat = fstat(fd.as_raw_fd())
+        .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
     if stat.st_mode & nix::libc::S_IFMT != nix::libc::S_IFREG {
         return Err(CistellaError::Contract(
             "admitted artifact must be a regular file".to_string(),
@@ -294,10 +311,12 @@ fn parse_sha256(value: &str) -> Result<[u8; 32]> {
     }
     let mut out = [0u8; 32];
     for (index, chunk) in value.as_bytes().chunks(2).enumerate() {
-        let text = std::str::from_utf8(chunk)
-            .map_err(|_| CistellaError::Contract("artifact sha256 must be hex".to_string()))?;
-        out[index] = u8::from_str_radix(text, 16)
-            .map_err(|_| CistellaError::Contract("artifact sha256 must be hex".to_string()))?;
+        let text = std::str::from_utf8(chunk).map_err(|_| {
+            CistellaError::Contract("artifact sha256 must be hex".to_string())
+        })?;
+        out[index] = u8::from_str_radix(text, 16).map_err(|_| {
+            CistellaError::Contract("artifact sha256 must be hex".to_string())
+        })?;
     }
     Ok(out)
 }

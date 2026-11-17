@@ -50,7 +50,11 @@ const RULE_PATH_BENEATH: LibcLong = 1;
 /// never waits unboundedly except inside the exec'd harness.
 /// Thin raw syscalls: libc exposes the numbers but not typed
 /// helpers (same discipline as the spike helper).
-unsafe fn syscall2(num: LibcLong, a1: LibcLong, a2: LibcLong) -> nix::libc::c_int {
+unsafe fn syscall2(
+    num: LibcLong,
+    a1: LibcLong,
+    a2: LibcLong,
+) -> nix::libc::c_int {
     unsafe { nix::libc::syscall(num, a1, a2) as nix::libc::c_int }
 }
 
@@ -138,9 +142,14 @@ fn create_ruleset() -> Result<RawFd, String> {
 /// Adds one `path_beneath` rule: `allowed` rights on the directory
 /// opened `O_PATH|O_DIRECTORY|O_NOFOLLOW` (symlinked allows refuse
 /// with ELOOP — translated topology paths are canonical dirs).
-fn add_path_rule(ruleset: RawFd, path: &str, allowed: u64) -> Result<(), String> {
+fn add_path_rule(
+    ruleset: RawFd,
+    path: &str,
+    allowed: u64,
+) -> Result<(), String> {
     use std::ffi::CString;
-    let cpath = CString::new(path).map_err(|_| format!("bad path bytes: {path}"))?;
+    let cpath =
+        CString::new(path).map_err(|_| format!("bad path bytes: {path}"))?;
     // SAFETY: O_PATH directory open, no I/O; closed below on every
     // path (success closes after the rule copies the reference —
     // the ruleset holds its own).
@@ -202,7 +211,7 @@ fn diagnose(fd: RawFd, line: &str) -> std::io::Result<()> {
         match nix::unistd::write(borrowed, &bytes[written..]) {
             Ok(0) => {
                 return Err(std::io::Error::other("diagnostics write closed"));
-            }
+            },
             Ok(count) => written += count,
             Err(error) => return Err(std::io::Error::from(error)),
         }
@@ -221,7 +230,9 @@ fn fail_apply(fd: RawFd, error: &str, code: u8) -> ExitCode {
     // serde_json owns escaping: path/error text (profile- and
     // extension-influenced) can carry quotes, newlines, or
     // control bytes without corrupting the frame.
-    let line = serde_json::json!({"applied": false, "error": error}).to_string() + "\n";
+    let line = serde_json::json!({"applied": false, "error": error})
+        .to_string()
+        + "\n";
     let _ = diagnose(fd, &line);
     eprintln!("supervisor-landlock: {error}");
     ExitCode::from(code)
@@ -233,7 +244,9 @@ fn fail_apply(fd: RawFd, error: &str, code: u8) -> ExitCode {
 /// started), never a harness outcome. serde owns escaping as in
 /// [`fail_apply`].
 fn fail_transition(fd: RawFd, error: &str, code: u8) -> ExitCode {
-    let line = serde_json::json!({"transitioned": false, "error": error}).to_string() + "\n";
+    let line = serde_json::json!({"transitioned": false, "error": error})
+        .to_string()
+        + "\n";
     let _ = diagnose(fd, &line);
     eprintln!("supervisor-landlock: {error}");
     ExitCode::from(code)
@@ -248,11 +261,11 @@ fn serve_probe() -> ExitCode {
                 REQUIRED_HANDLED_FS
             );
             ExitCode::SUCCESS
-        }
+        },
         Err(error) => {
             println!("{{\"unsupported\":\"{error}\"}}");
             ExitCode::from(1)
-        }
+        },
     }
 }
 
@@ -301,7 +314,8 @@ fn parse_ancestor(args: &[String]) -> Result<Ancestor, String> {
         }
         position += 1;
     }
-    let diagnostics = diagnostics.ok_or_else(|| "missing --diagnostics-fd".to_string())?;
+    let diagnostics =
+        diagnostics.ok_or_else(|| "missing --diagnostics-fd".to_string())?;
     if position >= args.len() {
         return Err("no wrapped command after `--`".to_string());
     }
@@ -320,19 +334,25 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     let fd = invocation.diagnostics;
     let abi = match kernel_abi() {
         Ok(abi) => abi,
-        Err(error) => return fail_apply(fd, &format!("unsupported: {error}"), 1),
+        Err(error) => {
+            return fail_apply(fd, &format!("unsupported: {error}"), 1);
+        },
     };
     if abi < MIN_LANDLOCK_ABI {
         return fail_apply(
             fd,
-            &format!("unsupported: kernel ABI {abi} below minimum {MIN_LANDLOCK_ABI}"),
+            &format!(
+                "unsupported: kernel ABI {abi} below minimum {MIN_LANDLOCK_ABI}"
+            ),
             1,
         );
     }
     // SAFETY: one-shot wrapper; no-new-privs is irreversible for
     // this thread and the ruleset is the next syscall anyway (same
     // discipline as the spike helper).
-    let pr = unsafe { nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    let pr = unsafe {
+        nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    };
     if pr != 0 {
         return fail_apply(
             fd,
@@ -345,7 +365,9 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     }
     let ruleset = match create_ruleset() {
         Ok(ruleset) => ruleset,
-        Err(error) => return fail_apply(fd, &format!("unsupported: {error}"), 1),
+        Err(error) => {
+            return fail_apply(fd, &format!("unsupported: {error}"), 1);
+        },
     };
     for path in &invocation.allow_ro {
         if let Err(error) = add_path_rule(ruleset, path, ANCESTOR_RIGHTS) {
@@ -413,7 +435,9 @@ fn serve_ancestor(invocation: &Ancestor) -> ExitCode {
     // (deterministic pin of the ambiguous case): with the env set,
     // SIGKILL self after attesting instead of supervising. Never
     // set in production.
-    if std::env::var("CISTELLA_QA_WRAPPER_FAULT").as_deref() == Ok("kill-after-attest") {
+    if std::env::var("CISTELLA_QA_WRAPPER_FAULT").as_deref()
+        == Ok("kill-after-attest")
+    {
         // SAFETY: intentional self-kill for the fault pin only.
         unsafe {
             nix::libc::raise(nix::libc::SIGKILL);
@@ -459,10 +483,11 @@ fn supervise_transition(fd: RawFd, command: &[String]) -> ExitCode {
     // Err-pipe, close-on-exec both ends: exec closes the write
     // end (EOF means exec'd-or-dead, disambiguated by waitpid),
     // and neither end leaks into the harness.
-    let (err_read, err_write) = match nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC) {
-        Ok((read, write)) => (read, write),
-        Err(_) => return fail_transition(fd, "transition pipe failed", 2),
-    };
+    let (err_read, err_write) =
+        match nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC) {
+            Ok((read, write)) => (read, write),
+            Err(_) => return fail_transition(fd, "transition pipe failed", 2),
+        };
     use std::os::fd::AsRawFd;
     let err_read_raw = err_read.as_raw_fd();
     let err_write_raw = err_write.as_raw_fd();
@@ -498,19 +523,22 @@ fn supervise_transition(fd: RawFd, command: &[String]) -> ExitCode {
                         if retry == nix::libc::EINTR {
                             continue;
                         }
-                        nix::libc::kill(nix::libc::getpid(), nix::libc::SIGKILL);
+                        nix::libc::kill(
+                            nix::libc::getpid(),
+                            nix::libc::SIGKILL,
+                        );
                         nix::libc::_exit(127);
                     }
                     written += count as usize;
                 }
                 nix::libc::_exit(127);
             }
-        }
+        },
         Ok(nix::unistd::ForkResult::Parent { child }) => {
             // Parent: close the write end, observe the boundary.
             std::mem::drop(err_write);
             observe_transition(fd, err_read, child)
-        }
+        },
     }
 }
 
@@ -531,7 +559,8 @@ fn observe_transition(
     // Bounded observation: exec resolves instantly; a wedged
     // child (STOPped, lost) is killed and reported rather than
     // hung on.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut errno_bytes = [0u8; 4];
     let mut filled = 0usize;
     let observed = loop {
@@ -542,17 +571,21 @@ fn observe_transition(
             err_read.as_fd(),
             nix::poll::PollFlags::POLLIN,
         )];
-        let wait =
-            nix::poll::PollTimeout::try_from(remaining).unwrap_or(nix::poll::PollTimeout::ZERO);
+        let wait = nix::poll::PollTimeout::try_from(remaining)
+            .unwrap_or(nix::poll::PollTimeout::ZERO);
         match nix::poll::poll(&mut pollfds, wait) {
             Ok(0) | Err(_) => break TransitionSeen::TimedOut,
-            Ok(_) => {}
+            Ok(_) => {},
         }
         let mut chunk = [0u8; 4];
         // SAFETY: borrowed read-end, transient buffer; count
         // checked below, no ownership transfer.
         let count = unsafe {
-            nix::libc::read(err_read.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len())
+            nix::libc::read(
+                err_read.as_raw_fd(),
+                chunk.as_mut_ptr().cast(),
+                chunk.len(),
+            )
         };
         if count < 0 {
             break TransitionSeen::TimedOut;
@@ -571,15 +604,22 @@ fn observe_transition(
         TransitionSeen::Errno(errno) => {
             // Exec failed with cause: reap, report typed, exit.
             let _ = waitpid(child, None);
-            return fail_transition(fd, &format!("exec failed: {}", errno_name(errno)), 2);
-        }
+            return fail_transition(
+                fd,
+                &format!("exec failed: {}", errno_name(errno)),
+                2,
+            );
+        },
         TransitionSeen::TimedOut => {
             // Wedged child: kill, reap, report typed.
-            let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+            let _ = nix::sys::signal::kill(
+                child,
+                nix::sys::signal::Signal::SIGKILL,
+            );
             let _ = waitpid(child, None);
             return fail_transition(fd, "transition observation timed out", 2);
-        }
-        TransitionSeen::Eof => {}
+        },
+        TransitionSeen::Eof => {},
     }
     // EOF: exec'd (CLOEXEC closed the write end) or died (death
     // closed it). waitpid disambiguates:
@@ -602,10 +642,10 @@ fn observe_transition(
     // A partial errno prefix with death keeps its bytes on
     // stderr for debuggability.
     match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
-        Ok(WaitStatus::StillAlive) => {}
+        Ok(WaitStatus::StillAlive) => {},
         Ok(WaitStatus::Exited(_, code)) => {
             return emit_transitioned_and_exit(fd, code);
-        }
+        },
         Ok(WaitStatus::Signaled(_, signal, _)) => {
             if filled > 0 {
                 eprintln!(
@@ -628,17 +668,17 @@ fn observe_transition(
                 + "\n";
             let _ = diagnose(fd, &line);
             return relay_signal_and_exit(signal);
-        }
+        },
         Ok(status) => {
             return fail_transition(
                 fd,
                 &format!("child stopped before transition: {status:?}"),
                 2,
             );
-        }
+        },
         Err(_) => {
             return fail_transition(fd, "transition wait failed", 2);
-        }
+        },
     }
     // Positive transition proof: emit, close diagnostics for EOF,
     // then supervise the harness to its disposition.
@@ -654,11 +694,15 @@ fn observe_transition(
 /// Emits the positive transition proof and closes diagnostics
 /// for EOF. On write failure the child is killed first (it must
 /// not run unattested) and the path exits wrapper-failure.
-fn emit_transitioned(fd: RawFd, child: nix::unistd::Pid) -> Result<(), ExitCode> {
+fn emit_transitioned(
+    fd: RawFd,
+    child: nix::unistd::Pid,
+) -> Result<(), ExitCode> {
     use nix::sys::wait::waitpid;
     let line = serde_json::json!({"transitioned": true}).to_string() + "\n";
     if diagnose(fd, &line).is_err() {
-        let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+        let _ =
+            nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
         let _ = waitpid(child, None);
         eprintln!("supervisor-landlock: transition write failed");
         return Err(ExitCode::from(2));
@@ -760,7 +804,7 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("supervisor-landlock: {error}");
             return ExitCode::from(3);
-        }
+        },
     };
     serve_ancestor(&invocation)
 }

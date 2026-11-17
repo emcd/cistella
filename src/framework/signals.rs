@@ -8,7 +8,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+use nix::sys::signal::{
+    SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction,
+};
 
 use crate::framework::contract::CancelFlag;
 

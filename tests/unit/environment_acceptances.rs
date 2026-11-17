@@ -54,7 +54,9 @@ impl Drop for EnvGuard {
 }
 
 fn minimal_toml(body: &str) -> String {
-    format!("image = \"localhost/cistella/opencode:example\"\nmounts = []\n{body}")
+    format!(
+        "image = \"localhost/cistella/opencode:example\"\nmounts = []\n{body}"
+    )
 }
 
 fn profile_with_acceptances(names: &[&str]) -> String {
@@ -66,12 +68,15 @@ fn profile_with_acceptances(names: &[&str]) -> String {
     minimal_toml(&format!("environment-acceptances = [{list}]\n"))
 }
 
-fn resolve_text(toml: &str) -> Result<Profile, cistella::error::CistellaError> {
+fn resolve_text(
+    toml: &str,
+) -> Result<Profile, cistella::error::CistellaError> {
     let work = TempDir::new().unwrap();
     let path = work.path().join("tmpl.toml");
     std::fs::write(&path, toml).unwrap();
     let xdg_base = TempDir::new().unwrap();
-    let source = ResolutionSource::new(Vec::new(), xdg_base.path().join("xdg"));
+    let source =
+        ResolutionSource::new(Vec::new(), xdg_base.path().join("xdg"));
     Profile::resolve_in(
         path.to_str().unwrap(),
         &source,
@@ -89,8 +94,9 @@ fn legacy_environment_table_fails_closed() {
 
 #[test]
 fn declaration_valid_list_parses() {
-    let prof = Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_T1"]))
-        .expect("valid acceptance list parses");
+    let prof =
+        Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_T1"]))
+            .expect("valid acceptance list parses");
     assert_eq!(prof.environment_acceptances, vec!["CISTELLA_ACC_T1"]);
 }
 
@@ -123,8 +129,10 @@ fn declaration_secret_shaped_names_permitted() {
 #[test]
 fn required_absent_fails_name_only() {
     let _guard = EnvGuard::remove(&["CISTELLA_ACC_MISSING"]);
-    let prof = Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_MISSING"]))
-        .expect("declaration parses without the var present");
+    let prof = Profile::from_toml(&profile_with_acceptances(&[
+        "CISTELLA_ACC_MISSING",
+    ]))
+    .expect("declaration parses without the var present");
     let err = prof
         .snapshot_acceptances()
         .expect_err("absent acceptance refuses");
@@ -133,7 +141,8 @@ fn required_absent_fails_name_only() {
 
 #[test]
 fn required_first_absent_in_list_order_reported() {
-    let _guard = EnvGuard::remove(&["CISTELLA_ACC_ORD_B", "CISTELLA_ACC_ORD_A"]);
+    let _guard =
+        EnvGuard::remove(&["CISTELLA_ACC_ORD_B", "CISTELLA_ACC_ORD_A"]);
     let prof = Profile::from_toml(&profile_with_acceptances(&[
         "CISTELLA_ACC_ORD_B",
         "CISTELLA_ACC_ORD_A",
@@ -161,7 +170,8 @@ fn collision_with_assignment_fails() {
 
 #[test]
 fn collision_home_fails() {
-    let prof = Profile::from_toml(&profile_with_acceptances(&["HOME"])).expect("declares");
+    let prof = Profile::from_toml(&profile_with_acceptances(&["HOME"]))
+        .expect("declares");
     let err = prof.snapshot_acceptances().expect_err("HOME refuses");
     assert!(err.to_string().contains("HOME"));
 }
@@ -173,14 +183,18 @@ fn collision_ssh_auth_sock_conditional_on_declaration() {
     // verbatim without it (explicit operator override). Ambient
     // is process-global: hold the seat-ambient lock so parallel
     // ssh-selection tests cannot swap the value mid-assertion.
-    let _ambient = crate::ssh_ambient::AmbientGuard::set(std::ffi::OsStr::new("/run/fake.sock"));
+    let _ambient = crate::ssh_ambient::AmbientGuard::set(
+        std::ffi::OsStr::new("/run/fake.sock"),
+    );
     let declared = "image = \"localhost/cistella/opencode:example\"\nmounts = []\nenvironment-acceptances = [\"SSH_AUTH_SOCK\"]\n[[extensions]]\nname = \"ssh\"\n";
     let prof = Profile::from_toml(declared).unwrap();
     assert!(
         prof.snapshot_acceptances().is_err(),
         "owned name refuses under declared ssh"
     );
-    let none = Profile::from_toml(&profile_with_acceptances(&["SSH_AUTH_SOCK"])).unwrap();
+    let none =
+        Profile::from_toml(&profile_with_acceptances(&["SSH_AUTH_SOCK"]))
+            .unwrap();
     assert!(
         none.snapshot_acceptances().is_ok(),
         "same name forwards undeclared"
@@ -189,8 +203,11 @@ fn collision_ssh_auth_sock_conditional_on_declaration() {
 
 #[test]
 fn verbatim_template_looking_value_passes_through() {
-    let _guard = EnvGuard::set(&[("CISTELLA_ACC_VERB", "{{supplement:x}}@literal")]);
-    let prof = Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_VERB"])).unwrap();
+    let _guard =
+        EnvGuard::set(&[("CISTELLA_ACC_VERB", "{{supplement:x}}@literal")]);
+    let prof =
+        Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_VERB"]))
+            .unwrap();
     assert_eq!(
         prof.snapshot_acceptances().unwrap(),
         vec![(
@@ -203,7 +220,9 @@ fn verbatim_template_looking_value_passes_through() {
 #[test]
 fn verbatim_equals_permitted() {
     let _guard = EnvGuard::set(&[("CISTELLA_ACC_EQ", "a=b=c")]);
-    let prof = Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_EQ"])).unwrap();
+    let prof =
+        Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_EQ"]))
+            .unwrap();
     assert_eq!(
         prof.snapshot_acceptances().unwrap()[0].1,
         "a=b=c".to_string()
@@ -218,7 +237,9 @@ fn gate_line_breaks_refused_value_free() {
     ] {
         let name = format!("CISTELLA_ACC_GATE_{tag}");
         let _guard = EnvGuard::set(&[(name.as_str(), value)]);
-        let prof = Profile::from_toml(&profile_with_acceptances(&[name.as_str()])).unwrap();
+        let prof =
+            Profile::from_toml(&profile_with_acceptances(&[name.as_str()]))
+                .unwrap();
         let err = prof.snapshot_acceptances().expect_err("line break refuses");
         let msg = err.to_string();
         assert!(msg.contains(&name), "names the variable");
@@ -234,7 +255,12 @@ fn snapshot_non_unicode_value_refused_without_payload() {
     use std::os::unix::ffi::OsStringExt;
     let name = "CISTELLA_ACC_NONUNI";
     let prev = std::env::var_os(name);
-    unsafe { std::env::set_var(name, std::ffi::OsString::from_vec(vec![0xFF, 0xFE, b'x'])) };
+    unsafe {
+        std::env::set_var(
+            name,
+            std::ffi::OsString::from_vec(vec![0xFF, 0xFE, b'x']),
+        )
+    };
     let prof = Profile::from_toml(&profile_with_acceptances(&[name])).unwrap();
     let err = prof
         .snapshot_acceptances()
@@ -247,15 +273,21 @@ fn snapshot_non_unicode_value_refused_without_payload() {
     // construction) contributes nothing to the diagnostic.
     assert_eq!(
         err.to_string(),
-        format!("profile: environment-acceptances name absent or non-Unicode: {name}")
+        format!(
+            "profile: environment-acceptances name absent or non-Unicode: {name}"
+        )
     );
 }
 
 #[test]
 fn secret_shaped_name_forwards_through_snapshot() {
     // No-deny pinned on the forwarding path, not just declaration parsing.
-    let _guard = EnvGuard::set(&[("CISTELLA_ACC_LIVE_TOKEN", "token-value-7")]);
-    let prof = Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_LIVE_TOKEN"])).unwrap();
+    let _guard =
+        EnvGuard::set(&[("CISTELLA_ACC_LIVE_TOKEN", "token-value-7")]);
+    let prof = Profile::from_toml(&profile_with_acceptances(&[
+        "CISTELLA_ACC_LIVE_TOKEN",
+    ]))
+    .unwrap();
     assert_eq!(
         prof.snapshot_acceptances().unwrap(),
         vec![(
@@ -271,7 +303,8 @@ fn no_render_permission_for_accepted_names() {
     let toml = minimal_toml(
         "environment-acceptances = [\"CISTELLA_ACC_NR\"]\n[environment-assignments]\nPROBE = \"{{environment:CISTELLA_ACC_NR}}\"\n",
     );
-    let err = resolve_text(&toml).expect_err("accepted name has no render rights");
+    let err =
+        resolve_text(&toml).expect_err("accepted name has no render rights");
     assert!(
         err.to_string().contains("CISTELLA_ACC_NR"),
         "allowlist-absent diagnostic names the span"
@@ -292,7 +325,8 @@ fn shared_gate_parity_with_assignments() {
         let toml = minimal_toml(&format!(
             "[environment-assignments]\nBAD_{tag} = \"a{esc}b\"\n"
         ));
-        let err = Profile::from_toml(&toml).expect_err("assignment line break refuses");
+        let err = Profile::from_toml(&toml)
+            .expect_err("assignment line break refuses");
         let msg = err.to_string();
         assert!(
             msg.contains("must not contain newlines"),
@@ -331,7 +365,9 @@ fn accepted_value_round_trips_post_escaping() {
     // render the unit, read the Environment= line back through unquoting.
     let tricky = "sq'q dq\"q bs\\q 100% ok";
     let _guard = EnvGuard::set(&[("CISTELLA_ACC_RT", tricky)]);
-    let prof = Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_RT"])).unwrap();
+    let prof =
+        Profile::from_toml(&profile_with_acceptances(&["CISTELLA_ACC_RT"]))
+            .unwrap();
     let pairs = prof.snapshot_acceptances().unwrap();
     let session = cistella::session::Session {
         id: mint_session_id(),
@@ -347,9 +383,15 @@ fn accepted_value_round_trips_post_escaping() {
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>();
-    let unit =
-        cistella::runtime::generate_quadlet_unit(&session, &[], &env_extra, &[], None, false)
-            .unwrap();
+    let unit = cistella::runtime::generate_quadlet_unit(
+        &session,
+        &[],
+        &env_extra,
+        &[],
+        None,
+        false,
+    )
+    .unwrap();
     let line = unit
         .lines()
         .find(|l| l.starts_with("Environment=CISTELLA_ACC_RT="))

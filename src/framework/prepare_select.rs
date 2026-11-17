@@ -22,9 +22,9 @@ use crate::framework::contract::{
 use crate::framework::guest::{GuestHost, host_external, host_registered};
 use crate::framework::policy::{PolicySet, acceptance_set};
 use crate::framework::prepare::{
-    DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, SSH_BIN, TMPDIR_BIN,
-    check_hook_executable, run_extension_prepare, spawn_invitation, ssh_expectation,
-    transact_prepare,
+    DRIVER_ENV, EXTENSION_BIN, EvaluatedPlan, ExtensionSpawn, SSH_BIN,
+    TMPDIR_BIN, check_hook_executable, run_extension_prepare,
+    spawn_invitation, ssh_expectation, transact_prepare,
 };
 use crate::guest_registry::HostEnv;
 use crate::guest_source::{ResolveCtx, cache_dir, resolve};
@@ -106,7 +106,7 @@ fn abort_hosted(
         Some(residue) => {
             lease.retain();
             residue
-        }
+        },
         None => error,
     }
 }
@@ -155,12 +155,13 @@ pub fn prepare_selected_extension(
             let profile_permissions = profile.explicit_permissions();
             // Known image-private baselines apply uniformly
             // (match scope is hook-independent).
-            let effective = crate::framework::contract::EffectivePermissions::assemble(
-                triples,
-                &[],
-                &profile_permissions,
-                &crate::framework::landlock_compiler::baseline_routes(),
-            )?;
+            let effective =
+                crate::framework::contract::EffectivePermissions::assemble(
+                    triples,
+                    &[],
+                    &profile_permissions,
+                    &crate::framework::landlock_compiler::baseline_routes(),
+                )?;
             Ok((
                 EvaluatedPlan {
                     merged: crate::framework::contract::MergedPlan {
@@ -177,7 +178,7 @@ pub fn prepare_selected_extension(
                 },
                 None,
             ))
-        }
+        },
         1 => {
             let extra = extra_args.first().map(Vec::as_slice).unwrap_or(&[]);
             match extensions.into_iter().next() {
@@ -224,14 +225,15 @@ pub fn prepare_selected_extension(
                         session_id,
                         lease_base,
                     )
-                }
+                },
                 None => unreachable!("length checked as 1"),
             }
-        }
+        },
         // Any arity composes here (duplicates refuse at profile
         // resolution, so no list reaches this arm twice-named).
         _ => prepare_many(
-            extensions, exe_dir, profile, triples, policy, session_id, lease_base, extra_args,
+            extensions, exe_dir, profile, triples, policy, session_id,
+            lease_base, extra_args,
         ),
     }
 }
@@ -271,14 +273,16 @@ fn prepare_many(
     let mut spawns = Vec::with_capacity(extensions.len());
     for entry in extensions {
         match entry {
-            ExtensionResolution::Landlock => spawns.push(ExtensionSpawn::Landlock),
+            ExtensionResolution::Landlock => {
+                spawns.push(ExtensionSpawn::Landlock)
+            },
             ExtensionResolution::Tmpdir => spawns.push(ExtensionSpawn::Tmpdir),
             ExtensionResolution::Ssh => spawns.push(ExtensionSpawn::Ssh),
             ExtensionResolution::Registered(registered) => {
                 let ctx = ResolveCtx::new(cache_dir(&HostEnv::live())?);
                 let resolved = resolve(&registered, &ctx)?;
                 spawns.push(ExtensionSpawn::Registered(resolved));
-            }
+            },
         }
     }
     // Host in declaration order; a pending marker precedes
@@ -303,19 +307,32 @@ fn prepare_many(
                 &offered,
                 Deadlines::default(),
             ),
-            ExtensionSpawn::Tmpdir => {
-                host_external(exe_dir, TMPDIR_BIN, extra, &offered, Deadlines::default())
-            }
-            ExtensionSpawn::Ssh => {
-                host_external(exe_dir, SSH_BIN, extra, &offered, Deadlines::default())
-            }
-            ExtensionSpawn::Registered(resolved) => {
-                host_registered(resolved, extra, &offered, Deadlines::default())
-            }
+            ExtensionSpawn::Tmpdir => host_external(
+                exe_dir,
+                TMPDIR_BIN,
+                extra,
+                &offered,
+                Deadlines::default(),
+            ),
+            ExtensionSpawn::Ssh => host_external(
+                exe_dir,
+                SSH_BIN,
+                extra,
+                &offered,
+                Deadlines::default(),
+            ),
+            ExtensionSpawn::Registered(resolved) => host_registered(
+                resolved,
+                extra,
+                &offered,
+                Deadlines::default(),
+            ),
         };
         match hosted_one {
             Ok((guest, negotiated)) => {
-                if let Err(error) = lease.record_guest(guest.pid(), guest.pid()) {
+                if let Err(error) =
+                    lease.record_guest(guest.pid(), guest.pid())
+                {
                     lease.retain();
                     return Err(abort_hosted(hosted, &mut lease, error));
                 }
@@ -325,11 +342,11 @@ fn prepare_many(
                     guest_id,
                     required,
                 });
-            }
+            },
             Err(error) => {
                 lease.retain();
                 return Err(abort_hosted(hosted, &mut lease, error));
-            }
+            },
         }
     }
     // Required advertisements (pure check, no I/O).
@@ -382,9 +399,9 @@ fn prepare_many(
             &one.guest_id,
             Deadlines::default().plan,
             session_id,
-            expectations
-                .iter()
-                .find(|expected| expected.owner == Provenance::Extension(one.guest_id.clone())),
+            expectations.iter().find(|expected| {
+                expected.owner == Provenance::Extension(one.guest_id.clone())
+            }),
         );
         match outcome {
             Ok((transacted, creds)) => {
@@ -423,7 +440,9 @@ fn prepare_many(
                     .iter()
                     .map(|contribution| contribution.name.clone())
                     .collect();
-                if let Err(error) = policy.partition_claims(&transacted.policy_claims, &own_names) {
+                if let Err(error) = policy
+                    .partition_claims(&transacted.policy_claims, &own_names)
+                {
                     return Err(abort_hosted(hosted, &mut lease, error));
                 }
                 // Single-set-single-request admission (messages
@@ -441,7 +460,9 @@ fn prepare_many(
                             CistellaError::Contract(message),
                         ));
                     }
-                    if let Some(prior) = hook_claimant.replace(one.guest_id.clone()) {
+                    if let Some(prior) =
+                        hook_claimant.replace(one.guest_id.clone())
+                    {
                         let message = format!(
                             "more than one guest-hook claimant: {prior} and {}",
                             one.guest_id
@@ -467,7 +488,7 @@ fn prepare_many(
                 plan.cleanup.extend(transacted.cleanup);
                 credentials.extend(creds);
                 capabilities.extend(one.negotiated.iter().cloned());
-            }
+            },
             Err(error) => return Err(abort_hosted(hosted, &mut lease, error)),
         }
     }
@@ -487,7 +508,8 @@ fn prepare_many(
             ));
         }
     }
-    let mut reserved: HashSet<String> = profile.environment_assignments.keys().cloned().collect();
+    let mut reserved: HashSet<String> =
+        profile.environment_assignments.keys().cloned().collect();
     for name in &profile.environment_acceptances {
         reserved.insert(name.clone());
     }
@@ -498,10 +520,13 @@ fn prepare_many(
     // Owner-provided baselines filled explicitly: the
     // landlock-owned compiler publishes the known
     // image-private set; a future owner provides its own.
-    let context = MergeContext::new(&profile.container_home, reserved, triples.to_vec())
-        .with_profile_permissions(profile_permissions)
-        .with_baselines(crate::framework::landlock_compiler::baseline_routes())
-        .with_expectations(expectations);
+    let context =
+        MergeContext::new(&profile.container_home, reserved, triples.to_vec())
+            .with_profile_permissions(profile_permissions)
+            .with_baselines(
+                crate::framework::landlock_compiler::baseline_routes(),
+            )
+            .with_expectations(expectations);
     let acceptances = acceptance_set(&profile.environment_acceptances);
     // Per-name provenance: lattice evaluation sees the source
     // that contributed each name (unreachable fallback — merge
@@ -520,7 +545,9 @@ fn prepare_many(
                     // gap typed) — but a guess would launder
                     // provenance, so the fallback is impossible, not
                     // defaulted.
-                    Provenance::Extension("impossible-missing-contributor".to_string())
+                    Provenance::Extension(
+                        "impossible-missing-contributor".to_string(),
+                    )
                 })
         },
         &capabilities,

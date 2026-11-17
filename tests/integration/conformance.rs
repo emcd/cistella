@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use cistella::framework::contract::{Capability, ReconciliationKey};
-use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use cistella::framework::isolator::{
+    CreateSpec, ExecutionOutcome, Isolator, StdioBinding,
+};
 use cistella::isolators::podman::PodmanIsolator;
 use cistella::isolators::quadlet::{residue_gone, resolve_image_digest};
 use cistella::mount::{MountMode, MountTriple, podman_volume_args};
@@ -57,16 +59,21 @@ fn fixture_image() -> Option<String> {
         Err(error) => {
             skip(format!("fixture image unavailable: {error}"));
             None
-        }
+        },
     }
 }
 
 /// Builds a session plus volumes over a worktree tmpdir (mirrors the
 /// conduct planning the prepare transaction will centralize in 2.2).
-fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<String>) {
+fn plan_session(
+    image: &str,
+    worktree: &TempDir,
+    marker: &str,
+) -> (Session, Vec<String>) {
     let id = mint_session_id();
     let directory = worktree.path().to_string_lossy().to_string();
-    std::fs::write(worktree.path().join(marker), "marker").expect("write marker");
+    std::fs::write(worktree.path().join(marker), "marker")
+        .expect("write marker");
     let session = Session {
         id: id.clone(),
         directory: directory.clone(),
@@ -82,7 +89,8 @@ fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<
         container_target: "/work".to_string(),
         mode: MountMode::Rw,
     }];
-    let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
+    let volumes =
+        podman_volume_args(&triples, &session.container_home.clone(), None);
     (session, volumes)
 }
 
@@ -164,7 +172,8 @@ fn conformance_full_cycle_with_fidelity() {
             .expect("await probe"),
         ExecutionOutcome::Exited(0)
     );
-    let contents = std::fs::read_to_string(worktree.path().join("probe")).expect("read probe");
+    let contents = std::fs::read_to_string(worktree.path().join("probe"))
+        .expect("read probe");
     assert_eq!(contents, "cistella-conformance\n");
 
     // Mount fidelity: the worktree marker is visible at /work.
@@ -310,7 +319,8 @@ fn conformance_absent_converge_clears_orphan_unit() {
         .expect("terminate");
     fixture.backend.remove(&handle, &key).expect("remove");
     let home = home_dir();
-    std::fs::write(unit_path(&home, &fixture.session_id), "[Unit]\n").expect("plant orphan unit");
+    std::fs::write(unit_path(&home, &fixture.session_id), "[Unit]\n")
+        .expect("plant orphan unit");
     fixture
         .backend
         .converge_clean(&handle, grace, &key)
@@ -396,7 +406,8 @@ fn conformance_await_reattaches_and_replays() {
     let outcome = std::thread::scope(|scope| {
         scope
             .spawn(|| {
-                let live = cistella::framework::contract::CancelFlag::default();
+                let live =
+                    cistella::framework::contract::CancelFlag::default();
                 backend.await_result(&sleep, &live)
             })
             .join()

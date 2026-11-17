@@ -54,9 +54,10 @@ pub fn lock_waiter_matches(line: &str, waiter: &BlockedWait) -> bool {
         match (parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some(maj), Some(min), Some(ino), None) => {
                 u32::from_str_radix(maj, 16).ok() == Some(expected_major)
-                    && u32::from_str_radix(min, 16).ok() == Some(expected_minor)
+                    && u32::from_str_radix(min, 16).ok()
+                        == Some(expected_minor)
                     && ino.parse::<u64>().ok() == Some(waiter.ino)
-            }
+            },
             _ => false,
         }
     })
@@ -93,7 +94,8 @@ pub fn wait_lock_blocked(child: &mut std::process::Child, timeout: Duration) {
     let mut last_seen = "no /proc/locks read yet".to_string();
     loop {
         let lock_meta = std::fs::metadata(cistella::lock::lock_path());
-        let lock_id = lock_meta.as_ref().ok().map(|meta| (meta.dev(), meta.ino()));
+        let lock_id =
+            lock_meta.as_ref().ok().map(|meta| (meta.dev(), meta.ino()));
         let locks_read = std::fs::read_to_string("/proc/locks");
         // Every route to the deadline names its cause: a read
         // or metadata error is itself the diagnostic (restricted
@@ -131,13 +133,17 @@ pub fn wait_lock_blocked(child: &mut std::process::Child, timeout: Duration) {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                panic!("child {pid} exited ({status:?}) before blocking on the lock")
-            }
-            Ok(None) => {}
+                panic!(
+                    "child {pid} exited ({status:?}) before blocking on the lock"
+                )
+            },
+            Ok(None) => {},
             Err(error) => panic!("child {pid} unobservable: {error}"),
         }
         if Instant::now() > deadline {
-            panic!("child {pid} never observably blocked on the lock (last: {last_seen})");
+            panic!(
+                "child {pid} never observably blocked on the lock (last: {last_seen})"
+            );
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -165,8 +171,10 @@ pub fn admit_fifo(
             // SAFETY: freshly opened above, owned here, wrapped
             // exactly once.
             Ok(raw) => {
-                return unsafe { std::os::unix::io::OwnedFd::from_raw_fd(raw) };
-            }
+                return unsafe {
+                    std::os::unix::io::OwnedFd::from_raw_fd(raw)
+                };
+            },
             Err(nix::errno::Errno::ENXIO) => {
                 // No reader right now: not-yet-admitted (retry
                 // while the workload lives) or missing (the
@@ -176,15 +184,17 @@ pub fn admit_fifo(
                     Ok(Some(status)) => panic!(
                         "release impossible: workload exited ({status:?}) before admission (missing reader)"
                     ),
-                    Ok(None) => {}
+                    Ok(None) => {},
                     Err(error) => panic!("child unobservable: {error}"),
                 }
                 if Instant::now() > deadline {
                     panic!("release never admitted: no reader within bound");
                 }
                 std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => panic!("release open failed for {}: {error}", gate.display()),
+            },
+            Err(error) => {
+                panic!("release open failed for {}: {error}", gate.display())
+            },
         }
     }
 }
@@ -193,7 +203,9 @@ pub fn admit_fifo(
 /// fifo. Returns `EPIPE` when the reader vanished after
 /// admission (distinct from never-arrived); any other error
 /// propagates unchanged.
-pub fn write_release(fd: &std::os::unix::io::OwnedFd) -> Result<(), nix::errno::Errno> {
+pub fn write_release(
+    fd: &std::os::unix::io::OwnedFd,
+) -> Result<(), nix::errno::Errno> {
     use std::os::unix::io::AsFd as _;
     match nix::unistd::write(fd.as_fd(), b"\n") {
         Ok(_) => Ok(()),
@@ -205,13 +217,17 @@ pub fn write_release(fd: &std::os::unix::io::OwnedFd) -> Result<(), nix::errno::
 /// fail-fast) then one newline. EPIPE on the write means the
 /// reader vanished after admission. No worker, no leak — every
 /// step is non-blocking by construction.
-pub fn release_fifo(gate: &std::path::Path, child: &mut std::process::Child, timeout: Duration) {
+pub fn release_fifo(
+    gate: &std::path::Path,
+    child: &mut std::process::Child,
+    timeout: Duration,
+) {
     let admitted = admit_fifo(gate, child, timeout);
     match write_release(&admitted) {
-        Ok(()) => {}
+        Ok(()) => {},
         Err(nix::errno::Errno::EPIPE) => {
             panic!("release write: reader vanished after admission")
-        }
+        },
         Err(error) => panic!("release write failed: {error}"),
     }
 }
@@ -221,7 +237,10 @@ mod blocking_tests {
     // Fast pins for the observation predicates (no podman, no
     // systemd): the matcher is pure; the fifo phases use local
     // fifos plus ordinary child processes.
-    use super::{BlockedWait, admit_fifo, lock_waiter_matches, release_fifo, write_release};
+    use super::{
+        BlockedWait, admit_fifo, lock_waiter_matches, release_fifo,
+        write_release,
+    };
 
     #[test]
     fn blocked_holder_line_matches_exact_pid_and_file() {
@@ -300,8 +319,11 @@ mod blocking_tests {
         // ENXIO observes the exit. Fast: no bound is consumed.
         let dir = tempfile::tempdir().expect("tmpdir");
         let gate = dir.path().join("gate.fifo");
-        nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::from_bits(0o600).expect("mode"))
-            .expect("mkfifo");
+        nix::unistd::mkfifo(
+            &gate,
+            nix::sys::stat::Mode::from_bits(0o600).expect("mode"),
+        )
+        .expect("mkfifo");
         let mut child = std::process::Command::new("true")
             .spawn()
             .expect("spawn true");
@@ -318,8 +340,11 @@ mod blocking_tests {
         use std::sync::mpsc::channel;
         let dir = tempfile::tempdir().expect("tmpdir");
         let gate = dir.path().join("gate.fifo");
-        nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::from_bits(0o600).expect("mode"))
-            .expect("mkfifo");
+        nix::unistd::mkfifo(
+            &gate,
+            nix::sys::stat::Mode::from_bits(0o600).expect("mode"),
+        )
+        .expect("mkfifo");
         let (gone_tx, gone_rx) = channel::<()>();
         let gate_path = gate.clone();
         let reader = std::thread::spawn(move || {
@@ -340,7 +365,8 @@ mod blocking_tests {
             .spawn()
             .expect("spawn keepalive");
         // Admission pairs with the blocked reader...
-        let admitted = admit_fifo(&gate, &mut child, std::time::Duration::from_secs(10));
+        let admitted =
+            admit_fifo(&gate, &mut child, std::time::Duration::from_secs(10));
         // ...the reader is released to vanish...
         let _ = gone_tx.send(());
         reader.join().expect("reader exits");

@@ -110,7 +110,8 @@ fn run_helper(allows: &[&str], wrapped_argv: &[&str]) -> (i32, String) {
     for arg in wrapped_argv {
         command.arg(arg);
     }
-    let output = run_bounded(command, RUN_CISTELLA_TIMEOUT).expect("landlock_helper must spawn");
+    let output = run_bounded(command, RUN_CISTELLA_TIMEOUT)
+        .expect("landlock_helper must spawn");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.code().unwrap_or(-1), stderr)
 }
@@ -144,7 +145,8 @@ fn admitted_access_succeeds() {
         exit_code, 0,
         "wrapped command must exit 0; stderr: {stderr}"
     );
-    let contents = std::fs::read_to_string(marker).expect("marker readable after helper exit");
+    let contents = std::fs::read_to_string(marker)
+        .expect("marker readable after helper exit");
     assert_eq!(contents, "spike-marker");
     let _ = std::fs::remove_file(marker);
 }
@@ -168,7 +170,8 @@ fn local_smoke_admitted_works() {
     let allows = ["/tmp", "/proc/self/fd", "/usr", "/etc"];
     let (exit_code, stderr) = run_helper(&allows, &wrapped);
     assert_eq!(exit_code, 0, "local smoke must exit 0; stderr: {stderr}");
-    let contents = std::fs::read_to_string(marker).expect("marker readable after helper exit");
+    let contents = std::fs::read_to_string(marker)
+        .expect("marker readable after helper exit");
     assert_eq!(contents, "local-smoke");
     let _ = std::fs::remove_file(marker);
 }
@@ -182,7 +185,8 @@ fn local_smoke_admitted_works() {
 #[ignore = "live: requires operator-authorized Podman seat"]
 #[test]
 fn denied_access_yields_eacces() {
-    let wrapped = ["/usr/bin/python3", "-c", "open('/etc/passwd', 'r').read()"];
+    let wrapped =
+        ["/usr/bin/python3", "-c", "open('/etc/passwd', 'r').read()"];
     let allows = ["/usr", "/proc/self/fd"];
     let (exit_code, stderr) = run_helper(&allows, &wrapped);
     assert_ne!(exit_code, 0, "wrapped command must fail on denied path");
@@ -236,7 +240,8 @@ fn unsupported_kernel_typed_refusal() {
     cmd.arg("/usr/bin/python3");
     cmd.arg("-c");
     cmd.arg(&wrapped_code);
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("landlock_kill_wrapper must spawn");
+    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
+        .expect("landlock_kill_wrapper must spawn");
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

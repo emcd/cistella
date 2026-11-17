@@ -46,7 +46,8 @@ fn fake_guest_path() -> PathBuf {
             if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
                 continue;
             }
-            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+            candidates
+                .push((metadata.modified().expect("mtime"), entry.path()));
         }
     }
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
@@ -69,7 +70,8 @@ fn stage_extension_peer() -> tempfile::TempDir {
     let staged = dir.path().join(EXTENSION_BIN);
     std::fs::copy(fake_guest_path(), &staged).expect("stage peer");
     use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(&staged).expect("meta").permissions();
+    let mut permissions =
+        std::fs::metadata(&staged).expect("meta").permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     std::fs::set_permissions(&staged, permissions).expect("exec bit");
     dir
@@ -210,15 +212,19 @@ fn hook_executable_binding_refuses_extension_args() {
 fn probe_report_gates_abi_and_mask() {
     use cistella::framework::prepare::parse_probe_report;
     parse_probe_report(br#"{"abi":7,"handled_fs_mask":32767}"#).unwrap();
-    let error = parse_probe_report(br#"{"abi":2,"handled_fs_mask":32767}"#).unwrap_err();
+    let error = parse_probe_report(br#"{"abi":2,"handled_fs_mask":32767}"#)
+        .unwrap_err();
     assert!(error.to_string().contains("below minimum"), "got: {error}");
-    let error = parse_probe_report(br#"{"abi":7,"handled_fs_mask":8191}"#).unwrap_err();
+    let error = parse_probe_report(br#"{"abi":7,"handled_fs_mask":8191}"#)
+        .unwrap_err();
     assert!(
         error.to_string().contains("rights shortfall"),
         "got: {error}"
     );
-    let error =
-        parse_probe_report(br#"{"unsupported":"landlock_create_ruleset: ENOSYS"}"#).unwrap_err();
+    let error = parse_probe_report(
+        br#"{"unsupported":"landlock_create_ruleset: ENOSYS"}"#,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("unsupported"), "got: {error}");
     let error = parse_probe_report(br#"{"abi":"seven"}"#).unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
@@ -228,11 +234,16 @@ fn probe_report_gates_abi_and_mask() {
 fn attestation_line_parses_applied() {
     use cistella::framework::prepare::parse_attestation_line;
     assert_eq!(
-        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767}"#).unwrap(),
+        parse_attestation_line(
+            r#"{"applied":true,"abi":7,"handled_fs_mask":32767}"#
+        )
+        .unwrap(),
         (7, 32767)
     );
-    let error =
-        parse_attestation_line(r#"{"applied":false,"error":"bad allow path"}"#).unwrap_err();
+    let error = parse_attestation_line(
+        r#"{"applied":false,"error":"bad allow path"}"#,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("apply failure"), "got: {error}");
     let error = parse_attestation_line("not json").unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
@@ -246,7 +257,8 @@ fn confinement_roots_require_src_tree() {
         confinement_roots(Path::new("/home/op"), "/home/op/src/proj").unwrap();
     assert_eq!(ancestor, Path::new("/home/op/src"));
     assert_eq!(subtree, Path::new("/home/op/src/proj"));
-    let error = confinement_roots(Path::new("/home/op"), "/srv/other").unwrap_err();
+    let error =
+        confinement_roots(Path::new("/home/op"), "/srv/other").unwrap_err();
     assert!(
         error.to_string().contains("confinement root"),
         "got: {error}"
@@ -257,9 +269,10 @@ fn confinement_roots_require_src_tree() {
 fn attestation_strict_schema_refuses_dups_and_extras() {
     use cistella::framework::prepare::parse_attestation_line;
     // Duplicate keys refuse (derived Deserialize rejects them).
-    let error =
-        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"abi":8}"#)
-            .unwrap_err();
+    let error = parse_attestation_line(
+        r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"abi":8}"#,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
     // Unknown fields refuse.
     let error = parse_attestation_line(
@@ -268,20 +281,25 @@ fn attestation_strict_schema_refuses_dups_and_extras() {
     .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
     // Cross-shape mismatch refuses (applied:true must not carry error).
-    let error =
-        parse_attestation_line(r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"error":"x"}"#)
-            .unwrap_err();
+    let error = parse_attestation_line(
+        r#"{"applied":true,"abi":7,"handled_fs_mask":32767,"error":"x"}"#,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
     // Negative shape still reports.
-    let error =
-        parse_attestation_line(r#"{"applied":false,"error":"bad allow path"}"#).unwrap_err();
+    let error = parse_attestation_line(
+        r#"{"applied":false,"error":"bad allow path"}"#,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("apply failure"), "got: {error}");
 }
 
 #[test]
 fn probe_strict_schema_refuses_extras() {
     use cistella::framework::prepare::parse_probe_report;
-    let error = parse_probe_report(br#"{"abi":7,"handled_fs_mask":32767,"extra":1}"#).unwrap_err();
+    let error =
+        parse_probe_report(br#"{"abi":7,"handled_fs_mask":32767,"extra":1}"#)
+            .unwrap_err();
     assert!(error.to_string().contains("shape"), "got: {error}");
 }
 
@@ -298,8 +316,8 @@ fn gate_drain_captures_exec_failure_and_ignores_noise() {
     use std::io::Write;
     write.write_all(script.as_bytes()).expect("write script");
     drop(write);
-    let (abi, detail) =
-        gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate passes on attestation");
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5))
+        .expect("gate passes on attestation");
     assert_eq!(abi, 7);
     assert_eq!(detail.as_deref(), Some("exec failed: ENOENT"));
     let _ = read.as_fd();
@@ -317,7 +335,8 @@ fn gate_drain_clean_session_has_no_detail() {
         )
         .expect("write script");
     drop(write);
-    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate passes");
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5))
+        .expect("gate passes");
     assert_eq!(abi, 7);
     assert_eq!(detail, None);
 }
@@ -332,7 +351,8 @@ fn gate_drain_malformed_trailing_refuses() {
         .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\nnot-json-noise\n")
         .expect("write script");
     drop(write);
-    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    let error =
+        gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
     assert!(
         error.to_string().contains("malformed diagnostics trailing"),
         "got: {error}"
@@ -352,7 +372,8 @@ fn gate_drain_missing_eof_times_out_typed() {
         .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
         .expect("write script");
     write.flush().expect("flush");
-    let error = gate_hook_attestation(&read, Duration::from_millis(300)).unwrap_err();
+    let error =
+        gate_hook_attestation(&read, Duration::from_millis(300)).unwrap_err();
     assert!(error.to_string().contains("timed out"), "got: {error}");
     drop(write);
 }
@@ -367,10 +388,13 @@ fn gate_drain_overlong_refuses() {
     let filler = vec![b'x'; 70 * 1024];
     let writer = std::thread::spawn(move || {
         use std::io::Write;
-        let _ = write.write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n");
+        let _ = write.write_all(
+            b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n",
+        );
         let _ = write.write_all(&filler);
     });
-    let error = gate_hook_attestation(&read, Duration::from_secs(10)).unwrap_err();
+    let error =
+        gate_hook_attestation(&read, Duration::from_secs(10)).unwrap_err();
     assert!(error.to_string().contains("overlong"), "got: {error}");
     let _ = writer.join();
 }
@@ -387,7 +411,8 @@ fn gate_drain_eof_without_transition_refuses() {
         .write_all(b"{\"applied\":true,\"abi\":7,\"handled_fs_mask\":32767}\n")
         .expect("write script");
     drop(write);
-    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    let error =
+        gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
     assert!(
         error.to_string().contains("transition unproven"),
         "got: {error}"
@@ -406,8 +431,8 @@ fn gate_drain_transition_failure_reports_detail() {
         )
         .expect("write script");
     drop(write);
-    let (abi, detail) =
-        gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate reads failure");
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5))
+        .expect("gate reads failure");
     assert_eq!(abi, 7);
     assert_eq!(detail.as_deref(), Some("child died"));
 }
@@ -428,8 +453,8 @@ fn gate_drain_ambiguous_signal_reports_transition_ambiguity() {
         )
         .expect("write script");
     drop(write);
-    let (abi, detail) =
-        gate_hook_attestation(&read, Duration::from_secs(5)).expect("gate reads failure");
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(5))
+        .expect("gate reads failure");
     assert_eq!(abi, 7);
     assert_eq!(
         detail.as_deref(),
@@ -449,8 +474,10 @@ fn require_declared_hooks_refuses_selected_but_empty() {
     assert!(error.to_string().contains("no hook"), "got: {error}");
     // Selected with hooks: pass (multiplicity is composition's
     // pre-create refusal, not this gate's).
-    require_declared_hooks(true, &[hook.clone(), hook.clone()]).expect("multi passes here");
-    require_declared_hooks(true, std::slice::from_ref(&hook)).expect("one passes");
+    require_declared_hooks(true, &[hook.clone(), hook.clone()])
+        .expect("multi passes here");
+    require_declared_hooks(true, std::slice::from_ref(&hook))
+        .expect("one passes");
     // Undeclared: nothing promised, nothing enforced.
     require_declared_hooks(false, &[]).expect("undeclared empty passes");
 }
@@ -474,7 +501,8 @@ fn gate_drain_transitioned_returns_before_eof() {
         .expect("write script");
     write.flush().expect("flush");
     let start = Instant::now();
-    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(30)).expect("gate passes");
+    let (abi, detail) = gate_hook_attestation(&read, Duration::from_secs(30))
+        .expect("gate passes");
     assert_eq!(abi, 7);
     assert_eq!(detail, None);
     assert!(
@@ -500,7 +528,8 @@ fn gate_drain_transitioned_with_trailing_bytes_refuses() {
         )
         .expect("write script");
     drop(write);
-    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    let error =
+        gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
     assert!(
         error.to_string().contains("malformed diagnostics trailing"),
         "got: {error}"
@@ -527,7 +556,8 @@ fn gate_drain_transitioned_with_overcap_tail_refuses() {
         script.extend(std::iter::repeat_n(b'x', 70 * 1024));
         let _ = write.write_all(&script);
     });
-    let error = gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
+    let error =
+        gate_hook_attestation(&read, Duration::from_secs(5)).unwrap_err();
     assert!(
         error.to_string().contains("malformed diagnostics trailing"),
         "got: {error}"

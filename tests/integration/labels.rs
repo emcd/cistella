@@ -45,8 +45,8 @@ fn gc_inspect_failure_fails_closed() {
         return;
     }
     let home = home_dir();
-    let shim_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".auxiliary/temporary/podman-shim");
+    let shim_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".auxiliary/temporary/podman-shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
     let mut cmd = Command::new("which");
     cmd.arg("podman");
@@ -161,10 +161,16 @@ fn command_label_edge_round_trip_live() {
     // errors into stdout, so render both streams on failure.
     wait_harness(&container, "edge_probe");
     let expected = "a=b c'd 100% %h %%";
-    let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let ready_by =
+        std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        let out = run_cistella(&home, &["enter", &id, "--", "cat", "/tmp/edge_probe"]);
-        if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == expected {
+        let out = run_cistella(
+            &home,
+            &["enter", &id, "--", "cat", "/tmp/edge_probe"],
+        );
+        if out.status.success()
+            && String::from_utf8_lossy(&out.stdout).trim() == expected
+        {
             break;
         }
         if std::time::Instant::now() > ready_by {
@@ -198,7 +204,8 @@ fn spaced_directory_conduct() {
     let spaced_str = spaced.to_string_lossy().to_string();
     let home = home_dir();
 
-    let (mut conduct, id, mut guard) = spawn_conduct(&home, &spaced_str, &["--identity", "alice"]);
+    let (mut conduct, id, mut guard) =
+        spawn_conduct(&home, &spaced_str, &["--identity", "alice"]);
     wait_active(&id);
     let container = format!("cistella-{id}");
     assert_eq!(unit_label(&home, &id, "cistella.directory"), spaced_str);
@@ -238,7 +245,8 @@ fn spaced_directory_conduct() {
     std::fs::create_dir(&pct).unwrap();
     std::fs::write(pct.join("README.md"), "# test").unwrap();
     let pct_str = pct.to_string_lossy().to_string();
-    let (mut conduct, id, mut guard) = spawn_conduct(&home, &pct_str, &["--identity", "alice"]);
+    let (mut conduct, id, mut guard) =
+        spawn_conduct(&home, &pct_str, &["--identity", "alice"]);
     wait_active(&id);
     let container = format!("cistella-{id}");
     assert_eq!(unit_label(&home, &id, "cistella.directory"), pct_str);

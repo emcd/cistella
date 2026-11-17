@@ -92,8 +92,11 @@ impl fmt::Display for BoundedRunError {
                 waited.as_millis()
             ),
             Self::Overflow { stream } => {
-                write!(f, "{stream} exceeded capture cap — killed, not truncated")
-            }
+                write!(
+                    f,
+                    "{stream} exceeded capture cap — killed, not truncated"
+                )
+            },
             Self::DrainTimeout {
                 partial_stdout,
                 partial_stderr,
@@ -157,7 +160,10 @@ pub fn spawn_cistella_cmd(home: &str, args: &[&str]) -> Command {
 /// path. Total wall = `timeout` + cleanup allowances (see
 /// `wait_bounded`); for a single deadline over everything, use
 /// `run_bounded_at`.
-pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Output, BoundedRunError> {
+pub fn run_bounded(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<Output, BoundedRunError> {
     let child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -170,7 +176,10 @@ pub fn run_bounded(mut cmd: Command, timeout: Duration) -> Result<Output, Bounde
 /// Bounded run against ONE absolute deadline (see
 /// `wait_bounded_at`): poll loops pass their fixed outer deadline
 /// so exit, kill+reap, and drain never stack past it.
-pub fn run_bounded_at(mut cmd: Command, deadline: Instant) -> Result<Output, BoundedRunError> {
+pub fn run_bounded_at(
+    mut cmd: Command,
+    deadline: Instant,
+) -> Result<Output, BoundedRunError> {
     let child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -229,11 +238,12 @@ pub fn drain_capped(
                         break;
                     }
                     guard.buf.extend_from_slice(&buf[..n]);
-                }
+                },
                 Err(error) => {
-                    slot.lock().expect("capture mutex").error = Some(error.to_string());
+                    slot.lock().expect("capture mutex").error =
+                        Some(error.to_string());
                     break;
-                }
+                },
             }
         }
         let _ = done.send(());
@@ -245,7 +255,10 @@ pub fn drain_capped(
 /// observed (handle joinable), false = deadline passed with the
 /// pipe still held. Completion is attested by the done channel,
 /// never by an unconditional join (finalize precedent).
-pub fn wait_drain(rx: &std::sync::mpsc::Receiver<()>, deadline: Instant) -> bool {
+pub fn wait_drain(
+    rx: &std::sync::mpsc::Receiver<()>,
+    deadline: Instant,
+) -> bool {
     while Instant::now() < deadline {
         if rx.recv_timeout(Duration::from_millis(25)).is_ok() {
             return true;
@@ -355,7 +368,10 @@ pub fn finish_capture(
 /// EOF). The allowances are named consts with a fixed shape; for
 /// a SINGLE deadline governing operation AND cleanup (no stacking
 /// past an outer budget), use `wait_bounded_at`.
-pub fn wait_bounded(child: Child, timeout: Duration) -> Result<Output, BoundedRunError> {
+pub fn wait_bounded(
+    child: Child,
+    timeout: Duration,
+) -> Result<Output, BoundedRunError> {
     wait_bounded_at(
         child,
         Instant::now() + timeout + REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT,
@@ -372,7 +388,10 @@ pub fn wait_bounded(child: Child, timeout: Duration) -> Result<Output, BoundedRu
 /// child is killed promptly. Reap gets `min(REAP_ALLOWANCE,
 /// remaining)` with a 100ms floor (the kernel needs a scheduling
 /// quantum past SIGKILL); the drain waits to `deadline` itself.
-pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, BoundedRunError> {
+pub fn wait_bounded_at(
+    mut child: Child,
+    deadline: Instant,
+) -> Result<Output, BoundedRunError> {
     use std::sync::{Arc, Mutex};
     let out_slot = Arc::new(Mutex::new(StreamCapture::empty()));
     let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
@@ -419,10 +438,16 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
             out.overflow || err.overflow
         };
         if overflowed {
-            return overflow_cleanup(&mut child, &out_slot, &err_slot, start, |child| {
-                let _ = child.kill();
-                reap_bounded(child, reap_budget()).is_some()
-            });
+            return overflow_cleanup(
+                &mut child,
+                &out_slot,
+                &err_slot,
+                start,
+                |child| {
+                    let _ = child.kill();
+                    reap_bounded(child, reap_budget()).is_some()
+                },
+            );
         }
         // try_wait failure is mapped, never panicked: the child's
         // disposition is unobtainable (this path runs inside Guard
@@ -436,12 +461,13 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
                     partial_stdout: label_partial(&out.buf),
                     partial_stderr: label_partial(&err.buf),
                 });
-            }
+            },
             Ok(Some(status)) => break (status, Instant::now()),
             Ok(None) => {
                 if Instant::now() > exit_until {
                     let _ = child.kill();
-                    let reaped = reap_bounded(&mut child, reap_budget()).is_some();
+                    let reaped =
+                        reap_bounded(&mut child, reap_budget()).is_some();
                     let out = out_slot.lock().expect("capture mutex");
                     let err = err_slot.lock().expect("capture mutex");
                     return Err(BoundedRunError::Timeout {
@@ -452,7 +478,7 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
                     });
                 }
                 std::thread::sleep(Duration::from_millis(25));
-            }
+            },
         }
     };
     // Child reaped: readers must EOF by the SHARED post-exit
@@ -472,7 +498,7 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
                 let _ = handle.join();
             }
             ok
-        }
+        },
         None => true,
     };
     let err_ok = match err_wait {
@@ -482,7 +508,7 @@ pub fn wait_bounded_at(mut child: Child, deadline: Instant) -> Result<Output, Bo
                 let _ = handle.join();
             }
             ok
-        }
+        },
         None => true,
     };
     finish_capture(status, &out_slot, &err_slot, out_ok, err_ok)
@@ -510,15 +536,19 @@ pub enum ConductIdError {
 impl fmt::Display for ConductIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Setup(detail) => write!(f, "nonblocking setup failed: {detail}"),
+            Self::Setup(detail) => {
+                write!(f, "nonblocking setup failed: {detail}")
+            },
             Self::Timeout { waited } => {
                 write!(f, "no id line within {}ms", waited.as_millis())
-            }
+            },
             Self::EofWithoutId => write!(f, "EOF before any conduct id line"),
             Self::LineOverflow { bytes } => {
                 write!(f, "no id line within {bytes} buffered bytes (runaway)")
-            }
-            Self::MalformedId(line) => write!(f, "malformed conduct id line: {line:?}"),
+            },
+            Self::MalformedId(line) => {
+                write!(f, "malformed conduct id line: {line:?}")
+            },
         }
     }
 }
@@ -549,10 +579,17 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
 ) -> Result<(String, R, Vec<u8>), ConductIdError> {
     use std::io::ErrorKind;
     let mut reader = reader;
-    if let Ok(flags) = nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+    if let Ok(flags) =
+        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+    {
         let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
         oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-        if nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err() {
+        if nix::fcntl::fcntl(
+            reader.as_raw_fd(),
+            nix::fcntl::FcntlArg::F_SETFL(oflags),
+        )
+        .is_err()
+        {
             return Err(ConductIdError::Setup(
                 "F_SETFL O_NONBLOCK refused".to_string(),
             ));
@@ -581,9 +618,11 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
                         bytes: pending.len(),
                     });
                 }
-                while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+                while let Some(pos) = pending.iter().position(|b| *b == b'\n')
+                {
                     let line: Vec<u8> = pending.drain(..=pos).collect();
-                    let text = String::from_utf8_lossy(&line).trim().to_string();
+                    let text =
+                        String::from_utf8_lossy(&line).trim().to_string();
                     if let Some(id) = text.strip_prefix("conduct ") {
                         if valid_minted_id(id) {
                             return Ok((id.to_string(), reader, pending));
@@ -591,13 +630,13 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
                         return Err(ConductIdError::MalformedId(text));
                     }
                 }
-            }
+            },
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(25));
-            }
+            },
             Err(_) => {
                 std::thread::sleep(Duration::from_millis(25));
-            }
+            },
         }
     }
 }
@@ -609,12 +648,19 @@ pub fn read_conduct_id<R: Read + std::os::unix::io::AsRawFd>(
 /// pipe, and reintroduces the conduct SIGPIPE/141 failure the
 /// drain exists to prevent. `Err` = fcntl refused; the caller must
 /// fail loudly, never drain on a nonblocking fd.
-pub fn restore_blocking(reader: &impl std::os::unix::io::AsRawFd) -> Result<(), String> {
-    let flags = nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
-        .map_err(|e| format!("F_GETFL refused: {e}"))?;
-    let oflags = nix::fcntl::OFlag::from_bits_retain(flags) & !nix::fcntl::OFlag::O_NONBLOCK;
-    nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
-        .map_err(|e| format!("F_SETFL blocking restore refused: {e}"))?;
+pub fn restore_blocking(
+    reader: &impl std::os::unix::io::AsRawFd,
+) -> Result<(), String> {
+    let flags =
+        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            .map_err(|e| format!("F_GETFL refused: {e}"))?;
+    let oflags = nix::fcntl::OFlag::from_bits_retain(flags)
+        & !nix::fcntl::OFlag::O_NONBLOCK;
+    nix::fcntl::fcntl(
+        reader.as_raw_fd(),
+        nix::fcntl::FcntlArg::F_SETFL(oflags),
+    )
+    .map_err(|e| format!("F_SETFL blocking restore refused: {e}"))?;
     Ok(())
 }
 
@@ -646,7 +692,10 @@ where
 /// hangs. Returns the status (not just a bool) so test bodies
 /// migrate their bare `wait()` calls onto this bound without losing
 /// exit evidence.
-pub fn reap_bounded(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+pub fn reap_bounded(
+    child: &mut Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -656,7 +705,7 @@ pub fn reap_bounded(child: &mut Child, timeout: Duration) -> Option<std::process
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(25));
-            }
+            },
             Err(_) => return None,
         }
     }

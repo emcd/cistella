@@ -15,10 +15,13 @@ fn credential_surface_refuses_at_parse() {
         "credential-surface = \"none\"\n",
         "credential-surface = { ssh_agent = \"/run/seat.sock\" }\n",
     ] {
-        let toml = format!("image = \"localhost/cistella/opencode:example\"\n{body}mounts = []\n");
+        let toml = format!(
+            "image = \"localhost/cistella/opencode:example\"\n{body}mounts = []\n"
+        );
         let error = Profile::from_toml(&toml).unwrap_err().to_string();
         assert!(
-            error.contains("credential-surface") || error.contains("credential_surface"),
+            error.contains("credential-surface")
+                || error.contains("credential_surface"),
             "slot must refuse naming itself, got: {error}"
         );
     }
@@ -40,7 +43,12 @@ mounts = []
 fn allowed_signers_format_pins_principal_and_key() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("allowed_signers");
-    cistella::identity::write_allowed_signers(&path, "seat", "ssh-ed25519 AAAAC3test").unwrap();
+    cistella::identity::write_allowed_signers(
+        &path,
+        "seat",
+        "ssh-ed25519 AAAAC3test",
+    )
+    .unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
     assert_eq!(content, "seat ssh-ed25519 AAAAC3test\n");
 }

@@ -52,8 +52,10 @@ fn acknowledged(names: &[&str]) -> (tempfile::TempDir, PolicySet) {
         text.push_str(name);
         text.push_str("\"\n");
     }
-    std::fs::write(dir.path().join("policies.toml"), text).expect("write policies.toml");
-    let policy = PolicySet::load(Some(dir.path())).expect("acknowledgements load");
+    std::fs::write(dir.path().join("policies.toml"), text)
+        .expect("write policies.toml");
+    let policy =
+        PolicySet::load(Some(dir.path())).expect("acknowledgements load");
     (dir, policy)
 }
 
@@ -74,7 +76,9 @@ fn full_caps() -> Vec<String> {
 }
 
 /// Negotiate hello with the peer advertising the full capability set.
-fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>) {
+fn negotiate_full(
+    host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
+) {
     host.exchange_mut()
         .hello(&full_caps(), Duration::from_secs(2))
         .expect("hello must succeed against the peer");
@@ -99,8 +103,12 @@ fn run_vector(
     acceptances: &HashSet<String>,
 ) -> Result<EvaluatedPlan, cistella::error::CistellaError> {
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &[format!("--mode={mode}")], tight_deadlines())
-        .expect("peer must spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &[format!("--mode={mode}")],
+        tight_deadlines(),
+    )
+    .expect("peer must spawn");
     negotiate_full(&mut host);
     let result = run_prepare(
         host.exchange_mut(),
@@ -126,7 +134,8 @@ fn vector_agentmux_prepare_merges() {
     // acceptance pair merges verbatim, the bus socket triple lands
     // read-only, and the tightening claim over the pair's namespace
     // upholds (both names acknowledged) with no diagnostics.
-    let (_dir, policy) = acknowledged(&["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"]);
+    let (_dir, policy) =
+        acknowledged(&["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"]);
     let acceptances: HashSet<String> = ["AGENTMUX_BUNDLE", "AGENTMUX_SESSION"]
         .map(String::from)
         .into();
@@ -174,8 +183,9 @@ fn vector_agentmux_weakening_claim_discarded() {
     // excuses, never overrides — the default still governs).
     let (_dir, policy) = acknowledged(&["GH_TOKEN"]);
     let acceptances: HashSet<String> = HashSet::new();
-    let plan = run_vector("prepare-vector-token-weakening", &policy, &acceptances)
-        .expect("weakening vector must still merge");
+    let plan =
+        run_vector("prepare-vector-token-weakening", &policy, &acceptances)
+            .expect("weakening vector must still merge");
     assert_eq!(
         plan.diagnostics.len(),
         1,
@@ -203,8 +213,8 @@ fn vector_ssh_prepare_merges() {
     // gate — the vector proves credential-seam admission end to end.
     let policy = defaults();
     let acceptances: HashSet<String> = HashSet::new();
-    let plan =
-        run_vector("prepare-vector-ssh", &policy, &acceptances).expect("ssh vector must merge");
+    let plan = run_vector("prepare-vector-ssh", &policy, &acceptances)
+        .expect("ssh vector must merge");
     assert_eq!(
         plan.merged.environment,
         vec![(

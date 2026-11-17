@@ -129,13 +129,13 @@ impl PolicySet {
                 use sha2::{Digest, Sha256};
                 let source_hash = format!("{:x}", Sha256::digest([]));
                 return Ok(Self::defaults_only(source_hash));
-            }
+            },
             Err(e) => {
                 return Err(CistellaError::Contract(format!(
                     "read {}: {e}",
                     path.display()
                 )));
-            }
+            },
         };
         Self::parse(&bytes)
     }
@@ -151,14 +151,17 @@ impl PolicySet {
         use sha2::{Digest, Sha256};
         if bytes.is_empty() {
             return Err(CistellaError::Contract(
-                "policies.toml is present but empty: refusing (not defaults)".to_string(),
+                "policies.toml is present but empty: refusing (not defaults)"
+                    .to_string(),
             ));
         }
         let source_hash = format!("{:x}", Sha256::digest(bytes));
-        let text = std::str::from_utf8(bytes)
-            .map_err(|_| CistellaError::Contract("policies.toml is not UTF-8".to_string()))?;
-        let file: PolicyFile = toml::from_str(text)
-            .map_err(|e| CistellaError::Contract(format!("policies.toml: {e}")))?;
+        let text = std::str::from_utf8(bytes).map_err(|_| {
+            CistellaError::Contract("policies.toml is not UTF-8".to_string())
+        })?;
+        let file: PolicyFile = toml::from_str(text).map_err(|e| {
+            CistellaError::Contract(format!("policies.toml: {e}"))
+        })?;
         if file.format_version != POLICY_FORMAT_VERSION {
             return Err(CistellaError::Contract(format!(
                 "policies.toml format_version {} unsupported (want {POLICY_FORMAT_VERSION})",
@@ -168,20 +171,28 @@ impl PolicySet {
         let mut seen_denials = HashSet::new();
         let mut user = Vec::with_capacity(file.denials.len());
         for entry in &file.denials {
-            let key = format!("{}\0{:?}\0{:?}", entry.pattern, entry.severity, entry.scope);
+            let key = format!(
+                "{}\0{:?}\0{:?}",
+                entry.pattern, entry.severity, entry.scope
+            );
             if !seen_denials.insert(key) {
                 return Err(CistellaError::Contract(format!(
                     "policies.toml duplicate denial: {}",
                     entry.pattern
                 )));
             }
-            if entry.severity == Severity::Inviolable && entry.scope == Scope::Universal {
+            if entry.severity == Severity::Inviolable
+                && entry.scope == Scope::Universal
+            {
                 return Err(CistellaError::Contract(
                     "policies.toml: inviolable universal is site-authority only".to_string(),
                 ));
             }
             let pattern = Regex::new(&entry.pattern).map_err(|e| {
-                CistellaError::Contract(format!("policies.toml bad pattern {}: {e}", entry.pattern))
+                CistellaError::Contract(format!(
+                    "policies.toml bad pattern {}: {e}",
+                    entry.pattern
+                ))
             })?;
             user.push(Rule {
                 pattern,
@@ -193,9 +204,12 @@ impl PolicySet {
         }
         let mut acknowledgements = HashSet::new();
         for entry in &file.acknowledgements {
-            crate::profile::validate_env_name(&entry.name, "acknowledgement").map_err(|e| {
-                CistellaError::Contract(format!("policies.toml bad acknowledgement: {e}"))
-            })?;
+            crate::profile::validate_env_name(&entry.name, "acknowledgement")
+                .map_err(|e| {
+                    CistellaError::Contract(format!(
+                        "policies.toml bad acknowledgement: {e}"
+                    ))
+                })?;
             if !acknowledgements.insert(entry.name.clone()) {
                 return Err(CistellaError::Contract(format!(
                     "policies.toml duplicate acknowledgement: {}",
@@ -256,7 +270,9 @@ impl PolicySet {
             if rule.is_default && profile_value && acceptances.contains(name) {
                 continue;
             }
-            if rule.severity == Severity::Suppressible && self.acknowledgements.contains(name) {
+            if rule.severity == Severity::Suppressible
+                && self.acknowledgements.contains(name)
+            {
                 continue;
             }
             return Err(denial(name, &rule.severity, &rule.scope));
@@ -265,11 +281,14 @@ impl PolicySet {
             if !claim.pattern.is_match(name) {
                 continue;
             }
-            if claim.scope == Scope::OnExtensions && !matches!(provenance, Provenance::Extension(_))
+            if claim.scope == Scope::OnExtensions
+                && !matches!(provenance, Provenance::Extension(_))
             {
                 continue;
             }
-            if claim.severity == Severity::Suppressible && self.acknowledgements.contains(name) {
+            if claim.severity == Severity::Suppressible
+                && self.acknowledgements.contains(name)
+            {
                 continue;
             }
             return Err(denial(name, &claim.severity, &claim.scope));
@@ -304,14 +323,19 @@ impl PolicySet {
                     "policy claim pattern must not be empty".to_string(),
                 ));
             }
-            if claim.severity == Severity::Inviolable && claim.scope == Scope::Universal {
+            if claim.severity == Severity::Inviolable
+                && claim.scope == Scope::Universal
+            {
                 return Err(CistellaError::Contract(format!(
                     "policy claim impersonates site authority: {}",
                     claim.pattern
                 )));
             }
             let pattern = Regex::new(&claim.pattern).map_err(|e| {
-                CistellaError::Contract(format!("bad policy claim pattern {}: {e}", claim.pattern))
+                CistellaError::Contract(format!(
+                    "bad policy claim pattern {}: {e}",
+                    claim.pattern
+                ))
             })?;
             if !contributed.iter().any(|name| pattern.is_match(name)) {
                 return Err(CistellaError::Contract(format!(
@@ -326,7 +350,8 @@ impl PolicySet {
                 .chain(&self.defaults)
                 .filter(|rule| rule.source == claim.pattern)
                 .any(|rule| {
-                    severity_rank(rule.severity) > severity_rank(claim.severity)
+                    severity_rank(rule.severity)
+                        > severity_rank(claim.severity)
                         || scope_width(rule.scope) > scope_width(claim.scope)
                 });
             if weaker_than {
@@ -375,7 +400,8 @@ impl UpheldClaim {
 /// Compiled-default ruleset (suppressible only, by construction).
 fn default_rules() -> Vec<Rule> {
     vec![Rule {
-        pattern: Regex::new(DEFAULT_TOKEN_PATTERN).expect("default pattern compiles"),
+        pattern: Regex::new(DEFAULT_TOKEN_PATTERN)
+            .expect("default pattern compiles"),
         source: DEFAULT_TOKEN_PATTERN.to_string(),
         severity: Severity::Suppressible,
         scope: Scope::Universal,
@@ -396,7 +422,9 @@ fn rule_applies(rule: &Rule, name: &str, provenance: &Provenance) -> bool {
 
 /// Value-free denial diagnostic: name, scope, severity.
 fn denial(name: &str, severity: &Severity, scope: &Scope) -> CistellaError {
-    CistellaError::Contract(format!("policy refuses {name}: {scope:?} {severity:?}"))
+    CistellaError::Contract(format!(
+        "policy refuses {name}: {scope:?} {severity:?}"
+    ))
 }
 
 /// Severity rank for weakening comparison.
@@ -430,7 +458,9 @@ fn check_tighten_only(user: &[Rule], defaults: &[Rule]) -> Result<()> {
             if candidate.source != baseline.source {
                 continue;
             }
-            if baseline.scope == Scope::Universal && candidate.scope == Scope::OnExtensions {
+            if baseline.scope == Scope::Universal
+                && candidate.scope == Scope::OnExtensions
+            {
                 return Err(CistellaError::Contract(format!(
                     "policies.toml weakens default rule: {}",
                     candidate.source
@@ -485,7 +515,9 @@ pub fn evaluate_all(
 
 /// Serializes the policy-relevant evaluation trail (names only).
 #[must_use]
-pub fn evaluation_trail(names: &[(String, Provenance)]) -> HashMap<String, String> {
+pub fn evaluation_trail(
+    names: &[(String, Provenance)],
+) -> HashMap<String, String> {
     names
         .iter()
         .map(|(name, provenance)| {

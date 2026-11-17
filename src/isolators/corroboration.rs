@@ -18,7 +18,8 @@ use crate::framework::isolator::{
 use crate::framework::signals::conduct_signal;
 use crate::isolators::podman::PodmanIsolator;
 use crate::isolators::quadlet::{
-    container_exists_code, query_unit_props, query_unit_props_checked, unit_file_absent_checked,
+    container_exists_code, query_unit_props, query_unit_props_checked,
+    unit_file_absent_checked,
 };
 
 /// Read-only lifecycle facts corroboration needs. Backend-domain
@@ -85,13 +86,16 @@ pub fn classify_completion(
     match facts {
         Some(facts) if facts.container_exists_code == 1 => unobservable(facts),
         Some(facts)
-            if !facts.service_active_state.is_empty() && facts.service_active_state != "active" =>
+            if !facts.service_active_state.is_empty()
+                && facts.service_active_state != "active" =>
         {
             unobservable(facts)
-        }
+        },
         _ => match raw {
             RawClientResult::Exited(code) => ExecutionOutcome::Exited(code),
-            RawClientResult::Signaled(signum) => ExecutionOutcome::Signaled(signum),
+            RawClientResult::Signaled(signum) => {
+                ExecutionOutcome::Signaled(signum)
+            },
         },
     }
 }
@@ -126,7 +130,8 @@ fn corroboration_facts(
     backend: &PodmanIsolator,
     execution: &ExecutionHandle,
 ) -> Option<CorroborationFacts> {
-    let (container_name, unit_name) = backend.corroboration_names(execution)?;
+    let (container_name, unit_name) =
+        backend.corroboration_names(execution)?;
     let code = container_exists_code(&container_name).ok()?;
     if code != 0 && code != 1 {
         return None;
@@ -138,8 +143,14 @@ fn corroboration_facts(
     let unit_absent = unit_file_absent_checked(&unit_name).ok()?;
     Some(CorroborationFacts {
         container_exists_code: code,
-        service_active_state: props.get("ActiveState").cloned().unwrap_or_default(),
-        service_load_state: props.get("LoadState").cloned().unwrap_or_default(),
+        service_active_state: props
+            .get("ActiveState")
+            .cloned()
+            .unwrap_or_default(),
+        service_load_state: props
+            .get("LoadState")
+            .cloned()
+            .unwrap_or_default(),
         unit_file_present: !unit_absent,
     })
 }
@@ -181,7 +192,8 @@ impl AbsenceProof {
         unit_absent: bool,
     ) -> Self {
         let converged = container_exists_code == 1
-            && (service_load_state == "not-found" || service_active_state == "inactive")
+            && (service_load_state == "not-found"
+                || service_active_state == "inactive")
             && unit_absent;
         Self {
             container_exists_code,
@@ -207,7 +219,9 @@ impl AbsenceProof {
 /// Returns `CistellaError::Runtime` on spawn failure, non-0/1
 /// container-exists codes, failed/unexpected service queries, or
 /// non-NotFound metadata errors.
-pub(crate) fn prove_absence(container_name: &str) -> crate::error::Result<AbsenceProof> {
+pub(crate) fn prove_absence(
+    container_name: &str,
+) -> crate::error::Result<AbsenceProof> {
     // Strict codes flow from `container_exists_code`: 1 is absent,
     // anything else errors (an observation error, never convergence).
     let code = container_exists_code(container_name)?;

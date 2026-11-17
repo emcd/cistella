@@ -41,12 +41,16 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::error::{CistellaError, Result};
-use crate::framework::contract::{Deadlines, ExecutionHandle, ReconciliationKey, UnitHandle};
+use crate::framework::contract::{
+    Deadlines, ExecutionHandle, ReconciliationKey, UnitHandle,
+};
 use crate::framework::fdpass::{
-    BundleHeader, accept_authenticated, bind_rendezvous, send_bundle, send_diagnostics_bundle,
+    BundleHeader, accept_authenticated, bind_rendezvous, send_bundle,
+    send_diagnostics_bundle,
 };
 use crate::framework::guest::{
-    host_external, host_registered, isolator_host_offer, isolator_host_offer_role,
+    host_external, host_registered, isolator_host_offer,
+    isolator_host_offer_role,
 };
 use crate::framework::isolator::{Isolator, StdioBinding};
 use crate::guest_source::ResolvedGuest;
@@ -58,7 +62,8 @@ use crate::isolators::podman::PodmanIsolator;
 mod client_isolator;
 
 pub use super::client_verdicts::{
-    abort_exit_code, pre_exec_recovery_verdict, rehost_failure_verdict, select_teardown_error,
+    abort_exit_code, pre_exec_recovery_verdict, rehost_failure_verdict,
+    select_teardown_error,
 };
 
 /// Guest binary name resolved sibling-relative to the driver.
@@ -164,12 +169,12 @@ impl WireClient {
                     stdout.as_fd().try_clone_to_owned(),
                     stderr.as_fd().try_clone_to_owned(),
                 )
-            }
+            },
             StdioBinding::HeldFiles { .. } => {
                 return Err(CistellaError::Contract(
                     "wire client takes Inherit only".to_string(),
                 ));
-            }
+            },
         };
         let (stdin, stdout, stderr) = (stdin?, stdout?, stderr?);
         let execution = ExecutionHandle::mint();
@@ -185,7 +190,12 @@ impl WireClient {
             self.deadlines.apply,
         )?;
         if let Some(diag) = diagnostics {
-            send_diagnostics_bundle(&self.fd_sock, &header, diag, self.deadlines.apply)?;
+            send_diagnostics_bundle(
+                &self.fd_sock,
+                &header,
+                diag,
+                self.deadlines.apply,
+            )?;
         }
         let payload = self.roundtrip(
             crate::isolators::wire::OP_EXECUTE_LAUNCH,
@@ -202,7 +212,11 @@ impl WireClient {
         let echoed = payload
             .get("execution_handle")
             .and_then(|handle| handle.as_str())
-            .ok_or_else(|| CistellaError::Contract("bad launch response: shape".to_string()))?;
+            .ok_or_else(|| {
+                CistellaError::Contract(
+                    "bad launch response: shape".to_string(),
+                )
+            })?;
         if echoed != execution.as_str() {
             return Err(CistellaError::Contract(
                 "launch echoed a different handle".to_string(),
@@ -251,12 +265,16 @@ impl WireClient {
             path.to_string_lossy().to_string(),
         ];
         args.extend(extra_args.iter().cloned());
-        let (guest, negotiated) =
-            host_external(exe_dir, name, &args, &isolator_host_offer(), deadlines).inspect_err(
-                |_| {
-                    let _ = std::fs::remove_file(&path);
-                },
-            )?;
+        let (guest, negotiated) = host_external(
+            exe_dir,
+            name,
+            &args,
+            &isolator_host_offer(),
+            deadlines,
+        )
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&path);
+        })?;
         Self::serve_accepted(guest, negotiated, listener, path, deadlines)
     }
 
@@ -282,11 +300,15 @@ impl WireClient {
             FD_SOCKET_ARG.to_string(),
             path.to_string_lossy().to_string(),
         ];
-        let (guest, negotiated) =
-            host_registered(resolved, &args, &isolator_host_offer_role(&role), deadlines)
-                .inspect_err(|_| {
-                    let _ = std::fs::remove_file(&path);
-                })?;
+        let (guest, negotiated) = host_registered(
+            resolved,
+            &args,
+            &isolator_host_offer_role(&role),
+            deadlines,
+        )
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&path);
+        })?;
         Self::serve_accepted(guest, negotiated, listener, path, deadlines)
     }
 
@@ -303,11 +325,13 @@ impl WireClient {
         path: PathBuf,
         deadlines: Deadlines,
     ) -> Result<Self> {
-        let pid = i32::try_from(guest.pid())
-            .map_err(|_| CistellaError::Runtime("guest pid out of range".to_string()))?;
-        let fd_sock = Self::accept_guest(&listener, pid, deadlines.hello).inspect_err(|_| {
-            let _ = std::fs::remove_file(&path);
+        let pid = i32::try_from(guest.pid()).map_err(|_| {
+            CistellaError::Runtime("guest pid out of range".to_string())
         })?;
+        let fd_sock = Self::accept_guest(&listener, pid, deadlines.hello)
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&path);
+            })?;
         let dead = Arc::new(AtomicBool::new(false));
         let uncertain = Arc::new(AtomicBool::new(false));
         let shutdown_report = Arc::new(Mutex::new(None));
@@ -347,7 +371,11 @@ impl WireClient {
     ///
     /// Returns `CistellaError::Contract` on authentication failure
     /// or guest death, `CistellaError::Runtime` past the budget.
-    fn accept_guest(listener: &OwnedFd, pid: i32, budget: Duration) -> Result<OwnedFd> {
+    fn accept_guest(
+        listener: &OwnedFd,
+        pid: i32,
+        budget: Duration,
+    ) -> Result<OwnedFd> {
         use nix::poll::{PollFd, PollFlags, poll};
         use nix::sys::signal::kill;
         use nix::unistd::Pid;
@@ -369,9 +397,12 @@ impl WireClient {
                     "fd-channel accept timed out".to_string(),
                 ));
             }
-            let wait = nix::poll::PollTimeout::try_from(slice).map_err(|_| {
-                CistellaError::Runtime("fd accept timeout out of range".to_string())
-            })?;
+            let wait =
+                nix::poll::PollTimeout::try_from(slice).map_err(|_| {
+                    CistellaError::Runtime(
+                        "fd accept timeout out of range".to_string(),
+                    )
+                })?;
             let mut pollfds = [PollFd::new(
                 {
                     use std::os::fd::AsFd;
@@ -379,8 +410,9 @@ impl WireClient {
                 },
                 PollFlags::POLLIN,
             )];
-            let ready = poll(&mut pollfds, wait)
-                .map_err(|e| CistellaError::Runtime(format!("poll fd rendezvous: {e}")))?;
+            let ready = poll(&mut pollfds, wait).map_err(|e| {
+                CistellaError::Runtime(format!("poll fd rendezvous: {e}"))
+            })?;
             if ready > 0 {
                 return accept_authenticated(listener, pid);
             }
@@ -393,7 +425,12 @@ impl WireClient {
     ///
     /// Returns the guest's typed error, dispatcher failure, or
     /// `CistellaError::Contract` on malformed response envelopes.
-    fn roundtrip(&self, op: &str, payload: Value, timeout: Duration) -> Result<Value> {
+    fn roundtrip(
+        &self,
+        op: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.commands
             .send(Command::Op {
@@ -403,10 +440,15 @@ impl WireClient {
                 reply: reply_tx,
             })
             .map_err(|_| {
-                CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+                CistellaError::Protocol(
+                    crate::isolators::dispatch::POST_TERMINAL_ERROR
+                        .to_string(),
+                )
             })?;
         let response = reply_rx.recv().map_err(|_| {
-            CistellaError::Protocol(crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string())
+            CistellaError::Protocol(
+                crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string(),
+            )
         })??;
         Self::redeem(op, response)
     }
@@ -420,29 +462,37 @@ impl WireClient {
     /// Returns the guest's typed error or
     /// `CistellaError::Contract` on malformed envelopes.
     fn redeem(op: &str, response: Value) -> Result<Value> {
-        let object = response
-            .as_object()
-            .ok_or_else(|| CistellaError::Contract(format!("bad {op} response: not an object")))?;
+        let object = response.as_object().ok_or_else(|| {
+            CistellaError::Contract(format!(
+                "bad {op} response: not an object"
+            ))
+        })?;
         match (object.get("ok"), object.get("error")) {
             (Some(payload), None) => Ok(payload.clone()),
             (None, Some(error)) => {
                 let error = error.as_object().ok_or_else(|| {
-                    CistellaError::Contract(format!("bad {op} response: error shape"))
+                    CistellaError::Contract(format!(
+                        "bad {op} response: error shape"
+                    ))
                 })?;
                 let code = error
                     .get("code")
                     .and_then(|code| code.as_str())
                     .ok_or_else(|| {
-                        CistellaError::Contract(format!("bad {op} response: error without code"))
+                        CistellaError::Contract(format!(
+                            "bad {op} response: error without code"
+                        ))
                     })?;
                 let message = error
                     .get("message")
                     .and_then(|message| message.as_str())
                     .ok_or_else(|| {
-                        CistellaError::Contract(format!("bad {op} response: error without message"))
+                        CistellaError::Contract(format!(
+                            "bad {op} response: error without message"
+                        ))
                     })?;
                 Err(wire_error(code, message))
-            }
+            },
             _ => Err(CistellaError::Contract(format!(
                 "bad {op} response: exactly one of ok/error"
             ))),
@@ -455,9 +505,15 @@ impl WireClient {
     ///
     /// Returns `CistellaError::Contract` on shape violations (the
     /// guest sent bytes outside its schema).
-    fn parse_typed<T: for<'de> serde::Deserialize<'de>>(op: &str, value: Value) -> Result<T> {
-        serde_json::from_value(value)
-            .map_err(|_| CistellaError::Contract(format!("bad {op} response: shape violation")))
+    fn parse_typed<T: for<'de> serde::Deserialize<'de>>(
+        op: &str,
+        value: Value,
+    ) -> Result<T> {
+        serde_json::from_value(value).map_err(|_| {
+            CistellaError::Contract(format!(
+                "bad {op} response: shape violation"
+            ))
+        })
     }
 
     /// Records an attempt key before a mutating call (residue duty:
@@ -481,14 +537,15 @@ impl WireClient {
     /// Returns `CistellaError::Contract` naming residue, or the
     /// inspector's query failure.
     pub fn on_guest_death(&self) -> Result<()> {
-        let keys = self.recorded_keys.lock().expect("residue key lock").clone();
+        let keys =
+            self.recorded_keys.lock().expect("residue key lock").clone();
         for key in &keys {
             match self.inspector.locate(key)? {
                 Some(_) => {
                     return Err(CistellaError::Contract(
                         "guest exit left unit residue".to_string(),
                     ));
-                }
+                },
                 None => continue,
             }
         }
@@ -525,8 +582,12 @@ impl WireClient {
     pub fn death_checked<T>(&self, outcome: Result<T>) -> Result<T> {
         match outcome {
             Ok(value) => Ok(value),
-            Err(error) if self.shutdown_uncertain() => Err(self.shutdown_dominant(error)),
-            Err(error) if self.guest_dead() => self.on_guest_death().and(Err(error)),
+            Err(error) if self.shutdown_uncertain() => {
+                Err(self.shutdown_dominant(error))
+            },
+            Err(error) if self.guest_dead() => {
+                self.on_guest_death().and(Err(error))
+            },
             Err(error) => Err(error),
         }
     }
@@ -583,12 +644,18 @@ impl WireClient {
                 // reaps), but the clean path ran nothing — the
                 // same omission class as the terminate arm.
                 // Litter reports, never fails the disposition.
-                crate::cleanup::reap_and_report(&crate::lock::runtime_base(), session_id);
+                crate::cleanup::reap_and_report(
+                    &crate::lock::runtime_base(),
+                    session_id,
+                );
                 // Attestation reaps with the session (unit gone via
                 // terminate+remove above — record-gone dominates).
-                crate::attestation::reap(&crate::lock::runtime_base(), session_id);
+                crate::attestation::reap(
+                    &crate::lock::runtime_base(),
+                    session_id,
+                );
                 Ok(())
-            }
+            },
             Err(error) => {
                 if self.shutdown_uncertain() {
                     // Unverified quiescence first (both-true resolves
@@ -598,14 +665,23 @@ impl WireClient {
                     // could install after the check). `error` already
                     // names the shutdown class via `death_checked`.
                     if lock_held {
-                        let _ = crate::runtime::teardown_inner(container_name, session_id);
+                        let _ = crate::runtime::teardown_inner(
+                            container_name,
+                            session_id,
+                        );
                     } else {
-                        let _ = crate::runtime::teardown(container_name, session_id);
+                        let _ = crate::runtime::teardown(
+                            container_name,
+                            session_id,
+                        );
                     }
                     Err(error)
                 } else if self.guest_dead() {
                     let converged = if lock_held {
-                        crate::runtime::teardown_inner(container_name, session_id)
+                        crate::runtime::teardown_inner(
+                            container_name,
+                            session_id,
+                        )
                     } else {
                         crate::runtime::teardown(container_name, session_id)
                     };
@@ -618,7 +694,7 @@ impl WireClient {
                 } else {
                     Err(error)
                 }
-            }
+            },
         }
     }
 

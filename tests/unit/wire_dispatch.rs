@@ -9,15 +9,18 @@ use cistella::framework::contract::{
     ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
 };
 use cistella::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
-    StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities,
+    RemovedAttestation, StartedAttestation, StdioBinding, StoppedAttestation,
+    UnitSnapshot,
 };
 use cistella::isolators::wire::{
-    IsolatorGuest, OP_CREATE, OP_EXECUTE_LAUNCH, OP_INITIATE, OP_INSPECT, OP_REMOVE, OP_STATE,
-    OP_TERMINATE,
+    IsolatorGuest, OP_CREATE, OP_EXECUTE_LAUNCH, OP_INITIATE, OP_INSPECT,
+    OP_REMOVE, OP_STATE, OP_TERMINATE,
 };
 
-use super::wire_fake::{FakeBackend, create_payload, launch_payload, replay_spec};
+use super::wire_fake::{
+    FakeBackend, create_payload, launch_payload, replay_spec,
+};
 
 fn stranger_unit() -> UnitHandle {
     UnitHandle::mint()
@@ -282,7 +285,8 @@ fn channeled_guest<B: cistella::framework::isolator::Isolator>(
 ) {
     let (a, b) = channeled_pair();
     (
-        cistella::isolators::wire::IsolatorGuest::with_backend(backend).with_fd_channel(b),
+        cistella::isolators::wire::IsolatorGuest::with_backend(backend)
+            .with_fd_channel(b),
         a,
     )
 }
@@ -463,7 +467,8 @@ impl Isolator for GatedBackend {
         _workdir: Option<&str>,
         _stdio: StdioBinding,
         _key: &ReconciliationKey,
-    ) -> cistella::error::Result<cistella::framework::contract::ExecutionHandle> {
+    ) -> cistella::error::Result<cistella::framework::contract::ExecutionHandle>
+    {
         Ok(cistella::framework::contract::ExecutionHandle::mint())
     }
 
@@ -484,7 +489,10 @@ impl Isolator for GatedBackend {
         Ok(ExecutionOutcome::Exited(0))
     }
 
-    fn inspect(&self, handle: &UnitHandle) -> cistella::error::Result<UnitSnapshot> {
+    fn inspect(
+        &self,
+        handle: &UnitHandle,
+    ) -> cistella::error::Result<UnitSnapshot> {
         Ok(UnitSnapshot {
             unit_identity: handle.as_str().to_string(),
             lifecycle: LifecycleState::Executing,
@@ -494,7 +502,10 @@ impl Isolator for GatedBackend {
         })
     }
 
-    fn state(&self, handle: &UnitHandle) -> cistella::error::Result<LifecycleState> {
+    fn state(
+        &self,
+        handle: &UnitHandle,
+    ) -> cistella::error::Result<LifecycleState> {
         let _ = handle;
         Ok(LifecycleState::Executing)
     }
@@ -521,7 +532,10 @@ impl Isolator for GatedBackend {
         })
     }
 
-    fn locate(&self, _key: &ReconciliationKey) -> cistella::error::Result<Option<UnitHandle>> {
+    fn locate(
+        &self,
+        _key: &ReconciliationKey,
+    ) -> cistella::error::Result<Option<UnitHandle>> {
         Ok(None)
     }
 }
@@ -546,7 +560,12 @@ fn terminate_served_during_blocked_await() {
     guest
         .dispatch(
             OP_EXECUTE_LAUNCH,
-            &launch_payload("gatedunit01", "gatedexec01", &key, &["sleep", "60"]),
+            &launch_payload(
+                "gatedunit01",
+                "gatedexec01",
+                &key,
+                &["sleep", "60"],
+            ),
         )
         .expect("launch must succeed");
     // Block one thread inside await_result while the main thread
@@ -603,7 +622,12 @@ fn converge_all_spares_units_with_live_executions() {
     guest
         .dispatch(
             OP_EXECUTE_LAUNCH,
-            &launch_payload("liveunit01", "liveexec01", &key, &["sleep", "60"]),
+            &launch_payload(
+                "liveunit01",
+                "liveexec01",
+                &key,
+                &["sleep", "60"],
+            ),
         )
         .expect("launch must succeed");
     guest
@@ -650,11 +674,13 @@ fn await_outcome_shapes_pin() {
     use cistella::framework::isolator::ExecutionOutcome as Outcome;
     use cistella::isolators::close::parse_await_outcome;
     assert_eq!(
-        parse_await_outcome(&serde_json::json!({"exit_status": 0}), false).expect("exit"),
+        parse_await_outcome(&serde_json::json!({"exit_status": 0}), false)
+            .expect("exit"),
         Outcome::Exited(0)
     );
     assert_eq!(
-        parse_await_outcome(&serde_json::json!({"signal": 9}), false).expect("signal"),
+        parse_await_outcome(&serde_json::json!({"signal": 9}), false)
+            .expect("signal"),
         Outcome::Signaled(9)
     );
     assert!(
@@ -670,7 +696,8 @@ fn await_outcome_shapes_pin() {
 #[test]
 fn await_unobservable_pins() {
     use cistella::framework::isolator::{
-        AbsenceObservation, ExecutionOutcome as Outcome, RawClientResult, UnobservableOutcome,
+        AbsenceObservation, ExecutionOutcome as Outcome, RawClientResult,
+        UnobservableOutcome,
     };
     use cistella::isolators::close::parse_await_outcome;
     let observation = AbsenceObservation {
@@ -704,7 +731,8 @@ fn await_unobservable_pins() {
     );
     // Bounds: bad code, long state, extra field, wrong raw all refuse.
     let mut bad_code = payload.clone();
-    bad_code["unobservable"]["observation"]["container_exists_code"] = serde_json::json!(125);
+    bad_code["unobservable"]["observation"]["container_exists_code"] =
+        serde_json::json!(125);
     assert!(parse_await_outcome(&bad_code, true).is_err());
     let mut long_state = payload.clone();
     long_state["unobservable"]["observation"]["service_active_state"] =
@@ -717,7 +745,8 @@ fn await_unobservable_pins() {
     bad_raw["unobservable"]["raw"] = serde_json::json!({"exited": "255"});
     assert!(parse_await_outcome(&bad_raw, true).is_err());
     let mut both_raw = payload.clone();
-    both_raw["unobservable"]["raw"] = serde_json::json!({"exited": 1, "signaled": 9});
+    both_raw["unobservable"]["raw"] =
+        serde_json::json!({"exited": 1, "signaled": 9});
     assert!(parse_await_outcome(&both_raw, true).is_err());
     // Mixed top-level tags refuse, even negotiated: exactly one
     // known variant, closed record.
@@ -778,11 +807,16 @@ fn complete_close_joins_dead_worker_and_unlinks() {
     std::fs::write(&socket, b"stale").expect("stage stale socket file");
     // Dropped sender with no message: simulates a worker that
     // accepted Shutdown and died before replying.
-    let (reply_tx, reply_rx) = mpsc::channel::<Result<(), cistella::error::CistellaError>>();
+    let (reply_tx, reply_rx) =
+        mpsc::channel::<Result<(), cistella::error::CistellaError>>();
     drop(reply_tx);
     let worker = std::thread::spawn(|| {});
-    let error = cistella::isolators::close::complete_close(Some(worker), &socket, reply_rx)
-        .expect_err("dead worker close must report");
+    let error = cistella::isolators::close::complete_close(
+        Some(worker),
+        &socket,
+        reply_rx,
+    )
+    .expect_err("dead worker close must report");
     assert!(
         matches!(
             &error,
@@ -809,12 +843,17 @@ fn complete_close_reports_live_shutdown() {
     let dir = tempfile::tempdir().expect("tmpdir");
     let socket = dir.path().join("guest-live.sock");
     std::fs::write(&socket, b"stale").expect("stage stale socket file");
-    let (reply_tx, reply_rx) = mpsc::channel::<Result<(), cistella::error::CistellaError>>();
+    let (reply_tx, reply_rx) =
+        mpsc::channel::<Result<(), cistella::error::CistellaError>>();
     let worker = std::thread::spawn(move || {
         let _ = reply_tx.send(Ok(()));
     });
-    cistella::isolators::close::complete_close(Some(worker), &socket, reply_rx)
-        .expect("live close reports Ok");
+    cistella::isolators::close::complete_close(
+        Some(worker),
+        &socket,
+        reply_rx,
+    )
+    .expect("live close reports Ok");
     assert!(!socket.exists(), "path unlinked on clean close");
 }
 

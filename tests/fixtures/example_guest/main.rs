@@ -43,7 +43,10 @@ fn read_frame<R: Read>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     Ok(body)
 }
 
-fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> std::io::Result<()> {
+fn write_frame<W: Write>(
+    writer: &mut W,
+    payload: &[u8],
+) -> std::io::Result<()> {
     const MAX_FRAME: usize = 64 * 1024;
     if payload.len() > MAX_FRAME {
         return Err(std::io::Error::new(

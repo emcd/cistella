@@ -70,7 +70,10 @@ impl LockGuard {
     fn acquire_path(path: &PathBuf, non_blocking: bool) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                CistellaError::Runtime(format!("create lock dir {}: {e}", parent.display()))
+                CistellaError::Runtime(format!(
+                    "create lock dir {}: {e}",
+                    parent.display()
+                ))
             })?;
         }
         let file = std::fs::OpenOptions::new()
@@ -79,7 +82,12 @@ impl LockGuard {
             .read(true)
             .write(true)
             .open(path)
-            .map_err(|e| CistellaError::Runtime(format!("open lock {}: {e}", path.display())))?;
+            .map_err(|e| {
+                CistellaError::Runtime(format!(
+                    "open lock {}: {e}",
+                    path.display()
+                ))
+            })?;
         let arg = if non_blocking {
             FlockArg::LockExclusiveNonblock
         } else {
@@ -89,7 +97,7 @@ impl LockGuard {
             Ok(locked) => Ok(Self { _locked: locked }),
             Err((_, nix::errno::Errno::EWOULDBLOCK)) if non_blocking => {
                 Err(CistellaError::LockContended)
-            }
+            },
             Err((_, e)) => Err(CistellaError::Runtime(format!(
                 "flock {}: {e}",
                 path.display()
@@ -200,14 +208,22 @@ impl PrepareLease {
     /// # Errors
     ///
     /// Returns `CistellaError::Runtime` on an unmintable session id.
-    pub fn path_for(base: &std::path::Path, session_id: &str) -> Result<PathBuf> {
+    pub fn path_for(
+        base: &std::path::Path,
+        session_id: &str,
+    ) -> Result<PathBuf> {
         Ok(Self::state_dir(base).join(Self::file_name(session_id)?))
     }
 
     /// Opens (creating) the verified private state directory.
-    fn open_state(base: &std::path::Path) -> Result<crate::guest_anchor::AnchoredDir> {
-        crate::guest_anchor::open_state_dir(&Self::state_dir(base))
-            .map_err(|error| CistellaError::Runtime(format!("prepare lease state: {error}")))
+    fn open_state(
+        base: &std::path::Path,
+    ) -> Result<crate::guest_anchor::AnchoredDir> {
+        crate::guest_anchor::open_state_dir(&Self::state_dir(base)).map_err(
+            |error| {
+                CistellaError::Runtime(format!("prepare lease state: {error}"))
+            },
+        )
     }
 
     /// Renders the full file content from current state.
@@ -227,7 +243,10 @@ impl PrepareLease {
         self.dir
             .replace_file(&self.name, &self.render())
             .map_err(|error| {
-                CistellaError::Runtime(format!("prepare lease {}: {error}", self.path.display()))
+                CistellaError::Runtime(format!(
+                    "prepare lease {}: {error}",
+                    self.path.display()
+                ))
             })
     }
 
@@ -245,11 +264,17 @@ impl PrepareLease {
         let path = Self::state_dir(base).join(&name);
         let dir = Self::open_state(base)?;
         let mut file = dir.create_file(&name).map_err(|error| {
-            CistellaError::Runtime(format!("prepare lease {}: {error}", path.display()))
+            CistellaError::Runtime(format!(
+                "prepare lease {}: {error}",
+                path.display()
+            ))
         })?;
         use std::io::Write;
         writeln!(file, "driver {}", std::process::id()).map_err(|error| {
-            CistellaError::Runtime(format!("prepare lease {}: {error}", path.display()))
+            CistellaError::Runtime(format!(
+                "prepare lease {}: {error}",
+                path.display()
+            ))
         })?;
         Ok(Self {
             dir,

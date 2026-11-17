@@ -5,9 +5,16 @@
 
 use cistella::mount::{MountMode, MountTriple};
 
-fn effective_for(triples: &[MountTriple]) -> cistella::framework::contract::EffectivePermissions {
-    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
-        .expect("driver-only assembly")
+fn effective_for(
+    triples: &[MountTriple],
+) -> cistella::framework::contract::EffectivePermissions {
+    cistella::framework::contract::EffectivePermissions::assemble(
+        triples,
+        &[],
+        &[],
+        &[],
+    )
+    .expect("driver-only assembly")
 }
 
 #[test]
@@ -34,7 +41,8 @@ fn revise_retains_ro_under_full_routes() {
     // subtract the parent grant, so the VFS binding carries
     // that enforcement); the ancestor outside FULL still flips
     // for submount materialization.
-    let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()], &[]);
+    let revised =
+        revise_ro_for_confinement(&triples, &["/src/proj".to_string()], &[]);
     assert_eq!(revised[0].mode, MountMode::Rw);
     assert_eq!(revised[1].mode, MountMode::Ro);
 }
@@ -59,7 +67,9 @@ fn ro_confinement_preflight_refuses_rw_descendant() {
     let full = vec!["/src/proj".to_string()];
     // Contradictory topology (RW graft under retained-RO dir)
     // refuses with both targets named; clean topologies pass.
-    let error = ro_confinement_preflight(&[ro.clone(), rw.clone()], &full, &[]).unwrap_err();
+    let error =
+        ro_confinement_preflight(&[ro.clone(), rw.clone()], &full, &[])
+            .unwrap_err();
     let text = error.to_string();
     assert!(text.contains("/src/proj/ro-data"), "got: {text}");
     assert!(text.contains("/src/proj/ro-data/work"), "got: {text}");
@@ -121,8 +131,11 @@ fn ro_confinement_preflight_collides_alias_spellings() {
         mode: MountMode::Rw,
     };
     let full = vec!["/src/proj".to_string()];
-    ro_confinement_preflight(std::slice::from_ref(&ro), &full, &[]).expect("clean passes");
-    let error = ro_confinement_preflight(&[ro.clone(), rw.clone()], &full, &[]).unwrap_err();
+    ro_confinement_preflight(std::slice::from_ref(&ro), &full, &[])
+        .expect("clean passes");
+    let error =
+        ro_confinement_preflight(&[ro.clone(), rw.clone()], &full, &[])
+            .unwrap_err();
     assert!(
         error.to_string().contains("read-write descendant"),
         "got: {error}"
@@ -156,8 +169,13 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
     // Same-tree RW graft outside the subtree: the graft FULL
     // would dentry-alias RO-covered content — refuse naming
     // the graft target.
-    let error =
-        graft_alias_preflight(&aliasing, &effective_for(&aliasing), ancestor, subtree).unwrap_err();
+    let error = graft_alias_preflight(
+        &aliasing,
+        &effective_for(&aliasing),
+        ancestor,
+        subtree,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("/src/graft"), "got: {error}");
     // Disjoint graft (outside the tree): disjoint dentries, no
     // alias — passes.
@@ -169,8 +187,13 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
             mode: MountMode::Rw,
         },
     ];
-    graft_alias_preflight(&disjoint, &effective_for(&disjoint), ancestor, subtree)
-        .expect("disjoint graft passes");
+    graft_alias_preflight(
+        &disjoint,
+        &effective_for(&disjoint),
+        ancestor,
+        subtree,
+    )
+    .expect("disjoint graft passes");
     // Subtree content RW (already FULL): no new writability —
     // passes. Ancestor RW itself (own FULL route): passes. RO
     // same-tree graft (union-safe): passes. Not-yet-existing
@@ -204,11 +227,14 @@ fn graft_alias_preflight_refuses_same_tree_rw_graft() {
 #[test]
 fn revise_retains_ro_under_full_backed_source() {
     use cistella::framework::contract::EffectivePermissions;
-    use cistella::framework::landlock_compiler::{full_grant_sources, revise_ro_for_confinement};
+    use cistella::framework::landlock_compiler::{
+        full_grant_sources, revise_ro_for_confinement,
+    };
     use cistella::mount::{MountMode, MountTriple, Placement};
     let tree = tempfile::tempdir().expect("tree");
     std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
-    std::fs::create_dir_all(tree.path().join("proj/private")).expect("private");
+    std::fs::create_dir_all(tree.path().join("proj/private"))
+        .expect("private");
     let host = tree.path().to_string_lossy().to_string();
     let subtree = tree.path().join("proj");
     // RO directory inside the FULL subtree bound outside all
@@ -227,11 +253,15 @@ fn revise_retains_ro_under_full_backed_source() {
             container_target: triple.container_target.clone(),
         })
         .collect();
-    let effective =
-        EffectivePermissions::assemble(&triples, &[], &[], &[]).expect("driver-only assembly");
+    let effective = EffectivePermissions::assemble(&triples, &[], &[], &[])
+        .expect("driver-only assembly");
     let sources = full_grant_sources(&placements, &effective, &subtree);
     assert_eq!(sources, vec![subtree.clone()]);
-    let revised = revise_ro_for_confinement(&triples, &["/src/proj".to_string()], &sources);
+    let revised = revise_ro_for_confinement(
+        &triples,
+        &["/src/proj".to_string()],
+        &sources,
+    );
     assert_eq!(revised[0].mode, MountMode::Ro);
 }
 
@@ -258,7 +288,11 @@ fn full_grant_sources_cover_subtree_and_rw_dirs() {
             mode: MountMode::Ro,
         },
         MountTriple {
-            host_source: tree.path().join("sock").to_string_lossy().to_string(),
+            host_source: tree
+                .path()
+                .join("sock")
+                .to_string_lossy()
+                .to_string(),
             container_target: "/run/agent.sock".to_string(),
             mode: MountMode::Rw,
         },
@@ -270,8 +304,8 @@ fn full_grant_sources_cover_subtree_and_rw_dirs() {
             container_target: triple.container_target.clone(),
         })
         .collect();
-    let effective =
-        EffectivePermissions::assemble(&triples, &[], &[], &[]).expect("driver-only assembly");
+    let effective = EffectivePermissions::assemble(&triples, &[], &[], &[])
+        .expect("driver-only assembly");
     let sources = full_grant_sources(&placements, &effective, &subtree);
     assert!(sources.contains(&subtree), "{sources:?}");
     assert!(sources.contains(&tree.path().join("state")), "{sources:?}");
@@ -288,7 +322,8 @@ fn ro_confinement_preflight_catches_source_retained_contradiction() {
     use cistella::mount::{MountMode, MountTriple};
     let tree = tempfile::tempdir().expect("tree");
     std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
-    std::fs::create_dir_all(tree.path().join("proj/private")).expect("private");
+    std::fs::create_dir_all(tree.path().join("proj/private"))
+        .expect("private");
     let host = tree.path().to_string_lossy().to_string();
     let subtree = tree.path().join("proj");
     let ro = MountTriple {
@@ -335,7 +370,8 @@ fn identical_ro_sources_admit_while_write_side_refuses() {
         mode: MountMode::Ro,
     };
     assert!(
-        validate_mounts(&[ro_a.clone(), ro_b.clone()], "/home/cistella").is_ok(),
+        validate_mounts(&[ro_a.clone(), ro_b.clone()], "/home/cistella")
+            .is_ok(),
         "identical RO+RO admits"
     );
     let rw_b = MountTriple {
@@ -373,17 +409,17 @@ fn write_normalizes_to_full_before_all_consumers() {
         provenance: Provenance::Extension("probe".to_string()),
     }];
     let effective =
-        EffectivePermissions::assemble(&[], &placements, &permissions, &[]).expect("assembles");
+        EffectivePermissions::assemble(&[], &placements, &permissions, &[])
+            .expect("assembles");
     let grant = effective.get("/state").expect("grant exists");
     assert_eq!(grant.rights, Rights::Full, "Write normalizes to Full");
     assert!(
         grant
             .claimants
             .iter()
-            .any(
-                |(provenance, rights)| *provenance == Provenance::Extension("probe".to_string())
-                    && *rights == Rights::Write
-            ),
+            .any(|(provenance, rights)| *provenance
+                == Provenance::Extension("probe".to_string())
+                && *rights == Rights::Write),
         "original Write label survives for audit: {:?}",
         grant.claimants
     );
@@ -403,7 +439,9 @@ fn same_target_driver_ro_plus_extension_write_stays_vfs_ro() {
     use cistella::framework::contract::{
         EffectivePermissions, PermissionContribution, Provenance, Rights,
     };
-    use cistella::framework::landlock_compiler::{full_grant_sources, revise_ro_for_confinement};
+    use cistella::framework::landlock_compiler::{
+        full_grant_sources, revise_ro_for_confinement,
+    };
     use cistella::mount::{MountMode, MountTriple, Placement};
     let tree = tempfile::tempdir().expect("tree");
     std::fs::create_dir_all(tree.path().join("proj")).expect("proj");
@@ -427,8 +465,13 @@ fn same_target_driver_ro_plus_extension_write_stays_vfs_ro() {
             container_target: triple.container_target.clone(),
         })
         .collect();
-    let effective = EffectivePermissions::assemble(&triples, &placements, &permissions, &[])
-        .expect("assembles");
+    let effective = EffectivePermissions::assemble(
+        &triples,
+        &placements,
+        &permissions,
+        &[],
+    )
+    .expect("assembles");
     let grant = effective.get("/mirror").expect("grant exists");
     assert_eq!(grant.rights, Rights::Full, "join yields Full");
     assert!(
@@ -436,7 +479,11 @@ fn same_target_driver_ro_plus_extension_write_stays_vfs_ro() {
         "driver RO intent survives the join"
     );
     let sources = full_grant_sources(&placements, &effective, &subtree);
-    let revised = revise_ro_for_confinement(&triples, &["/mirror".to_string()], &sources);
+    let revised = revise_ro_for_confinement(
+        &triples,
+        &["/mirror".to_string()],
+        &sources,
+    );
     assert_eq!(
         revised[0].mode,
         MountMode::Ro,
@@ -486,14 +533,16 @@ fn permission_only_full_on_ro_sibling_refuses_graft() {
         provenance: Provenance::Profile,
     }];
     let effective =
-        EffectivePermissions::assemble(&triples, &[], &permissions, &[]).expect("assembles");
+        EffectivePermissions::assemble(&triples, &[], &permissions, &[])
+            .expect("assembles");
     let grant = effective.get("/view").expect("grant exists");
     assert_eq!(
         grant.rights,
         Rights::Full,
         "permission-only grant joins Full"
     );
-    let error = graft_alias_preflight(&triples, &effective, ancestor, subtree).unwrap_err();
+    let error = graft_alias_preflight(&triples, &effective, ancestor, subtree)
+        .unwrap_err();
     assert!(
         error.to_string().contains("/view"),
         "effective-Full RO-declared graft refuses, got: {error}"

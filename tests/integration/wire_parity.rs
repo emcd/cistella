@@ -14,8 +14,12 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use cistella::framework::contract::{CancelFlag, Capability, LifecycleState, ReconciliationKey};
-use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use cistella::framework::contract::{
+    CancelFlag, Capability, LifecycleState, ReconciliationKey,
+};
+use cistella::framework::isolator::{
+    CreateSpec, ExecutionOutcome, Isolator, StdioBinding,
+};
 use cistella::isolators::client::{ISOLATOR_BIN, WireClient};
 use cistella::isolators::podman::PodmanIsolator;
 use cistella::isolators::quadlet::{residue_gone, resolve_image_digest};
@@ -47,7 +51,8 @@ fn host_wire(rendezvous: &TempDir) -> WireClient {
         dir.join(name).exists(),
         "guest binary missing: run `cargo build --bin {name}` first"
     );
-    WireClient::host(&dir, rendezvous.path(), Default::default()).expect("host real guest")
+    WireClient::host(&dir, rendezvous.path(), Default::default())
+        .expect("host real guest")
 }
 
 /// Best-effort name-based converge for wire-created units (no
@@ -59,7 +64,9 @@ struct LiveUnitGuard {
 
 impl Drop for LiveUnitGuard {
     fn drop(&mut self) {
-        if let (Some(container), Some(id)) = (self.container_name.take(), self.session_id.take()) {
+        if let (Some(container), Some(id)) =
+            (self.container_name.take(), self.session_id.take())
+        {
             let _ = cistella::runtime::teardown(&container, &id);
         }
     }
@@ -75,16 +82,21 @@ fn fixture_image() -> Option<String> {
         Err(error) => {
             skip(format!("fixture image unavailable: {error}"));
             None
-        }
+        },
     }
 }
 
 /// Builds a session plus volumes over a worktree tmpdir (same
 /// shape as the reference conformance planner).
-fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<String>) {
+fn plan_session(
+    image: &str,
+    worktree: &TempDir,
+    marker: &str,
+) -> (Session, Vec<String>) {
     let id = mint_session_id();
     let directory = worktree.path().to_string_lossy().to_string();
-    std::fs::write(worktree.path().join(marker), "marker").expect("write marker");
+    std::fs::write(worktree.path().join(marker), "marker")
+        .expect("write marker");
     let session = Session {
         id: id.clone(),
         directory: directory.clone(),
@@ -100,7 +112,8 @@ fn plan_session(image: &str, worktree: &TempDir, marker: &str) -> (Session, Vec<
         container_target: "/work".to_string(),
         mode: MountMode::Rw,
     }];
-    let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
+    let volumes =
+        podman_volume_args(&triples, &session.container_home.clone(), None);
     (session, volumes)
 }
 
@@ -256,7 +269,8 @@ fn wire_parity_full_cycle_with_fidelity() {
         ExecutionOutcome::Exited(0)
     );
     let worktree_probe = fixture._worktree.path().join("probe");
-    let contents = std::fs::read_to_string(&worktree_probe).expect("read probe");
+    let contents =
+        std::fs::read_to_string(&worktree_probe).expect("read probe");
     assert_eq!(contents, "cistella-conformance\n");
 
     // Mount fidelity: the worktree marker is visible at /work.
@@ -413,7 +427,8 @@ fn wire_parity_absent_converge_clears_orphan_unit() {
     client.terminate(&handle, grace, &key).expect("terminate");
     client.remove(&handle, &key).expect("remove");
     let home = home_dir();
-    std::fs::write(unit_path(&home, &fixture.session_id), "[Unit]\n").expect("plant orphan unit");
+    std::fs::write(unit_path(&home, &fixture.session_id), "[Unit]\n")
+        .expect("plant orphan unit");
     client
         .converge_clean(&handle, grace, &key)
         .expect("converge absent clears unit");
@@ -564,7 +579,9 @@ fn drive_cycle(
             StdioBinding::Inherit,
             &launch_key,
         )
-        .and_then(|probe| backend.await_result(&probe, &CancelFlag::default()))?;
+        .and_then(|probe| {
+            backend.await_result(&probe, &CancelFlag::default())
+        })?;
     let mount = backend
         .execute_launch(
             &handle,
@@ -577,7 +594,9 @@ fn drive_cycle(
             StdioBinding::Inherit,
             &launch_key,
         )
-        .and_then(|mount| backend.await_result(&mount, &CancelFlag::default()))?;
+        .and_then(|mount| {
+            backend.await_result(&mount, &CancelFlag::default())
+        })?;
     let failure = backend
         .execute_launch(
             &handle,
@@ -586,13 +605,20 @@ fn drive_cycle(
             StdioBinding::Inherit,
             &launch_key,
         )
-        .and_then(|failure| backend.await_result(&failure, &CancelFlag::default()))?;
+        .and_then(|failure| {
+            backend.await_result(&failure, &CancelFlag::default())
+        })?;
     let snapshot = backend.inspect(&handle)?;
-    let consistent = snapshot.unit_identity == container && snapshot.session_id == session_id;
-    let contents = std::fs::read_to_string(worktree.join("parity"))
-        .map_err(|error| CistellaError::Runtime(format!("parity probe read: {error}")))?;
+    let consistent = snapshot.unit_identity == container
+        && snapshot.session_id == session_id;
+    let contents =
+        std::fs::read_to_string(worktree.join("parity")).map_err(|error| {
+            CistellaError::Runtime(format!("parity probe read: {error}"))
+        })?;
     if contents != "cistella-parity\n" {
-        return Err(CistellaError::Contract("parity probe mismatch".to_string()));
+        return Err(CistellaError::Contract(
+            "parity probe mismatch".to_string(),
+        ));
     }
     Ok(CycleOutput {
         evidence: CycleEvidence {
@@ -748,9 +774,9 @@ fn wire_parity_removed_handle_create_refuses_live() {
                 timeout,
             )
             .expect("guest answers re-create");
-        let error = refused
-            .get("error")
-            .unwrap_or_else(|| panic!("{what} re-create refuses with error envelope"));
+        let error = refused.get("error").unwrap_or_else(|| {
+            panic!("{what} re-create refuses with error envelope")
+        });
         assert!(
             error.to_string().contains("removed"),
             "{what} refusal names removal, got: {error}"
@@ -809,10 +835,11 @@ fn wire_parity_transcript_matches_reference() {
         labels: vec![],
         landlock_hooked: false,
     };
-    let reference_output = match drive_cycle(&reference, spec, &key, worktree.path()) {
-        Ok(output) => output,
-        Err(error) => panic!("reference cycle: {error}"),
-    };
+    let reference_output =
+        match drive_cycle(&reference, spec, &key, worktree.path()) {
+            Ok(output) => output,
+            Err(error) => panic!("reference cycle: {error}"),
+        };
     assert!(
         reference_output.evidence.consistent,
         "reference self-consistent: {:?}",
@@ -837,10 +864,11 @@ fn wire_parity_transcript_matches_reference() {
         labels: vec![],
         landlock_hooked: false,
     };
-    let wire_output = match drive_cycle(holder.get(), spec, &key, worktree.path()) {
-        Ok(output) => output,
-        Err(error) => panic!("wire cycle: {error}"),
-    };
+    let wire_output =
+        match drive_cycle(holder.get(), spec, &key, worktree.path()) {
+            Ok(output) => output,
+            Err(error) => panic!("wire cycle: {error}"),
+        };
     converge_cycle(holder.get(), &wire_output, &key, &mut guard);
     let _ = holder.take().close();
     assert_eq!(

@@ -19,7 +19,8 @@ use nix::fcntl::OFlag;
 use crate::error::{CistellaError, Result};
 use crate::framework::protocol::PROTOCOL_MAJOR;
 use crate::guest_anchor::{
-    AnchoredDir, PinnedBinary, begin_anchored, open_state_dir, openat_anchored, sha256_bytes,
+    AnchoredDir, PinnedBinary, begin_anchored, open_state_dir,
+    openat_anchored, sha256_bytes,
 };
 use crate::guest_registry::{Guest, HostEnv, SourceLocation};
 
@@ -47,7 +48,10 @@ pub const MAX_GUEST_BYTES: u64 = 64 * 1024 * 1024;
 /// Returns `CistellaError::Profile` on relative, ancestor,
 /// symlink, ownership, mode, or digest refusal, and
 /// `CistellaError::Io` on open/read/stat failure.
-pub fn resolve_path_source(path: &Path, expected: &[u8; 32]) -> Result<PinnedBinary> {
+pub fn resolve_path_source(
+    path: &Path,
+    expected: &[u8; 32],
+) -> Result<PinnedBinary> {
     if !path.is_absolute() {
         return Err(CistellaError::Profile(format!(
             "registered guest path must be absolute: {}",
@@ -113,19 +117,19 @@ fn check_ancestors(canonical_parent: &Path, original: &Path) -> Result<()> {
         })?;
         use std::os::unix::fs::MetadataExt;
         match ancestor_verdict(stat.mode(), stat.uid(), seat) {
-            AncestorVerdict::Pass => {}
+            AncestorVerdict::Pass => {},
             AncestorVerdict::WorldWritable => {
                 return Err(CistellaError::Profile(format!(
                     "registered guest ancestor is world-writable: {}",
                     current.display()
                 )));
-            }
+            },
             AncestorVerdict::StickyUntrusted => {
                 return Err(CistellaError::Profile(format!(
                     "registered guest ancestor is sticky but not seat-owned: {}",
                     current.display()
                 )));
-            }
+            },
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent,
@@ -184,21 +188,23 @@ pub fn cache_dir(env: &HostEnv) -> Result<PathBuf> {
             let path = PathBuf::from(dir);
             if !path.is_absolute() {
                 return Err(CistellaError::Profile(
-                    "XDG_CACHE_HOME must be absolute for registry resolution".to_string(),
+                    "XDG_CACHE_HOME must be absolute for registry resolution"
+                        .to_string(),
                 ));
             }
             path
-        }
+        },
         None => {
-            let home = env
-                .home
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    CistellaError::Profile("HOME not set for registry resolution".to_string())
-                })?;
+            let home =
+                env.home.as_deref().filter(|s| !s.is_empty()).ok_or_else(
+                    || {
+                        CistellaError::Profile(
+                            "HOME not set for registry resolution".to_string(),
+                        )
+                    },
+                )?;
             PathBuf::from(home).join(".cache")
-        }
+        },
     };
     Ok(base.join("cistella/guest-cache"))
 }
@@ -280,7 +286,7 @@ pub fn resolve(entry: &Guest, ctx: &ResolveCtx) -> Result<ResolvedGuest> {
         SourceLocation::Fetch { source_url, digest } => {
             let outcome = fetch_source(source_url, digest, ctx)?;
             (outcome.slot, outcome.pinned)
-        }
+        },
     };
     Ok(ResolvedGuest {
         name: entry.name.clone(),
@@ -324,8 +330,17 @@ pub struct FetchOutcome {
 ///
 /// Returns `CistellaError::Profile` on cache, fetch, bound,
 /// status, or verification refusal.
-pub fn fetch_source(url: &str, expected: &[u8; 32], ctx: &ResolveCtx) -> Result<FetchOutcome> {
-    prepare_cache_dir(&ctx.cache_dir)?.fetch(url, expected, ctx.fetch_max_bytes, ctx.fetch_timeout)
+pub fn fetch_source(
+    url: &str,
+    expected: &[u8; 32],
+    ctx: &ResolveCtx,
+) -> Result<FetchOutcome> {
+    prepare_cache_dir(&ctx.cache_dir)?.fetch(
+        url,
+        expected,
+        ctx.fetch_max_bytes,
+        ctx.fetch_timeout,
+    )
 }
 
 /// Creates the framework-owned cache directory (0700, unconditionally
@@ -348,7 +363,9 @@ pub fn fetch_source(url: &str, expected: &[u8; 32], ctx: &ResolveCtx) -> Result<
 pub fn prepare_cache_dir(dir: &Path) -> Result<CacheDirGuard> {
     open_state_dir(dir)
         .map(|dir| CacheDirGuard { dir })
-        .map_err(|error| CistellaError::Profile(format!("registry cache {error}")))
+        .map_err(|error| {
+            CistellaError::Profile(format!("registry cache {error}"))
+        })
 }
 
 /// Open-directory guard pinning the verified cache directory:
@@ -401,7 +418,12 @@ impl CacheDirGuard {
         // Direct open, never an `exists()` probe: `exists()`
         // follows symlinks and suppresses errors, so a dangling
         // symlink would read as a miss.
-        match openat_anchored(self.dirfd(), &slot, MAX_GUEST_BYTES, self.dir_path())? {
+        match openat_anchored(
+            self.dirfd(),
+            &slot,
+            MAX_GUEST_BYTES,
+            self.dir_path(),
+        )? {
             Some(open) => Ok(FetchOutcome {
                 slot: self.dir_path().join(&slot),
                 pinned: open.finish_binary(expected)?,
@@ -429,10 +451,9 @@ impl CacheDirGuard {
             .max_redirects(5)
             .build()
             .into();
-        let response = agent
-            .get(url)
-            .call()
-            .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        let response = agent.get(url).call().map_err(|e| {
+            CistellaError::Profile(format!("registry fetch {url}: {e}"))
+        })?;
         if response.status() != 200 {
             return Err(CistellaError::Profile(format!(
                 "registry fetch {url}: status {}",
@@ -445,7 +466,9 @@ impl CacheDirGuard {
             .into_reader()
             .take(max_bytes + 1)
             .read_to_end(&mut bytes)
-            .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+            .map_err(|e| {
+                CistellaError::Profile(format!("registry fetch {url}: {e}"))
+            })?;
         if bytes.len() as u64 > max_bytes {
             return Err(CistellaError::Profile(format!(
                 "registry fetch {url}: exceeds size bound"
@@ -457,11 +480,16 @@ impl CacheDirGuard {
             )));
         }
         let mut staged = StagedTemp::create(self.dirfd(), url)?;
-        staged
-            .write_all(&bytes)
-            .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        staged.write_all(&bytes).map_err(|e| {
+            CistellaError::Profile(format!("registry fetch {url}: {e}"))
+        })?;
         staged.persist(slot, url)?;
-        let Some(open) = openat_anchored(self.dirfd(), slot, MAX_GUEST_BYTES, self.dir_path())?
+        let Some(open) = openat_anchored(
+            self.dirfd(),
+            slot,
+            MAX_GUEST_BYTES,
+            self.dir_path(),
+        )?
         else {
             return Err(CistellaError::Profile(format!(
                 "registry fetch {url}: slot vanished after stage"
@@ -477,7 +505,8 @@ impl CacheDirGuard {
 /// Counter for staging-temp name uniqueness (pid + nanos +
 /// sequence; O_EXCL makes residual collisions fail-closed into a
 /// retry).
-static STAGE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STAGE_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// FD-relative staging temp: created O_EXCL inside the guarded
 /// directory, renamed into the slot by renameat, unlinked on
@@ -502,12 +531,17 @@ impl StagedTemp {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let sequence = STAGE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let name = format!("stage-{}-{nanos}-{sequence}", std::process::id());
+            let sequence = STAGE_COUNTER
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let name =
+                format!("stage-{}-{nanos}-{sequence}", std::process::id());
             match nix::fcntl::openat(
                 Some(dirfd),
                 Path::new(&name),
-                OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC,
+                OFlag::O_WRONLY
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_CLOEXEC,
                 nix::sys::stat::Mode::from_bits_truncate(0o600),
             ) {
                 Ok(raw) => {
@@ -531,16 +565,18 @@ impl StagedTemp {
                         nix::sys::stat::Mode::from_bits_truncate(0o700),
                     )
                     .map_err(|errno| {
-                        CistellaError::Profile(format!("registry fetch {url}: {errno}"))
+                        CistellaError::Profile(format!(
+                            "registry fetch {url}: {errno}"
+                        ))
                     })?;
                     return Ok(staged);
-                }
+                },
                 Err(nix::errno::Errno::EEXIST) => continue,
                 Err(errno) => {
                     return Err(CistellaError::Profile(format!(
                         "registry fetch {url}: {errno}"
                     )));
-                }
+                },
             }
         }
         Err(CistellaError::Profile(format!(
@@ -569,7 +605,9 @@ impl StagedTemp {
             Some(self.dirfd),
             Path::new(slot),
         )
-        .map_err(|e| CistellaError::Profile(format!("registry fetch {url}: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Profile(format!("registry fetch {url}: {e}"))
+        })?;
         self.file.take();
         Ok(())
     }

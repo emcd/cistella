@@ -54,8 +54,13 @@ fn xdg_copy_wins_over_baked_and_survives_seed() {
     let custom = "localhost/custom:mine";
     write_profile(&xdg, "opencode", custom);
     let before = std::fs::read(xdg.join("opencode.toml")).unwrap();
-    let (prof, _digest, name) =
-        Profile::resolve_in("opencode", &source, None, &Supplements::default()).unwrap();
+    let (prof, _digest, name) = Profile::resolve_in(
+        "opencode",
+        &source,
+        None,
+        &Supplements::default(),
+    )
+    .unwrap();
     assert_eq!(name, "opencode");
     assert_eq!(prof.image, custom);
     assert_eq!(
@@ -95,7 +100,8 @@ fn flag_dir_wins_over_env_dir_and_xdg() {
         source.xdg_profiles_dir,
     );
     let (prof, _, _) =
-        Profile::resolve_in("custom", &source, None, &Supplements::default()).unwrap();
+        Profile::resolve_in("custom", &source, None, &Supplements::default())
+            .unwrap();
     assert_eq!(prof.image, "localhost/flag:1");
     // With only the env dir supplied, it wins over XDG.
     let source = ResolutionSource::new(
@@ -109,7 +115,8 @@ fn flag_dir_wins_over_env_dir_and_xdg() {
         "localhost/xdg:1",
     );
     let (prof, _, _) =
-        Profile::resolve_in("custom", &source, None, &Supplements::default()).unwrap();
+        Profile::resolve_in("custom", &source, None, &Supplements::default())
+            .unwrap();
     assert_eq!(prof.image, "localhost/env:1");
 }
 
@@ -136,7 +143,9 @@ fn flag_dir_miss_shadows_env_and_writes_nothing() {
         ],
         xdg.clone(),
     );
-    let err = Profile::resolve_in("custom", &source, None, &Supplements::default()).unwrap_err();
+    let err =
+        Profile::resolve_in("custom", &source, None, &Supplements::default())
+            .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("custom"), "error names the profile: {msg}");
     assert!(!xdg.exists(), "closed miss writes nothing to XDG");
@@ -148,9 +157,18 @@ fn supplied_closed_miss_never_falls_through_to_baked() {
     let xdg_base = TempDir::new().unwrap();
     let xdg = xdg_base.path().join("xdg-profiles");
     std::fs::create_dir_all(supplied_base.path().join("profiles")).unwrap();
-    let source = ResolutionSource::new(vec![supplied_base.path().to_path_buf()], xdg.clone());
+    let source = ResolutionSource::new(
+        vec![supplied_base.path().to_path_buf()],
+        xdg.clone(),
+    );
     // `opencode` is baked, but the supplied tier is closed.
-    let err = Profile::resolve_in("opencode", &source, None, &Supplements::default()).unwrap_err();
+    let err = Profile::resolve_in(
+        "opencode",
+        &source,
+        None,
+        &Supplements::default(),
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("opencode"));
     assert!(!xdg.exists(), "closed tier never seeds");
 }
@@ -159,7 +177,9 @@ fn supplied_closed_miss_never_falls_through_to_baked() {
 fn unknown_name_errors_and_still_seeds_baked() {
     let xdg_base = TempDir::new().unwrap();
     let (source, xdg) = fresh_source(&xdg_base);
-    let err = Profile::resolve_in("nope", &source, None, &Supplements::default()).unwrap_err();
+    let err =
+        Profile::resolve_in("nope", &source, None, &Supplements::default())
+            .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("nope"), "error names the profile: {msg}");
     assert!(msg.contains("baked"), "error lists tiers searched: {msg}");
@@ -183,7 +203,10 @@ fn explicit_path_bypasses_every_tier() {
         "localhost/decoy:1",
     );
     let path = write_profile(work.path(), "custom", "localhost/explicit:1");
-    let source = ResolutionSource::new(vec![supplied_base.path().to_path_buf()], xdg.clone());
+    let source = ResolutionSource::new(
+        vec![supplied_base.path().to_path_buf()],
+        xdg.clone(),
+    );
     let (prof, _digest, name) = Profile::resolve_in(
         &path.to_string_lossy(),
         &source,
@@ -223,7 +246,8 @@ fn env_tier_end_to_end() {
     let env_profiles = env_base.path().join("profiles");
     std::fs::create_dir_all(&env_profiles).unwrap();
     write_profile(&env_profiles, "custom", "localhost/env:1");
-    let old_config_dir = std::env::var("CISTELLA_CONFIGURATION_DIRECTORY").ok();
+    let old_config_dir =
+        std::env::var("CISTELLA_CONFIGURATION_DIRECTORY").ok();
     let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
     unsafe {
         std::env::set_var("CISTELLA_CONFIGURATION_DIRECTORY", env_base.path());
@@ -239,7 +263,9 @@ fn env_tier_end_to_end() {
     })();
     unsafe {
         match old_config_dir {
-            Some(v) => std::env::set_var("CISTELLA_CONFIGURATION_DIRECTORY", v),
+            Some(v) => {
+                std::env::set_var("CISTELLA_CONFIGURATION_DIRECTORY", v)
+            },
             None => std::env::remove_var("CISTELLA_CONFIGURATION_DIRECTORY"),
         }
         match old_xdg {
@@ -255,7 +281,9 @@ fn env_tier_end_to_end() {
 #[test]
 fn from_host_env_puts_flag_first() {
     let flag = TempDir::new().unwrap();
-    let source = ResolutionSource::from_host_env(Some(flag.path().to_str().unwrap())).unwrap();
+    let source =
+        ResolutionSource::from_host_env(Some(flag.path().to_str().unwrap()))
+            .unwrap();
     assert_eq!(
         source
             .configuration_directories
@@ -281,7 +309,10 @@ fn template_toml(host: &str, target: &str) -> String {
 fn resolve_template_text(
     toml: &str,
     project: Option<ProjectName<'_>>,
-) -> Result<(cistella::profile::Profile, String, String), cistella::error::CistellaError> {
+) -> Result<
+    (cistella::profile::Profile, String, String),
+    cistella::error::CistellaError,
+> {
     resolve_template_text_with(toml, project, &Supplements::default())
 }
 
@@ -289,12 +320,16 @@ fn resolve_template_text_with(
     toml: &str,
     project: Option<ProjectName<'_>>,
     supplements: &Supplements,
-) -> Result<(cistella::profile::Profile, String, String), cistella::error::CistellaError> {
+) -> Result<
+    (cistella::profile::Profile, String, String),
+    cistella::error::CistellaError,
+> {
     let work = TempDir::new().unwrap();
     let path = work.path().join("tmpl.toml");
     std::fs::write(&path, toml).unwrap();
     let xdg_base = TempDir::new().unwrap();
-    let source = ResolutionSource::new(Vec::new(), xdg_base.path().join("xdg"));
+    let source =
+        ResolutionSource::new(Vec::new(), xdg_base.path().join("xdg"));
     // Synchronous resolution completes before the TempDirs drop.
     Profile::resolve_in(&path.to_string_lossy(), &source, project, supplements)
 }
@@ -317,7 +352,9 @@ fn templates_expand_on_both_sides_and_argv() {
         "/data/{{core:project-name}}",
         "{{core:container-home}}/{{core:project-name}}",
     );
-    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("qa"))).unwrap();
+    let (prof, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("qa")))
+            .unwrap();
     assert_eq!(prof.mounts[0].host_source, "/data/qa");
     assert_eq!(prof.mounts[0].container_target, "/home/cistella/qa");
     assert_eq!(
@@ -334,7 +371,8 @@ fn project_override_beats_basename_default() {
         "/notes/{{core:project-name}}",
     );
     let (prof, _, _) =
-        resolve_template_text(&toml, Some(ProjectName::Explicit("cistella"))).unwrap();
+        resolve_template_text(&toml, Some(ProjectName::Explicit("cistella")))
+            .unwrap();
     assert_eq!(prof.mounts[0].host_source, "/notes/cistella");
 }
 
@@ -343,7 +381,9 @@ fn host_home_template_reads_home() {
     // Only mutates HOME-adjacent reads through the standard env; no other
     // test reads these template paths, and HOME itself is untouched.
     let toml = template_toml("{{core:host-home}}/.config/x", "/x");
-    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap();
+    let (prof, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+            .unwrap();
     let home = std::env::var("HOME").unwrap();
     assert_eq!(prof.mounts[0].host_source, format!("{home}/.config/x"));
 }
@@ -351,7 +391,8 @@ fn host_home_template_reads_home() {
 #[test]
 fn bare_span_fails_closed() {
     let toml = template_toml("/data/{{nosuch}}", "/x");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+        .unwrap_err();
     assert!(err.to_string().contains("nosuch"));
 }
 
@@ -385,7 +426,8 @@ fn container_home_core_reference_is_a_cycle() {
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
 container-home = \"/home/{{core:host-home}}\"\n\
 mounts = []\n";
-    let err = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err = resolve_template_text(toml, Some(ProjectName::Explicit("p")))
+        .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("self-referential"), "{msg}");
     assert!(msg.contains("container-home"), "{msg}");
@@ -395,12 +437,15 @@ mounts = []\n";
 fn bad_project_charset_rejected_never_sanitized() {
     let toml = template_toml("/data/{{core:project-name}}", "/x");
     for bad in ["", "../x", "/abs", "a=b", "a b"] {
-        let err = resolve_template_text(&toml, Some(ProjectName::Explicit(bad))).unwrap_err();
+        let err =
+            resolve_template_text(&toml, Some(ProjectName::Explicit(bad)))
+                .unwrap_err();
         assert!(err.to_string().contains("project name"), "for {bad:?}");
     }
     // Dots and dashes are legal (agentmux parity).
     let (prof, _, _) =
-        resolve_template_text(&toml, Some(ProjectName::Explicit("my.proj-1"))).unwrap();
+        resolve_template_text(&toml, Some(ProjectName::Explicit("my.proj-1")))
+            .unwrap();
     assert_eq!(prof.mounts[0].host_source, "/data/my.proj-1");
 }
 
@@ -408,8 +453,11 @@ fn bad_project_charset_rejected_never_sanitized() {
 fn adjacent_templates_expand_without_rescan() {
     // Single-pass proof by construction: adjacent spans each expand once;
     // substituted text is never re-examined (see expand_value).
-    let toml = template_toml("/{{core:project-name}}/{{core:project-name}}", "/x");
-    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("qa"))).unwrap();
+    let toml =
+        template_toml("/{{core:project-name}}/{{core:project-name}}", "/x");
+    let (prof, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("qa")))
+            .unwrap();
     assert_eq!(prof.mounts[0].host_source, "/qa/qa");
     // NOTE: a hostile-$HOME rescan test is deliberately absent: HOME is
     // process-global and mutating it races parallel tests (e.g. the `~`
@@ -448,7 +496,8 @@ container-home = \"/home/cistella/../other\"\n\
 host-source = \"/data\"\n\
 container-target = \"{{core:container-home}}/x\"\n\
 mode = \"ro\"\n";
-    let (prof, _, _) = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap();
+    let (prof, _, _) =
+        resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap();
     assert_eq!(prof.home(), "/home/other");
     assert_eq!(prof.mounts[0].container_target, "/home/other/x");
 }
@@ -458,16 +507,21 @@ fn unknown_templates_outrank_context_requirements() {
     // Finding 2: exact span recognition — structural span errors report
     // before charset, HOME, supplement, environment, or context needs.
     let bare = template_toml("/data/{{not-a-context}}", "/x");
-    let err = resolve_template_text(&bare, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err = resolve_template_text(&bare, Some(ProjectName::Explicit("p")))
+        .unwrap_err();
     assert!(err.to_string().contains("bare template span"), "{err}");
     let bad_context = template_toml("/data/{{bogus:name}}", "/x");
-    let err = resolve_template_text(&bad_context, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err =
+        resolve_template_text(&bad_context, Some(ProjectName::Explicit("p")))
+            .unwrap_err();
     assert!(
         err.to_string().contains("unknown template context"),
         "{err}"
     );
     let bad_core = template_toml("/data/{{core:not-a-name}}", "/x");
-    let err = resolve_template_text(&bad_core, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err =
+        resolve_template_text(&bad_core, Some(ProjectName::Explicit("p")))
+            .unwrap_err();
     assert!(err.to_string().contains("unknown core template"), "{err}");
     // Structural errors outrank even the project-context requirement.
     let unknown = template_toml("/data/{{core:nosuch}}", "/x");
@@ -496,7 +550,9 @@ fn root_directory_default_is_lazy() {
         .is_ok()
     );
     let toml = template_toml("/data/{{core:project-name}}", "/x");
-    let err = resolve_template_text(&toml, Some(ProjectName::DirectoryDefault("/"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::DirectoryDefault("/")))
+            .unwrap_err();
     assert!(err.to_string().contains("basename"), "{err}");
 }
 
@@ -514,7 +570,11 @@ fn directory_default_basename_validates_charset() {
     assert!(err.to_string().contains("project name"), "{err}");
 }
 
-fn env_labels_toml(env_value: &str, label_key: &str, label_value: &str) -> String {
+fn env_labels_toml(
+    env_value: &str,
+    label_key: &str,
+    label_value: &str,
+) -> String {
     format!(
         "{}\n[environment-assignments]\nPROBE = \"{env_value}\"\n[labels]\n\"{label_key}\" = \"{label_value}\"\n",
         template_toml("/data", "/x")
@@ -530,7 +590,8 @@ fn env_values_expand_templates() {
     );
     let home = std::env::var("HOME").unwrap();
     let (profile, _, _) =
-        resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap();
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap();
     assert_eq!(
         profile
             .environment_assignments
@@ -542,9 +603,14 @@ fn env_values_expand_templates() {
 
 #[test]
 fn labels_values_expand_templates() {
-    let toml = env_labels_toml("v", "tag", "{{core:project-name}}-{{core:container-home}}");
+    let toml = env_labels_toml(
+        "v",
+        "tag",
+        "{{core:project-name}}-{{core:container-home}}",
+    );
     let (profile, _, _) =
-        resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap();
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap();
     assert_eq!(
         profile.labels.get("tag").map(String::as_str),
         Some("proj-/home/cistella")
@@ -554,21 +620,27 @@ fn labels_values_expand_templates() {
 #[test]
 fn unknown_template_in_env_errors() {
     let toml = env_labels_toml("{{bogus}}", "plain", "v");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap_err();
     assert!(err.to_string().contains("bare template span"), "{err}");
 }
 
 #[test]
 fn unterminated_span_in_labels_errors() {
     let toml = env_labels_toml("v", "plain", "{{container-home");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap_err();
     assert!(err.to_string().contains("unterminated"), "{err}");
 }
 
 #[test]
 fn template_in_label_key_errors() {
     let toml = env_labels_toml("v", "{{core:project-name}}", "v");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap_err();
     assert!(err.to_string().contains("label key"), "{err}");
 }
 
@@ -610,7 +682,9 @@ fn unterminated_span_hides_env_secret() {
     // Tier-2: diagnostics name the field, never the raw value — env
     // values may carry credentials that must not reach stderr/logs.
     let toml = env_labels_toml("sk-live-SENTINEL-9f8{{", "plain", "v");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap_err();
     let msg = err.to_string();
     assert!(!msg.contains("SENTINEL"), "secret leaked: {msg}");
     assert!(msg.contains("env value"), "field named: {msg}");
@@ -623,7 +697,9 @@ fn unterminated_span_hides_env_secret() {
 #[test]
 fn unterminated_span_hides_label_secret() {
     let toml = env_labels_toml("v", "plain", "tok-SENTINEL-77{{");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap_err();
     let msg = err.to_string();
     assert!(!msg.contains("SENTINEL"), "secret leaked: {msg}");
     assert!(msg.contains("label value"), "field named: {msg}");
@@ -642,15 +718,20 @@ fn supplement_pairs(pairs: &[(&str, &str)]) -> Supplements {
 fn supplied_supplement_resolves() {
     let toml = template_toml("/data/{{supplement:dataset}}", "/x");
     let supp = supplement_pairs(&[("dataset", "live")]);
-    let (prof, _, _) =
-        resolve_template_text_with(&toml, Some(ProjectName::Explicit("p")), &supp).unwrap();
+    let (prof, _, _) = resolve_template_text_with(
+        &toml,
+        Some(ProjectName::Explicit("p")),
+        &supp,
+    )
+    .unwrap();
     assert_eq!(prof.mounts[0].host_source, "/data/live");
 }
 
 #[test]
 fn unsupplied_supplement_fails_closed_naming_key() {
     let toml = template_toml("/data/{{supplement:dataset}}", "/x");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+        .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("unknown supplement"), "{msg}");
     assert!(msg.contains("dataset"), "{msg}");
@@ -659,9 +740,14 @@ fn unsupplied_supplement_fails_closed_naming_key() {
 #[test]
 fn supplement_last_wins_on_duplicates() {
     let toml = template_toml("/data/{{supplement:dataset}}", "/x");
-    let supp = supplement_pairs(&[("dataset", "first"), ("dataset", "second")]);
-    let (prof, _, _) =
-        resolve_template_text_with(&toml, Some(ProjectName::Explicit("p")), &supp).unwrap();
+    let supp =
+        supplement_pairs(&[("dataset", "first"), ("dataset", "second")]);
+    let (prof, _, _) = resolve_template_text_with(
+        &toml,
+        Some(ProjectName::Explicit("p")),
+        &supp,
+    )
+    .unwrap();
     assert_eq!(prof.mounts[0].host_source, "/data/second");
 }
 
@@ -673,8 +759,12 @@ fn supplement_values_are_opaque_until_sink() {
 container-home = \"{{supplement:home}}\"\n\
 mounts = []\n";
     let supp = supplement_pairs(&[("home", "/home/opaque")]);
-    let (prof, _, _) =
-        resolve_template_text_with(toml, Some(ProjectName::Explicit("p")), &supp).unwrap();
+    let (prof, _, _) = resolve_template_text_with(
+        toml,
+        Some(ProjectName::Explicit("p")),
+        &supp,
+    )
+    .unwrap();
     assert_eq!(prof.home(), "/home/opaque");
 }
 
@@ -707,7 +797,9 @@ fn supplement_keys_face_charset_and_reservation() {
 #[test]
 fn environment_home_resolves() {
     let toml = template_toml("/data", "{{environment:HOME}}/x");
-    let (prof, _, _) = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap();
+    let (prof, _, _) =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+            .unwrap();
     let home = std::env::var("HOME").unwrap();
     assert_eq!(prof.mounts[0].container_target, format!("{home}/x"));
 }
@@ -727,8 +819,11 @@ fn environment_credential_names_hard_refused() {
         "db_password",
         "MY_CREDENTIAL_FILE",
     ] {
-        let toml = template_toml("/data", &format!("{{{{environment:{name}}}}}/x"));
-        let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+        let toml =
+            template_toml("/data", &format!("{{{{environment:{name}}}}}/x"));
+        let err =
+            resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+                .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("refused"), "for {name}: {msg}");
         assert!(msg.contains(name), "names the variable: {msg}");
@@ -739,7 +834,8 @@ fn environment_credential_names_hard_refused() {
 fn environment_unallowlisted_present_name_fails_closed() {
     // PATH is present but not allowlisted: typed error, value never read.
     let toml = template_toml("/data", "{{environment:PATH}}/x");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+        .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("not allowlisted"), "{msg}");
     assert!(msg.contains("PATH"), "{msg}");
@@ -754,11 +850,15 @@ fn environment_invalid_names_rejected() {
     // Empty names fail at span classification; malformed names fail at
     // environment resolution. Both are typed errors naming the offense.
     let toml = template_toml("/data", "{{environment:}}/x");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+        .unwrap_err();
     assert!(err.to_string().contains("empty template name"), "{err}");
     for name in ["HAS-DASH", "HAS SPACE", "a:b"] {
-        let toml = template_toml("/data", &format!("{{{{environment:{name}}}}}/x"));
-        let err = resolve_template_text(&toml, Some(ProjectName::Explicit("p"))).unwrap_err();
+        let toml =
+            template_toml("/data", &format!("{{{{environment:{name}}}}}/x"));
+        let err =
+            resolve_template_text(&toml, Some(ProjectName::Explicit("p")))
+                .unwrap_err();
         assert!(
             err.to_string().contains("invalid environment name"),
             "for {name:?}"
@@ -774,7 +874,8 @@ container-home = \"{{environment:HOME}}\"\n\
 host-source = \"/data\"\n\
 container-target = \"{{core:container-home}}/x\"\n\
 mode = \"ro\"\n";
-    let (prof, _, _) = resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap();
+    let (prof, _, _) =
+        resolve_template_text(toml, Some(ProjectName::Explicit("p"))).unwrap();
     let home = std::env::var("HOME").unwrap();
     assert_eq!(prof.home(), home);
     assert_eq!(prof.mounts[0].container_target, format!("{home}/x"));
@@ -790,15 +891,20 @@ fn early_home_traversal_canonicalizes_like_literals() {
 container-home = \"/tmp/early/../early\"\n\
 mounts = []\n";
     let (literal_prof, _, _) =
-        resolve_template_text(literal, Some(ProjectName::Explicit("p"))).unwrap();
+        resolve_template_text(literal, Some(ProjectName::Explicit("p")))
+            .unwrap();
     assert_eq!(literal_prof.home(), "/tmp/early");
     let _ = home;
     let supp = supplement_pairs(&[("seg", "early/../early")]);
     let expanded = "image = \"localhost/cistella/opencode:example\"\n\
 container-home = \"/tmp/{{supplement:seg}}\"\n\
 mounts = []\n";
-    let (expanded_prof, _, _) =
-        resolve_template_text_with(expanded, Some(ProjectName::Explicit("p")), &supp).unwrap();
+    let (expanded_prof, _, _) = resolve_template_text_with(
+        expanded,
+        Some(ProjectName::Explicit("p")),
+        &supp,
+    )
+    .unwrap();
     assert_eq!(
         expanded_prof.home(),
         literal_prof.home(),
@@ -813,15 +919,24 @@ fn early_home_dangerous_values_rejected() {
 container-home = \"{{supplement:home}}\"\n\
 mounts = []\n";
         let supp = supplement_pairs(&[("home", home)]);
-        resolve_template_text_with(toml, Some(ProjectName::Explicit("p")), &supp).unwrap_err();
+        resolve_template_text_with(
+            toml,
+            Some(ProjectName::Explicit("p")),
+            &supp,
+        )
+        .unwrap_err();
     }
     // Control characters via supplement into container-home.
     let toml = "image = \"localhost/cistella/opencode:example\"\n\
 container-home = \"{{supplement:home}}\"\n\
 mounts = []\n";
     let supp = supplement_pairs(&[("home", "/tmp/has\nnewline")]);
-    let err =
-        resolve_template_text_with(toml, Some(ProjectName::Explicit("p")), &supp).unwrap_err();
+    let err = resolve_template_text_with(
+        toml,
+        Some(ProjectName::Explicit("p")),
+        &supp,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("control"), "{err}");
 }
 
@@ -830,6 +945,8 @@ fn qualified_spans_need_no_bare_grandfather() {
     // Sharp break with no grandfathering: every old flat spelling is
     // now a bare-span error, including in label keys.
     let toml = env_labels_toml("v", "plain", "{{host-home}}");
-    let err = resolve_template_text(&toml, Some(ProjectName::Explicit("proj"))).unwrap_err();
+    let err =
+        resolve_template_text(&toml, Some(ProjectName::Explicit("proj")))
+            .unwrap_err();
     assert!(err.to_string().contains("bare template span"), "{err}");
 }

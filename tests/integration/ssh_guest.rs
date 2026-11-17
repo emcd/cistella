@@ -33,7 +33,8 @@ fn framed(op: &str, protocol: u32, payload: serde_json::Value) -> Vec<u8> {
 fn read_frames(mut stdout: &[u8]) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     while stdout.len() >= 4 {
-        let len = u32::from_be_bytes(stdout[..4].try_into().expect("header")) as usize;
+        let len = u32::from_be_bytes(stdout[..4].try_into().expect("header"))
+            as usize;
         let body = &stdout[4..4 + len];
         out.push(serde_json::from_slice(body).expect("frame parses"));
         stdout = &stdout[4 + len..];
@@ -47,13 +48,14 @@ struct Transcript {
 }
 
 fn run_guest(args: &[&str], writes: Vec<Vec<u8>>) -> Transcript {
-    let mut child = std::process::Command::new(shipped_bin("cistella-extension-ssh"))
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("ssh guest spawns");
+    let mut child =
+        std::process::Command::new(shipped_bin("cistella-extension-ssh"))
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("ssh guest spawns");
     {
         let stdin = child.stdin.as_mut().expect("stdin");
         for frame in &writes {
@@ -65,15 +67,18 @@ fn run_guest(args: &[&str], writes: Vec<Vec<u8>>) -> Transcript {
     // that never exits AND never closes stdout must hit the reap
     // bound, never hang in read_to_end. Post-exit assembly reuses
     // finish_capture (cap/overflow/error/drain-timeout refusal).
-    let out_slot = std::sync::Arc::new(std::sync::Mutex::new(StreamCapture::empty()));
-    let empty_slot = std::sync::Arc::new(std::sync::Mutex::new(StreamCapture::empty()));
+    let out_slot =
+        std::sync::Arc::new(std::sync::Mutex::new(StreamCapture::empty()));
+    let empty_slot =
+        std::sync::Arc::new(std::sync::Mutex::new(StreamCapture::empty()));
     let (drain_tx, drain_rx) = std::sync::mpsc::channel();
     let drain_handle = drain_capped(
         child.stdout.take().expect("piped stdout"),
         std::sync::Arc::clone(&out_slot),
         drain_tx,
     );
-    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
+    let status =
+        reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
     let drained = drain_rx.recv_timeout(POST_EXIT_DRAIN_TIMEOUT).is_ok();
     if drained {
         let _ = drain_handle.join();
@@ -124,7 +129,13 @@ fn ssh_hello_advertises_role_and_contribution_types() {
         .expect("hello carries capabilities");
     assert_eq!(
         caps,
-        &serde_json::json!(["ssh", "environment", "mounts", "permissions", "credentials"]),
+        &serde_json::json!([
+            "ssh",
+            "environment",
+            "mounts",
+            "permissions",
+            "credentials"
+        ]),
         "role plus the four returned types, nothing else"
     );
     let max_frame = transcript.frames[0]
@@ -161,7 +172,9 @@ fn ssh_prepare_contributes_exact_tuple() {
     );
     assert_eq!(
         payload.pointer("/mounts"),
-        Some(&serde_json::json!([{"host_source": sock, "container_target": sock}])),
+        Some(
+            &serde_json::json!([{"host_source": sock, "container_target": sock}])
+        ),
         "self-bind read-only shape"
     );
     assert_eq!(
@@ -211,12 +224,16 @@ fn ssh_symlink_splits_declared_from_canonical() {
         .expect("prepare payload");
     assert_eq!(
         payload.pointer("/environment"),
-        Some(&serde_json::json!([{"name": "SSH_AUTH_SOCK", "value": declared}])),
+        Some(
+            &serde_json::json!([{"name": "SSH_AUTH_SOCK", "value": declared}])
+        ),
         "env names declared P"
     );
     assert_eq!(
         payload.pointer("/mounts"),
-        Some(&serde_json::json!([{"host_source": canonical, "container_target": declared}])),
+        Some(
+            &serde_json::json!([{"host_source": canonical, "container_target": declared}])
+        ),
         "mount binds canonical C onto declared P"
     );
     assert_eq!(

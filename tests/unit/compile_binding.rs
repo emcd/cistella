@@ -4,7 +4,9 @@
 //! prepare_permissions at the file-size limit). Grant joining
 //! stays in prepare_permissions.
 
-fn singleton_hook(prefix: Vec<String>) -> cistella::framework::contract::GuestHookRequest {
+fn singleton_hook(
+    prefix: Vec<String>,
+) -> cistella::framework::contract::GuestHookRequest {
     use cistella::framework::contract::{HookArtifact, HookProbe, HookSource};
     cistella::framework::contract::GuestHookRequest {
         artifact: HookArtifact {
@@ -56,7 +58,8 @@ fn compile_inputs() -> (
         provenance: Provenance::Extension("probe".to_string()),
     }];
     let effective =
-        EffectivePermissions::assemble(&[], &placements, &permissions, &[]).expect("assembles");
+        EffectivePermissions::assemble(&[], &placements, &permissions, &[])
+            .expect("assembles");
     (placements, effective)
 }
 
@@ -114,8 +117,8 @@ fn joined_parent_with_rw_child_refuses_despite_full_grants() {
     // though grants are Full on both. Grant aliasing stays the
     // graft preflight's job; this gate reads bindings.
     use cistella::framework::contract::{
-        EffectivePermissions, MergeContext, PermissionContribution, Provenance, Rights,
-        merge_prepare, render_placements,
+        EffectivePermissions, MergeContext, PermissionContribution,
+        Provenance, Rights, merge_prepare, render_placements,
     };
     use cistella::framework::landlock_compiler::ro_confinement_preflight;
     use cistella::mount::Placement;
@@ -159,7 +162,8 @@ fn joined_parent_with_rw_child_refuses_despite_full_grants() {
         ],
         ..cistella::framework::contract::PreparePlan::default()
     };
-    let context = MergeContext::new("/home/cistella", HashSet::new(), Vec::new());
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), Vec::new());
     let merged = merge_prepare(
         plan,
         &cistella::framework::contract::CapabilitySet::new(&[
@@ -209,7 +213,9 @@ fn joined_parent_with_rw_child_refuses_despite_full_grants() {
 #[test]
 fn compiled_binding_refuses_stale_fingerprint() {
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -223,7 +229,8 @@ fn compiled_binding_refuses_stale_fingerprint() {
     .expect("freezes");
     let mut compiled = compile_topology(&snapshot, &hook).expect("compiles");
     compiled.fingerprint = "stale".to_string();
-    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
     assert!(
         error.to_string().contains("escapes its snapshot binding"),
         "got: {error}"
@@ -235,7 +242,9 @@ fn compiled_binding_refuses_foreign_supervisor() {
     // CompilerA rendering paired with a SupervisorB policy: the
     // hook digest binds output to its enforcement consumer.
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -250,7 +259,8 @@ fn compiled_binding_refuses_foreign_supervisor() {
     let compiled = compile_topology(&snapshot, &hook).expect("compiles");
     let mut other = test_hook();
     other.artifact.sha256 = "f".repeat(64);
-    let error = verify_compiled_binding(&snapshot, &compiled, &other).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &other).unwrap_err();
     assert!(
         error.to_string().contains("escapes its snapshot binding"),
         "got: {error}"
@@ -284,8 +294,8 @@ fn read_write_join_renders_ro_for_retention() {
     // (VFS) — the join widens the grant without erasing the
     // wall, through merge, render, and revision.
     use cistella::framework::contract::{
-        EffectivePermissions, MergeContext, PermissionContribution, Provenance, Rights,
-        merge_prepare, render_placements,
+        EffectivePermissions, MergeContext, PermissionContribution,
+        Provenance, Rights, merge_prepare, render_placements,
     };
     use cistella::framework::landlock_compiler::{
         full_grant_routes, full_grant_sources, revise_ro_for_confinement,
@@ -317,7 +327,8 @@ fn read_write_join_renders_ro_for_retention() {
         ],
         ..cistella::framework::contract::PreparePlan::default()
     };
-    let context = MergeContext::new("/home/cistella", HashSet::new(), Vec::new());
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), Vec::new());
     let merged = merge_prepare(
         plan,
         &cistella::framework::contract::CapabilitySet::new(&[
@@ -358,7 +369,9 @@ fn read_write_join_renders_ro_for_retention() {
         host_source: format!("{host}/state"),
         container_target: "/state".to_string(),
     }];
-    let hook = singleton_hook(vec!["/run/cistella/hooks/supervisor-landlock".to_string()]);
+    let hook = singleton_hook(vec![
+        "/run/cistella/hooks/supervisor-landlock".to_string(),
+    ]);
     let routes = full_grant_routes(
         &[hook],
         &placements,
@@ -376,7 +389,11 @@ fn read_write_join_renders_ro_for_retention() {
         sources.contains(&tree.path().join("state")),
         "Full grants join FULL-source accounting: {sources:?}"
     );
-    let revised = revise_ro_for_confinement(&rendered, &["/state".to_string()], &sources);
+    let revised = revise_ro_for_confinement(
+        &rendered,
+        &["/state".to_string()],
+        &sources,
+    );
     assert_eq!(
         revised[0].mode,
         cistella::mount::MountMode::Ro,
@@ -401,7 +418,10 @@ fn read_write_join_renders_ro_for_retention() {
         &[],
     )
     .expect("assembles");
-    let file_rendered = render_placements(std::slice::from_ref(&file_placement), &file_effective);
+    let file_rendered = render_placements(
+        std::slice::from_ref(&file_placement),
+        &file_effective,
+    );
     assert_eq!(
         file_rendered[0].mode,
         cistella::mount::MountMode::Rw,
@@ -426,7 +446,8 @@ fn freeze_with(
         })
         .collect();
     let effective =
-        EffectivePermissions::assemble(&[], placements, &permissions, &[]).expect("assembles");
+        EffectivePermissions::assemble(&[], placements, &permissions, &[])
+            .expect("assembles");
     let triples: Vec<cistella::mount::MountTriple> = placements
         .iter()
         .map(|placement| cistella::mount::MountTriple {
@@ -474,7 +495,9 @@ fn compiled_coverage_refuses_added_binding() {
     // Copied fingerprint with an added output binding: the
     // target-multiset check refuses despite matching strings.
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -492,7 +515,8 @@ fn compiled_coverage_refuses_added_binding() {
         container_target: "/evil".to_string(),
         mode: cistella::mount::MountMode::Rw,
     });
-    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
     assert!(
         error.to_string().contains("coverage"),
         "added output refuses, got: {error}"
@@ -502,7 +526,9 @@ fn compiled_coverage_refuses_added_binding() {
 #[test]
 fn compiled_coverage_refuses_missing_binding() {
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -516,7 +542,8 @@ fn compiled_coverage_refuses_missing_binding() {
     .expect("freezes");
     let mut compiled = compile_topology(&snapshot, &hook).expect("compiles");
     compiled.revised.pop();
-    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
     assert!(
         error.to_string().contains("coverage"),
         "missing output refuses, got: {error}"
@@ -551,7 +578,9 @@ fn freeze_refuses_unregistered_renderer() {
 #[test]
 fn compiled_binding_refuses_foreign_owner() {
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -565,7 +594,8 @@ fn compiled_binding_refuses_foreign_owner() {
     .expect("freezes");
     let mut compiled = compile_topology(&snapshot, &hook).expect("compiles");
     compiled.compiler_owner = "foreign".to_string();
-    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
     assert!(
         error.to_string().contains("escapes its snapshot binding"),
         "got: {error}"
@@ -577,7 +607,9 @@ fn verify_refuses_changed_source_at_same_target() {
     // Same targets, one host source swapped: target-only
     // comparison would pass; source identity refuses.
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -591,7 +623,8 @@ fn verify_refuses_changed_source_at_same_target() {
     .expect("freezes");
     let mut compiled = compile_topology(&snapshot, &hook).expect("compiles");
     compiled.revised[0].host_source = "/srv/foreign".to_string();
-    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
     assert!(
         error.to_string().contains("coverage"),
         "changed source refuses, got: {error}"
@@ -604,7 +637,9 @@ fn verify_refuses_mutated_snapshot_contents() {
     // recomputation fails self-consistency before any output
     // comparison runs.
     use cistella::framework::hooks::verify_compiled_binding;
-    use cistella::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+    use cistella::framework::landlock_compiler::{
+        compile_topology, freeze_snapshot,
+    };
     let (placements, effective) = compile_inputs();
     let hook = test_hook();
     let snapshot = freeze_snapshot(
@@ -619,7 +654,8 @@ fn verify_refuses_mutated_snapshot_contents() {
     let compiled = compile_topology(&snapshot, &hook).expect("compiles");
     let mut snapshot = snapshot;
     snapshot.placements[0].host_source = "/srv/foreign".to_string();
-    let error = verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
+    let error =
+        verify_compiled_binding(&snapshot, &compiled, &hook).unwrap_err();
     assert!(
         error.to_string().contains("self-consistency"),
         "mutated snapshot refuses, got: {error}"
@@ -657,9 +693,11 @@ fn fingerprint_distinguishes_delimiter_collision() {
             .collect::<Vec<_>>()
     };
     let left_effective =
-        EffectivePermissions::assemble(&[], &left, &perms_for(&left), &[]).expect("assembles");
+        EffectivePermissions::assemble(&[], &left, &perms_for(&left), &[])
+            .expect("assembles");
     let right_effective =
-        EffectivePermissions::assemble(&[], &right, &perms_for(&right), &[]).expect("assembles");
+        EffectivePermissions::assemble(&[], &right, &perms_for(&right), &[])
+            .expect("assembles");
     let left_triples: Vec<cistella::mount::MountTriple> = left
         .iter()
         .map(|placement| cistella::mount::MountTriple {

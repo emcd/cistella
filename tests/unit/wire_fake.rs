@@ -5,10 +5,13 @@
 //! Podman. Shared across guest instances through clone to prove
 //! adopt-after-restart convergence.
 
-use cistella::framework::contract::{LifecycleState, ReconciliationKey, UnitHandle};
+use cistella::framework::contract::{
+    LifecycleState, ReconciliationKey, UnitHandle,
+};
 use cistella::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
-    StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities,
+    RemovedAttestation, StartedAttestation, StdioBinding, StoppedAttestation,
+    UnitSnapshot,
 };
 use cistella::session::Session;
 
@@ -18,11 +21,17 @@ use cistella::session::Session;
 #[derive(Debug, Clone, Default)]
 pub struct FakeBackend {
     /// Local handle to lifecycle state.
-    pub units:
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<UnitHandle, LifecycleState>>>,
+    pub units: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<UnitHandle, LifecycleState>,
+        >,
+    >,
     /// Reconciliation key to local handle.
-    pub keys:
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ReconciliationKey, UnitHandle>>>,
+    pub keys: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<ReconciliationKey, UnitHandle>,
+        >,
+    >,
     /// Launched argv per call (double-spawn detector).
     pub launches: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
     /// Backend `create` call count (adopt must not recreate).
@@ -33,10 +42,13 @@ pub struct FakeBackend {
     pub removed: std::sync::Arc<std::sync::Mutex<Vec<UnitHandle>>>,
     /// Local handle to session id (residue ownership for the
     /// tombstone residue model below).
-    pub sessions: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<UnitHandle, String>>>,
+    pub sessions: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<UnitHandle, String>>,
+    >,
     /// Session ids with surviving residue (planted by
     /// tests, cleared by remove — the absent-residue model).
-    pub residue: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    pub residue:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Isolator for FakeBackend {
@@ -73,7 +85,9 @@ impl Isolator for FakeBackend {
     ) -> cistella::error::Result<StartedAttestation> {
         let mut units = self.units.lock().unwrap();
         let state = units.get_mut(handle).ok_or_else(|| {
-            cistella::error::CistellaError::Contract("fake: unknown unit".to_string())
+            cistella::error::CistellaError::Contract(
+                "fake: unknown unit".to_string(),
+            )
         })?;
         *state = LifecycleState::Initiated;
         Ok(StartedAttestation {
@@ -90,7 +104,8 @@ impl Isolator for FakeBackend {
         _workdir: Option<&str>,
         _stdio: StdioBinding,
         _key: &ReconciliationKey,
-    ) -> cistella::error::Result<cistella::framework::contract::ExecutionHandle> {
+    ) -> cistella::error::Result<cistella::framework::contract::ExecutionHandle>
+    {
         if !self.units.lock().unwrap().contains_key(handle) {
             return Err(cistella::error::CistellaError::Contract(
                 "fake: unknown unit".to_string(),
@@ -108,9 +123,13 @@ impl Isolator for FakeBackend {
         Ok(ExecutionOutcome::Exited(0))
     }
 
-    fn inspect(&self, handle: &UnitHandle) -> cistella::error::Result<UnitSnapshot> {
+    fn inspect(
+        &self,
+        handle: &UnitHandle,
+    ) -> cistella::error::Result<UnitSnapshot> {
         let units = self.units.lock().unwrap();
-        let lifecycle = units.get(handle).copied().unwrap_or(LifecycleState::Absent);
+        let lifecycle =
+            units.get(handle).copied().unwrap_or(LifecycleState::Absent);
         Ok(UnitSnapshot {
             unit_identity: handle.as_str().to_string(),
             lifecycle,
@@ -120,7 +139,10 @@ impl Isolator for FakeBackend {
         })
     }
 
-    fn state(&self, handle: &UnitHandle) -> cistella::error::Result<LifecycleState> {
+    fn state(
+        &self,
+        handle: &UnitHandle,
+    ) -> cistella::error::Result<LifecycleState> {
         Ok(self
             .units
             .lock()
@@ -159,7 +181,10 @@ impl Isolator for FakeBackend {
         })
     }
 
-    fn locate(&self, key: &ReconciliationKey) -> cistella::error::Result<Option<UnitHandle>> {
+    fn locate(
+        &self,
+        key: &ReconciliationKey,
+    ) -> cistella::error::Result<Option<UnitHandle>> {
         Ok(self.keys.lock().unwrap().get(key).cloned())
     }
 }
@@ -184,7 +209,11 @@ pub fn replay_spec() -> CreateSpec {
     }
 }
 
-pub fn create_payload(fw: &str, key: &ReconciliationKey, spec: &CreateSpec) -> serde_json::Value {
+pub fn create_payload(
+    fw: &str,
+    key: &ReconciliationKey,
+    spec: &CreateSpec,
+) -> serde_json::Value {
     serde_json::json!({
         "unit_handle": fw,
         "spec": serde_json::to_value(spec).expect("spec serializes"),

@@ -88,9 +88,9 @@ pub fn rehost_failure_verdict(
 ) -> CistellaError {
     match (teardown, residue_ok) {
         (Err(teardown_error), _) => teardown_error,
-        (Ok(()), false) => {
-            CistellaError::Contract(format!("re-host failure left residue: {rehost_error}"))
-        }
+        (Ok(()), false) => CistellaError::Contract(format!(
+            "re-host failure left residue: {rehost_error}"
+        )),
         (Ok(()), true) => rehost_error,
     }
 }

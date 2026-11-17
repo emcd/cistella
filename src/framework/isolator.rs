@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::framework::contract::{
-    CancelFlag, Capability, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
+    CancelFlag, Capability, ExecutionHandle, LifecycleState,
+    ReconciliationKey, UnitHandle,
 };
 use crate::session::Session;
 
@@ -131,7 +132,10 @@ pub enum ForegroundJoin {
 /// piped stays. Pure decision seam — the truth table pins
 /// directly instead of through a live PTY.
 #[must_use]
-pub fn foreground_join(tty: bool, conductor: Option<(u32, u32)>) -> ForegroundJoin {
+pub fn foreground_join(
+    tty: bool,
+    conductor: Option<(u32, u32)>,
+) -> ForegroundJoin {
     match (tty, conductor) {
         (true, Some(identity)) => ForegroundJoin::Join(identity),
         (true, None) => ForegroundJoin::Refuse,
@@ -147,7 +151,11 @@ pub fn foreground_join(tty: bool, conductor: Option<(u32, u32)>) -> ForegroundJo
 /// TTY branch turns that into [`ForegroundJoin::Refuse`]
 /// downstream.
 #[must_use]
-pub fn verified_conductor_pgid(parent: u32, host: u32, pgid: Option<u32>) -> Option<(u32, u32)> {
+pub fn verified_conductor_pgid(
+    parent: u32,
+    host: u32,
+    pgid: Option<u32>,
+) -> Option<(u32, u32)> {
     if parent == host {
         pgid.map(|pgid| (parent, pgid))
     } else {
@@ -159,7 +167,9 @@ pub fn verified_conductor_pgid(parent: u32, host: u32, pgid: Option<u32>) -> Opt
 /// in the caller's (foreground) process group for terminal I/O to
 /// flow instead of stopping with SIGTTIN/SIGTTOU.
 #[must_use]
-pub fn is_session_tty<Fd: std::os::fd::AsFd + std::os::fd::AsRawFd>(fd: &Fd) -> bool {
+pub fn is_session_tty<Fd: std::os::fd::AsFd + std::os::fd::AsRawFd>(
+    fd: &Fd,
+) -> bool {
     nix::unistd::isatty(fd.as_raw_fd()).unwrap_or(false)
 }
 
@@ -297,7 +307,11 @@ pub trait Isolator: Send + Sync {
     /// # Errors
     ///
     /// Returns on install/IO failure with no partial unit left behind.
-    fn create(&self, spec: &CreateSpec, key: &ReconciliationKey) -> Result<UnitHandle>;
+    fn create(
+        &self,
+        spec: &CreateSpec,
+        key: &ReconciliationKey,
+    ) -> Result<UnitHandle>;
 
     /// Starts the unit; returns the initiate attestation.
     ///
@@ -305,7 +319,11 @@ pub trait Isolator: Send + Sync {
     ///
     /// Returns when the unit fails to reach active or the deadline
     /// expires; the caller tears down.
-    fn initiate(&self, handle: &UnitHandle, key: &ReconciliationKey) -> Result<StartedAttestation>;
+    fn initiate(
+        &self,
+        handle: &UnitHandle,
+        key: &ReconciliationKey,
+    ) -> Result<StartedAttestation>;
 
     /// Launches the harness argv without blocking for completion and
     /// returns an awaitable execution handle.
@@ -375,7 +393,11 @@ pub trait Isolator: Send + Sync {
     /// # Errors
     ///
     /// Returns on removal failure with residue remaining.
-    fn remove(&self, handle: &UnitHandle, key: &ReconciliationKey) -> Result<RemovedAttestation>;
+    fn remove(
+        &self,
+        handle: &UnitHandle,
+        key: &ReconciliationKey,
+    ) -> Result<RemovedAttestation>;
 
     /// Locates a unit by reconciliation key (replacement-peer
     /// recovery independent of any returned handle).
@@ -409,7 +431,7 @@ pub trait Isolator: Send + Sync {
                 self.terminate(handle, grace, key)?;
                 self.remove(handle, key)?;
                 Ok(())
-            }
+            },
         }
     }
 }

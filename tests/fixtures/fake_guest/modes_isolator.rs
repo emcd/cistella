@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::{PROTOCOL_MAJOR, protocol_error_exit, read_frame_from_stdin, write_frame};
+use crate::{
+    PROTOCOL_MAJOR, protocol_error_exit, read_frame_from_stdin, write_frame,
+};
 
 /// Runs one Isolator-concurrency mode; `None` falls through to the next group.
 pub(crate) fn run(
@@ -60,12 +62,14 @@ pub(crate) fn run(
                     )
                 })
                 .unwrap_or((json!("await-0"), String::new()));
-            let watch_dir = std::env::args()
-                .skip(1)
-                .find_map(|arg| arg.strip_prefix("--fd-watch=").map(str::to_string));
+            let watch_dir = std::env::args().skip(1).find_map(|arg| {
+                arg.strip_prefix("--fd-watch=").map(str::to_string)
+            });
             if let Some(dir) = watch_dir {
-                let _ =
-                    std::fs::write(std::path::Path::new(&dir).join("await-admitted"), &op1_name);
+                let _ = std::fs::write(
+                    std::path::Path::new(&dir).join("await-admitted"),
+                    &op1_name,
+                );
             }
             let op2 = match read_frame_from_stdin(&mut stdin_lock) {
                 Ok(body) => body,
@@ -117,7 +121,7 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &reply1, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "isolator-concurrent" => {
             // Scripted isolator ops for client-dispatcher proofs:
             // hello with the isolator role cap, then a slow await
@@ -188,7 +192,7 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &reply1, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "isolator-die-mid-await" => {
             // Hello, then die abruptly after the first op arrives:
             // the client must fail every pending caller with a
@@ -211,7 +215,7 @@ pub(crate) fn run(
             let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
             let _ = read_frame_from_stdin(&mut stdin_lock);
             std::process::exit(1);
-        }
+        },
         "isolator-split-frame" => {
             // Hello, then answer one op with the frame split
             // across dispatch slices: 4-byte header, sleep past
@@ -261,7 +265,7 @@ pub(crate) fn run(
                 let _ = stdout_lock.flush();
             }
             ExitCode::SUCCESS
-        }
+        },
         "isolator-wrong-op" => {
             // Hello, then answer the op id with a DIFFERENT op
             // name: the dispatcher must refuse the mismatch
@@ -298,7 +302,7 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &response, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "isolator-unsolicited" => {
             // Hello, then emit a response for an id nobody asked
             // about: the dispatcher must fail the exchange (fail
@@ -346,7 +350,7 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &real, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "isolator-big-frame" => {
             // Hello with an 8 MiB ceiling, then answer one op with
             // a 2 MiB payload: between the 1 MiB default and the
@@ -386,7 +390,7 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &response, 8 * 1024 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "isolator-await-stall" => {
             // Hello, then one header byte followed by silence:
             // the dispatcher's frame-completion bound (not its
@@ -411,7 +415,7 @@ pub(crate) fn run(
             let _ = stdout_lock.flush();
             std::thread::sleep(Duration::from_secs(60));
             ExitCode::SUCCESS
-        }
+        },
         "isolator-exit-after-hello" => {
             // Hello, then exit promptly: exercises close() against
             // an already-dead dispatcher (join + path removal must
@@ -433,7 +437,7 @@ pub(crate) fn run(
             let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
             std::thread::sleep(Duration::from_millis(500));
             ExitCode::SUCCESS
-        }
+        },
         "isolator-die-after-two" => {
             // Hello, then die abruptly after the SECOND op arrives,
             // replying to neither: both callers must be in flight
@@ -459,7 +463,7 @@ pub(crate) fn run(
             let _ = read_frame_from_stdin(&mut stdin_lock);
             let _ = read_frame_from_stdin(&mut stdin_lock);
             std::process::exit(1);
-        }
+        },
         "isolator-create-stall" => {
             // Hello, then stall 30s without reading: a large op
             // (over the pipe buffer) blocks in write past any
@@ -486,7 +490,7 @@ pub(crate) fn run(
             let _ = write_frame(&mut stdout_lock, &hello, 64 * 1024);
             std::thread::sleep(Duration::from_secs(30));
             ExitCode::SUCCESS
-        }
+        },
         "isolator-small-ceiling" => {
             // Hello with a 256-byte ceiling, then serve state
             // normally: a create payload (hundreds of bytes of
@@ -539,7 +543,7 @@ pub(crate) fn run(
                 .expect("serialize");
                 let _ = write_frame(&mut stdout_lock, &response, 256);
             }
-        }
+        },
         "isolator-lingering-descendant" | "isolator-lingering-admitted" => {
             // Hello, read op frames (left pending forever), then
             // fork a setsid grandchild holding stdout while the
@@ -603,12 +607,13 @@ pub(crate) fn run(
                         tv_sec: 10,
                         tv_nsec: 0,
                     };
-                    let _ = ::libc::nanosleep(&remaining, std::ptr::null_mut());
+                    let _ =
+                        ::libc::nanosleep(&remaining, std::ptr::null_mut());
                     ::libc::_exit(0);
                 }
             }
             unsafe { ::libc::_exit(0) };
-        }
+        },
         _ => return None,
     })
 }

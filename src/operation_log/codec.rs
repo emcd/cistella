@@ -49,7 +49,10 @@ pub struct ReadResult {
 /// Returns `CistellaError::Runtime` when the file cannot be
 /// opened, is not a regular file, cannot be read, or exceeds the
 /// ceiling.
-pub(crate) fn read_bounded_regular(path: &Path, ceiling: u64) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded_regular(
+    path: &Path,
+    ceiling: u64,
+) -> Result<Vec<u8>> {
     use std::os::fd::FromRawFd;
     let raw = nix::fcntl::open(
         path,
@@ -59,7 +62,9 @@ pub(crate) fn read_bounded_regular(path: &Path, ceiling: u64) -> Result<Vec<u8>>
             | nix::fcntl::OFlag::O_CLOEXEC,
         nix::sys::stat::Mode::empty(),
     )
-    .map_err(|errno| CistellaError::Runtime(format!("operation log read: {errno}")))?;
+    .map_err(|errno| {
+        CistellaError::Runtime(format!("operation log read: {errno}"))
+    })?;
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
     let file: File = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw).into() };
     // fstat on the open description: a symlink target aside, a
@@ -82,7 +87,9 @@ pub(crate) fn read_bounded_regular(path: &Path, ceiling: u64) -> Result<Vec<u8>>
     (&file)
         .take(ceiling + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| CistellaError::Runtime(format!("operation log read: {error}")))?;
+        .map_err(|error| {
+            CistellaError::Runtime(format!("operation log read: {error}"))
+        })?;
     if bytes.len() as u64 > ceiling {
         return Err(CistellaError::Runtime(
             "operation log read exceeds bound".to_string(),
@@ -131,7 +138,8 @@ pub fn decode_frames(bytes: &[u8]) -> (Vec<serde_json::Value>, u64) {
             discards += 1;
             break;
         }
-        let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+        let len =
+            u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
         // The declared length is checked against the maximum
         // payload AND the remaining file bytes BEFORE any
         // allocation: an oversize claim or a short payload ends
@@ -146,7 +154,7 @@ pub fn decode_frames(bytes: &[u8]) -> (Vec<serde_json::Value>, u64) {
             Err(_) => {
                 discards += 1;
                 break;
-            }
+            },
         };
         // Declared schema plus state machine, in order: a numeric
         // `seq` matching the expected position, then a known `kind`
@@ -154,11 +162,14 @@ pub fn decode_frames(bytes: &[u8]) -> (Vec<serde_json::Value>, u64) {
         // while open, terminal to close). Anything else ends the
         // valid prefix here; the terminal must end the stream, so
         // trailing bytes after one are corruption, not records.
-        let seq_ok = value.get("seq").and_then(serde_json::Value::as_u64) == Some(expected_seq);
+        let seq_ok = value.get("seq").and_then(serde_json::Value::as_u64)
+            == Some(expected_seq);
         let kind = value.get("kind").and_then(serde_json::Value::as_str);
         let shape_ok = matches!(
             (seen_start, kind),
-            (false, Some("start")) | (true, Some("body")) | (true, Some("terminal"))
+            (false, Some("start"))
+                | (true, Some("body"))
+                | (true, Some("terminal"))
         );
         if !seq_ok || !shape_ok {
             discards += 1;

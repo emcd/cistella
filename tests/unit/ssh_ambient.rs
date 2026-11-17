@@ -39,7 +39,9 @@ impl AmbientGuard {
 impl Drop for AmbientGuard {
     fn drop(&mut self) {
         match &self.prev {
-            Some(value) => unsafe { std::env::set_var("SSH_AUTH_SOCK", value) },
+            Some(value) => unsafe {
+                std::env::set_var("SSH_AUTH_SOCK", value)
+            },
             None => unsafe { std::env::remove_var("SSH_AUTH_SOCK") },
         }
     }

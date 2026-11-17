@@ -6,14 +6,17 @@
 
 use std::time::{Duration, Instant};
 
-pub fn wait_attestation(id: &str, container: &str) -> cistella::attestation::Attestation {
+pub fn wait_attestation(
+    id: &str,
+    container: &str,
+) -> cistella::attestation::Attestation {
     let base = cistella::lock::runtime_base();
     let state_dir = cistella::lock::PrepareLease::state_dir(&base);
     // Open through the anchored discipline (creates 0700
     // seat-owned on first use) so the watched directory is the
     // same trusted object the owner publishes into.
-    let _anchored =
-        cistella::guest_anchor::open_state_dir(&state_dir).expect("attestation state dir opens");
+    let _anchored = cistella::guest_anchor::open_state_dir(&state_dir)
+        .expect("attestation state dir opens");
     await_observed(
         &state_dir,
         &format!("launch attestation for session {id}"),
@@ -32,11 +35,16 @@ pub fn wait_readiness_file(
     expected: &str,
     timeout: Duration,
 ) -> String {
-    let content = await_observed(dir, &format!("readiness file {name}"), timeout, || {
-        std::fs::read_to_string(dir.join(name))
-            .ok()
-            .filter(|text| !text.is_empty())
-    });
+    let content = await_observed(
+        dir,
+        &format!("readiness file {name}"),
+        timeout,
+        || {
+            std::fs::read_to_string(dir.join(name))
+                .ok()
+                .filter(|text| !text.is_empty())
+        },
+    );
     assert_eq!(
         content, expected,
         "readiness file {name} names the admitted op, got: {content}"
@@ -85,7 +93,9 @@ pub fn arm_watch(dir: &std::path::Path) -> ArmedWatch {
     use std::os::unix::io::RawFd;
     // SAFETY: straight-line libc inotify init with checked
     // return; CLOEXEC|NONBLOCK, owned by the guard below.
-    let fd: RawFd = unsafe { ::libc::inotify_init1(::libc::IN_CLOEXEC | ::libc::IN_NONBLOCK) };
+    let fd: RawFd = unsafe {
+        ::libc::inotify_init1(::libc::IN_CLOEXEC | ::libc::IN_NONBLOCK)
+    };
     if fd < 0 {
         panic!("inotify init failed");
     }
@@ -148,7 +158,8 @@ pub fn await_armed<T>(
             events: ::libc::POLLIN,
             revents: 0,
         };
-        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as ::libc::c_int;
+        let timeout_ms =
+            remaining.as_millis().min(i32::MAX as u128) as ::libc::c_int;
         let ready = unsafe { ::libc::poll(&mut poll_fd, 1, timeout_ms) };
         if ready < 0 {
             let errno = unsafe { *::libc::__errno_location() };
@@ -164,7 +175,11 @@ pub fn await_armed<T>(
             // a complete drain for NONBLOCK semantics.
             loop {
                 let n = unsafe {
-                    ::libc::read(armed.fd, buf.as_mut_ptr() as *mut ::libc::c_void, buf.len())
+                    ::libc::read(
+                        armed.fd,
+                        buf.as_mut_ptr() as *mut ::libc::c_void,
+                        buf.len(),
+                    )
                 };
                 if n <= 0 {
                     break;
@@ -195,7 +210,8 @@ fn read_valid_attestation(
     container: &str,
 ) -> Option<cistella::attestation::Attestation> {
     read_valid_attestation_with(base, id, container, || {
-        cistella::attestation::query_incarnation(container).map_err(|error| error.to_string())
+        cistella::attestation::query_incarnation(container)
+            .map_err(|error| error.to_string())
     })
 }
 
@@ -213,7 +229,9 @@ fn read_valid_attestation_with(
     use cistella::attestation::{Currency, decide_currency};
     let attestation = match cistella::attestation::read(base, id) {
         Ok(found) => found?,
-        Err(error) => panic!("attestation for session {id} unreadable: {error}"),
+        Err(error) => {
+            panic!("attestation for session {id} unreadable: {error}")
+        },
     };
     // Container binding before any backend contact: a mismatch
     // fails without running the live query at all.
@@ -227,19 +245,23 @@ fn read_valid_attestation_with(
     });
     let live = match query() {
         Ok(observed) => Some(observed),
-        Err(error) => panic!("incarnation unqueryable for session {id}: {error}"),
+        Err(error) => {
+            panic!("incarnation unqueryable for session {id}: {error}")
+        },
     };
     match decide_currency(true, bound, live.as_ref()) {
         Currency::Current => Some(attestation),
         Currency::Stale => {
-            panic!("attestation for session {id} is stale (container recreated or restarted)")
-        }
+            panic!(
+                "attestation for session {id} is stale (container recreated or restarted)"
+            )
+        },
         Currency::Unknown => {
             panic!("incarnation unqueryable for session {id} (unknown)")
-        }
+        },
         Currency::Mismatched => {
             unreachable!("container binding checked above")
-        }
+        },
     }
 }
 
@@ -276,16 +298,19 @@ fn await_observed_pins_arm_recheck_validate() {
     // sleep-tuned: the target write cannot precede the
     // subscription.
     let armed = arm_watch(dir.path());
-    std::fs::write(dir.path().join("unrelated"), b"noise").expect("stage noise");
+    std::fs::write(dir.path().join("unrelated"), b"noise")
+        .expect("stage noise");
     let staged = dir.path().to_path_buf();
     std::thread::spawn(move || {
-        std::fs::write(staged.join("target"), b"target-content").expect("stage target");
+        std::fs::write(staged.join("target"), b"target-content")
+            .expect("stage target");
     });
-    let got: String = await_armed(&armed, "genuine commit", Duration::from_secs(10), || {
-        std::fs::read_to_string(dir.path().join("target"))
-            .ok()
-            .filter(|text| !text.is_empty())
-    });
+    let got: String =
+        await_armed(&armed, "genuine commit", Duration::from_secs(10), || {
+            std::fs::read_to_string(dir.path().join("target"))
+                .ok()
+                .filter(|text| !text.is_empty())
+        });
     assert_eq!(got, "target-content", "only the validated commit satisfies");
 }
 
@@ -299,14 +324,20 @@ fn await_unrelated_wake_never_satisfies() {
     // Deterministic: no target file exists at all.
     let dir = tempfile::tempdir().expect("tmpdir");
     let armed = arm_watch(dir.path());
-    std::fs::write(dir.path().join("unrelated"), b"noise").expect("stage noise");
-    let _: () = await_armed(&armed, "unrelated-only", Duration::from_millis(200), || {
-        // The unrelated file exists and its wake fires, but the
-        // predicate only accepts the absent target: never
-        // satisfied, so the bound fires.
-        let _ = std::fs::read_to_string(dir.path().join("unrelated")).ok();
-        None::<()>
-    });
+    std::fs::write(dir.path().join("unrelated"), b"noise")
+        .expect("stage noise");
+    let _: () = await_armed(
+        &armed,
+        "unrelated-only",
+        Duration::from_millis(200),
+        || {
+            // The unrelated file exists and its wake fires, but the
+            // predicate only accepts the absent target: never
+            // satisfied, so the bound fires.
+            let _ = std::fs::read_to_string(dir.path().join("unrelated")).ok();
+            None::<()>
+        },
+    );
 }
 
 #[test]
@@ -334,12 +365,14 @@ fn await_armed_recheck_precedes_poll() {
     // immediate bound failure. No sleeps, no timing.
     let dir = tempfile::tempdir().expect("tmpdir");
     let armed = arm_watch(dir.path());
-    std::fs::write(dir.path().join("target"), b"recheck-content").expect("stage target");
-    let got: String = await_armed(&armed, "recheck-only", Duration::ZERO, || {
-        std::fs::read_to_string(dir.path().join("target"))
-            .ok()
-            .filter(|text| !text.is_empty())
-    });
+    std::fs::write(dir.path().join("target"), b"recheck-content")
+        .expect("stage target");
+    let got: String =
+        await_armed(&armed, "recheck-only", Duration::ZERO, || {
+            std::fs::read_to_string(dir.path().join("target"))
+                .ok()
+                .filter(|text| !text.is_empty())
+        });
     assert_eq!(
         got, "recheck-content",
         "post-subscription recheck satisfies"
@@ -379,9 +412,10 @@ fn read_valid_attestation_accepts_current_identity() {
     let id = "fixture-current-1";
     let container = format!("cistella-{id}");
     let bound = fixture_commitment(base, id, &container);
-    let found =
-        read_valid_attestation_with(base, id, &container, || Ok::<_, String>(bound.clone()))
-            .expect("current identity validates");
+    let found = read_valid_attestation_with(base, id, &container, || {
+        Ok::<_, String>(bound.clone())
+    })
+    .expect("current identity validates");
     assert_eq!(found.session_id, id);
 }
 
@@ -397,7 +431,9 @@ fn read_valid_attestation_rejects_stale_identity() {
         container_id: "replacement-id".to_string(),
         started_at: "fixture-started-at".to_string(),
     };
-    let _ = read_valid_attestation_with(base, id, &container, || Ok::<_, String>(stale));
+    let _ = read_valid_attestation_with(base, id, &container, || {
+        Ok::<_, String>(stale)
+    });
 }
 
 #[test]
@@ -409,7 +445,9 @@ fn read_valid_attestation_rejects_unknown_identity() {
     let container = format!("cistella-{id}");
     fixture_commitment(base, id, &container);
     let _ = read_valid_attestation_with(base, id, &container, || {
-        Err::<cistella::attestation::Incarnation, String>("backend hiccup".to_string())
+        Err::<cistella::attestation::Incarnation, String>(
+            "backend hiccup".to_string(),
+        )
     });
 }
 
@@ -423,11 +461,16 @@ fn read_valid_attestation_rejects_container_mismatch() {
     let bound = fixture_commitment(base, id, &container);
     // The query must never run on a mismatch: the closure
     // panics if called, proving the ordering.
-    let _ = read_valid_attestation_with(base, id, "cistella-some-other-session", || {
-        panic!("live query must not run after a container mismatch");
-        #[allow(unreachable_code)]
-        Ok::<_, String>(bound.clone())
-    });
+    let _ = read_valid_attestation_with(
+        base,
+        id,
+        "cistella-some-other-session",
+        || {
+            panic!("live query must not run after a container mismatch");
+            #[allow(unreachable_code)]
+            Ok::<_, String>(bound.clone())
+        },
+    );
 }
 
 #[test]

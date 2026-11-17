@@ -11,8 +11,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use cistella::framework::fdpass::{
-    BundleHeader, accept_authenticated, bind_rendezvous, connect_rendezvous, recv_bundle,
-    send_bundle,
+    BundleHeader, accept_authenticated, bind_rendezvous, connect_rendezvous,
+    recv_bundle, send_bundle,
 };
 
 fn null_fd() -> OwnedFd {
@@ -50,7 +50,8 @@ fn bundle_round_trip() {
         std::time::Duration::from_secs(2),
     )
     .expect("send");
-    let (got_header, got_fds) = recv_bundle(&b, Duration::from_secs(2)).expect("receive");
+    let (got_header, got_fds) =
+        recv_bundle(&b, Duration::from_secs(2)).expect("receive");
     assert_eq!(got_header, header("unit01", "exec01"));
     assert_eq!(got_fds.len(), 3);
     for fd in &got_fds {
@@ -67,7 +68,8 @@ fn bundle_wrong_count_refuses() {
     use std::io::IoSlice;
     let (a, b) = pair();
     let one = null_fd();
-    let body = serde_json::to_vec(&header("unit02", "exec02")).expect("header");
+    let body =
+        serde_json::to_vec(&header("unit02", "exec02")).expect("header");
     let iov = [IoSlice::new(&body)];
     sendmsg::<UnixAddr>(
         a.as_raw_fd(),
@@ -77,7 +79,8 @@ fn bundle_wrong_count_refuses() {
         None,
     )
     .expect("raw send");
-    let error = recv_bundle(&b, Duration::from_secs(2)).expect_err("1 fd must refuse");
+    let error =
+        recv_bundle(&b, Duration::from_secs(2)).expect_err("1 fd must refuse");
     assert!(
         error.to_string().contains("exactly 3 descriptors"),
         "got: {error}"
@@ -103,7 +106,8 @@ fn bundle_garbage_header_refuses() {
         None,
     )
     .expect("raw send");
-    let error = recv_bundle(&b, Duration::from_secs(2)).expect_err("garbage must refuse");
+    let error = recv_bundle(&b, Duration::from_secs(2))
+        .expect_err("garbage must refuse");
     assert!(
         error.to_string().contains("shape violation"),
         "got: {error}"
@@ -115,10 +119,13 @@ fn bundle_without_fds_refuses() {
     use nix::sys::socket::{MsgFlags, UnixAddr, sendmsg};
     use std::io::IoSlice;
     let (a, b) = pair();
-    let body = serde_json::to_vec(&header("unit03", "exec03")).expect("header");
+    let body =
+        serde_json::to_vec(&header("unit03", "exec03")).expect("header");
     let iov = [IoSlice::new(&body)];
-    sendmsg::<UnixAddr>(a.as_raw_fd(), &iov, &[], MsgFlags::empty(), None).expect("raw send");
-    let error = recv_bundle(&b, Duration::from_secs(2)).expect_err("fd-less must refuse");
+    sendmsg::<UnixAddr>(a.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)
+        .expect("raw send");
+    let error = recv_bundle(&b, Duration::from_secs(2))
+        .expect_err("fd-less must refuse");
     assert!(
         error.to_string().contains("exactly 3 descriptors"),
         "got: {error}"
@@ -137,11 +144,12 @@ fn rendezvous_authenticates_same_user() {
         let path = path.clone();
         move || connect_rendezvous(&path).expect("connect")
     });
-    let accepted =
-        accept_authenticated(&listener, std::process::id() as i32).expect("accept same uid");
+    let accepted = accept_authenticated(&listener, std::process::id() as i32)
+        .expect("accept same uid");
     let peer = connector.join().expect("connector joins");
     let fds = [null_fd(), null_fd(), null_fd()];
-    let borrowed: [BorrowedFd<'_>; 3] = [fds[0].as_fd(), fds[1].as_fd(), fds[2].as_fd()];
+    let borrowed: [BorrowedFd<'_>; 3] =
+        [fds[0].as_fd(), fds[1].as_fd(), fds[2].as_fd()];
     send_bundle(
         &peer,
         &header("unit04", "exec04"),
@@ -149,7 +157,8 @@ fn rendezvous_authenticates_same_user() {
         std::time::Duration::from_secs(2),
     )
     .expect("send");
-    let (got, _) = recv_bundle(&accepted, Duration::from_secs(2)).expect("receive");
+    let (got, _) =
+        recv_bundle(&accepted, Duration::from_secs(2)).expect("receive");
     assert_eq!(got, header("unit04", "exec04"));
     std::fs::remove_file(&path).expect("rendezvous cleanup");
 }
@@ -187,7 +196,11 @@ fn received_fds_are_live_references() {
         );
         let mut buf = [0u8; 16];
         assert_eq!(
-            libc::read(got[0].as_raw_fd(), buf.as_mut_ptr() as *mut _, buf.len()),
+            libc::read(
+                got[0].as_raw_fd(),
+                buf.as_mut_ptr() as *mut _,
+                buf.len()
+            ),
             marker.len() as isize,
             "read through the received fd"
         );
@@ -213,7 +226,8 @@ fn back_to_back_bundles_stay_aligned() {
         .expect("send");
     }
     for n in ["backtoback01", "backtoback02"] {
-        let (got, _) = recv_bundle(&b, Duration::from_secs(2)).expect("receive");
+        let (got, _) =
+            recv_bundle(&b, Duration::from_secs(2)).expect("receive");
         assert_eq!(got.unit_handle, n, "record order preserved");
     }
 }
@@ -226,7 +240,8 @@ fn over_limit_cmsg_refuses() {
     use std::io::IoSlice;
     let (a, b) = pair();
     let extra = [null_fd(), null_fd(), null_fd(), null_fd()];
-    let body = serde_json::to_vec(&header("overlimit01", "exec")).expect("header");
+    let body =
+        serde_json::to_vec(&header("overlimit01", "exec")).expect("header");
     let iov = [IoSlice::new(&body)];
     let raws: Vec<_> = extra.iter().map(|fd| fd.as_raw_fd()).collect();
     sendmsg::<UnixAddr>(
@@ -237,9 +252,11 @@ fn over_limit_cmsg_refuses() {
         None,
     )
     .expect("raw send");
-    let error = recv_bundle(&b, Duration::from_secs(2)).expect_err("4 fds must refuse");
+    let error = recv_bundle(&b, Duration::from_secs(2))
+        .expect_err("4 fds must refuse");
     assert!(
-        error.to_string().contains("truncated") || error.to_string().contains("exactly 3"),
+        error.to_string().contains("truncated")
+            || error.to_string().contains("exactly 3"),
         "got: {error}"
     );
 }
@@ -293,9 +310,16 @@ fn repeated_refusals_leak_nothing() {
         } else {
             vec![ControlMessage::ScmRights(&raws[..1])]
         };
-        sendmsg::<UnixAddr>(a.as_raw_fd(), &iov, &cmsgs, MsgFlags::empty(), None)
-            .expect("raw send");
-        let _ = recv_bundle(&b, Duration::from_secs(2)).expect_err("must refuse");
+        sendmsg::<UnixAddr>(
+            a.as_raw_fd(),
+            &iov,
+            &cmsgs,
+            MsgFlags::empty(),
+            None,
+        )
+        .expect("raw send");
+        let _ =
+            recv_bundle(&b, Duration::from_secs(2)).expect_err("must refuse");
     }
     assert_eq!(
         settled_fd_count(),
@@ -362,7 +386,7 @@ fn saturated_peer_returns_within_budget() {
                 );
                 timed_out = true;
                 break;
-            }
+            },
         }
     }
     assert!(timed_out, "an unreading peer must trip the deadline");
@@ -414,7 +438,7 @@ fn dead_peer_send_is_typed() {
                     "immediate send-path failure, got: {error}"
                 );
                 std::process::exit(0);
-            }
+            },
         }
     }
     let exe = std::env::current_exe().expect("current test binary");
@@ -440,7 +464,9 @@ fn dead_peer_send_is_typed() {
 
 #[test]
 fn diagnostics_bundle_round_trip() {
-    use cistella::framework::fdpass::{recv_diagnostics_bundle, send_diagnostics_bundle};
+    use cistella::framework::fdpass::{
+        recv_diagnostics_bundle, send_diagnostics_bundle,
+    };
     let (a, b) = pair();
     let one = null_fd();
     send_diagnostics_bundle(
@@ -472,7 +498,8 @@ fn diagnostics_bundle_wrong_count_refuses() {
         Duration::from_secs(2),
     )
     .expect("send");
-    let error = recv_diagnostics_bundle(&b, Duration::from_secs(2)).expect_err("3 fds must refuse");
+    let error = recv_diagnostics_bundle(&b, Duration::from_secs(2))
+        .expect_err("3 fds must refuse");
     assert!(
         error.to_string().contains("exactly 1 descriptor"),
         "got: {error}"
@@ -491,7 +518,8 @@ fn stdio_bundle_rejects_diagnostics_single() {
         Duration::from_secs(2),
     )
     .expect("send");
-    let error = recv_bundle(&b, Duration::from_secs(2)).expect_err("1 fd must refuse as triple");
+    let error = recv_bundle(&b, Duration::from_secs(2))
+        .expect_err("1 fd must refuse as triple");
     assert!(
         error.to_string().contains("exactly 3 descriptors"),
         "got: {error}"

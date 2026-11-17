@@ -63,7 +63,8 @@ const FINALIZED_MARKER: &str = ".finalized";
 /// Fixed operation vocabulary for argv labels. Labels never
 /// render command lines, so no untrusted path text lands in a
 /// label.
-pub const KNOWN_VERBS: &[&str] = &["gc", "install", "start", "teardown", "terminate"];
+pub const KNOWN_VERBS: &[&str] =
+    &["gc", "install", "start", "teardown", "terminate"];
 
 /// Name of the records file inside one operation directory.
 const RECORDS_NAME: &str = "records.log";
@@ -150,7 +151,9 @@ fn bound_claim(raw: &str) -> String {
 /// Reads injected metadata from the environment.
 #[must_use]
 pub fn read_injected() -> Injected {
-    read_injected_from(&|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
+    read_injected_from(&|key| {
+        std::env::var(key).ok().filter(|value| !value.is_empty())
+    })
 }
 
 /// Injected-metadata intake over an explicit source, so the
@@ -159,7 +162,8 @@ pub fn read_injected() -> Injected {
 #[must_use]
 pub fn read_injected_from(get: &dyn Fn(&str) -> Option<String>) -> Injected {
     let claim = |key: &str| get(key).map(|value| bound_claim(&value));
-    let parent_op_id = claim("CISTELLA_PARENT_OP_ID").filter(|id| op_id_valid(id));
+    let parent_op_id =
+        claim("CISTELLA_PARENT_OP_ID").filter(|id| op_id_valid(id));
     Injected {
         run_id: claim("CISTELLA_TEST_RUN_ID"),
         test_name: claim("CISTELLA_TEST_NAME"),
@@ -207,9 +211,11 @@ pub fn self_owner() -> Option<Owner> {
 #[must_use]
 pub fn owner_alive(owner: &Owner) -> Option<bool> {
     match std::fs::symlink_metadata(format!("/proc/{}", owner.pid)) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Some(false);
+        },
         Err(_) => return None,
-        Ok(_) => {}
+        Ok(_) => {},
     }
     proc_starttime(owner.pid).map(|now| now == owner.starttime)
 }
@@ -240,8 +246,9 @@ pub struct Operation {
 /// Opens one verified directory: creates 0700, opens nofollow, and
 /// checks seat-or-root ownership on the open FD.
 fn open_verified_dir(path: &Path) -> Result<crate::guest_anchor::AnchoredDir> {
-    crate::guest_anchor::open_state_dir(path)
-        .map_err(|error| CistellaError::Runtime(format!("operation log dir: {error}")))
+    crate::guest_anchor::open_state_dir(path).map_err(|error| {
+        CistellaError::Runtime(format!("operation log dir: {error}"))
+    })
 }
 
 /// Opens the log root, creating missing ancestors with the same
@@ -249,9 +256,12 @@ fn open_verified_dir(path: &Path) -> Result<crate::guest_anchor::AnchoredDir> {
 /// the non-recursive [`open_verified_dir`] would refuse every
 /// open there and no log would ever exist. Only the root uses
 /// this: everything beneath it has a guaranteed parent from here.
-fn open_verified_root(path: &Path) -> Result<crate::guest_anchor::AnchoredDir> {
-    crate::guest_anchor::open_state_dir_all(path)
-        .map_err(|error| CistellaError::Runtime(format!("operation log dir: {error}")))
+fn open_verified_root(
+    path: &Path,
+) -> Result<crate::guest_anchor::AnchoredDir> {
+    crate::guest_anchor::open_state_dir_all(path).map_err(|error| {
+        CistellaError::Runtime(format!("operation log dir: {error}"))
+    })
 }
 
 /// Reports whether metadata describes a seat- or root-owned
@@ -278,8 +288,9 @@ fn trusted_entry(meta: &std::fs::Metadata) -> bool {
 fn tree_usage(root: &Path) -> Result<(u64, usize)> {
     let mut bytes = 0u64;
     let mut entries = 0usize;
-    let listing = std::fs::read_dir(root)
-        .map_err(|error| CistellaError::Runtime(format!("operation log scan: {error}")))?;
+    let listing = std::fs::read_dir(root).map_err(|error| {
+        CistellaError::Runtime(format!("operation log scan: {error}"))
+    })?;
     for entry in listing {
         entries += 1;
         if entries > SCAN_ENTRY_CAP {
@@ -287,17 +298,21 @@ fn tree_usage(root: &Path) -> Result<(u64, usize)> {
                 "operation log scan exceeds entry bound".to_string(),
             ));
         }
-        let entry = entry
-            .map_err(|error| CistellaError::Runtime(format!("operation log scan: {error}")))?;
-        let entry_meta = std::fs::symlink_metadata(entry.path())
-            .map_err(|error| CistellaError::Runtime(format!("operation log scan: {error}")))?;
+        let entry = entry.map_err(|error| {
+            CistellaError::Runtime(format!("operation log scan: {error}"))
+        })?;
+        let entry_meta =
+            std::fs::symlink_metadata(entry.path()).map_err(|error| {
+                CistellaError::Runtime(format!("operation log scan: {error}"))
+            })?;
         if !trusted_entry(&entry_meta) {
             continue;
         }
         if entry_meta.is_dir() {
             bytes += OP_METADATA_SHARE;
-            let inner = std::fs::read_dir(entry.path())
-                .map_err(|error| CistellaError::Runtime(format!("operation log scan: {error}")))?;
+            let inner = std::fs::read_dir(entry.path()).map_err(|error| {
+                CistellaError::Runtime(format!("operation log scan: {error}"))
+            })?;
             for file in inner {
                 entries += 1;
                 if entries > SCAN_ENTRY_CAP {
@@ -306,11 +321,16 @@ fn tree_usage(root: &Path) -> Result<(u64, usize)> {
                     ));
                 }
                 let file = file.map_err(|error| {
-                    CistellaError::Runtime(format!("operation log scan: {error}"))
+                    CistellaError::Runtime(format!(
+                        "operation log scan: {error}"
+                    ))
                 })?;
-                let file_meta = std::fs::symlink_metadata(file.path()).map_err(|error| {
-                    CistellaError::Runtime(format!("operation log scan: {error}"))
-                })?;
+                let file_meta = std::fs::symlink_metadata(file.path())
+                    .map_err(|error| {
+                        CistellaError::Runtime(format!(
+                            "operation log scan: {error}"
+                        ))
+                    })?;
                 if !trusted_entry(&file_meta) || !file_meta.is_file() {
                     continue;
                 }
@@ -338,7 +358,13 @@ impl Operation {
         parent: Option<&str>,
         injected: &Injected,
     ) -> Result<Self> {
-        Self::open_with(root, verb, parent, injected, &prune::Budget::production())
+        Self::open_with(
+            root,
+            verb,
+            parent,
+            injected,
+            &prune::Budget::production(),
+        )
     }
 
     /// Opens one operation log under the given budget with a
@@ -427,7 +453,9 @@ impl Operation {
                     .mode(0o700)
                     .create(&dir)
                     .map_err(|error| {
-                        CistellaError::Runtime(format!("operation log dir: {error}"))
+                        CistellaError::Runtime(format!(
+                            "operation log dir: {error}"
+                        ))
                     })?;
             }
             verify_dir(&dir)?;
@@ -437,7 +465,9 @@ impl Operation {
                 .write(true)
                 .open(&records_path)
                 .map_err(|error| {
-                    CistellaError::Runtime(format!("operation log records: {error}"))
+                    CistellaError::Runtime(format!(
+                        "operation log records: {error}"
+                    ))
                 })?;
             set_owner_only(&records_path)?;
             let wall = std::time::SystemTime::now()
@@ -457,7 +487,11 @@ impl Operation {
             let start_payload = serde_json::to_vec(&start_record(
                 id, verb, parent, injected, wall,
             )?)
-            .map_err(|error| CistellaError::Runtime(format!("operation log encode: {error}")))?;
+            .map_err(|error| {
+                CistellaError::Runtime(format!(
+                    "operation log encode: {error}"
+                ))
+            })?;
             op.append_bytes(&start_payload)?;
             Ok(op)
         })();
@@ -501,8 +535,9 @@ impl Operation {
         let mut body = record.clone();
         body["seq"] = serde_json::Value::from(self.seq);
         body["kind"] = serde_json::Value::from("body");
-        let payload = serde_json::to_vec(&body)
-            .map_err(|error| CistellaError::Runtime(format!("operation log encode: {error}")))?;
+        let payload = serde_json::to_vec(&body).map_err(|error| {
+            CistellaError::Runtime(format!("operation log encode: {error}"))
+        })?;
         self.append_bytes(&payload)
     }
 
@@ -560,9 +595,10 @@ impl Operation {
         // reentrant across open file descriptions, so holding it
         // through prune would make every normal close skip its
         // own evictions.
-        let _finalization = open_verified_dir(&self.root)
-            .ok()
-            .and_then(|root| admission::admission_lock_bounded(&root, 50).ok());
+        let _finalization =
+            open_verified_dir(&self.root).ok().and_then(|root| {
+                admission::admission_lock_bounded(&root, 50).ok()
+            });
         let protected = _finalization.is_some();
         if protected {
             let _ = self.begin_finalization();
@@ -586,7 +622,7 @@ impl Operation {
                     if self.append_bytes(&payload).is_err() {
                         self.broken = true;
                     }
-                }
+                },
                 Err(_) => self.broken = true,
             }
         }
@@ -647,11 +683,17 @@ fn verify_dir(path: &Path) -> Result<()> {
             | nix::fcntl::OFlag::O_CLOEXEC,
         nix::sys::stat::Mode::empty(),
     )
-    .map_err(|errno| CistellaError::Runtime(format!("operation log dir: {errno}")))?;
+    .map_err(|errno| {
+        CistellaError::Runtime(format!("operation log dir: {errno}"))
+    })?;
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
-    let fd: std::os::fd::OwnedFd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-    let stat = nix::sys::stat::fstat(std::os::fd::AsFd::as_fd(&fd).as_raw_fd())
-        .map_err(|errno| CistellaError::Runtime(format!("operation log dir: {errno}")))?;
+    let fd: std::os::fd::OwnedFd =
+        unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+    let stat =
+        nix::sys::stat::fstat(std::os::fd::AsFd::as_fd(&fd).as_raw_fd())
+            .map_err(|errno| {
+                CistellaError::Runtime(format!("operation log dir: {errno}"))
+            })?;
     // SAFETY: getuid is inherently safe.
     let seat = unsafe { nix::libc::getuid() };
     if stat.st_uid != seat && stat.st_uid != 0 {
@@ -666,7 +708,9 @@ fn verify_dir(path: &Path) -> Result<()> {
 fn set_owner_only(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| CistellaError::Runtime(format!("operation log records: {error}")))
+        .map_err(|error| {
+            CistellaError::Runtime(format!("operation log records: {error}"))
+        })
 }
 
 /// Builds the start record for one operation.
@@ -727,9 +771,12 @@ pub mod emit;
 pub mod prune;
 
 pub use admission::RESERVATION_BYTES;
-pub use codec::{Outcome, ReadResult, decode_frames, encode_frame, read_operation};
+pub use codec::{
+    Outcome, ReadResult, decode_frames, encode_frame, read_operation,
+};
 pub use emit::{
-    Classify, Observed, cap_str, open_best_effort, record_gc_classify, record_gc_phase,
-    record_gc_reap, record_gc_scan, record_step, scoped, scoped_at,
+    Classify, Observed, cap_str, open_best_effort, record_gc_classify,
+    record_gc_phase, record_gc_reap, record_gc_scan, record_step, scoped,
+    scoped_at,
 };
 pub use prune::{Budget, PruneReport, prune, prune_on_close, prune_with};

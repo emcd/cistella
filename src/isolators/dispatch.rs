@@ -61,14 +61,16 @@ pub fn fatal_terminal(
             dead.store(true, Ordering::SeqCst);
             fail_pending(pending, reason);
             None
-        }
+        },
         Err(detail) => {
-            let composed = format!("{reason}; guest shutdown failed: {detail}");
-            *shutdown_report.lock().expect("shutdown report lock") = Some(composed.clone());
+            let composed =
+                format!("{reason}; guest shutdown failed: {detail}");
+            *shutdown_report.lock().expect("shutdown report lock") =
+                Some(composed.clone());
             uncertain.store(true, Ordering::SeqCst);
             fail_pending(pending, &composed);
             Some(detail)
-        }
+        },
     }
 }
 
@@ -108,7 +110,8 @@ pub struct Pending {
 /// this error. Ordinary per-request ok/error replies never mark
 /// terminal; only `fatal_terminal`/orderly Shutdown transitions.
 /// Single documented string so callers pin one contract.
-pub const POST_TERMINAL_ERROR: &str = "dispatcher terminated: no further ops admitted";
+pub const POST_TERMINAL_ERROR: &str =
+    "dispatcher terminated: no further ops admitted";
 
 /// Dispatcher commands from client threads.
 pub(crate) enum Command {
@@ -165,10 +168,14 @@ pub(crate) fn serve(
         // Explicitly retired ids (expiry, detach): late
         // terminals with these ids drop silently. Anything
         // else unknown is a protocol violation, not patience.
-        let mut retired: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut retired: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut next_id: u64 = 0;
         let mut stopping = false;
-        let mut stream = crate::framework::stream::StreamReader::new(max_frame, frame_timeout);
+        let mut stream = crate::framework::stream::StreamReader::new(
+            max_frame,
+            frame_timeout,
+        );
         while !stopping {
             // Drain new commands without blocking the stream.
             while let Ok(command) = commands_rx.try_recv() {
@@ -187,7 +194,8 @@ pub(crate) fn serve(
                             op: op.clone(),
                             payload: payload.clone(),
                         };
-                        let deadline = Instant::now() + timeout.unwrap_or(Duration::ZERO);
+                        let deadline =
+                            Instant::now() + timeout.unwrap_or(Duration::ZERO);
                         // Uncapped await uses no deadline; the
                         // send itself stays bounded.
                         let send_by = if timeout.is_none() {
@@ -195,7 +203,11 @@ pub(crate) fn serve(
                         } else {
                             deadline
                         };
-                        let frame_len = crate::framework::protocol::envelope_bytes(&envelope).len();
+                        let frame_len =
+                            crate::framework::protocol::envelope_bytes(
+                                &envelope,
+                            )
+                            .len();
                         if frame_len > max_frame {
                             // Local refusal: our envelope exceeds
                             // the negotiated ceiling the guest was
@@ -209,7 +221,7 @@ pub(crate) fn serve(
                             continue;
                         }
                         match guest.exchange_mut().send(&envelope, send_by) {
-                            Ok(()) => {}
+                            Ok(()) => {},
                             Err(error) => {
                                 // Uncertain exchange (write
                                 // timeout or hard failure):
@@ -239,17 +251,22 @@ pub(crate) fn serve(
                                     guest.shutdown(),
                                 );
                                 let message = match &uncertainty {
-                                    None => format!("guest terminated during {op}: {reason}"),
+                                    None => format!(
+                                        "guest terminated during {op}: {reason}"
+                                    ),
                                     Some(detail) => format!(
                                         "guest terminated during {op}: {reason}; guest shutdown failed: {detail}"
                                     ),
                                 };
-                                let _ = reply.send(Err(CistellaError::Protocol(message)));
+                                let _ = reply.send(Err(
+                                    CistellaError::Protocol(message),
+                                ));
                                 stopping = true;
                                 break;
-                            }
+                            },
                         }
-                        let is_await = op == crate::framework::protocol::AWAIT_RESULT_OP;
+                        let is_await =
+                            op == crate::framework::protocol::AWAIT_RESULT_OP;
                         let exec = payload
                             .get("execution_handle")
                             .and_then(|handle| handle.as_str())
@@ -264,23 +281,25 @@ pub(crate) fn serve(
                                 exec,
                             },
                         );
-                    }
+                    },
                     Command::DetachByExec { exec } => {
                         let retired_ids: Vec<String> = pending
                             .iter()
-                            .filter(|(_, entry)| entry.exec.as_deref() == Some(&exec))
+                            .filter(|(_, entry)| {
+                                entry.exec.as_deref() == Some(&exec)
+                            })
                             .map(|(id, _)| id.clone())
                             .collect();
                         for id in retired_ids {
                             pending.remove(&id);
                             retired.insert(id);
                         }
-                    }
+                    },
                     Command::Shutdown { reply } => {
                         let _ = reply.send(guest.shutdown());
                         stopping = true;
                         break;
-                    }
+                    },
                 }
             }
             if stopping {
@@ -289,7 +308,9 @@ pub(crate) fn serve(
             // One stream slice through the persistent
             // assembler: trickled frames resolve across
             // slices instead of desynchronizing.
-            match stream.poll_frame(guest.exchange_mut().reader_mut(), DISPATCH_SLICE) {
+            match stream
+                .poll_frame(guest.exchange_mut().reader_mut(), DISPATCH_SLICE)
+            {
                 Ok(Some(body)) => {
                     // Full envelope grammar (unknown fields,
                     // correlation, token shapes): the
@@ -299,20 +320,22 @@ pub(crate) fn serve(
                     // detach) drop silently; anything else
                     // unsolicited fails the exchange rather
                     // than confusing later correlation.
-                    let envelope = match crate::framework::protocol::parse_envelope(&body) {
-                        Ok(envelope) => envelope,
-                        Err(_) => {
-                            let _ = fatal_terminal(
-                                &mut pending,
-                                &dead,
-                                &uncertain,
-                                &shutdown_report,
-                                "malformed response frame",
-                                guest.shutdown(),
-                            );
-                            break;
-                        }
-                    };
+                    let envelope =
+                        match crate::framework::protocol::parse_envelope(&body)
+                        {
+                            Ok(envelope) => envelope,
+                            Err(_) => {
+                                let _ = fatal_terminal(
+                                    &mut pending,
+                                    &dead,
+                                    &uncertain,
+                                    &shutdown_report,
+                                    "malformed response frame",
+                                    guest.shutdown(),
+                                );
+                                break;
+                            },
+                        };
                     match pending.remove(&envelope.id) {
                         Some(entry) if entry.op == envelope.op => {
                             // `{pending: true}` heartbeat: kept,
@@ -330,26 +353,32 @@ pub(crate) fn serve(
                                 // caller.
                                 pending.insert(envelope.id, entry);
                             } else if !entry.is_await && pending_frame {
-                                let _ = entry.reply.send(Err(CistellaError::Contract(
-                                    "pending frame on non-await op".to_string(),
-                                )));
+                                let _ = entry.reply.send(Err(
+                                    CistellaError::Contract(
+                                        "pending frame on non-await op"
+                                            .to_string(),
+                                    ),
+                                ));
                             } else {
                                 let _ = entry.reply.send(Ok(envelope.payload));
                             }
-                        }
+                        },
                         Some(entry) => {
                             // Op mismatch: the response names a
                             // live request but answers a
                             // different operation — fail the
                             // caller, keep no ambiguity.
-                            let _ = entry.reply.send(Err(CistellaError::Contract(
-                                "response op mismatches request".to_string(),
-                            )));
-                        }
+                            let _ = entry.reply.send(Err(
+                                CistellaError::Contract(
+                                    "response op mismatches request"
+                                        .to_string(),
+                                ),
+                            ));
+                        },
                         None if retired.contains(&envelope.id) => {
                             // Explicitly retired (expiry,
                             // detach): late terminal drops.
-                        }
+                        },
                         None => {
                             let _ = fatal_terminal(
                                 &mut pending,
@@ -360,13 +389,13 @@ pub(crate) fn serve(
                                 guest.shutdown(),
                             );
                             break;
-                        }
+                        },
                     }
-                }
+                },
                 Ok(None) => {
                     // Idle slice: loop back for commands,
                     // deadlines, and detach marks.
-                }
+                },
                 Err(error) => {
                     if crate::framework::protocol::is_read_timeout(&error) {
                         // Idle slice (no bytes yet): loop back.
@@ -391,7 +420,7 @@ pub(crate) fn serve(
                         );
                         break;
                     }
-                }
+                },
             }
             // Expire bounded ops; uncapped awaits never expire.
             // Discrimination first: a deadline expiring on an
@@ -407,7 +436,9 @@ pub(crate) fn serve(
             let now = Instant::now();
             let expired: Vec<String> = pending
                 .iter()
-                .filter(|(_, entry)| entry.deadline.is_some_and(|deadline| now >= deadline))
+                .filter(|(_, entry)| {
+                    entry.deadline.is_some_and(|deadline| now >= deadline)
+                })
                 .map(|(id, _)| id.clone())
                 .collect();
             if !expired.is_empty() && guest.peer_exited() {
@@ -424,10 +455,9 @@ pub(crate) fn serve(
             for id in expired {
                 if let Some(entry) = pending.remove(&id) {
                     retired.insert(id.clone());
-                    let _ = entry.reply.send(Err(CistellaError::Protocol(format!(
-                        "{} response timed out",
-                        entry.op
-                    ))));
+                    let _ = entry.reply.send(Err(CistellaError::Protocol(
+                        format!("{} response timed out", entry.op),
+                    )));
                 }
             }
         }

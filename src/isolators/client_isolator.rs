@@ -6,8 +6,9 @@ use crate::framework::contract::{
     CancelFlag, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
 };
 use crate::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
-    StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities,
+    RemovedAttestation, StartedAttestation, StdioBinding, StoppedAttestation,
+    UnitSnapshot,
 };
 use crate::isolators::close::parse_await_outcome;
 use crate::isolators::dispatch::{Command, DISPATCH_SLICE};
@@ -22,7 +23,11 @@ impl Isolator for WireClient {
         PodmanIsolator::new().capabilities()
     }
 
-    fn create(&self, spec: &CreateSpec, key: &ReconciliationKey) -> Result<UnitHandle> {
+    fn create(
+        &self,
+        spec: &CreateSpec,
+        key: &ReconciliationKey,
+    ) -> Result<UnitHandle> {
         self.record_key(key);
         let unit = UnitHandle::mint();
         let payload = self.roundtrip(
@@ -37,7 +42,11 @@ impl Isolator for WireClient {
         let echoed = payload
             .get("unit_handle")
             .and_then(|handle| handle.as_str())
-            .ok_or_else(|| CistellaError::Contract("bad create response: shape".to_string()))?;
+            .ok_or_else(|| {
+                CistellaError::Contract(
+                    "bad create response: shape".to_string(),
+                )
+            })?;
         if echoed != unit.as_str() {
             return Err(CistellaError::Contract(
                 "create echoed a different handle".to_string(),
@@ -46,7 +55,11 @@ impl Isolator for WireClient {
         Ok(unit)
     }
 
-    fn initiate(&self, handle: &UnitHandle, key: &ReconciliationKey) -> Result<StartedAttestation> {
+    fn initiate(
+        &self,
+        handle: &UnitHandle,
+        key: &ReconciliationKey,
+    ) -> Result<StartedAttestation> {
         self.record_key(key);
         let payload = self.roundtrip(
             crate::isolators::wire::OP_INITIATE,
@@ -56,10 +69,12 @@ impl Isolator for WireClient {
             }),
             self.deadlines.apply,
         )?;
-        let attestation = payload
-            .get("started_attestation")
-            .cloned()
-            .ok_or_else(|| CistellaError::Contract("bad initiate response: shape".to_string()))?;
+        let attestation =
+            payload.get("started_attestation").cloned().ok_or_else(|| {
+                CistellaError::Contract(
+                    "bad initiate response: shape".to_string(),
+                )
+            })?;
         Self::parse_typed("initiate", attestation)
     }
 
@@ -114,7 +129,7 @@ impl Isolator for WireClient {
                         capability == crate::framework::protocol::AWAIT_INTERRUPTED_V1
                     });
                     return parse_await_outcome(&outcome, guest_offers);
-                }
+                },
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if cancel.is_cancelled() {
                         // Retire the entry explicitly so it clears
@@ -128,12 +143,13 @@ impl Isolator for WireClient {
                             "await detached by cancellation".to_string(),
                         ));
                     }
-                }
+                },
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(CistellaError::Protocol(
-                        crate::isolators::dispatch::POST_TERMINAL_ERROR.to_string(),
+                        crate::isolators::dispatch::POST_TERMINAL_ERROR
+                            .to_string(),
                     ));
-                }
+                },
             }
         }
     }
@@ -156,9 +172,18 @@ impl Isolator for WireClient {
         let lifecycle = payload
             .get("lifecycle")
             .and_then(|lifecycle| lifecycle.as_str())
-            .ok_or_else(|| CistellaError::Contract("bad state response: shape".to_string()))?;
-        serde_json::from_value(serde_json::Value::String(lifecycle.to_string())).map_err(|_| {
-            CistellaError::Contract("bad state response: unknown lifecycle".to_string())
+            .ok_or_else(|| {
+                CistellaError::Contract(
+                    "bad state response: shape".to_string(),
+                )
+            })?;
+        serde_json::from_value(serde_json::Value::String(
+            lifecycle.to_string(),
+        ))
+        .map_err(|_| {
+            CistellaError::Contract(
+                "bad state response: unknown lifecycle".to_string(),
+            )
         })
     }
 
@@ -177,14 +202,20 @@ impl Isolator for WireClient {
             }),
             self.deadlines.apply,
         )?;
-        let attestation = payload
-            .get("stopped_attestation")
-            .cloned()
-            .ok_or_else(|| CistellaError::Contract("bad terminate response: shape".to_string()))?;
+        let attestation =
+            payload.get("stopped_attestation").cloned().ok_or_else(|| {
+                CistellaError::Contract(
+                    "bad terminate response: shape".to_string(),
+                )
+            })?;
         Self::parse_typed("terminate", attestation)
     }
 
-    fn remove(&self, handle: &UnitHandle, key: &ReconciliationKey) -> Result<RemovedAttestation> {
+    fn remove(
+        &self,
+        handle: &UnitHandle,
+        key: &ReconciliationKey,
+    ) -> Result<RemovedAttestation> {
         let payload = self.roundtrip(
             crate::isolators::wire::OP_REMOVE,
             serde_json::json!({
@@ -193,10 +224,12 @@ impl Isolator for WireClient {
             }),
             self.deadlines.apply,
         )?;
-        let attestation = payload
-            .get("removed_attestation")
-            .cloned()
-            .ok_or_else(|| CistellaError::Contract("bad remove response: shape".to_string()))?;
+        let attestation =
+            payload.get("removed_attestation").cloned().ok_or_else(|| {
+                CistellaError::Contract(
+                    "bad remove response: shape".to_string(),
+                )
+            })?;
         Self::parse_typed("remove", attestation)
     }
 
@@ -215,12 +248,12 @@ impl Isolator for WireClient {
             Ok(LifecycleState::Absent) => {
                 self.remove(handle, key)?;
                 Ok(())
-            }
+            },
             Ok(_) => {
                 self.terminate(handle, grace, key)?;
                 self.remove(handle, key)?;
                 Ok(())
-            }
+            },
             Err(e) => Err(e),
         }
     }

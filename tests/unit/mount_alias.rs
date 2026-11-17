@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cistella::mount::{MountMode, MountTriple, canonicalize_host_source};
-use cistella::mount_alias::{DentryId, MountTable, refuse_dentry_aliases_with};
+use cistella::mount_alias::{
+    DentryId, MountTable, refuse_dentry_aliases_with,
+};
 
 /// Host layout for the pins: `/tree` ancestor (dev 8:1),
 /// `/tree/proj` subtree, `/tree/sib` denied sibling (ino
@@ -35,7 +37,8 @@ const PAIRED_MOUNTINFO: &str = "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw
 
 /// Paired binds of one read-only declaration at two outside
 /// paths (the HIGH-1 RO shape).
-const PAIRED_RO_MOUNTINFO: &str = "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw
+const PAIRED_RO_MOUNTINFO: &str =
+    "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw
 32 23 8:2 / /opt rw,relatime - ext4 /dev/sda2 rw
 33 23 8:2 /ro /srv/x rw,relatime - ext4 /dev/sda2 rw
 34 23 8:2 /ro /srv/y rw,relatime - ext4 /dev/sda2 rw
@@ -64,9 +67,16 @@ fn stat_of(pairs: &[(&str, DentryId)]) -> HashMap<PathBuf, DentryId> {
         .collect()
 }
 
-fn effective_for(triples: &[MountTriple]) -> cistella::framework::contract::EffectivePermissions {
-    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
-        .expect("driver-only assembly")
+fn effective_for(
+    triples: &[MountTriple],
+) -> cistella::framework::contract::EffectivePermissions {
+    cistella::framework::contract::EffectivePermissions::assemble(
+        triples,
+        &[],
+        &[],
+        &[],
+    )
+    .expect("driver-only assembly")
 }
 
 fn check(
@@ -128,9 +138,10 @@ fn parse_mountinfo_resolves_bind_sources() {
 
 #[test]
 fn parse_mountinfo_unescapes_paths() {
-    let table =
-        MountTable::parse("40 23 8:1 /my\\040dir /mnt/space\\040dir rw - ext4 /dev/sda1 rw\n")
-            .expect("escape fixture parses");
+    let table = MountTable::parse(
+        "40 23 8:1 /my\\040dir /mnt/space\\040dir rw - ext4 /dev/sda1 rw\n",
+    )
+    .expect("escape fixture parses");
     let (_, fs) = table
         .filesystem_path(Path::new("/mnt/space dir"))
         .expect("escaped mountpoint resolves");
@@ -172,7 +183,8 @@ fn refuses_paired_rw_binds_of_sibling() {
     // Two read-write binds of one denied sibling: each
     // spelling refuses on its own — the pair must not
     // exempt each other as FULL-on-FULL.
-    let table = MountTable::parse(PAIRED_MOUNTINFO).expect("paired fixture parses");
+    let table =
+        MountTable::parse(PAIRED_MOUNTINFO).expect("paired fixture parses");
     let stats = stat_of(&[
         ("/tree", id(dev(8, 1), 100)),
         ("/tree/proj", id(dev(8, 1), 101)),
@@ -197,7 +209,8 @@ fn refuses_paired_rw_binds_of_ro_declaration() {
     // Two read-write binds of one read-only declaration:
     // the RO contradiction refuses before any FULL-on-FULL
     // exemption admits.
-    let table = MountTable::parse(PAIRED_RO_MOUNTINFO).expect("paired RO fixture parses");
+    let table = MountTable::parse(PAIRED_RO_MOUNTINFO)
+        .expect("paired RO fixture parses");
     let stats = stat_of(&[
         ("/tree", id(dev(8, 1), 100)),
         ("/tree/proj", id(dev(8, 1), 101)),
@@ -225,7 +238,8 @@ fn refuses_subtree_escape_bind() {
     ]);
     // Path-wise inside the subtree, dentry outside it: the
     // carveout would grant undeclared content FULL.
-    let triples = vec![ro("/tree", "/src"), rw("/tree/proj/evil", "/src/proj/evil")];
+    let triples =
+        vec![ro("/tree", "/src"), rw("/tree/proj/evil", "/src/proj/evil")];
     let error = check(&triples, Some(&table), &stats).unwrap_err();
     assert!(error.to_string().contains("/src/proj/evil"), "got: {error}");
 }
@@ -287,8 +301,10 @@ fn refuses_alias_when_table_empty() {
 fn refuses_alias_when_table_does_not_cover() {
     // Table missing every entry covering the graft: the
     // alias is unresolvable — unprovable disjointness.
-    let table = MountTable::parse("33 23 8:2 / /opt rw,relatime - ext4 /dev/sda2 rw\n")
-        .expect("partial fixture parses");
+    let table = MountTable::parse(
+        "33 23 8:2 / /opt rw,relatime - ext4 /dev/sda2 rw\n",
+    )
+    .expect("partial fixture parses");
     let stats = stat_of(&[
         ("/tree", id(7, 50)),
         ("/tree/proj", id(7, 51)),
@@ -348,7 +364,8 @@ fn refuses_malformed_table_with_valid_root() {
     // root: strict parse rejects the whole table rather
     // than falling back to the root prefix and mapping the
     // alias to a fake filesystem-relative path.
-    let text = "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n32 23 8:1 /tree/sib\n";
+    let text =
+        "31 23 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n32 23 8:1 /tree/sib\n";
     assert!(MountTable::parse(text).is_none(), "malformed rejects");
     let stats = stat_of(&[
         ("/tree", id(dev(8, 1), 100)),
@@ -401,7 +418,8 @@ fn admits_second_rw_bind_of_graft_content() {
     // Two read-write grafts of the same outside content,
     // proven outside every sensitive root: FULL-on-FULL is
     // declared intent twice — passes.
-    let table = MountTable::parse(MIRROR_MOUNTINFO).expect("mirror fixture parses");
+    let table =
+        MountTable::parse(MIRROR_MOUNTINFO).expect("mirror fixture parses");
     let stats = stat_of(&[
         ("/tree", id(dev(8, 1), 100)),
         ("/tree/proj", id(dev(8, 1), 101)),
@@ -477,8 +495,13 @@ fn baseline_tmp_alias_allows_fresh_slice() {
     let triples = [triple(&format!("{host}/slice"), "/tmp", MountMode::Rw)];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("slice")];
-    baseline_tmp_alias_preflight(&triples, &effective_for(&triples), &routes, &sources)
-        .expect("fresh slice passes");
+    baseline_tmp_alias_preflight(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+    )
+    .expect("fresh slice passes");
 }
 
 #[test]
@@ -497,8 +520,13 @@ fn baseline_tmp_alias_retains_ro_duplicate() {
     ];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("shared")];
-    baseline_tmp_alias_preflight(&triples, &effective_for(&triples), &routes, &sources)
-        .expect("retained duplicate passes");
+    baseline_tmp_alias_preflight(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+    )
+    .expect("retained duplicate passes");
 }
 
 #[test]
@@ -516,8 +544,13 @@ fn baseline_tmp_alias_refuses_ancestor_covered() {
     ];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("anc/sub")];
-    let error = baseline_tmp_alias_preflight(&triples, &effective_for(&triples), &routes, &sources)
-        .expect_err("ancestor refuses");
+    let error = baseline_tmp_alias_preflight(
+        &triples,
+        &effective_for(&triples),
+        &routes,
+        &sources,
+    )
+    .expect_err("ancestor refuses");
     assert!(
         error.to_string().contains("/src"),
         "names ancestor, got: {error}"
@@ -538,8 +571,13 @@ fn baseline_tmp_alias_allows_consistent_shapes() {
     ];
     let routes = vec!["/dev".to_string(), "/tmp".to_string()];
     let sources = vec![tree.path().join("shared")];
-    baseline_tmp_alias_preflight(&rw_pair, &effective_for(&rw_pair), &routes, &sources)
-        .expect("RW pair passes");
+    baseline_tmp_alias_preflight(
+        &rw_pair,
+        &effective_for(&rw_pair),
+        &routes,
+        &sources,
+    )
+    .expect("RW pair passes");
     let retained_ro = [
         triple(&format!("{host}/shared"), "/tmp", MountMode::Rw),
         triple(&format!("{host}/shared"), "/mirror", MountMode::Ro),

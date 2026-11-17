@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use cistella::framework::contract::{CancelFlag, LifecycleState, ReconciliationKey};
+use cistella::framework::contract::{
+    CancelFlag, LifecycleState, ReconciliationKey,
+};
 use cistella::framework::isolator::{CreateSpec, Isolator, StdioBinding};
 use cistella::isolators::client::{ISOLATOR_BIN, WireClient};
 use cistella::isolators::quadlet::residue_gone;
@@ -51,7 +53,8 @@ fn host_wire(rendezvous: &TempDir) -> WireClient {
         dir.join(name).exists(),
         "guest binary missing: run `cargo build --bin {name}` first"
     );
-    WireClient::host(&dir, rendezvous.path(), Default::default()).expect("host real guest")
+    WireClient::host(&dir, rendezvous.path(), Default::default())
+        .expect("host real guest")
 }
 
 /// Best-effort name-based converge (no handle record exists
@@ -63,7 +66,9 @@ struct LiveUnitGuard {
 
 impl Drop for LiveUnitGuard {
     fn drop(&mut self) {
-        if let (Some(container), Some(id)) = (self.container_name.take(), self.session_id.take()) {
+        if let (Some(container), Some(id)) =
+            (self.container_name.take(), self.session_id.take())
+        {
             let _ = cistella::runtime::teardown(&container, &id);
         }
     }
@@ -102,7 +107,10 @@ fn kill_guest_child_of(parent_pid: u32) {
 /// Polls until the client observes the kill (latch or uncertain).
 fn wait_death_observed(client: &WireClient) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !client.guest_dead() && !client.shutdown_uncertain() && Instant::now() < deadline {
+    while !client.guest_dead()
+        && !client.shutdown_uncertain()
+        && Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(
@@ -115,7 +123,8 @@ fn wait_death_observed(client: &WireClient) {
 fn plan_session(image: &str, worktree: &TempDir) -> (Session, Vec<String>) {
     let id = mint_session_id();
     let directory = worktree.path().to_string_lossy().to_string();
-    std::fs::write(worktree.path().join("marker"), "marker").expect("write marker");
+    std::fs::write(worktree.path().join("marker"), "marker")
+        .expect("write marker");
     let session = Session {
         id: id.clone(),
         directory: directory.clone(),
@@ -131,7 +140,8 @@ fn plan_session(image: &str, worktree: &TempDir) -> (Session, Vec<String>) {
         container_target: "/work".to_string(),
         mode: MountMode::Rw,
     }];
-    let volumes = podman_volume_args(&triples, &session.container_home.clone(), None);
+    let volumes =
+        podman_volume_args(&triples, &session.container_home.clone(), None);
     (session, volumes)
 }
 
@@ -144,7 +154,7 @@ fn fixture_image() -> Option<String> {
         Err(error) => {
             skip(format!("fixture image unavailable: {error}"));
             None
-        }
+        },
     }
 }
 
@@ -218,7 +228,7 @@ fn recovery_create_unknown_applied_converges() {
             second_ref
                 .converge_clean(&adopted, Duration::from_secs(10), &key)
                 .expect("converge");
-        }
+        },
         Err(error) => {
             // Fail-closed partial install (unit file present but the
             // key binding unscannable): typed refusal, never a blind
@@ -231,8 +241,9 @@ fn recovery_create_unknown_applied_converges() {
                 ),
                 "partial install refuses typed, got: {error}"
             );
-            cistella::runtime::teardown(&container, &session_id).expect("direct converge");
-        }
+            cistella::runtime::teardown(&container, &session_id)
+                .expect("direct converge");
+        },
     }
     assert!(residue_gone(&container), "no residue after convergence");
     guard.container_name = None;
@@ -283,7 +294,8 @@ fn recovery_initiate_started_converges_by_adopt() {
         created.as_str(),
         "adopt mints a new framework handle"
     );
-    let attestation = second.get().initiate(&adopted, &key).expect("re-initiate");
+    let attestation =
+        second.get().initiate(&adopted, &key).expect("re-initiate");
     assert!(attestation.ready);
     assert_eq!(attestation.unit_identity, container);
     assert_eq!(
@@ -360,13 +372,15 @@ fn recovery_second_death_fails_stop_with_residue() {
     let dominated = second
         .get()
         .death_checked(second.get().inspect(&adopted).map(|_| ()));
-    let error = dominated.expect_err("residue must dominate after second death");
+    let error =
+        dominated.expect_err("residue must dominate after second death");
     assert!(
         matches!(error, cistella::error::CistellaError::Contract(_))
             && error.to_string().contains("residue"),
         "residue dominates, got: {error}"
     );
-    cistella::runtime::teardown(&container, &session_id).expect("direct converge");
+    cistella::runtime::teardown(&container, &session_id)
+        .expect("direct converge");
     assert!(residue_gone(&container), "no residue after direct converge");
     guard.container_name = None;
     guard.session_id = None;
@@ -541,7 +555,8 @@ fn recovery_launch_noack_never_replays() {
     // reclaim still reports worker/rendezvous state through Drop
     // (reclaim-then-close only when uniquely held — a wedged clone
     // reports instead of pretending).
-    let mut holder = ArcCloseGuard::new(std::sync::Arc::new(host_wire(&rendezvous)));
+    let mut holder =
+        ArcCloseGuard::new(std::sync::Arc::new(host_wire(&rendezvous)));
     let unit = holder.get().create(&spec, &key).expect("create");
     holder.get().initiate(&unit, &key).expect("initiate");
     // Arm this unit's hold: no sibling session owns an arm file
@@ -577,7 +592,8 @@ fn recovery_launch_noack_never_replays() {
     // hold (spawn proven host-side) and the harness ran (proven
     // container-side). Bounded waits; a miss retires explicitly.
     let runs_marker = worktree.path().join("runs");
-    let spawned = poll_present(&unit_dir.join("entered-pre-ack")) && poll_present(&runs_marker);
+    let spawned = poll_present(&unit_dir.join("entered-pre-ack"))
+        && poll_present(&runs_marker);
     // The kill releases the blocked launch either way. Reclaim
     // only on channel proof below — never a blind join.
     kill_guest(&rendezvous);
@@ -585,8 +601,10 @@ fn recovery_launch_noack_never_replays() {
     let launched = match result_rx.recv_timeout(Duration::from_secs(30)) {
         Ok(outcome) => outcome,
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("launch thread ended without a result; worker state unknown, unit guard armed");
-        }
+            panic!(
+                "launch thread ended without a result; worker state unknown, unit guard armed"
+            );
+        },
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             // Wedged: the handle drops here (detach, documented),
             // never joined; the client is never closed; both guards
@@ -597,7 +615,7 @@ fn recovery_launch_noack_never_replays() {
                  residue possible, unit guard armed for name-based converge",
                 std::sync::Arc::strong_count(holder.get()),
             );
-        }
+        },
     };
     // Proven complete: joining returns promptly and drops the
     // thread's Arc, so the sole client is reclaimable after.
@@ -706,8 +724,13 @@ fn recovery_conduct_rehosts_through_guest_kill() {
     // timeout with no unit yet) kills and reaps the child and
     // converges any discovered unit — never a wedged holder of the
     // creation lock.
-    let mut parked =
-        ParkedConduct::spawn_with_argv(&home, &worktree_str, &fixture, &gate, &["true"]);
+    let mut parked = ParkedConduct::spawn_with_argv(
+        &home,
+        &worktree_str,
+        &fixture,
+        &gate,
+        &["true"],
+    );
     let id = parked.discover_id();
     let upath = unit_path(&home, &id);
     assert!(upath.exists(), "installed unit marks the hold window");
@@ -729,7 +752,8 @@ fn recovery_conduct_rehosts_through_guest_kill() {
     );
     assert!(!upath.exists(), "adopted unit removed after recovery");
     assert!(rdv_gone(&id), "rendezvous dir reaped after recovery");
-    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    let survey =
+        run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         survey.status.success(),
         "survey runs: {}",

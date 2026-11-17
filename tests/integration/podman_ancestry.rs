@@ -96,7 +96,10 @@ fn landlock_helper_path() -> PathBuf {
 /// failure, not a skip. Both probe callers exercise the admitted and
 /// denied paths through this same container shape; only the allow
 /// list and the wrapped argv differ.
-fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, String, String) {
+fn run_helper_in_container(
+    allows: &[&str],
+    wrapped_argv: &[&str],
+) -> (i32, String, String) {
     let helper = landlock_helper_path();
     let image = image_ref();
     let mount = format!("{}:{HELPER_MOUNT}:ro", helper.display());
@@ -118,7 +121,8 @@ fn run_helper_in_container(allows: &[&str], wrapped_argv: &[&str]) -> (i32, Stri
     for arg in wrapped_argv {
         command.arg(arg);
     }
-    let output = run_bounded(command, RUN_CISTELLA_TIMEOUT).expect("podman run must spawn");
+    let output = run_bounded(command, RUN_CISTELLA_TIMEOUT)
+        .expect("podman run must spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.code().unwrap_or(-1), stdout, stderr)
@@ -158,7 +162,8 @@ fn admitted_inside_keep_id_container() {
     // ld cache directory; `/proc/self/fd` covers stdio; `/tmp` is
     // unused here but keeps the shape identical.
     let allows = ["/tmp", "/proc/self/fd", "/usr", "/etc"];
-    let (exit_code, stdout, stderr) = run_helper_in_container(&allows, &wrapped);
+    let (exit_code, stdout, stderr) =
+        run_helper_in_container(&allows, &wrapped);
     assert_eq!(
         exit_code, 0,
         "wrapped shell must exit 0 inside keep-id container; stdout: {stdout:?} stderr: {stderr:?}"
@@ -182,7 +187,8 @@ fn denied_inside_keep_id_container() {
     }
     let wrapped = ["/bin/sh", "-c", "cat /etc/hostname"];
     let allows = ["/usr", "/proc/self/fd"];
-    let (exit_code, stdout, stderr) = run_helper_in_container(&allows, &wrapped);
+    let (exit_code, stdout, stderr) =
+        run_helper_in_container(&allows, &wrapped);
     assert_ne!(
         exit_code, 0,
         "wrapped cat of a denied path must fail inside keep-id container; stdout: {stdout:?}"

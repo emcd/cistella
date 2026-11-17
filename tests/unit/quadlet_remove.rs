@@ -14,14 +14,19 @@ use cistella::isolators::quadlet::unlink_unit_file;
 
 fn test_base() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tmpdir");
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    std::fs::set_permissions(
+        dir.path(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("chmod");
     dir
 }
 
 fn write_unit(dir: &tempfile::TempDir, name: &str) -> std::path::PathBuf {
     let path = dir.path().join(name);
     std::fs::write(&path, b"[Container]\n").expect("write fixture");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .expect("chmod");
     path
 }
 
@@ -99,9 +104,10 @@ fn baseline_error_mapping_fails_on_peer_removal() {
     // Peer remover wins the race here.
     std::fs::remove_file(&path).expect("peer unlink");
     // Pre-repair arm, verbatim shape: every unlink error is a failure.
-    let result: Result<(), String> =
-        std::fs::remove_file(&path).map_err(|e| format!("remove {path:?}: {e}"));
-    let error = result.expect_err("old mapping must fail on peer-removed unit");
+    let result: Result<(), String> = std::fs::remove_file(&path)
+        .map_err(|e| format!("remove {path:?}: {e}"));
+    let error =
+        result.expect_err("old mapping must fail on peer-removed unit");
     assert!(
         error.contains("No such file"),
         "old failure is the ENOENT mode, got: {error}"
@@ -117,10 +123,13 @@ fn permission_denied_unlink_propagates_error() {
     std::fs::create_dir(&locked).expect("mkdir fixture");
     let path = locked.join("cistella-locked.container");
     std::fs::write(&path, b"[Container]\n").expect("write fixture");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .expect("chmod");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+        .expect("chmod");
     let result = unlink_unit_file(&path);
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700))
+        .expect("chmod");
     assert!(
         result.is_err(),
         "permission-denied unlink must error, got: {result:?}"

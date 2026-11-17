@@ -40,7 +40,8 @@ fn conduct_enter_refuses_before_launch_commit() {
     let profile = fixture_profile("default.toml");
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
-    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    let mut parked =
+        ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
     // Install is complete when discovery returns (bounded: its
     // timeout fails the test, never releases the conduct).
     let id = parked.discover_id();
@@ -72,7 +73,8 @@ fn conduct_enter_refuses_before_launch_commit() {
     );
     let shown = String::from_utf8_lossy(&stated.stdout).to_string();
     assert!(
-        shown.contains("commitment=unattested") && shown.contains("backend=unknown"),
+        shown.contains("commitment=unattested")
+            && shown.contains("backend=unknown"),
         "describe reports unattested+unknown-backend, got: {shown}"
     );
     assert!(
@@ -133,7 +135,8 @@ fn conduct_parked_gate_aborts_on_pre_park_signal() {
     let profile = fixture_profile("default.toml");
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
-    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    let mut parked =
+        ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
     // Boundary arrival first: the installed unit proves create
     // ran, which proves the handlers are installed. Only then
     // signal — the abort that follows is ordered, not raced.
@@ -157,7 +160,10 @@ fn conduct_parked_gate_aborts_on_pre_park_signal() {
 /// out-of-band container surgery cannot race conduct
 /// convergence. Returns the session triple with a guard armed
 /// for panic-path teardown.
-fn ownerless_committed_session(home: &str, worktree_str: &str) -> (String, String, Guard) {
+fn ownerless_committed_session(
+    home: &str,
+    worktree_str: &str,
+) -> (String, String, Guard) {
     let profile = fixture_profile("default.toml");
     let (mut conduct, id, guard) = spawn_conduct_full(
         home,
@@ -236,7 +242,8 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let (id, container, mut guard) = ownerless_committed_session(&home, &worktree_str);
+    let (id, container, mut guard) =
+        ownerless_committed_session(&home, &worktree_str);
     let base = cistella::lock::runtime_base();
     let before = cistella::attestation::read(&base, &id)
         .expect("attestation reads")
@@ -284,13 +291,15 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
         "podman restart: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let evidence = maybe_evidence.expect("landing evidence present after successful surgery");
+    let evidence = maybe_evidence
+        .expect("landing evidence present after successful surgery");
     // Post-landing context guard: any failure unwinding past
     // this point prints the retained mutation identity, landing
     // history, and baseline. Disarmed only on full convergence
     // below.
-    let mut evidence_guard =
-        collect::EvidenceGuard::armed(collect::render_landing_report(&evidence));
+    let mut evidence_guard = collect::EvidenceGuard::armed(
+        collect::render_landing_report(&evidence),
+    );
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -310,7 +319,9 @@ fn conduct_enter_refuses_stale_incarnation_after_restart() {
     } else if stderr.contains("unestablishable") {
         "unestablishable"
     } else {
-        panic!("post-restart refusal must come from the readiness edge, got: {stderr}");
+        panic!(
+            "post-restart refusal must come from the readiness edge, got: {stderr}"
+        );
     };
     eprintln!("post-restart refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
@@ -337,7 +348,8 @@ fn conduct_enter_after_teardown_reports_selector_not_readiness() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let (id, container, mut guard) = ownerless_committed_session(&home, &worktree_str);
+    let (id, container, mut guard) =
+        ownerless_committed_session(&home, &worktree_str);
     let _ = container;
     let term = run_cistella(&home, &["terminate", &id]);
     assert!(
@@ -372,7 +384,8 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let (id, container, mut guard) = ownerless_committed_session(&home, &worktree_str);
+    let (id, container, mut guard) =
+        ownerless_committed_session(&home, &worktree_str);
     let base = cistella::lock::runtime_base();
     let before = cistella::attestation::read(&base, &id)
         .expect("attestation reads")
@@ -423,7 +436,8 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     // Full surgery cycle with the order pinned: baseline, then
     // the mutation, then the landing wait whose deadline starts
     // at the mutation-return boundary.
-    let surgery_argv = vec!["podman".to_string(), "kill".to_string(), container.clone()];
+    let surgery_argv =
+        vec!["podman".to_string(), "kill".to_string(), container.clone()];
     let (surgery_outcome, maybe_evidence) = collect::run_surgery_cycle(
         &collect::RealRunner,
         &collect::SystemClock,
@@ -438,13 +452,15 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
         "podman kill: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let evidence = maybe_evidence.expect("landing evidence present after successful surgery");
+    let evidence = maybe_evidence
+        .expect("landing evidence present after successful surgery");
     // Post-landing context guard: any failure unwinding past
     // this point prints the retained mutation identity, landing
     // history, and baseline. Disarmed only on full convergence
     // below.
-    let mut evidence_guard =
-        collect::EvidenceGuard::armed(collect::render_landing_report(&evidence));
+    let mut evidence_guard = collect::EvidenceGuard::armed(
+        collect::render_landing_report(&evidence),
+    );
     // Readiness-edge negative control: the same payload must
     // not execute — its side effect stays absent — and the
     // refusal must come from the edge (stale or
@@ -464,7 +480,9 @@ fn conduct_enter_refuses_stale_incarnation_after_recreate() {
     } else if stderr.contains("unestablishable") {
         "unestablishable"
     } else {
-        panic!("post-recreate refusal must come from the readiness edge, got: {stderr}");
+        panic!(
+            "post-recreate refusal must come from the readiness edge, got: {stderr}"
+        );
     };
     eprintln!("post-recreate refusal: {verdict}");
     let term = run_cistella(&home, &["terminate", &id]);
@@ -496,7 +514,8 @@ fn conduct_gate_release_proceeds_to_commit() {
     let profile = fixture_profile("default.toml");
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
-    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    let mut parked =
+        ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
     let id = parked.discover_id();
     let container = format!("cistella-{id}");
     // Release: create the gate file; the next poll iteration

@@ -74,7 +74,7 @@ fn stalled_partial_fails_typed() {
                 if start.elapsed() > Duration::from_secs(5) {
                     panic!("stall must fail by frame timeout");
                 }
-            }
+            },
             conclusion => break conclusion,
         }
     };

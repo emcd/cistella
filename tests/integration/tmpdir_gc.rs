@@ -48,7 +48,10 @@ fn signal_dead(pid: u32) -> bool {
 
 fn group_dead(pgid: u32) -> bool {
     matches!(
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), None),
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(pgid as i32)),
+            None
+        ),
         Err(nix::errno::Errno::ESRCH)
     )
 }
@@ -75,17 +78,22 @@ fn seat_root() -> std::path::PathBuf {
 }
 
 fn lease_path(session: &str) -> std::path::PathBuf {
-    cistella::lock::PrepareLease::path_for(&cistella::lock::runtime_base(), session)
-        .expect("lease path forms")
+    cistella::lock::PrepareLease::path_for(
+        &cistella::lock::runtime_base(),
+        session,
+    )
+    .expect("lease path forms")
 }
 
 fn write_lease(session: &str, content: &str) {
     let path = lease_path(session);
-    std::fs::create_dir_all(path.parent().expect("lease has a parent")).expect("mkdir lease dir");
+    std::fs::create_dir_all(path.parent().expect("lease has a parent"))
+        .expect("mkdir lease dir");
     std::fs::write(&path, content).expect("write lease");
     // Normalize: a permissive build-host umask (e.g. 0002 fixture
     // fallout) must not leave group-writable lease files behind.
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod lease");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .expect("chmod lease");
 }
 
 fn slice_path(session: &str, rand: &str) -> std::path::PathBuf {
@@ -95,7 +103,8 @@ fn slice_path(session: &str, rand: &str) -> std::path::PathBuf {
 fn make_slice(session: &str, rand: &str) -> std::path::PathBuf {
     let path = slice_path(session, rand);
     std::fs::create_dir(&path).expect("mkdir slice");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("chmod");
     path
 }
 
@@ -149,8 +158,9 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     // SIGKILL the driver while the guest hangs: uncertainty is
     // preserved (guest group alive) — no reap.
     kill_wait(driver_a_pid);
-    let _ = reap_bounded(&mut driver_a, CHILD_REAP_TIMEOUT)
-        .expect("reap driver_a post-kill (missing reap is wedged-child evidence)");
+    let _ = reap_bounded(&mut driver_a, CHILD_REAP_TIMEOUT).expect(
+        "reap driver_a post-kill (missing reap is wedged-child evidence)",
+    );
     assert!(signal_dead(driver_a_pid), "driver reaped");
     let out = run_cistella(&home, &["gc"]);
     assert!(
@@ -171,8 +181,9 @@ fn gc_preserves_uncertainty_then_reaps_after_quiescence() {
     // zombie that still answers kill(-pgid, 0), so the poll would
     // never read dead.)
     kill_wait(guest_pid);
-    let _ = reap_bounded(&mut hanging, CHILD_REAP_TIMEOUT)
-        .expect("reap hanging post-kill (missing reap is wedged-child evidence)");
+    let _ = reap_bounded(&mut hanging, CHILD_REAP_TIMEOUT).expect(
+        "reap hanging post-kill (missing reap is wedged-child evidence)",
+    );
     wait_group_dead(guest_pgid);
     let out = run_cistella(&home, &["gc"]);
     assert!(
@@ -312,7 +323,8 @@ fn tmpdir_natural_exit_reaps_slice() {
         &mut conduct,
         Duration::from_secs(60),
     );
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct completes");
     assert!(status.success(), "natural exit 0, got: {status:?}");
     guard.id = None;
     // Natural completion reaps the declared slice (same promise
@@ -430,7 +442,8 @@ fn hooked_tmp_admits_through_wrapped_harness() {
         &[],
         None,
     );
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct completes");
     assert!(
         status.success(),
         "wrapped /tmp write admits, got: {status:?}"
@@ -479,7 +492,8 @@ fn hooked_ro_mirror_denies_through_wrapped_harness() {
         &[],
         None,
     );
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct completes");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct completes");
     assert!(
         status.success(),
         "wrapped read-ok plus write-denied must exit 0, got: {status:?}"
@@ -508,11 +522,13 @@ fn hooked_ancestor_alias_refuses_precreate() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    let sib = tempfile::TempDir::new_in(std::path::Path::new(&home).join("src"))
-        .expect("sibling under ancestor");
+    let sib =
+        tempfile::TempDir::new_in(std::path::Path::new(&home).join("src"))
+            .expect("sibling under ancestor");
     let sib_str = sib.path().to_string_lossy().to_string();
-    let extra =
-        format!("[[mounts]]\nhost-source = '{sib_str}'\ncontainer-target = '/tmp'\nmode = 'ro'\n");
+    let extra = format!(
+        "[[mounts]]\nhost-source = '{sib_str}'\ncontainer-target = '/tmp'\nmode = 'ro'\n"
+    );
     let profdir = tempfile::tempdir().expect("profile dir");
     let profile = write_hooked_profile(profdir.path(), &extra);
     // Refused conducts never print an id line (no session

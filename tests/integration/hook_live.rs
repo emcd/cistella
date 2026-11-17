@@ -11,13 +11,20 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
-use cistella::framework::contract::{CancelFlag, LifecycleState, ReconciliationKey};
-use cistella::framework::contract::{GuestHookRequest, HookArtifact, HookProbe, HookSource};
-use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use cistella::framework::contract::{
+    CancelFlag, LifecycleState, ReconciliationKey,
+};
+use cistella::framework::contract::{
+    GuestHookRequest, HookArtifact, HookProbe, HookSource,
+};
+use cistella::framework::isolator::{
+    CreateSpec, ExecutionOutcome, Isolator, StdioBinding,
+};
 use cistella::framework::landlock_compiler::full_grant_routes;
 use cistella::framework::prepare::{compose_hook_argv, parse_probe_report};
 use cistella::framework::registry::{
-    STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME, digest_sibling, stage_hook_artifact,
+    STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME, digest_sibling,
+    stage_hook_artifact,
 };
 use cistella::isolators::client::{ISOLATOR_BIN, WireClient};
 use cistella::mount::{MountMode, MountTriple, podman_volume_args};
@@ -50,7 +57,8 @@ fn host_wire(rendezvous: &TempDir) -> WireClient {
         dir.join(WRAPPER_FILE_NAME).exists(),
         "wrapper binary missing: run `cargo build --bin {WRAPPER_FILE_NAME}` first"
     );
-    WireClient::host(&dir, rendezvous.path(), Default::default()).expect("host real guest")
+    WireClient::host(&dir, rendezvous.path(), Default::default())
+        .expect("host real guest")
 }
 
 /// Best-effort name-based converge for hook-created units (no
@@ -79,7 +87,9 @@ impl Drop for HookUnitGuard {
 /// Declaration order is the unwind order (reversed): name guard
 /// older, client guard newer.
 /// Strips triples to modeless placements for the map-reading grant path.
-fn placements_of(triples: &[cistella::mount::MountTriple]) -> Vec<cistella::mount::Placement> {
+fn placements_of(
+    triples: &[cistella::mount::MountTriple],
+) -> Vec<cistella::mount::Placement> {
     triples
         .iter()
         .map(|triple| cistella::mount::Placement {
@@ -93,8 +103,13 @@ fn placements_of(triples: &[cistella::mount::MountTriple]) -> Vec<cistella::moun
 fn fixture_effective(
     triples: &[cistella::mount::MountTriple],
 ) -> cistella::framework::contract::EffectivePermissions {
-    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
-        .expect("driver-only assembly")
+    cistella::framework::contract::EffectivePermissions::assemble(
+        triples,
+        &[],
+        &[],
+        &[],
+    )
+    .expect("driver-only assembly")
 }
 
 struct HookFixture {
@@ -137,7 +152,8 @@ fn hook_fixture(image: &str) -> HookFixture {
     // pre-exist in the RO ancestor source (Podman overmounts
     // the real content onto it). Real operators mkdir the same
     // placeholder; the fixture mirrors the contract.
-    std::fs::create_dir_all(tree.path().join("graft")).expect("graft placeholder");
+    std::fs::create_dir_all(tree.path().join("graft"))
+        .expect("graft placeholder");
     // Declared-RO directory under the FULL subtree (tier-2
     // RO-under-RW alias pin): must exist on host (preflight
     // shape) so the revision retention is what denies writes.
@@ -164,8 +180,9 @@ fn hook_fixture(image: &str) -> HookFixture {
     let cache_src = TempDir::new().expect("cache tmpdir");
     let cache_dir = cache_src.path().join("data");
     std::fs::create_dir_all(&cache_dir).expect("cache data dir");
-    let _agent_socket = std::os::unix::net::UnixListener::bind(tree.path().join("agent.sock"))
-        .expect("agent socket");
+    let _agent_socket =
+        std::os::unix::net::UnixListener::bind(tree.path().join("agent.sock"))
+            .expect("agent socket");
     let id = mint_session_id();
     // Stage the denial-probe helper for exact-syscall
     // pre/post controls: resolve the built example binary,
@@ -258,7 +275,11 @@ fn hook_fixture(image: &str) -> HookFixture {
         // allow derivation must skip it (never an allow
         // path), while the Podman bind still materializes.
         MountTriple {
-            host_source: tree.path().join("agent.sock").to_string_lossy().to_string(),
+            host_source: tree
+                .path()
+                .join("agent.sock")
+                .to_string_lossy()
+                .to_string(),
             container_target: "/run/agent.sock".to_string(),
             mode: MountMode::Ro,
         },
@@ -299,13 +320,19 @@ fn hook_fixture(image: &str) -> HookFixture {
     )
     .expect("full routes derive");
     let full_sources =
-        cistella::framework::landlock_compiler::full_grant_sources(&placements, &effective, &proj);
-    let revised = cistella::framework::landlock_compiler::revise_ro_for_confinement(
-        &triples,
-        &full_routes,
-        &full_sources,
-    );
-    let volumes = podman_volume_args(&revised, &session.container_home.clone(), None);
+        cistella::framework::landlock_compiler::full_grant_sources(
+            &placements,
+            &effective,
+            &proj,
+        );
+    let revised =
+        cistella::framework::landlock_compiler::revise_ro_for_confinement(
+            &triples,
+            &full_routes,
+            &full_sources,
+        );
+    let volumes =
+        podman_volume_args(&revised, &session.container_home.clone(), None);
     let spec = CreateSpec {
         session,
         volumes,
@@ -395,7 +422,10 @@ fn hook_probe_reports_matrix_in_container() {
         return;
     };
     let mut fixture = hook_fixture(&image);
-    let out = podman_exec(&fixture.container, &[STAGED_WRAPPER_GUEST_PATH, "--probe"]);
+    let out = podman_exec(
+        &fixture.container,
+        &[STAGED_WRAPPER_GUEST_PATH, "--probe"],
+    );
     assert!(out.status.success(), "probe must exit 0 in-container");
     parse_probe_report(&out.stdout).expect("probe matrix gates");
     fixture.teardown();
@@ -428,8 +458,10 @@ fn hook_denial_matrix_confines() {
     // Both sibling routes translate through the validated
     // topology: the primary bind and the carveout-free
     // alternate bind.
-    let sib_routes =
-        cistella::mount::guest_routes_for_host(&placements_of(&fixture.triples), &tree.join("sib"));
+    let sib_routes = cistella::mount::guest_routes_for_host(
+        &placements_of(&fixture.triples),
+        &tree.join("sib"),
+    );
     assert_eq!(
         sib_routes,
         vec!["/alt/sib".to_string(), "/src/sib".to_string()]
@@ -442,10 +474,12 @@ fn hook_denial_matrix_confines() {
     // op, same path, same uid and mounts in both contexts:
     // companion exec proves the operation, hooked harness
     // proves the denial.
-    let result_host = |tag: &str| fixture.proj.join(format!("probe-{tag}.out"));
+    let result_host =
+        |tag: &str| fixture.proj.join(format!("probe-{tag}.out"));
     let result_guest = |tag: &str| format!("/src/proj/probe-{tag}.out");
     let probe_argv = |tag: &str, op: &[&str]| {
-        let mut argv = vec![fixture.probe.clone(), result_guest(tag), op[0].to_string()];
+        let mut argv =
+            vec![fixture.probe.clone(), result_guest(tag), op[0].to_string()];
         argv.extend(op[1..].iter().map(|arg| (*arg).to_string()));
         argv
     };
@@ -459,7 +493,8 @@ fn hook_denial_matrix_confines() {
     // restrictions, recording `OK`.
     let pre_ok = |tag: &str, op: &[&str]| {
         let result = result_guest(tag);
-        let mut exec_argv = vec![fixture.probe.as_str(), result.as_str(), op[0]];
+        let mut exec_argv =
+            vec![fixture.probe.as_str(), result.as_str(), op[0]];
         exec_argv.extend_from_slice(&op[1..]);
         let out = podman_exec(&fixture.container, &exec_argv);
         assert!(
@@ -489,14 +524,16 @@ fn hook_denial_matrix_confines() {
     // unconfined open replaces the first byte (proves the
     // write landed), content is restored, confined open
     // records EACCES with content byte-exact.
-    std::fs::write(tree.join("sib/w"), "0123456789").expect("w fixture content");
+    std::fs::write(tree.join("sib/w"), "0123456789")
+        .expect("w fixture content");
     pre_ok("write-pre", &["open-wronly", "/src/sib/w"]);
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/w")).expect("w readable"),
         "x123456789",
         "unconfined write must replace the first byte"
     );
-    std::fs::write(tree.join("sib/w"), "0123456789").expect("restore w content");
+    std::fs::write(tree.join("sib/w"), "0123456789")
+        .expect("restore w content");
     post_denied("write-post", &["open-wronly", "/src/sib/w"]);
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/w")).expect("w readable"),
@@ -520,16 +557,19 @@ fn hook_denial_matrix_confines() {
     // the victim is restored for the confined attempt, which
     // must leave it byte-exact. Victim setup is host-side
     // fixture (creation itself is proved by create-excl).
-    std::fs::write(tree.join("sib/victim"), "x").expect("victim fixture content");
+    std::fs::write(tree.join("sib/victim"), "x")
+        .expect("victim fixture content");
     pre_ok("unlink-pre", &["unlink", "/src/sib/victim"]);
     assert!(
         !tree.join("sib/victim").exists(),
         "unconfined unlink must remove"
     );
-    std::fs::write(tree.join("sib/victim"), "x").expect("restore victim content");
+    std::fs::write(tree.join("sib/victim"), "x")
+        .expect("restore victim content");
     post_denied("unlink-post", &["unlink", "/src/sib/victim"]);
     assert_eq!(
-        std::fs::read_to_string(tree.join("sib/victim")).expect("victim readable"),
+        std::fs::read_to_string(tree.join("sib/victim"))
+            .expect("victim readable"),
         "x",
         "denied unlink must leave the file"
     );
@@ -564,17 +604,21 @@ fn hook_denial_matrix_confines() {
     // open empties the file (proves truncation happened),
     // content is restored, confined open records EACCES
     // with content byte-exact.
-    std::fs::write(tree.join("sib/trunc"), "0123456789").expect("trunc fixture content");
+    std::fs::write(tree.join("sib/trunc"), "0123456789")
+        .expect("trunc fixture content");
     pre_ok("trunc-pre", &["open-ro-trunc", "/src/sib/trunc"]);
     assert_eq!(
-        std::fs::read_to_string(tree.join("sib/trunc")).expect("trunc readable"),
+        std::fs::read_to_string(tree.join("sib/trunc"))
+            .expect("trunc readable"),
         "",
         "unconfined O_RDONLY|O_TRUNC must empty the file"
     );
-    std::fs::write(tree.join("sib/trunc"), "0123456789").expect("restore trunc content");
+    std::fs::write(tree.join("sib/trunc"), "0123456789")
+        .expect("restore trunc content");
     post_denied("trunc-post", &["open-ro-trunc", "/src/sib/trunc"]);
     assert_eq!(
-        std::fs::read_to_string(tree.join("sib/trunc")).expect("trunc readable"),
+        std::fs::read_to_string(tree.join("sib/trunc"))
+            .expect("trunc readable"),
         "0123456789",
         "denied truncate must leave content intact"
     );
@@ -582,14 +626,16 @@ fn hook_denial_matrix_confines() {
     // pre/post discipline through the second bind, with
     // the file present for both (pure open reports ENOENT
     // on missing paths, not EACCES).
-    std::fs::write(tree.join("sib/ctl"), "0123456789").expect("alt fixture content");
+    std::fs::write(tree.join("sib/ctl"), "0123456789")
+        .expect("alt fixture content");
     pre_ok("alt-pre", &["open-wronly", "/alt/sib/ctl"]);
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/ctl")).expect("ctl readable"),
         "x123456789",
         "unconfined alternate-route write must replace the first byte"
     );
-    std::fs::write(tree.join("sib/ctl"), "0123456789").expect("restore ctl content");
+    std::fs::write(tree.join("sib/ctl"), "0123456789")
+        .expect("restore ctl content");
     post_denied("alt-post", &["open-wronly", "/alt/sib/ctl"]);
     assert_eq!(
         std::fs::read_to_string(tree.join("sib/ctl")).expect("ctl readable"),
@@ -658,8 +704,10 @@ fn hook_hooked_launch_attests_and_confines() {
         fixture.proj.parent().expect("tree"),
     );
     assert_eq!(ancestor, vec!["/src".to_string()]);
-    let subtree =
-        cistella::mount::guest_routes_for_host(&placements_of(&fixture.triples), &fixture.proj);
+    let subtree = cistella::mount::guest_routes_for_host(
+        &placements_of(&fixture.triples),
+        &fixture.proj,
+    );
     assert_eq!(subtree, vec!["/src/proj".to_string()]);
     // Admitted harness: marker inside the subtree, argv through
     // the real derivation (baseline included).
@@ -857,7 +905,8 @@ fn hooked_argv(fixture: &HookFixture, harness: &[String]) -> Vec<String> {
 fn run_harness(fixture: &HookFixture, harness: &[String]) -> ExecutionOutcome {
     let argv = hooked_argv(fixture, harness);
     let (diag_read, diag_write) =
-        nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).expect("diagnostics pipe");
+        nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
+            .expect("diagnostics pipe");
     let execution = {
         use std::os::fd::AsFd;
         fixture
@@ -875,9 +924,11 @@ fn run_harness(fixture: &HookFixture, harness: &[String]) -> ExecutionOutcome {
     drop(diag_write);
     // Production gate (not first-line-only): attestation plus
     // transitioned plus EOF through the real classifier.
-    let (abi, detail) =
-        cistella::framework::hooks::gate_hook_attestation(&diag_read, Duration::from_secs(30))
-            .expect("production gate passes");
+    let (abi, detail) = cistella::framework::hooks::gate_hook_attestation(
+        &diag_read,
+        Duration::from_secs(30),
+    )
+    .expect("production gate passes");
     assert!(abi >= 3, "attested ABI carries TRUNCATE");
     assert_eq!(detail, None);
     drop(diag_read);
@@ -897,6 +948,6 @@ fn fixture_image_opt() -> Option<String> {
         Err(error) => {
             skip(format!("fixture image unavailable: {error}"));
             None
-        }
+        },
     }
 }

@@ -7,7 +7,9 @@
 //! mechanism, not guest-specific.
 
 use crate::error::{CistellaError, Result};
-use crate::framework::contract::{MergeContext, PreparePlan, Provenance, Rights};
+use crate::framework::contract::{
+    MergeContext, PreparePlan, Provenance, Rights,
+};
 
 /// One host-declared expected bundle: the exact contribution
 /// shape a named instance must return. Generic mechanism, not
@@ -79,14 +81,20 @@ pub fn check_expected_credentials(
 /// caller holding the admitted handles; path equality is
 /// enforced at admission, where content is still visible.
 /// Diagnostics name variables and kinds, never values or paths.
-pub(crate) fn check_expectations(plan: &PreparePlan, context: &MergeContext) -> Result<()> {
+pub(crate) fn check_expectations(
+    plan: &PreparePlan,
+    context: &MergeContext,
+) -> Result<()> {
     for expected in &context.expectations {
         let mut env: Vec<(&str, &str)> = Vec::new();
         let mut mounts: Vec<(&str, &str)> = Vec::new();
         let mut permissions: Vec<(&str, Rights)> = Vec::new();
         for contribution in &plan.environment {
             if contribution.provenance == expected.owner {
-                env.push((contribution.name.as_str(), contribution.value.as_str()));
+                env.push((
+                    contribution.name.as_str(),
+                    contribution.value.as_str(),
+                ));
             }
         }
         for contribution in &plan.mounts {
@@ -99,7 +107,8 @@ pub(crate) fn check_expectations(plan: &PreparePlan, context: &MergeContext) -> 
         }
         for contribution in &plan.permissions {
             if contribution.provenance == expected.owner {
-                permissions.push((contribution.target.as_str(), contribution.rights));
+                permissions
+                    .push((contribution.target.as_str(), contribution.rights));
             }
         }
         let mut expected_env: Vec<(&str, &str)> = expected
@@ -140,7 +149,10 @@ pub(crate) fn check_expectations(plan: &PreparePlan, context: &MergeContext) -> 
             a.0.cmp(b.0)
                 .then_with(|| rights_rank(a.1).cmp(&rights_rank(b.1)))
         });
-        if env != expected_env || mounts != expected_mounts || permissions != expected_permissions {
+        if env != expected_env
+            || mounts != expected_mounts
+            || permissions != expected_permissions
+        {
             return Err(CistellaError::Contract(
                 "declared contribution bundle mismatch: omission, divergence, or extras refuse"
                     .to_string(),

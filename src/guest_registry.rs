@@ -120,21 +120,23 @@ pub fn registry_path(env: &HostEnv) -> Result<PathBuf> {
             let path = PathBuf::from(dir);
             if !path.is_absolute() {
                 return Err(CistellaError::Profile(
-                    "XDG_CONFIG_HOME must be absolute for registry resolution".to_string(),
+                    "XDG_CONFIG_HOME must be absolute for registry resolution"
+                        .to_string(),
                 ));
             }
             path
-        }
+        },
         None => {
-            let home = env
-                .home
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    CistellaError::Profile("HOME not set for registry resolution".to_string())
-                })?;
+            let home =
+                env.home.as_deref().filter(|s| !s.is_empty()).ok_or_else(
+                    || {
+                        CistellaError::Profile(
+                            "HOME not set for registry resolution".to_string(),
+                        )
+                    },
+                )?;
             PathBuf::from(home).join(".config")
-        }
+        },
     };
     Ok(base.join("cistella/registry.toml"))
 }
@@ -294,7 +296,10 @@ impl Registry {
         };
         let anchored = open.finish()?;
         let text = std::str::from_utf8(&anchored.bytes).map_err(|_| {
-            CistellaError::Profile(format!("registry {} is not valid UTF-8", path.display()))
+            CistellaError::Profile(format!(
+                "registry {} is not valid UTF-8",
+                path.display()
+            ))
         })?;
         Self::parse(text)
     }
@@ -307,15 +312,17 @@ impl Registry {
     /// Returns `CistellaError::Profile` on TOML, version, or entry
     /// refusal. Diagnostics name declarations, never values.
     pub fn parse(text: &str) -> Result<Self> {
-        let file: RegistryRaw = toml::from_str(text)
-            .map_err(|e| CistellaError::Profile(format!("registry parse: {e}")))?;
+        let file: RegistryRaw = toml::from_str(text).map_err(|e| {
+            CistellaError::Profile(format!("registry parse: {e}"))
+        })?;
         if file.format_version != Some(REGISTRY_FORMAT_VERSION) {
             return Err(CistellaError::Profile(format!(
                 "registry format-version must be {REGISTRY_FORMAT_VERSION}"
             )));
         }
         let isolators = validate_table(file.isolators, GuestTable::Isolators)?;
-        let extensions = validate_table(file.extensions, GuestTable::Extensions)?;
+        let extensions =
+            validate_table(file.extensions, GuestTable::Extensions)?;
         Ok(Self {
             isolators,
             extensions,
@@ -326,8 +333,12 @@ impl Registry {
     #[must_use]
     pub fn find(&self, table: GuestTable, name: &str) -> Option<&Guest> {
         match table {
-            GuestTable::Isolators => self.isolators.iter().find(|e| e.name == name),
-            GuestTable::Extensions => self.extensions.iter().find(|e| e.name == name),
+            GuestTable::Isolators => {
+                self.isolators.iter().find(|e| e.name == name)
+            },
+            GuestTable::Extensions => {
+                self.extensions.iter().find(|e| e.name == name)
+            },
         }
     }
 
@@ -356,7 +367,10 @@ impl Registry {
 /// refusal, reserved-name shadowing refusal, colon refusal (owner
 /// identities are namespaced `shipped:`/`registered:` — no entry
 /// may squat a shipped identity), per-entry checks.
-fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<Guest>> {
+fn validate_table(
+    entries: Vec<GuestRaw>,
+    table: GuestTable,
+) -> Result<Vec<Guest>> {
     let reserved = match table {
         GuestTable::Isolators => SHIPPED_ISOLATOR_NAME,
         GuestTable::Extensions => SHIPPED_EXTENSION_NAME,
@@ -383,7 +397,8 @@ fn validate_table(entries: Vec<GuestRaw>, table: GuestTable) -> Result<Vec<Guest
             )));
         }
         if entry.name == reserved
-            || (table == GuestTable::Extensions && entry.name == SHIPPED_SSH_NAME)
+            || (table == GuestTable::Extensions
+                && entry.name == SHIPPED_SSH_NAME)
         {
             return Err(CistellaError::Profile(format!(
                 "registry entry shadows shipped name: {}",
@@ -415,12 +430,14 @@ fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<Guest> {
         )));
     }
     let digest = match entry.source_digest.algorithm {
-        DigestAlgorithm::Sha256 => parse_sha256_hex(&entry.source_digest.value).map_err(|_| {
-            CistellaError::Profile(format!(
-                "registry entry {} source-digest malformed",
-                entry.name
-            ))
-        })?,
+        DigestAlgorithm::Sha256 => {
+            parse_sha256_hex(&entry.source_digest.value).map_err(|_| {
+                CistellaError::Profile(format!(
+                    "registry entry {} source-digest malformed",
+                    entry.name
+                ))
+            })?
+        },
     };
     for arg in &entry.arguments {
         reject_spans(arg, "registry entry argument")?;
@@ -428,14 +445,16 @@ fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<Guest> {
     let source = match (entry.source_url, entry.source_path) {
         (Some(source_url), None) => {
             reject_spans(&source_url, "registry entry source-url")?;
-            if !source_url.starts_with("https://") && !source_url.starts_with("http://") {
+            if !source_url.starts_with("https://")
+                && !source_url.starts_with("http://")
+            {
                 return Err(CistellaError::Profile(format!(
                     "registry entry {} source-url must be http(s)",
                     entry.name
                 )));
             }
             SourceLocation::Fetch { source_url, digest }
-        }
+        },
         (None, Some(source_path)) => {
             reject_spans(&source_path, "registry entry source-path")?;
             let source_path = PathBuf::from(&source_path);
@@ -449,19 +468,19 @@ fn validate_entry(entry: GuestRaw, table: GuestTable) -> Result<Guest> {
                 source_path,
                 digest,
             }
-        }
+        },
         (Some(_), Some(_)) => {
             return Err(CistellaError::Profile(format!(
                 "registry entry {} must declare exactly one source",
                 entry.name
             )));
-        }
+        },
         (None, None) => {
             return Err(CistellaError::Profile(format!(
                 "registry entry {} must declare a source",
                 entry.name
             )));
-        }
+        },
     };
     Ok(Guest {
         name: entry.name,

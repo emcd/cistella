@@ -37,7 +37,8 @@ fn wrapper_path() -> PathBuf {
             if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
                 continue;
             }
-            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+            candidates
+                .push((metadata.modified().expect("mtime"), entry.path()));
         }
     }
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
@@ -53,7 +54,10 @@ fn wrapper_path() -> PathBuf {
 /// (captured stdout): returns `(exit, attestation_line,
 /// rest_stdout, stderr)`. The harness is python3; `/usr` is the
 /// read-execute route, `allowed` the read-write route.
-fn run_wrapped(allowed: &std::path::Path, python: &str) -> (i32, String, String, String) {
+fn run_wrapped(
+    allowed: &std::path::Path,
+    python: &str,
+) -> (i32, String, String, String) {
     let mut cmd = Command::new(wrapper_path());
     cmd.arg("--diagnostics-fd=1");
     cmd.arg("--allow-ro=/usr");
@@ -62,7 +66,8 @@ fn run_wrapped(allowed: &std::path::Path, python: &str) -> (i32, String, String,
     cmd.arg("/usr/bin/python3");
     cmd.arg("-c");
     cmd.arg(python);
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.splitn(2, '\n');
     let attestation = lines.next().unwrap_or("").to_string();
@@ -89,7 +94,8 @@ fn fixture_tree() -> (tempfile::TempDir, PathBuf) {
 fn probe_reports_usable_abi_and_full_mask() {
     let mut cmd = Command::new(wrapper_path());
     cmd.arg("--probe");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("probe must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("probe must spawn");
     assert_eq!(output.status.code(), Some(0), "probe must exit 0");
     let payload: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("probe prints JSON");
@@ -118,7 +124,8 @@ fn usage_errors_exit_3_without_applying() {
     ] {
         let mut cmd = Command::new(wrapper_path());
         cmd.args(&args);
-        let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+        let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
+            .expect("wrapper must spawn");
         assert_eq!(
             output.status.code(),
             Some(3),
@@ -136,8 +143,8 @@ fn admitted_write_succeeds_attested() {
         &format!("open({:?}, 'w').write('confined-ok')", marker),
     );
     assert_eq!(exit, 0, "admitted harness must exit 0");
-    let payload: serde_json::Value =
-        serde_json::from_str(&attestation).expect("first stdout line is attestation JSON");
+    let payload: serde_json::Value = serde_json::from_str(&attestation)
+        .expect("first stdout line is attestation JSON");
     assert_eq!(payload.get("applied"), Some(&serde_json::Value::Bool(true)));
     assert_eq!(
         std::fs::read_to_string(&marker)
@@ -159,8 +166,8 @@ fn sibling_create_denied_attested() {
     // the harness status propagates while confinement held.
     assert_ne!(exit, 0, "denied create must fail the harness");
     assert!(!target.exists(), "denied file must not exist");
-    let payload: serde_json::Value =
-        serde_json::from_str(&attestation).expect("attestation precedes harness output");
+    let payload: serde_json::Value = serde_json::from_str(&attestation)
+        .expect("attestation precedes harness output");
     assert_eq!(payload.get("applied"), Some(&serde_json::Value::Bool(true)));
 }
 
@@ -169,7 +176,8 @@ fn sibling_read_and_truncate_denied_file_unmodified() {
     let (dir, allowed) = fixture_tree();
     let sibling = dir.path().join("denied").join("sib.txt");
     std::fs::write(&sibling, "SIB").expect("sibling fixture");
-    let (exit, _, _, _) = run_wrapped(&allowed, &format!("open({:?}, 'r').read()", sibling));
+    let (exit, _, _, _) =
+        run_wrapped(&allowed, &format!("open({:?}, 'r').read()", sibling));
     assert_ne!(exit, 0, "sibling read must fail");
     let (exit, _, _, _) = run_wrapped(
         &allowed,
@@ -193,7 +201,8 @@ fn sibling_unlink_denied() {
     let (dir, allowed) = fixture_tree();
     let sibling = dir.path().join("denied").join("gone.txt");
     std::fs::write(&sibling, "GONE").expect("sibling fixture");
-    let (exit, _, _, _) = run_wrapped(&allowed, &format!("import os; os.unlink({:?})", sibling));
+    let (exit, _, _, _) =
+        run_wrapped(&allowed, &format!("import os; os.unlink({:?})", sibling));
     assert_ne!(exit, 0, "sibling unlink must fail");
     assert!(sibling.exists(), "denied unlink must leave the file");
 }
@@ -228,7 +237,8 @@ fn bad_allow_path_fails_before_exec() {
     cmd.arg("/usr/bin/python3");
     cmd.arg("-c");
     cmd.arg("open('/tmp/should-never-exist-xyz', 'w')");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -236,7 +246,8 @@ fn bad_allow_path_fails_before_exec() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let payload: serde_json::Value =
-        serde_json::from_str(stdout.lines().next().unwrap_or("")).expect("failure attestation");
+        serde_json::from_str(stdout.lines().next().unwrap_or(""))
+            .expect("failure attestation");
     assert_eq!(
         payload.get("applied"),
         Some(&serde_json::Value::Bool(false))
@@ -260,16 +271,20 @@ fn injection_path_stays_framed_json() {
     cmd.arg("/usr/bin/python3");
     cmd.arg("-c");
     cmd.arg("open('/tmp/landlock-injection-escaped-xyz', 'w')");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(1), "bad allow is apply-class");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let payload: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
-        .expect("failure line parses despite injection");
+    let payload: serde_json::Value =
+        serde_json::from_str(stdout.lines().next().unwrap_or(""))
+            .expect("failure line parses despite injection");
     assert_eq!(
         payload.get("applied"),
         Some(&serde_json::Value::Bool(false))
     );
-    assert!(!std::path::Path::new("/tmp/landlock-injection-escaped-xyz").exists());
+    assert!(
+        !std::path::Path::new("/tmp/landlock-injection-escaped-xyz").exists()
+    );
 }
 
 #[test]
@@ -287,7 +302,8 @@ fn broken_diagnostics_exits_without_execing() {
     cmd.arg("/usr/bin/python3");
     cmd.arg("-c");
     cmd.arg(format!("open({:?}, 'w')", marker));
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -312,7 +328,8 @@ fn exec_failure_reports_wrapper_error() {
     cmd.arg(format!("--allow-rw={}", allowed.display()));
     cmd.arg("--");
     cmd.arg("/nonexistent-harness-xyz");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -321,13 +338,15 @@ fn exec_failure_reports_wrapper_error() {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
     let attested: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("attestation first");
     assert_eq!(
         attested.get("applied"),
         Some(&serde_json::Value::Bool(true))
     );
     let failed: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("transition second");
     assert_eq!(
         failed.get("transitioned"),
         Some(&serde_json::Value::Bool(false))
@@ -354,18 +373,21 @@ fn success_emits_transitioned_true() {
     cmd.arg("/usr/bin/python3");
     cmd.arg("-c");
     cmd.arg("pass");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
     let attested: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("attestation first");
     assert_eq!(
         attested.get("applied"),
         Some(&serde_json::Value::Bool(true))
     );
     let transitioned: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("transition second");
     assert_eq!(
         transitioned.get("transitioned"),
         Some(&serde_json::Value::Bool(true))
@@ -391,7 +413,8 @@ fn fault_kill_after_attest_dies_by_signal_without_execing() {
     cmd.arg("-c");
     cmd.arg(format!("open({:?}, 'w')", marker));
     cmd.env("CISTELLA_QA_WRAPPER_FAULT", "kill-after-attest");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(
         output.status.code(),
         None,
@@ -401,7 +424,8 @@ fn fault_kill_after_attest_dies_by_signal_without_execing() {
     assert_eq!(output.status.signal(), Some(9), "fault must be SIGKILL");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let attested: serde_json::Value =
-        serde_json::from_str(stdout.lines().next().unwrap_or("")).expect("attestation first");
+        serde_json::from_str(stdout.lines().next().unwrap_or(""))
+            .expect("attestation first");
     assert_eq!(
         attested.get("applied"),
         Some(&serde_json::Value::Bool(true))
@@ -425,18 +449,21 @@ fn fast_harness_exit_relays_disposition() {
     cmd.arg(format!("--allow-rw={}", allowed.display()));
     cmd.arg("--");
     cmd.arg("/usr/bin/true");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(0), "fast exit relays clean");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
     let attested: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("attestation first");
     assert_eq!(
         attested.get("applied"),
         Some(&serde_json::Value::Bool(true))
     );
     let transitioned: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("transition second");
     assert_eq!(
         transitioned.get("transitioned"),
         Some(&serde_json::Value::Bool(true))
@@ -464,7 +491,8 @@ fn signalled_harness_relays_signal() {
     cmd.arg("/usr/bin/dash");
     cmd.arg("-c");
     cmd.arg("sleep 0.2; kill -TERM $$");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(
         output.status.signal(),
@@ -474,7 +502,8 @@ fn signalled_harness_relays_signal() {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
     let attested: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("attestation first");
     // Render the whole attestation on failure: its error
     // field names the fail_apply site, which the next
     // intermittent arm failure will need (applied:false
@@ -486,7 +515,8 @@ fn signalled_harness_relays_signal() {
         "apply attestation must report applied (attestation: {attested}, stdout: {stdout:?})"
     );
     let transitioned: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("transition second");
     assert_eq!(
         transitioned.get("transitioned"),
         Some(&serde_json::Value::Bool(true)),
@@ -508,18 +538,21 @@ fn harness_exit_126_relays_as_harness_outcome() {
     cmd.arg("/usr/bin/dash");
     cmd.arg("-c");
     cmd.arg("exit 126");
-    let output = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
+    let output =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("wrapper must spawn");
     assert_eq!(output.status.code(), Some(126));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut lines = stdout.lines();
     let attested: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("attestation first");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("attestation first");
     assert_eq!(
         attested.get("applied"),
         Some(&serde_json::Value::Bool(true))
     );
     let transitioned: serde_json::Value =
-        serde_json::from_str(lines.next().unwrap_or("")).expect("transition second");
+        serde_json::from_str(lines.next().unwrap_or(""))
+            .expect("transition second");
     assert_eq!(
         transitioned.get("transitioned"),
         Some(&serde_json::Value::Bool(true))

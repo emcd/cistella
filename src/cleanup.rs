@@ -63,14 +63,19 @@ pub struct CleanupRecord {
 ///
 /// Returns `CistellaError::Runtime` on bad session id, relative
 /// paths, symlink/non-directory/untrusted roots, or I/O failure.
-pub fn record_cleanup(base: &Path, session_id: &str, paths: &[String]) -> Result<()> {
+pub fn record_cleanup(
+    base: &Path,
+    session_id: &str,
+    paths: &[String],
+) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
     // Validate the session id before guest-supplied paths:
     // programmer errors surface before untrusted-input errors.
-    let _session = cleanup_state_name(session_id)
-        .map_err(|error| CistellaError::Runtime(format!("cleanup state: {error}")))?;
+    let _session = cleanup_state_name(session_id).map_err(|error| {
+        CistellaError::Runtime(format!("cleanup state: {error}"))
+    })?;
     // SAFETY: getuid is inherently safe.
     let seat = unsafe { nix::libc::getuid() };
     let mut records = Vec::with_capacity(paths.len());
@@ -82,7 +87,10 @@ pub fn record_cleanup(base: &Path, session_id: &str, paths: &[String]) -> Result
             )));
         }
         let stat = std::fs::symlink_metadata(&candidate).map_err(|e| {
-            CistellaError::Runtime(format!("cleanup admit {}: {e}", candidate.display()))
+            CistellaError::Runtime(format!(
+                "cleanup admit {}: {e}",
+                candidate.display()
+            ))
         })?;
         if stat.file_type().is_symlink() {
             return Err(CistellaError::Runtime(format!(
@@ -109,7 +117,10 @@ pub fn record_cleanup(base: &Path, session_id: &str, paths: &[String]) -> Result
             ))
         })?;
         let parent_stat = std::fs::metadata(parent).map_err(|e| {
-            CistellaError::Runtime(format!("cleanup admit {}: {e}", parent.display()))
+            CistellaError::Runtime(format!(
+                "cleanup admit {}: {e}",
+                parent.display()
+            ))
         })?;
         records.push(CleanupRecord {
             path: candidate,
@@ -119,14 +130,20 @@ pub fn record_cleanup(base: &Path, session_id: &str, paths: &[String]) -> Result
             parent_ino: parent_stat.ino(),
         });
     }
-    let bytes = serde_json::to_vec(&records)
-        .map_err(|e| CistellaError::Runtime(format!("encode cleanup state: {e}")))?;
-    let name = cleanup_state_name(session_id)
-        .map_err(|error| CistellaError::Runtime(format!("cleanup state: {error}")))?;
+    let bytes = serde_json::to_vec(&records).map_err(|e| {
+        CistellaError::Runtime(format!("encode cleanup state: {e}"))
+    })?;
+    let name = cleanup_state_name(session_id).map_err(|error| {
+        CistellaError::Runtime(format!("cleanup state: {error}"))
+    })?;
     open_session_state(base)
-        .map_err(|error| CistellaError::Runtime(format!("cleanup state: {error}")))?
+        .map_err(|error| {
+            CistellaError::Runtime(format!("cleanup state: {error}"))
+        })?
         .replace_file(&name, &bytes)
-        .map_err(|e| CistellaError::Runtime(format!("write cleanup state {name}: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("write cleanup state {name}: {e}"))
+        })?;
     Ok(())
 }
 
@@ -135,7 +152,9 @@ pub fn record_cleanup(base: &Path, session_id: &str, paths: &[String]) -> Result
 fn open_session_state(
     base: &Path,
 ) -> std::result::Result<crate::guest_anchor::AnchoredDir, String> {
-    crate::guest_anchor::open_state_dir(&crate::lock::PrepareLease::state_dir(base))
+    crate::guest_anchor::open_state_dir(&crate::lock::PrepareLease::state_dir(
+        base,
+    ))
 }
 
 /// Reaps the recorded cleanup roots for one session: admits each
@@ -155,7 +174,9 @@ pub fn reap_cleanup(base: &Path, session_id: &str) -> Vec<String> {
         Ok(dir) => dir,
         Err(error) => return vec![format!("cleanup state: {error}")],
     };
-    let bytes = match dir.read_file(&name, crate::guest_anchor::MAX_STATE_BYTES) {
+    let bytes = match dir
+        .read_file(&name, crate::guest_anchor::MAX_STATE_BYTES)
+    {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return litter,
         Err(error) => return vec![format!("cleanup state {name}: {error}")],
@@ -164,7 +185,7 @@ pub fn reap_cleanup(base: &Path, session_id: &str) -> Vec<String> {
         Ok(records) => records,
         Err(error) => {
             return vec![format!("cleanup state {name}: {error}")];
-        }
+        },
     };
     for record in &records {
         if let Err(error) = reap_one(record) {
@@ -196,7 +217,9 @@ pub fn reap_and_report(base: &Path, session_id: &str) {
 
 /// Cleanup state file name for one session id (single-component,
 /// safe for dirfd-relative operations).
-fn cleanup_state_name(session_id: &str) -> std::result::Result<String, String> {
+fn cleanup_state_name(
+    session_id: &str,
+) -> std::result::Result<String, String> {
     if session_id.is_empty()
         || !session_id
             .bytes()
@@ -218,10 +241,12 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
     let seat = unsafe { nix::libc::getuid() };
     let stat = match std::fs::symlink_metadata(&record.path) {
         Ok(stat) => stat,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(());
+        },
         Err(error) => {
             return Err(format!("cleanup {}: {error}", record.path.display()));
-        }
+        },
     };
     if stat.file_type().is_symlink() {
         return Err(format!(
@@ -247,13 +272,14 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
             record.path.display()
         ));
     }
-    let parent = record
-        .path
-        .parent()
-        .ok_or_else(|| format!("cleanup root has no parent: {}", record.path.display()))?;
+    let parent = record.path.parent().ok_or_else(|| {
+        format!("cleanup root has no parent: {}", record.path.display())
+    })?;
     let parent_stat = std::fs::metadata(parent)
         .map_err(|e| format!("cleanup parent {}: {e}", parent.display()))?;
-    if parent_stat.dev() != record.parent_dev || parent_stat.ino() != record.parent_ino {
+    if parent_stat.dev() != record.parent_dev
+        || parent_stat.ino() != record.parent_ino
+    {
         return Err(format!(
             "cleanup parent changed (refusing move): {}",
             record.path.display()
@@ -262,9 +288,12 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
     // Open the trusted parent, re-verify the association on
     // the open description, then remove through the shared
     // record-carried tail.
-    let parent_fd = open_trusted_parent(parent, &record.path.display().to_string())?;
-    let parent_open = nix::sys::stat::fstat(parent_fd.as_raw_fd())
-        .map_err(|e| format!("cleanup fstat parent {}: {e}", parent.display()))?;
+    let parent_fd =
+        open_trusted_parent(parent, &record.path.display().to_string())?;
+    let parent_open =
+        nix::sys::stat::fstat(parent_fd.as_raw_fd()).map_err(|e| {
+            format!("cleanup fstat parent {}: {e}", parent.display())
+        })?;
     if parent_open.st_dev as u64 != record.parent_dev
         || parent_open.st_ino as u64 != record.parent_ino
     {
@@ -292,7 +321,10 @@ fn reap_one(record: &CleanupRecord) -> std::result::Result<(), String> {
 /// mutation restricted to trusted actors). Shared by declared
 /// and enumerated removals — every mutating path operation in
 /// this module descends from a directory opened here.
-fn open_trusted_parent(parent: &Path, display: &str) -> std::result::Result<OwnedFd, String> {
+fn open_trusted_parent(
+    parent: &Path,
+    display: &str,
+) -> std::result::Result<OwnedFd, String> {
     // SAFETY: getuid is inherently safe.
     let seat = unsafe { nix::libc::getuid() };
     let parent_raw = nix::fcntl::open(
@@ -348,13 +380,15 @@ fn unlink_verified_tree(
     if root_stat.st_uid != seat && root_stat.st_uid != 0 {
         return Err(format!("cleanup root is not seat-owned: {display}"));
     }
-    let (dev, ino) = baseline.unwrap_or((root_stat.st_dev as u64, root_stat.st_ino as u64));
+    let (dev, ino) =
+        baseline.unwrap_or((root_stat.st_dev as u64, root_stat.st_ino as u64));
     if root_stat.st_dev as u64 != dev || root_stat.st_ino as u64 != ino {
         return Err(format!(
             "cleanup root moved during open (refusing): {display}"
         ));
     }
-    remove_tree(root_fd.as_raw_fd(), 0).map_err(|e| format!("cleanup {display}: {e}"))?;
+    remove_tree(root_fd.as_raw_fd(), 0)
+        .map_err(|e| format!("cleanup {display}: {e}"))?;
     drop(root_fd);
     // Re-verify the name still denotes the traversed object
     // before unlinking: a directory-entry replacement after
@@ -423,7 +457,9 @@ fn traversal_trusted(
         return Ok(());
     }
     if mode & 0o002 != 0 {
-        return Err(format!("cleanup traversal parent world-writable: {what}"));
+        return Err(format!(
+            "cleanup traversal parent world-writable: {what}"
+        ));
     }
     Err(format!("cleanup traversal parent group-writable: {what}"))
 }
@@ -443,13 +479,15 @@ fn remove_tree(dirfd: RawFd, depth: u32) -> std::result::Result<(), String> {
     // rather than risk operating among attacker-controlled entries.
     // SAFETY: getuid is inherently safe.
     let seat = unsafe { nix::libc::getuid() };
-    let here = nix::sys::stat::fstat(dirfd).map_err(|e| format!("cleanup fstat: {e}"))?;
+    let here = nix::sys::stat::fstat(dirfd)
+        .map_err(|e| format!("cleanup fstat: {e}"))?;
     traversal_trusted(&here, seat, "traversed directory")?;
-    let dup = nix::unistd::dup(dirfd).map_err(|e| format!("cleanup dup: {e}"))?;
+    let dup =
+        nix::unistd::dup(dirfd).map_err(|e| format!("cleanup dup: {e}"))?;
     // SAFETY: freshly duped above, owned here, wrapped exactly once.
     let owned: OwnedFd = unsafe { OwnedFd::from_raw_fd(dup) };
-    let mut dir =
-        nix::dir::Dir::from_fd(owned.into_raw_fd()).map_err(|e| format!("cleanup opendir: {e}"))?;
+    let mut dir = nix::dir::Dir::from_fd(owned.into_raw_fd())
+        .map_err(|e| format!("cleanup opendir: {e}"))?;
     let entries: Vec<(std::ffi::CString, Option<nix::dir::Type>)> = dir
         .iter()
         .map(|result| {
@@ -475,18 +513,26 @@ fn remove_tree(dirfd: RawFd, depth: u32) -> std::result::Result<(), String> {
                         | nix::fcntl::OFlag::O_CLOEXEC,
                     nix::sys::stat::Mode::empty(),
                 )
-                .map_err(|e| format!("cleanup open subdir {}: {e}", name.to_string_lossy()))?;
+                .map_err(|e| {
+                    format!(
+                        "cleanup open subdir {}: {e}",
+                        name.to_string_lossy()
+                    )
+                })?;
                 remove_tree(sub, depth + 1).inspect_err(|_| {
                     let _ = nix::unistd::close(sub);
                 })?;
-                nix::unistd::close(sub).map_err(|e| format!("cleanup close: {e}"))?;
+                nix::unistd::close(sub)
+                    .map_err(|e| format!("cleanup close: {e}"))?;
                 nix::unistd::unlinkat(
                     Some(dirfd),
                     name_path,
                     nix::unistd::UnlinkatFlags::RemoveDir,
                 )
-                .map_err(|e| format!("cleanup rmdir {}: {e}", name.to_string_lossy()))?;
-            }
+                .map_err(|e| {
+                    format!("cleanup rmdir {}: {e}", name.to_string_lossy())
+                })?;
+            },
             _ => {
                 // Files, symlinks, and anything else unlink as
                 // entries: removing a link never follows it, and
@@ -497,8 +543,10 @@ fn remove_tree(dirfd: RawFd, depth: u32) -> std::result::Result<(), String> {
                     name_path,
                     nix::unistd::UnlinkatFlags::NoRemoveDir,
                 )
-                .map_err(|e| format!("cleanup unlink {}: {e}", name.to_string_lossy()))?;
-            }
+                .map_err(|e| {
+                    format!("cleanup unlink {}: {e}", name.to_string_lossy())
+                })?;
+            },
         }
     }
     Ok(())
@@ -534,24 +582,34 @@ pub struct LeaseState {
 ///
 /// Returns `CistellaError::Runtime` on unreadable or malformed
 /// lease content.
-pub fn read_lease(base: &Path, session_id: &str) -> Result<Option<LeaseState>> {
-    let name = crate::lock::PrepareLease::file_name(session_id)
-        .map_err(|error| CistellaError::Runtime(format!("prepare lease: {error}")))?;
-    let dir = open_session_state(base)
-        .map_err(|error| CistellaError::Runtime(format!("prepare lease state: {error}")))?;
-    let bytes = match dir.read_file(&name, crate::guest_anchor::MAX_STATE_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(CistellaError::Runtime(format!(
-                "prepare lease {name}: {error}"
-            )));
-        }
-    };
+pub fn read_lease(
+    base: &Path,
+    session_id: &str,
+) -> Result<Option<LeaseState>> {
+    let name =
+        crate::lock::PrepareLease::file_name(session_id).map_err(|error| {
+            CistellaError::Runtime(format!("prepare lease: {error}"))
+        })?;
+    let dir = open_session_state(base).map_err(|error| {
+        CistellaError::Runtime(format!("prepare lease state: {error}"))
+    })?;
+    let bytes =
+        match dir.read_file(&name, crate::guest_anchor::MAX_STATE_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Err(CistellaError::Runtime(format!(
+                    "prepare lease {name}: {error}"
+                )));
+            },
+        };
     let Some(bytes) = bytes else {
         return Ok(None);
     };
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| CistellaError::Runtime(format!("prepare lease {name} is not valid UTF-8")))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        CistellaError::Runtime(format!(
+            "prepare lease {name} is not valid UTF-8"
+        ))
+    })?;
     let mut lines = text.lines().peekable();
     let first = lines.next().unwrap_or("");
     let mut words = first.split_whitespace();
@@ -560,13 +618,15 @@ pub fn read_lease(base: &Path, session_id: &str) -> Result<Option<LeaseState>> {
             .next()
             .and_then(|pid| pid.parse().ok())
             .ok_or_else(|| {
-                CistellaError::Runtime(format!("prepare lease {name} has a malformed driver line"))
+                CistellaError::Runtime(format!(
+                    "prepare lease {name} has a malformed driver line"
+                ))
             })?,
         _ => {
             return Err(CistellaError::Runtime(format!(
                 "prepare lease {name} has a malformed driver line"
             )));
-        }
+        },
     };
     let mut pending = false;
     let mut guests = Vec::new();
@@ -586,12 +646,12 @@ pub fn read_lease(base: &Path, session_id: &str) -> Result<Option<LeaseState>> {
                     ))
                 })?;
                 guests.push((pid, pgid));
-            }
+            },
             _ => {
                 return Err(CistellaError::Runtime(format!(
                     "prepare lease {name} has a malformed line"
                 )));
-            }
+            },
         }
     }
     Ok(Some(LeaseState {
@@ -611,7 +671,8 @@ pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return true;
     }
-    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None) {
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None)
+    {
         Ok(()) => true,
         Err(nix::errno::Errno::ESRCH) => false,
         Err(_) => true,
@@ -630,325 +691,17 @@ pub fn group_dead(pgid: u32) -> bool {
         return false;
     }
     matches!(
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), None),
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(pgid as i32)),
+            None
+        ),
         Err(nix::errno::Errno::ESRCH)
     )
 }
 
-/// Parses a session id out of a slice directory name
-/// (`cistella-tmp-<session>-<pid>-<nanos>`): the trailing two
-/// numeric segments are the mint randomness, everything between
-/// the prefix and them is the session. Anything else (wrong
-/// prefix, missing numerics, bad session charset) is not ours —
-/// `None` means skip silently, never touch.
-#[must_use]
-pub fn parse_slice_session(name: &str) -> Option<String> {
-    let rest = name.strip_prefix("cistella-tmp-")?;
-    let mut parts: Vec<&str> = rest.split('-').collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let nanos = parts.pop().expect("len checked");
-    let pid = parts.pop().expect("len checked");
-    if nanos.is_empty()
-        || pid.is_empty()
-        || !nanos.bytes().all(|byte| byte.is_ascii_digit())
-        || !pid.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    let session = parts.join("-");
-    if session.is_empty()
-        || !session
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        return None;
-    }
-    Some(session)
-}
-
-/// Reaps orphaned tmpdir slices: enumerates the seat temp root
-/// for session-attributable names, skips sessions with live units
-/// and anything not provably quiescent, and removes the rest
-/// FD-relative. Returns removed directory names; litter reports
-/// to stderr (removal failure is litter, never residue) and the
-/// caller continues.
-///
-/// Safety conditions per candidate, all required: name parses to
-/// a session absent from `live_sessions`; the prepare lease is
-/// absent (no prepare recorded) or present with a dead driver,
-/// all recorded guest groups proven dead, and at least one guest
-/// line (guestless leases skip — contradictory provenance);
-/// any live driver, live group, unreadable/malformed lease, or
-/// identity gap skips. Removal itself opens temproot and candidate
-/// nofollow, verifies directory plus seat-or-root ownership on
-/// the open descriptions, traverses FD-relative, and unlinks —
-/// orphans carry no recorded identity (nothing was admitted), so
-/// name-attribution plus liveness gates are the safety, never a
-/// baseline comparison.
-pub fn reap_tmpdir_orphans(live_sessions: &std::collections::HashSet<String>) -> Vec<String> {
-    reap_tmpdir_orphans_in(
-        &seat_temp_root(),
-        &crate::lock::runtime_base(),
-        live_sessions,
-    )
-}
-
-/// Orphan sweep with explicit roots (the unit-pinned entry point):
-/// `root` enumerates candidate slices, `base` holds lease state.
-/// Same safety contract as [`reap_tmpdir_orphans`].
-pub fn reap_tmpdir_orphans_in(
-    root: &Path,
-    base: &Path,
-    live_sessions: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    let mut removed = Vec::new();
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return removed,
-        Err(error) => {
-            eprintln!("warning: cleanup enumerate {}: {error}", root.display());
-            return removed;
-        }
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(session) = parse_slice_session(&name) else {
-            continue;
-        };
-        if live_sessions.contains(&session) {
-            continue;
-        }
-        match orphan_eligible(base, &session) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(litter) => {
-                eprintln!("warning: cleanup litter: {litter}");
-                continue;
-            }
-        }
-        // Record rendezvous: a session WITH cleanup records
-        // never falls back to name-only authority. An admitted
-        // identity removes through the shared record-carried
-        // tail; a recorded path with a mismatched object skips
-        // (a teardown-refused replacement stands); genuinely
-        // unrecorded paths take the name-attribution path.
-        let candidate = root.join(&name);
-        match match_cleanup_record(base, &session, &candidate) {
-            Ok(RecordMatch::Admitted(record)) => {
-                remove_lease_file(base, &session);
-                match reap_recorded(&candidate, &record) {
-                    Ok(()) => removed.push(name),
-                    Err(litter) => eprintln!("warning: cleanup litter: {litter}"),
-                }
-            }
-            Ok(RecordMatch::Refused) => {
-                eprintln!(
-                    "warning: cleanup litter: recorded refusal stands for {}",
-                    candidate.display()
-                );
-                continue;
-            }
-            Ok(RecordMatch::Unrecorded) => {
-                remove_lease_file(base, &session);
-                match remove_orphan(root, &name) {
-                    Ok(()) => removed.push(name),
-                    Err(litter) => eprintln!("warning: cleanup litter: {litter}"),
-                }
-            }
-            Ok(RecordMatch::Gone) => continue,
-            Err(litter) => {
-                eprintln!("warning: cleanup litter: {litter}");
-                continue;
-            }
-        }
-    }
-    removed
-}
-
-/// Removes one stale lease file best-effort (never fails —
-/// callers treat removal as hygiene, eligibility as safety).
-fn remove_lease_file(base: &Path, session: &str) {
-    let Ok(name) = crate::lock::PrepareLease::file_name(session) else {
-        return;
-    };
-    if let Ok(dir) = open_session_state(base) {
-        dir.remove_file(&name);
-    }
-}
-
-/// Decides one candidate: true when no live unit, no live lease,
-/// no pending spawn, and no live recorded guest group stand in
-/// the way. `Err` is litter (malformed lease, unreadable state)
-/// and skips.
-fn orphan_eligible(base: &Path, session: &str) -> std::result::Result<bool, String> {
-    let state = match read_lease(base, session) {
-        Ok(state) => state,
-        Err(error) => return Err(error.to_string()),
-    };
-    let Some(state) = state else {
-        return Ok(true);
-    };
-    if pid_alive(state.driver_pid) {
-        return Ok(false);
-    }
-    if state.pending {
-        // A spawn is recorded but its guest identity is not yet
-        // known: a guest may exist unrecorded (spawn precedes
-        // recording by microseconds) — never assume.
-        return Ok(false);
-    }
-    if state.guests.is_empty() {
-        // No guest lines, no pending marker, dead driver: spawn
-        // never happened (pending always commits first), so no
-        // guest exists — proceed; the stale lease file goes with
-        // the orphan.
-        return Ok(true);
-    }
-    for (_, pgid) in &state.guests {
-        if !group_dead(*pgid) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// Record rendezvous for one orphan candidate: loads the
-/// session's cleanup records (absent file means unrecorded) and
-/// matches by object identity, never by name alone:
-/// - `Admitted` — some record's dev+ino names this object: the
-///   admitted slice, wherever it currently sits.
-/// - `Refused` — a record names this path but nothing matches its
-///   identity: a teardown-refused replacement stands.
-/// - `Unrecorded` — no records, or none relevant: the existing
-///   name-attribution path may proceed.
-/// - `Gone` — the candidate vanished between enumeration and
-///   lookup: converged by other means, skip silently.
-///
-/// Unreadable state is litter (uncertainty skips).
-fn match_cleanup_record(
-    base: &Path,
-    session: &str,
-    candidate: &Path,
-) -> std::result::Result<RecordMatch, String> {
-    let dir = match open_session_state(base) {
-        Ok(dir) => dir,
-        Err(error) => return Err(format!("cleanup state: {error}")),
-    };
-    let name = match cleanup_state_name(session) {
-        Ok(name) => name,
-        Err(error) => return Err(format!("cleanup state: {error}")),
-    };
-    let bytes = match dir.read_file(&name, crate::guest_anchor::MAX_STATE_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) => return Err(format!("cleanup state {name}: {error}")),
-    };
-    let Some(bytes) = bytes else {
-        return Ok(RecordMatch::Unrecorded);
-    };
-    let records: Vec<CleanupRecord> = match serde_json::from_slice(&bytes) {
-        Ok(records) => records,
-        Err(error) => return Err(format!("cleanup state {name}: {error}")),
-    };
-    let stat = match std::fs::symlink_metadata(candidate) {
-        Ok(stat) => stat,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(RecordMatch::Gone),
-        Err(error) => return Err(format!("cleanup {error} {}", candidate.display())),
-    };
-    // Full match first: identity plus the admitted parent
-    // association. A dev/ino hit without association (moved
-    // object) does NOT admit — it falls through to the path
-    // check, which refuses when a record names this path.
-    // Checking every record before deciding keeps multiple
-    // records per session coherent.
-    let mut identity_seen = false;
-    for record in &records {
-        if stat.dev() == record.dev && stat.ino() == record.ino {
-            identity_seen = true;
-            let associated = candidate
-                .parent()
-                .and_then(|parent| std::fs::metadata(parent).ok())
-                .is_some_and(|parent_stat| {
-                    parent_stat.dev() == record.parent_dev && parent_stat.ino() == record.parent_ino
-                });
-            if associated {
-                return Ok(RecordMatch::Admitted(record.clone()));
-            }
-        }
-    }
-    if identity_seen || records.iter().any(|record| record.path == *candidate) {
-        // Either the admitted object moved away from here, or a
-        // record names this path for a different object: both are
-        // teardown-refused states — preserve.
-        return Ok(RecordMatch::Refused);
-    }
-    Ok(RecordMatch::Unrecorded)
-}
-/// Record-match outcome for one gc candidate (see
-/// [`match_cleanup_record`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RecordMatch {
-    /// A record's dev+ino names this object: admitted removal.
-    Admitted(CleanupRecord),
-    /// A record names this path but nothing matches: a refused
-    /// replacement stands — preserve it.
-    Refused,
-    /// No records relevant: name-attribution path may proceed.
-    Unrecorded,
-    /// Candidate vanished: converged by other means.
-    Gone,
-}
-
-/// Removes one admitted object found by enumeration: the match
-/// already verified identity plus the admitted parent
-/// association, so the parent here is trusted on its open FD and
-/// the record travels into the shared verified-removal tail.
-/// Used only after a full match, never on a bare name.
-fn reap_recorded(candidate: &Path, record: &CleanupRecord) -> std::result::Result<(), String> {
-    let parent = candidate.parent().ok_or_else(|| {
-        format!(
-            "cleanup admitted root has no parent: {}",
-            candidate.display()
-        )
-    })?;
-    let parent_fd = open_trusted_parent(parent, &candidate.display().to_string())?;
-    // Association on the ACTUAL opened parent FD (not just the
-    // path-metadata check at match time): the parent could have
-    // been swapped between the match lookup and this open, so
-    // the full record stays effective through deletion.
-    let parent_open = nix::sys::stat::fstat(parent_fd.as_raw_fd())
-        .map_err(|e| format!("cleanup fstat parent {}: {e}", parent.display()))?;
-    if parent_open.st_dev as u64 != record.parent_dev
-        || parent_open.st_ino as u64 != record.parent_ino
-    {
-        return Err(format!(
-            "cleanup parent moved during open (refusing): {}",
-            candidate.display()
-        ));
-    }
-    let Some(name) = candidate.file_name() else {
-        return Err(format!(
-            "cleanup admitted root names no file: {}",
-            candidate.display()
-        ));
-    };
-    unlink_verified_tree(
-        &parent_fd,
-        name,
-        Some((record.dev, record.ino)),
-        &candidate.display().to_string(),
-    )
-}
-
-/// Removes one enumerated orphan with no record: the temproot
-/// meets traversal trust on its open FD, then the shared tail
-/// verifies kind plus ownership on the open description and
-/// removes FD-relative with a pre-unlink reverify (baseline from
-/// the fresh open — unrecorded objects carry no admitted
-/// identity, so name-attribution plus liveness gates decided
-/// eligibility before this call).
-fn remove_orphan(root: &Path, name: &str) -> std::result::Result<(), String> {
-    let parent_fd = open_trusted_parent(root, name)?;
-    unlink_verified_tree(&parent_fd, Path::new(name).as_os_str(), None, name)
-}
+// Tmpdir orphan sweeping lives in the submodule; the hub
+// re-exports every public name so existing paths keep working.
+mod tmpdir;
+pub use self::tmpdir::{
+    parse_slice_session, reap_tmpdir_orphans, reap_tmpdir_orphans_in,
+};

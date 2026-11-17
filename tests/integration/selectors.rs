@@ -60,7 +60,8 @@ fn selectors_ambiguous_and_exclusive() {
     assert!(err.contains("exactly one"), "exclusive refusal: {err}");
 
     // Unknown prefix names the registry without matching.
-    let out = run_cistella(&home, &["enter", "zzzzzzzzzzzzzzzzz", "--", "true"]);
+    let out =
+        run_cistella(&home, &["enter", "zzzzzzzzzzzzzzzzz", "--", "true"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no session"));
 
@@ -91,8 +92,9 @@ fn selectors_ambiguous_and_exclusive() {
         "terminate by label: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut child_a, CHILD_REAP_TIMEOUT)
-        .expect("reap child_a post-terminate (missing reap is wedged-child evidence)");
+    let _ = reap_bounded(&mut child_a, CHILD_REAP_TIMEOUT).expect(
+        "reap child_a post-terminate (missing reap is wedged-child evidence)",
+    );
     guard_a.id = None;
 
     let out = run_cistella(&home, &["survey", "--directory", &worktree_str]);
@@ -108,7 +110,8 @@ fn selectors_ambiguous_and_exclusive() {
         "terminate {id_b}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = reap_bounded(&mut child_b, CHILD_REAP_TIMEOUT)
-        .expect("reap child_b post-terminate (missing reap is wedged-child evidence)");
+    let _ = reap_bounded(&mut child_b, CHILD_REAP_TIMEOUT).expect(
+        "reap child_b post-terminate (missing reap is wedged-child evidence)",
+    );
     guard_b.id = None;
 }

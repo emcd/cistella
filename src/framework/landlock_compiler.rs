@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::error::{CistellaError, Result};
-use crate::framework::contract::{EffectivePermissions, GuestHookRequest, Rights};
+use crate::framework::contract::{
+    EffectivePermissions, GuestHookRequest, Rights,
+};
 use crate::mount::{
-    MountMode, MountTriple, Placement, canonicalize_container_target, canonicalize_host_source,
-    under_full_route, under_full_source,
+    MountMode, MountTriple, Placement, canonicalize_container_target,
+    canonicalize_host_source, under_full_route, under_full_source,
 };
 
 /// One decided Landlock grant: full rights or read-execute on a
@@ -61,16 +63,20 @@ pub(crate) fn compute_grants(
             "hook launch supports exactly one hook".to_string(),
         ));
     }
-    let ancestor_routes = crate::mount::guest_routes_for_host(placements, ancestor_host);
+    let ancestor_routes =
+        crate::mount::guest_routes_for_host(placements, ancestor_host);
     if ancestor_routes.is_empty() {
         return Err(CistellaError::Contract(
-            "hook ancestor untranslatable through the mount topology".to_string(),
+            "hook ancestor untranslatable through the mount topology"
+                .to_string(),
         ));
     }
-    let subtree_routes = crate::mount::guest_routes_for_host(placements, subtree_host);
+    let subtree_routes =
+        crate::mount::guest_routes_for_host(placements, subtree_host);
     if subtree_routes.is_empty() {
         return Err(CistellaError::Contract(
-            "hook subtree untranslatable through the mount topology".to_string(),
+            "hook subtree untranslatable through the mount topology"
+                .to_string(),
         ));
     }
     // Declared mounts, granted by declared mode (operator-owned
@@ -90,7 +96,8 @@ pub(crate) fn compute_grants(
     for placement in placements {
         // Proven non-directories skip (see above); missing
         // paths grant by rights (see above).
-        let source = crate::mount::canonicalize_host_source(&placement.host_source);
+        let source =
+            crate::mount::canonicalize_host_source(&placement.host_source);
         if source.exists() && !source.is_dir() {
             continue;
         }
@@ -101,14 +108,22 @@ pub(crate) fn compute_grants(
         // or mint a second rule spelling for one mount.
         // Rights come from the effective map (actual granted
         // rights), never from wire modes — the wire carries none.
-        let target = crate::mount::canonicalize_container_target(&placement.container_target);
+        let target = crate::mount::canonicalize_container_target(
+            &placement.container_target,
+        );
         let grant = effective.get(&target).ok_or_else(|| {
-            CistellaError::Contract(format!("no effective grant for granted placement {target}"))
+            CistellaError::Contract(format!(
+                "no effective grant for granted placement {target}"
+            ))
         })?;
-        let covered = ancestor_routes
-            .iter()
-            .chain(subtree_routes.iter())
-            .any(|route| target == *route || target.starts_with(&format!("{route}/")));
+        let covered =
+            ancestor_routes
+                .iter()
+                .chain(subtree_routes.iter())
+                .any(|route| {
+                    target == *route
+                        || target.starts_with(&format!("{route}/"))
+                });
         match grant.rights {
             // Read-write carveouts: EVERY declared read-write
             // directory grants full rights on its guest target,
@@ -121,7 +136,7 @@ pub(crate) fn compute_grants(
             // operator declared admissible.
             crate::framework::contract::Rights::Full => {
                 carveouts.push((GrantKind::Full, target));
-            }
+            },
             // Read-only readability: uncovered outside mounts,
             // plus under-ancestor mounts whose targets lie
             // outside every route (declared content must stay
@@ -129,8 +144,8 @@ pub(crate) fn compute_grants(
             // under routes stay covered by their route's rule.
             crate::framework::contract::Rights::Read if !covered => {
                 carveouts.push((GrantKind::Read, target));
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     Ok(GrantSet {
@@ -186,7 +201,13 @@ pub fn full_grant_routes(
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
 ) -> Result<Vec<String>> {
-    let grants = compute_grants(hooks, placements, effective, ancestor_host, subtree_host)?;
+    let grants = compute_grants(
+        hooks,
+        placements,
+        effective,
+        ancestor_host,
+        subtree_host,
+    )?;
     let mut full: Vec<String> = FULL_BASELINE_ROUTES
         .iter()
         .map(|route| route.to_string())
@@ -208,8 +229,8 @@ pub fn revise_ro_for_confinement(
     triples
         .iter()
         .map(|triple| {
-            let directory =
-                triple.mode == MountMode::Ro && std::path::Path::new(&triple.host_source).is_dir();
+            let directory = triple.mode == MountMode::Ro
+                && std::path::Path::new(&triple.host_source).is_dir();
             if !directory {
                 return triple.clone();
             }
@@ -234,13 +255,15 @@ pub fn full_grant_sources(
     subtree_host: &std::path::Path,
 ) -> Vec<PathBuf> {
     use crate::mount::canonicalize_container_target;
-    let mut sources = vec![canonicalize_host_source(&subtree_host.to_string_lossy())];
+    let mut sources =
+        vec![canonicalize_host_source(&subtree_host.to_string_lossy())];
     for placement in placements {
         // Actual granted rights from the map: a `Write` placement
         // joins FULL accounting exactly like `Full` (normalized
         // before every consumer), so no alias hole opens under a
         // non-FULL label.
-        let target = canonicalize_container_target(&placement.container_target);
+        let target =
+            canonicalize_container_target(&placement.container_target);
         let full = effective
             .get(&target)
             .is_some_and(|grant| grant.rights == Rights::Full);
@@ -257,7 +280,8 @@ pub fn full_grant_sources(
     // read-only at the VFS layer; the alias preflight below
     // refuses the routes retention cannot cover).
     let backing = placements.iter().find_map(|placement| {
-        if canonicalize_container_target(&placement.container_target) == "/tmp" {
+        if canonicalize_container_target(&placement.container_target) == "/tmp"
+        {
             Some(canonicalize_host_source(&placement.host_source))
         } else {
             None
@@ -298,11 +322,16 @@ pub fn ro_confinement_preflight(
         // read-only BINDING with a read-write descendant beneath
         // refuses regardless of what the union grants. Grant
         // aliasing is the graft preflight's job, not this one's.
-        if ro.mode != MountMode::Ro || !std::path::Path::new(&ro.host_source).is_dir() {
+        if ro.mode != MountMode::Ro
+            || !std::path::Path::new(&ro.host_source).is_dir()
+        {
             continue;
         }
         let retained = under_full_route(&ro.container_target, full_routes)
-            || under_full_source(&canonicalize_host_source(&ro.host_source), full_sources);
+            || under_full_source(
+                &canonicalize_host_source(&ro.host_source),
+                full_sources,
+            );
         if !retained {
             continue;
         }
@@ -339,7 +368,9 @@ pub fn ro_confinement_preflight(
 ///
 /// Returns `CistellaError::Contract` when no compiler is
 /// registered for the artifact.
-pub(crate) fn compiler_owner_for(hook: &GuestHookRequest) -> Result<&'static str> {
+pub(crate) fn compiler_owner_for(
+    hook: &GuestHookRequest,
+) -> Result<&'static str> {
     use crate::framework::registry::{SHIPPED_REGISTRY_ID, WRAPPER_FILE_NAME};
     if hook.artifact.source.registry == SHIPPED_REGISTRY_ID
         && hook.artifact.source.path == WRAPPER_FILE_NAME
@@ -464,7 +495,8 @@ fn fingerprint_snapshot(
             source: &placement.host_source,
         })
         .collect();
-    placement_records.sort_by(|a, b| (a.target, a.source).cmp(&(b.target, b.source)));
+    placement_records
+        .sort_by(|a, b| (a.target, a.source).cmp(&(b.target, b.source)));
     let mut triple_records: Vec<BoundTriple<'_>> = triples
         .iter()
         .map(|triple| BoundTriple {
@@ -473,14 +505,18 @@ fn fingerprint_snapshot(
             mode: triple.mode.as_flag(),
         })
         .collect();
-    triple_records.sort_by(|a, b| (a.target, a.source, a.mode).cmp(&(b.target, b.source, b.mode)));
+    triple_records.sort_by(|a, b| {
+        (a.target, a.source, a.mode).cmp(&(b.target, b.source, b.mode))
+    });
     let mut grant_records: Vec<BoundGrant<'_>> = effective
         .iter()
         .map(|(target, grant)| {
             let mut claimants: Vec<String> = grant
                 .claimants
                 .iter()
-                .map(|(provenance, rights)| format!("{provenance:?}:{rights:?}"))
+                .map(|(provenance, rights)| {
+                    format!("{provenance:?}:{rights:?}")
+                })
                 .collect();
             claimants.sort();
             BoundGrant {
@@ -501,7 +537,8 @@ fn fingerprint_snapshot(
         hook_digest,
         compiler_owner,
     };
-    let bytes = serde_json::to_vec(&record).expect("snapshot record serializes");
+    let bytes =
+        serde_json::to_vec(&record).expect("snapshot record serializes");
     hex::encode(Sha256::digest(&bytes))
 }
 
@@ -546,7 +583,8 @@ pub fn freeze_snapshot(
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
     for placement in placements {
-        let target = canonicalize_container_target(&placement.container_target);
+        let target =
+            canonicalize_container_target(&placement.container_target);
         if !seen.insert(target.clone()) {
             return Err(CistellaError::Contract(format!(
                 "compile snapshot duplicate placement target {target}"
@@ -609,7 +647,8 @@ pub fn compile_topology(
         &snapshot.effective,
         &snapshot.subtree_host,
     );
-    let revised = revise_ro_for_confinement(&snapshot.triples, &routes, &sources);
+    let revised =
+        revise_ro_for_confinement(&snapshot.triples, &routes, &sources);
     Ok(CompiledTopology {
         revised,
         routes,

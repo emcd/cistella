@@ -33,13 +33,20 @@ fn usage() -> ! {
 fn main() {
     let mut argv = std::env::args();
     let _program = argv.next();
-    let (Some(home), Some(session), Some(backing), Some(alias_source), Some(alias_target)) = (
+    let (
+        Some(home),
+        Some(session),
+        Some(backing),
+        Some(alias_source),
+        Some(alias_target),
+    ) = (
         argv.next(),
         argv.next(),
         argv.next(),
         argv.next(),
         argv.next(),
-    ) else {
+    )
+    else {
         usage();
     };
     // The sets derivation reads confinement roots from HOME.
@@ -90,8 +97,13 @@ fn main() {
         })
         .collect();
     let effective =
-        cistella::framework::contract::EffectivePermissions::assemble(&triples, &[], &[], &[])
-            .expect("driver-only assembly");
+        cistella::framework::contract::EffectivePermissions::assemble(
+            &triples,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("driver-only assembly");
     let sets = match hook_full_sets(
         std::slice::from_ref(&hook),
         &placements,
@@ -102,9 +114,14 @@ fn main() {
         Err(error) => {
             println!("REFUSED:{error}");
             return;
-        }
+        },
     };
-    match baseline_tmp_alias_preflight(&triples, &effective, &sets.routes, &sets.sources) {
+    match baseline_tmp_alias_preflight(
+        &triples,
+        &effective,
+        &sets.routes,
+        &sets.sources,
+    ) {
         Ok(()) => println!("ALLOWED"),
         Err(error) => println!("REFUSED:{error}"),
     }

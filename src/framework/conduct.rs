@@ -46,7 +46,9 @@ pub fn evaluate_profile_contributions(
     accepted_env: &[(String, String)],
     policy: &PolicySet,
 ) -> Result<()> {
-    let mut names = Vec::with_capacity(profile.environment_assignments.len() + accepted_env.len());
+    let mut names = Vec::with_capacity(
+        profile.environment_assignments.len() + accepted_env.len(),
+    );
     for key in profile.environment_assignments.keys() {
         names.push((key.clone(), Provenance::Profile));
     }
@@ -74,11 +76,15 @@ pub fn host_isolator(
     match isolator {
         IsolatorResolution::Podman => {
             WireClient::host(exe_dir, rendezvous_dir, Deadlines::default())
-        }
+        },
         IsolatorResolution::Registered(entry) => {
             let resolved = resolve(entry, &resolve_ctx()?)?;
-            WireClient::host_registered(resolved, rendezvous_dir, Deadlines::default())
-        }
+            WireClient::host_registered(
+                resolved,
+                rendezvous_dir,
+                Deadlines::default(),
+            )
+        },
     }
 }
 
@@ -98,7 +104,10 @@ fn resolve_ctx() -> Result<ResolveCtx> {
 /// silent), and the success path fails on it — a residue-class
 /// close failure dominates a clean harness. Rendezvous-dir litter
 /// reports to stderr without failing (litter, not residue).
-pub fn release_client(client: WireClient, rendezvous_dir: &std::path::Path) -> Result<()> {
+pub fn release_client(
+    client: WireClient,
+    rendezvous_dir: &std::path::Path,
+) -> Result<()> {
     let outcome = client.close();
     if let Err(error) = std::fs::remove_dir(rendezvous_dir) {
         eprintln!("error: rendezvous cleanup: {error}");
@@ -142,7 +151,9 @@ pub fn abort_startup(
     // (prepare succeeded, unit never installed): reap them here
     // since no teardown runs on this path. Litter reports without
     // failing the abort disposition.
-    for litter in crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id) {
+    for litter in
+        crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id)
+    {
         eprintln!("warning: cleanup litter: {litter}");
     }
     // Read uncertainty BEFORE release consumes the client, then
@@ -220,7 +231,9 @@ pub fn finalize_unobservable(
         // text; anything else reports the teardown error. No
         // fallthrough may reference a converged claim.
         report_release(release_client(client, rendezvous_dir));
-        eprintln!("error: teardown after unobservable outcome: {teardown_err}");
+        eprintln!(
+            "error: teardown after unobservable outcome: {teardown_err}"
+        );
         return 1;
     }
     if let Err(error) = release_client(client, rendezvous_dir) {
@@ -239,12 +252,16 @@ pub fn finalize_unobservable(
         );
         return 1;
     }
-    let proof = match crate::isolators::corroboration::prove_absence(coords.container_name) {
+    let proof = match crate::isolators::corroboration::prove_absence(
+        coords.container_name,
+    ) {
         Ok(proof) => proof,
         Err(error) => {
-            eprintln!("error: absence proof failed after unobservable outcome: {error}");
+            eprintln!(
+                "error: absence proof failed after unobservable outcome: {error}"
+            );
             return 1;
-        }
+        },
     };
     if !proof.converged {
         eprintln!(

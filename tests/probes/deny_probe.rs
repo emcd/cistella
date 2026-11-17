@@ -27,7 +27,7 @@ fn record(result_path: &str, outcome: &str) -> std::process::ExitCode {
         Err(error) => {
             eprintln!("PROBE_FAIL: cannot record outcome: {error}");
             std::process::ExitCode::from(2)
-        }
+        },
     }
 }
 
@@ -68,7 +68,7 @@ fn main() -> std::process::ExitCode {
                 },
                 Err(error) => errno_of(error),
             }
-        }
+        },
         // The ABI-v3 shape: read-only open with truncate.
         // Denied only by LANDLOCK_ACCESS_FS_TRUNCATE.
         "open-ro-trunc" => {
@@ -83,7 +83,7 @@ fn main() -> std::process::ExitCode {
                 Ok(_) => "OK".to_string(),
                 Err(error) => errno_of(error),
             }
-        }
+        },
         // Creation of a fresh name.
         "create-excl" => {
             let Some(path) = argv.next() else {
@@ -97,7 +97,7 @@ fn main() -> std::process::ExitCode {
                 Ok(_) => "OK".to_string(),
                 Err(error) => errno_of(error),
             }
-        }
+        },
         "unlink" => {
             let Some(path) = argv.next() else {
                 return usage();
@@ -106,16 +106,17 @@ fn main() -> std::process::ExitCode {
                 Ok(()) => "OK".to_string(),
                 Err(error) => errno_of(error),
             }
-        }
+        },
         "rename" => {
-            let (Some(source), Some(target)) = (argv.next(), argv.next()) else {
+            let (Some(source), Some(target)) = (argv.next(), argv.next())
+            else {
                 return usage();
             };
             match std::fs::rename(&source, &target) {
                 Ok(()) => "OK".to_string(),
                 Err(error) => errno_of(error),
             }
-        }
+        },
         _ => return usage(),
     };
     record(&result_path, &outcome)

@@ -88,7 +88,9 @@ impl Phase {
     pub fn is_planning(self) -> bool {
         matches!(
             self,
-            Self::Planning | Self::GateHostPreCreate | Self::PostInitiatePrepare
+            Self::Planning
+                | Self::GateHostPreCreate
+                | Self::PostInitiatePrepare
         )
     }
 }
@@ -176,9 +178,12 @@ pub struct MountContribution {
     pub provenance: Provenance,
 }
 
-pub use crate::framework::expectations::{InstanceExpectation, check_expected_credentials};
+pub use crate::framework::expectations::{
+    InstanceExpectation, check_expected_credentials,
+};
 pub use crate::framework::permissions::{
-    EffectiveGrant, EffectivePermissions, PermissionContribution, Rights, render_placements,
+    EffectiveGrant, EffectivePermissions, PermissionContribution, Rights,
+    render_placements,
 };
 
 /// Policy severity: acknowledgement-escapable or absolute.
@@ -418,14 +423,20 @@ impl MergeContext {
 
     /// Attaches host-declared expected contribution bundles.
     #[must_use]
-    pub fn with_expectations(mut self, expectations: Vec<InstanceExpectation>) -> Self {
+    pub fn with_expectations(
+        mut self,
+        expectations: Vec<InstanceExpectation>,
+    ) -> Self {
         self.expectations = expectations;
         self
     }
 
     /// Attaches explicit profile `[[permissions]] contributions.
     #[must_use]
-    pub fn with_profile_permissions(mut self, permissions: Vec<PermissionContribution>) -> Self {
+    pub fn with_profile_permissions(
+        mut self,
+        permissions: Vec<PermissionContribution>,
+    ) -> Self {
         self.profile_permissions = permissions;
         self
     }
@@ -492,7 +503,8 @@ pub fn merge_prepare(
                 .map(|(name, _)| (&expected.owner, name.as_str()))
         })
         .collect();
-    let environment = merge_environment(&plan.environment, &context.reserved_env, &exempt)?;
+    let environment =
+        merge_environment(&plan.environment, &context.reserved_env, &exempt)?;
     let placements: Vec<Placement> = plan
         .mounts
         .iter()
@@ -500,7 +512,9 @@ pub fn merge_prepare(
         .collect();
     let contributed_targets: Vec<String> = placements
         .iter()
-        .map(|placement| canonicalize_container_target(&placement.container_target))
+        .map(|placement| {
+            canonicalize_container_target(&placement.container_target)
+        })
         .collect();
     let mut assembled_permissions = context.profile_permissions.clone();
     assembled_permissions.extend(plan.permissions.iter().cloned());
@@ -518,7 +532,8 @@ pub fn merge_prepare(
     // on one source) that the actual rendering admits as RO+RO.
     let mut triples: Vec<MountTriple> = context.occupied_mounts.clone();
     triples.extend(render_placements(&placements, &effective));
-    validate_mounts(&triples, &context.container_home).map_err(contract_error)?;
+    validate_mounts(&triples, &context.container_home)
+        .map_err(contract_error)?;
     let policy_claims = check_claims(&plan.policy_claims)?;
     let guest_hooks = order_hooks(&plan.guest_hooks)?;
     Ok(MergedPlan {
@@ -535,7 +550,10 @@ fn contract_error(error: CistellaError) -> CistellaError {
     CistellaError::Contract(error.to_string())
 }
 
-pub(crate) fn gate_capabilities(plan: &PreparePlan, advertised: &CapabilitySet) -> Result<()> {
+pub(crate) fn gate_capabilities(
+    plan: &PreparePlan,
+    advertised: &CapabilitySet,
+) -> Result<()> {
     for (nonempty, capability, what) in [
         (
             !plan.environment.is_empty(),
@@ -577,7 +595,8 @@ fn merge_environment(
     let mut seen: HashSet<&str> = HashSet::new();
     let mut merged = Vec::with_capacity(contributions.len());
     for (index, contribution) in contributions.iter().enumerate() {
-        validate_env_name(&contribution.name, "contribution").map_err(contract_error)?;
+        validate_env_name(&contribution.name, "contribution")
+            .map_err(contract_error)?;
         if contribution.value.contains('\n')
             || contribution.value.contains('\r')
             || contribution.value.contains('\0')
@@ -587,9 +606,9 @@ fn merge_environment(
                 contribution.name
             )));
         }
-        let owned = exempt
-            .iter()
-            .any(|(owner, name)| *owner == &contribution.provenance && *name == contribution.name);
+        let owned = exempt.iter().any(|(owner, name)| {
+            *owner == &contribution.provenance && *name == contribution.name
+        });
         if reserved.contains(&contribution.name) && !owned {
             return Err(CistellaError::Contract(format!(
                 "contribution collides with reserved name: {}",
@@ -734,8 +753,8 @@ fn is_sha256_hex(value: &str) -> bool {
 /// isolator-contract schema on both `state` and `inspect` paths —
 /// one form, never Debug-derived.
 pub use crate::framework::lifecycle::{
-    Assumption, BaselineBinding, CancelFlag, ExecutionHandle, ExtensionIdentity, LifecycleState,
-    ReconciliationKey, UnitHandle,
+    Assumption, BaselineBinding, CancelFlag, ExecutionHandle,
+    ExtensionIdentity, LifecycleState, ReconciliationKey, UnitHandle,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -878,7 +897,8 @@ pub(crate) fn merge_transacted_as(
     );
     if !credentials.is_empty() && !advertised.allows(Capability::Credentials) {
         return Err(CistellaError::Contract(
-            "guest returned unadvertised contribution type: credentials".to_string(),
+            "guest returned unadvertised contribution type: credentials"
+                .to_string(),
         ));
     }
     // Raw inputs captured before the move: the full map
@@ -899,14 +919,19 @@ pub(crate) fn merge_transacted_as(
     // already refused at the per-plan gate; the global pass must
     // never flatten identity away — otherwise guest A's broad
     // pattern would police guest B's unacknowledged names.
-    let mut owner_groups: Vec<(Provenance, Vec<PolicyClaim>, Vec<String>)> = Vec::new();
+    let mut owner_groups: Vec<(Provenance, Vec<PolicyClaim>, Vec<String>)> =
+        Vec::new();
     for claim in &merged.policy_claims {
         match owner_groups
             .iter_mut()
             .find(|(owner, _, _)| *owner == claim.provenance)
         {
             Some((_, claims, _)) => claims.push(claim.clone()),
-            None => owner_groups.push((claim.provenance.clone(), vec![claim.clone()], Vec::new())),
+            None => owner_groups.push((
+                claim.provenance.clone(),
+                vec![claim.clone()],
+                Vec::new(),
+            )),
         }
     }
     for (name, _) in &merged.environment {

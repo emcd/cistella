@@ -9,7 +9,9 @@
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use super::bounded::{BoundedRunError, POST_EXIT_DRAIN_TIMEOUT, REAP_ALLOWANCE};
+use super::bounded::{
+    BoundedRunError, POST_EXIT_DRAIN_TIMEOUT, REAP_ALLOWANCE,
+};
 use super::surgery_diag as diag;
 
 /// Reserve inside every probe window for harness cleanup
@@ -48,7 +50,11 @@ pub const SURGERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A subprocess runner: argv in, bounded outcome out. The
 /// production runner shells out; test fakes replay scripts.
 pub trait ProbeRunner {
-    fn run(&self, argv: &[String], deadline: Instant) -> Result<Output, BoundedRunError>;
+    fn run(
+        &self,
+        argv: &[String],
+        deadline: Instant,
+    ) -> Result<Output, BoundedRunError>;
 }
 
 /// Production runner: builds the command and waits against
@@ -56,7 +62,11 @@ pub trait ProbeRunner {
 pub struct RealRunner;
 
 impl ProbeRunner for RealRunner {
-    fn run(&self, argv: &[String], deadline: Instant) -> Result<Output, BoundedRunError> {
+    fn run(
+        &self,
+        argv: &[String],
+        deadline: Instant,
+    ) -> Result<Output, BoundedRunError> {
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
         super::bounded::run_bounded_at(cmd, deadline)
@@ -107,7 +117,9 @@ pub struct LandingEvidence {
 pub fn render_landing_report(evidence: &LandingEvidence) -> String {
     format!(
         "landing evidence:\nmutation:\n{}\nhistory:\n{}\nbaseline:\n{}",
-        evidence.mutation_report, evidence.history_report, evidence.baseline_report
+        evidence.mutation_report,
+        evidence.history_report,
+        evidence.baseline_report
     )
 }
 /// Renders one successful mutation for retention: argv joined as
@@ -143,7 +155,10 @@ pub fn run_diagnostic<R: ProbeRunner, C: Clock>(
     let Some((deadline, granted)) =
         diag::probe_window(now, phase_deadline, allowance, PROBE_RESERVE)
     else {
-        return diag::render_cmd_evidence(label, "MISSING: phase budget exhausted");
+        return diag::render_cmd_evidence(
+            label,
+            "MISSING: phase budget exhausted",
+        );
     };
     let label_owned = format!("{label} +{granted:?}");
     let outcome = diag::split_outcome(runner.run(&argv[..], deadline));
@@ -243,7 +258,12 @@ pub fn collect_postmortem<R: ProbeRunner, C: Clock>(
     ));
     let ps_argv = diag::ps_argv(container);
     let ps_label = format!("podman ps -a name={container}");
-    match diag::probe_window(clock.now(), d_deadline, POSTMORTEM_PROBE, PROBE_RESERVE) {
+    match diag::probe_window(
+        clock.now(),
+        d_deadline,
+        POSTMORTEM_PROBE,
+        PROBE_RESERVE,
+    ) {
         Some((deadline, _granted)) => {
             let outcome = diag::split_outcome(runner.run(&ps_argv, deadline));
             let matched = diag::ps_id_present(&outcome.stdout, bound_id);
@@ -254,7 +274,7 @@ pub fn collect_postmortem<R: ProbeRunner, C: Clock>(
                     diag::render_outcome_body(&outcome, POSTMORTEM_STREAM_CAP),
                 ),
             ));
-        }
+        },
         None => parts.push(diag::render_cmd_evidence(
             &ps_label,
             "MISSING: phase budget exhausted",
@@ -295,36 +315,49 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
     index: usize,
     history: &mut diag::PollHistory,
 ) -> Option<(String, String)> {
-    let offsets = |now: Instant| now.duration_since(t0).as_millis().min(u64::MAX as u128) as u64;
+    let offsets = |now: Instant| {
+        now.duration_since(t0).as_millis().min(u64::MAX as u128) as u64
+    };
     // Inspect probe.
     let inspect_start = clock.now();
     let inspect_start_ms = offsets(inspect_start);
-    let (inspect_outcome, inspect_granted) =
-        match diag::probe_window(inspect_start, wait_deadline, PER_POLL_PROBE, PROBE_RESERVE) {
-            Some((deadline, granted)) => (
-                Some(diag::split_outcome(
-                    runner.run(&diag::inspect_argv(container), deadline),
-                )),
-                granted,
-            ),
-            None => (None, Duration::ZERO),
-        };
+    let (inspect_outcome, inspect_granted) = match diag::probe_window(
+        inspect_start,
+        wait_deadline,
+        PER_POLL_PROBE,
+        PROBE_RESERVE,
+    ) {
+        Some((deadline, granted)) => (
+            Some(diag::split_outcome(
+                runner.run(&diag::inspect_argv(container), deadline),
+            )),
+            granted,
+        ),
+        None => (None, Duration::ZERO),
+    };
     let inspect_end_ms = offsets(clock.now());
-    let (inspect_class, pair) =
-        diag::classify_inspect(inspect_outcome.as_ref(), bound_id, bound_started);
+    let (inspect_class, pair) = diag::classify_inspect(
+        inspect_outcome.as_ref(),
+        bound_id,
+        bound_started,
+    );
     // Exists probe (same budget discipline, sequential order).
     let exists_start = clock.now();
     let exists_start_ms = offsets(exists_start);
-    let (exists_outcome, exists_granted) =
-        match diag::probe_window(exists_start, wait_deadline, PER_POLL_PROBE, PROBE_RESERVE) {
-            Some((deadline, granted)) => (
-                Some(diag::split_outcome(
-                    runner.run(&diag::exists_argv(container), deadline),
-                )),
-                granted,
-            ),
-            None => (None, Duration::ZERO),
-        };
+    let (exists_outcome, exists_granted) = match diag::probe_window(
+        exists_start,
+        wait_deadline,
+        PER_POLL_PROBE,
+        PROBE_RESERVE,
+    ) {
+        Some((deadline, granted)) => (
+            Some(diag::split_outcome(
+                runner.run(&diag::exists_argv(container), deadline),
+            )),
+            granted,
+        ),
+        None => (None, Duration::ZERO),
+    };
     let exists_end_ms = offsets(clock.now());
     let exists_class = diag::classify_exists(exists_outcome.as_ref());
     // Human note: full per-probe outcomes (end, detail,
@@ -362,7 +395,8 @@ pub fn poll_landing<R: ProbeRunner, C: Clock>(
     }
     let mut late_rejected = false;
     let mut landed = None;
-    if let (diag::InspectClass::Changed, Some(pair)) = (&inspect_class, &pair) {
+    if let (diag::InspectClass::Changed, Some(pair)) = (&inspect_class, &pair)
+    {
         if clock.now() >= wait_deadline {
             // Changed identity observed at or past the
             // deadline: rejected, never landed.
@@ -411,7 +445,8 @@ pub fn run_surgery_cycle<R: ProbeRunner, C: Clock>(
     Result<std::process::Output, BoundedRunError>,
     Option<LandingEvidence>,
 ) {
-    let baseline = capture_baseline(runner, clock, container, bound_id, bound_started);
+    let baseline =
+        capture_baseline(runner, clock, container, bound_id, bound_started);
     // The mutation keeps its pre-existing allowance: a full
     // SURGERY_TIMEOUT of execution plus the cleanup reserve,
     // matching the old run_bounded(60s) composition.
@@ -433,7 +468,9 @@ pub fn run_surgery_cycle<R: ProbeRunner, C: Clock>(
     let mut index = 0usize;
     loop {
         if clock.now() >= wait_deadline {
-            let postmortem = collect_postmortem(runner, clock, container, bound_id, &baseline);
+            let postmortem = collect_postmortem(
+                runner, clock, container, bound_id, &baseline,
+            );
             let section = diag::unqueryable_section(&history);
             let verdict = format!(
                 "surgery never landed a new incarnation for {container}: bound=({bound_id}, {bound_started})"
@@ -513,7 +550,9 @@ impl EvidenceGuard {
 impl Drop for EvidenceGuard {
     fn drop(&mut self) {
         if let Some(report) = self.report.take() {
-            eprintln!("post-landing context (failure unwinding past this point):\n{report}");
+            eprintln!(
+                "post-landing context (failure unwinding past this point):\n{report}"
+            );
         }
     }
 }

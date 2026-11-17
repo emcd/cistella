@@ -39,7 +39,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{CistellaError, Result};
-use crate::mount::{MountTriple, canonicalize_container_target, canonicalize_host_source};
+use crate::mount::{
+    MountTriple, canonicalize_container_target, canonicalize_host_source,
+};
 
 /// Dentry identity of one directory: owning device plus inode
 /// number. Equal pairs on one host are the same directory,
@@ -138,14 +140,18 @@ impl MountTable {
     /// overmount order), remainder joins the entry's fs root.
     /// `None` only for an empty table (no root mount parsed).
     #[must_use]
-    pub fn filesystem_path(&self, canonical: &Path) -> Option<((u64, u64), PathBuf)> {
+    pub fn filesystem_path(
+        &self,
+        canonical: &Path,
+    ) -> Option<((u64, u64), PathBuf)> {
         let mut best: Option<&MountEntry> = None;
         for entry in &self.entries {
             if !canonical.starts_with(&entry.mount_point) {
                 continue;
             }
             let longer = best.is_none_or(|b: &MountEntry| {
-                entry.mount_point.as_os_str().len() >= b.mount_point.as_os_str().len()
+                entry.mount_point.as_os_str().len()
+                    >= b.mount_point.as_os_str().len()
             });
             if longer {
                 best = Some(entry);
@@ -275,8 +281,10 @@ pub fn refuse_dentry_aliases_with(
         .map(|triple| effective.rights_of(&triple.container_target))
         .collect();
     let rights = rights?;
-    let ancestor_canon = canonicalize_host_source(&ancestor_host.to_string_lossy());
-    let subtree_canon = canonicalize_host_source(&subtree_host.to_string_lossy());
+    let ancestor_canon =
+        canonicalize_host_source(&ancestor_host.to_string_lossy());
+    let subtree_canon =
+        canonicalize_host_source(&subtree_host.to_string_lossy());
     let ancestor_id = stat(&ancestor_canon);
     let subtree_id = stat(&subtree_canon);
     // An ancestor binding declared read-write carries its
@@ -284,7 +292,8 @@ pub fn refuse_dentry_aliases_with(
     // so its content is FULL-backed, not sensitive. Union
     // semantics: FULL wins over the read-execute route.
     let ancestor_full = triples.iter().enumerate().any(|(index, triple)| {
-        rights[index].writes() && canonicalize_host_source(&triple.host_source) == ancestor_canon
+        rights[index].writes()
+            && canonicalize_host_source(&triple.host_source) == ancestor_canon
     });
     // FULL-backed graft sources by dentry accounting (their
     // carveouts), keyed by triple so a candidate never
@@ -338,8 +347,9 @@ pub fn refuse_dentry_aliases_with(
         // every read-only declaration. A paired read-write
         // alias of the same content does not dilute this —
         // exemptions below never precede it.
-        let sensitive_eq =
-            (!ancestor_full && ancestor_id.is_some_and(|root| root == id)) || ro_ids.contains(&id);
+        let sensitive_eq = (!ancestor_full
+            && ancestor_id.is_some_and(|root| root == id))
+            || ro_ids.contains(&id);
         if sensitive_eq {
             return Err(alias_refusal(&triple.container_target));
         }
@@ -358,7 +368,10 @@ pub fn refuse_dentry_aliases_with(
             if rule_full_eq {
                 continue;
             }
-            return Err(table_refusal(&triple.container_target, "unavailable"));
+            return Err(table_refusal(
+                &triple.container_target,
+                "unavailable",
+            ));
         };
         if table.is_empty() {
             if rule_full_eq {
@@ -383,10 +396,12 @@ pub fn refuse_dentry_aliases_with(
         // content — refuse rather than compare blind. Roots
         // with no dentry skip (nothing to alias, matching
         // the missing-path skip).
-        let ancestor_fs = ancestor_id
-            .and_then(|root| table.filesystem_path(&ancestor_canon).map(|fs| (root, fs)));
-        let subtree_fs =
-            subtree_id.and_then(|root| table.filesystem_path(&subtree_canon).map(|fs| (root, fs)));
+        let ancestor_fs = ancestor_id.and_then(|root| {
+            table.filesystem_path(&ancestor_canon).map(|fs| (root, fs))
+        });
+        let subtree_fs = subtree_id.and_then(|root| {
+            table.filesystem_path(&subtree_canon).map(|fs| (root, fs))
+        });
         if ancestor_id.is_some() && ancestor_fs.is_none()
             || subtree_id.is_some() && subtree_fs.is_none()
         {
@@ -411,7 +426,8 @@ pub fn refuse_dentry_aliases_with(
             }
             ro_fs.push(resolved);
         }
-        let mut graft_fs: HashMap<usize, ((u64, u64), PathBuf)> = HashMap::new();
+        let mut graft_fs: HashMap<usize, ((u64, u64), PathBuf)> =
+            HashMap::new();
         for (other, graft_source) in &graft_sources {
             let Some(resolved) = table.filesystem_path(graft_source) else {
                 return Err(table_refusal(
@@ -446,9 +462,9 @@ pub fn refuse_dentry_aliases_with(
                 dev == candidate_dev && candidate_root.starts_with(root)
             })
             && !under_subtree)
-            || ro_fs
-                .iter()
-                .any(|(dev, root)| dev == candidate_dev && candidate_root.starts_with(root));
+            || ro_fs.iter().any(|(dev, root)| {
+                dev == candidate_dev && candidate_root.starts_with(root)
+            });
         if sensitive {
             return Err(alias_refusal(&triple.container_target));
         }
@@ -463,7 +479,9 @@ pub fn refuse_dentry_aliases_with(
                     dev == candidate_dev && candidate_root.starts_with(root)
                 }))
             || graft_fs.iter().any(|(other, (dev, root))| {
-                *other != index && dev == candidate_dev && candidate_root.starts_with(root)
+                *other != index
+                    && dev == candidate_dev
+                    && candidate_root.starts_with(root)
             });
         if under_subtree_path && !full {
             // Bind escape: path-wise inside the subtree but
@@ -598,7 +616,8 @@ pub fn baseline_tmp_alias_preflight_with(
             "cannot prove /tmp backing alias-disjoint: mount table unavailable".to_string(),
         ));
     };
-    let Some((backing_dev, backing_rel)) = table.filesystem_path(&backing) else {
+    let Some((backing_dev, backing_rel)) = table.filesystem_path(&backing)
+    else {
         return Err(CistellaError::Mount(
             "cannot resolve /tmp backing through the mount table".to_string(),
         ));
@@ -612,7 +631,8 @@ pub fn baseline_tmp_alias_preflight_with(
         if !is_dir(&source) {
             continue;
         }
-        let Some((source_dev, source_rel)) = table.filesystem_path(&source) else {
+        let Some((source_dev, source_rel)) = table.filesystem_path(&source)
+        else {
             return Err(CistellaError::Mount(format!(
                 "cannot resolve {} through the mount table",
                 triple.container_target

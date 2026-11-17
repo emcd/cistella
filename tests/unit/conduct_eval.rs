@@ -12,7 +12,9 @@ use cistella::framework::policy::PolicySet;
 use cistella::profile::Profile;
 
 fn minimal_toml(body: &str) -> String {
-    format!("image = \"localhost/cistella/opencode:example\"\nmounts = []\n{body}")
+    format!(
+        "image = \"localhost/cistella/opencode:example\"\nmounts = []\n{body}"
+    )
 }
 
 /// Compiled defaults via load on an empty dir: absent file means
@@ -20,7 +22,8 @@ fn minimal_toml(body: &str) -> String {
 /// a hand-built default set).
 fn defaults_via_absent_file() -> (tempfile::TempDir, PolicySet) {
     let dir = tempfile::tempdir().expect("tmpdir");
-    let policy = PolicySet::load(Some(dir.path())).expect("absent file means defaults");
+    let policy =
+        PolicySet::load(Some(dir.path())).expect("absent file means defaults");
     (dir, policy)
 }
 
@@ -50,9 +53,10 @@ fn assignment_token_with_exact_ack_passes() {
         "[environment-assignments]\nGITHUB_TOKEN = \"secret\"\n",
     ))
     .unwrap();
-    let policy =
-        PolicySet::parse(b"format_version = 1\n[[acknowledgements]]\nname = \"GITHUB_TOKEN\"\n")
-            .expect("acknowledgement parses");
+    let policy = PolicySet::parse(
+        b"format_version = 1\n[[acknowledgements]]\nname = \"GITHUB_TOKEN\"\n",
+    )
+    .expect("acknowledgement parses");
     evaluate_profile_contributions(&prof, &[], &policy)
         .expect("exact acknowledgement excuses the suppressible default");
 }
@@ -64,9 +68,11 @@ fn accepted_token_name_grandfathered_against_defaults_only() {
     ))
     .unwrap();
     let (_dir, policy) = defaults_via_absent_file();
-    let accepted = vec![("GITHUB_TOKEN".to_string(), "invoker-value".to_string())];
-    evaluate_profile_contributions(&prof, &accepted, &policy)
-        .expect("shipped acceptance grandfathers against the compiled default");
+    let accepted =
+        vec![("GITHUB_TOKEN".to_string(), "invoker-value".to_string())];
+    evaluate_profile_contributions(&prof, &accepted, &policy).expect(
+        "shipped acceptance grandfathers against the compiled default",
+    );
 }
 
 #[test]
@@ -79,7 +85,8 @@ fn user_denial_over_accepted_name_refuses() {
         "format_version = 1\n[[denials]]\npattern = \"AGENTMUX_.*\"\nseverity = \"suppressible\"\nscope = \"universal\"\n".as_bytes(),
     )
     .expect("user denial parses");
-    let accepted = vec![("AGENTMUX_BUNDLE".to_string(), "seat-7f3a".to_string())];
+    let accepted =
+        vec![("AGENTMUX_BUNDLE".to_string(), "seat-7f3a".to_string())];
     let error = evaluate_profile_contributions(&prof, &accepted, &policy)
         .expect_err("user rules take precedence over grandfathering");
     assert!(

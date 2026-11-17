@@ -72,12 +72,17 @@ pub fn probe_table(
 /// contact failures are typed observation errors, never silent
 /// absence (a failed query never reads as "not there").
 pub fn probe_native(container_name: &str) -> Result<NativeEvidence> {
-    let container_present =
-        crate::isolators::quadlet::container_exists(container_name).map_err(|e| {
-            CistellaError::Runtime(format!("describe probe container {container_name}: {e}"))
-        })?;
-    let unit_present =
-        crate::isolators::podman::unit_file_present(&format!("{container_name}.container"));
+    let container_present = crate::isolators::quadlet::container_exists(
+        container_name,
+    )
+    .map_err(|e| {
+        CistellaError::Runtime(format!(
+            "describe probe container {container_name}: {e}"
+        ))
+    })?;
+    let unit_present = crate::isolators::podman::unit_file_present(&format!(
+        "{container_name}.container"
+    ));
     Ok(NativeEvidence {
         container_present,
         unit_present,
@@ -88,10 +93,14 @@ pub fn probe_native(container_name: &str) -> Result<NativeEvidence> {
 /// failure and unexpected shapes are observation errors, never
 /// silent defaults.
 pub fn service_props(container_name: &str) -> Result<HashMap<String, String>> {
-    crate::isolators::quadlet::query_unit_props_checked(&format!("{container_name}.service"))
-        .map_err(|e| {
-            CistellaError::Runtime(format!("describe probe service {container_name}: {e}"))
-        })
+    crate::isolators::quadlet::query_unit_props_checked(&format!(
+        "{container_name}.service"
+    ))
+    .map_err(|e| {
+        CistellaError::Runtime(format!(
+            "describe probe service {container_name}: {e}"
+        ))
+    })
 }
 
 /// Guards the commitment≠currency invariant at the render
@@ -102,7 +111,8 @@ pub fn service_props(container_name: &str) -> Result<HashMap<String, String>> {
 pub fn snapshot_checked(snapshot: &UnitSnapshot) -> Result<LifecycleState> {
     match snapshot.lifecycle {
         LifecycleState::Executing => Err(CistellaError::Runtime(
-            "describe refuses ownerless executing (internal invariant)".to_string(),
+            "describe refuses ownerless executing (internal invariant)"
+                .to_string(),
         )),
         state => Ok(state),
     }
@@ -132,24 +142,33 @@ pub fn exec_admittability(container_name: &str) -> Result<Admittability> {
             container_name,
         ])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("enter probe {container_name}: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!(
+                "enter probe {container_name}: {e}"
+            ))
+        })?;
     let (running, init_pid) = if out.status.success() {
         let text = String::from_utf8_lossy(&out.stdout);
         let mut parts = text.split_whitespace();
         let status = parts.next().unwrap_or_default();
         let pid: i64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
         (status == "running", pid)
-    } else if crate::isolators::quadlet::container_exists(container_name).map_err(|e| {
-        CistellaError::Runtime(format!("enter probe container {container_name}: {e}"))
-    })? {
+    } else if crate::isolators::quadlet::container_exists(container_name)
+        .map_err(|e| {
+            CistellaError::Runtime(format!(
+                "enter probe container {container_name}: {e}"
+            ))
+        })?
+    {
         return Err(CistellaError::Runtime(format!(
             "enter probe {container_name} failed while container exists"
         )));
     } else {
         (false, 0)
     };
-    let unit_present =
-        crate::isolators::podman::unit_file_present(&format!("{container_name}.container"));
+    let unit_present = crate::isolators::podman::unit_file_present(&format!(
+        "{container_name}.container"
+    ));
     Ok(Admittability {
         running,
         init_pid,
@@ -194,11 +213,14 @@ pub fn decide_enter(
     admittability: &Admittability,
 ) -> EnterDecision {
     let Some(bound) = attestation else {
-        return EnterDecision::Refuse("no launch attestation committed".to_string());
+        return EnterDecision::Refuse(
+            "no launch attestation committed".to_string(),
+        );
     };
     if bound.container_name != container_name {
         return EnterDecision::Refuse(
-            "attestation container mismatch (possible out-of-band recreate)".to_string(),
+            "attestation container mismatch (possible out-of-band recreate)"
+                .to_string(),
         );
     }
     if bound.incarnation.is_none() {
@@ -209,13 +231,14 @@ pub fn decide_enter(
             return EnterDecision::Refuse(
                 "launch incarnation unestablishable (refusing)".to_string(),
             );
-        }
+        },
         LiveIncarnation::Stale => {
             return EnterDecision::Refuse(
-                "stale launch incarnation (container recreated or restarted)".to_string(),
+                "stale launch incarnation (container recreated or restarted)"
+                    .to_string(),
             );
-        }
-        LiveIncarnation::Current => {}
+        },
+        LiveIncarnation::Current => {},
     }
     if !admittability.unit_present {
         return EnterDecision::Refuse("unit file absent".to_string());
@@ -224,7 +247,9 @@ pub fn decide_enter(
         return EnterDecision::Refuse("container not running".to_string());
     }
     if admittability.init_pid <= 0 {
-        return EnterDecision::Refuse("container init PID not established".to_string());
+        return EnterDecision::Refuse(
+            "container init PID not established".to_string(),
+        );
     }
     EnterDecision::ProceedNative
 }
@@ -240,7 +265,7 @@ pub fn render_state(state: &LifecycleState) -> &'static str {
         LifecycleState::Initiated => "initiated",
         LifecycleState::Executing => {
             unreachable!("snapshot_checked excludes ownerless executing")
-        }
+        },
         LifecycleState::Stopped => "stopped",
         LifecycleState::Absent => "absent",
     }

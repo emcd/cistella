@@ -26,7 +26,8 @@ fn signal_during_startup_tears_down() {
     // how slow the runner is — no elapsed-time premise.
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
-    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &fixture, &gate);
+    let mut parked =
+        ParkedConduct::spawn(&home, &worktree_str, &fixture, &gate);
     let id = parked.discover_id();
     let upath = unit_path(&home, &id);
     assert!(upath.exists(), "installed unit marks the hold window");
@@ -73,7 +74,8 @@ impl TerminatorHold {
 
     fn join(mut self) -> std::process::Output {
         let child = self.child.take().expect("terminator owned until join");
-        let out = wait_bounded(child, RUN_CISTELLA_TIMEOUT).expect("terminator reaped");
+        let out = wait_bounded(child, RUN_CISTELLA_TIMEOUT)
+            .expect("terminator reaped");
         self.done = true;
         out
     }
@@ -116,7 +118,8 @@ fn terminate_waits_on_creation_lock_pre_initiate() {
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
 
-    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &fixture, &gate);
+    let mut parked =
+        ParkedConduct::spawn(&home, &worktree_str, &fixture, &gate);
     let id = parked.discover_id();
     let upath = unit_path(&home, &id);
     assert!(upath.exists(), "installed unit marks the hold window");
@@ -152,7 +155,8 @@ fn terminate_waits_on_creation_lock_pre_initiate() {
     );
     assert!(!upath.exists(), "unit removed by raced teardown");
     assert!(rdv_gone(&id), "rendezvous dir reaped by raced teardown");
-    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    let survey =
+        run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         survey.status.success(),
         "survey runs: {}",
@@ -193,7 +197,8 @@ fn sighup_conduct_tears_down() {
         "kill -HUP {pid}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct reaped");
     assert_eq!(status.code(), Some(129), "128+SIGHUP, got {status:?}");
     guard.id = None;
     assert!(

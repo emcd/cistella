@@ -51,7 +51,10 @@ pub const AWAIT_INTERRUPTED_V1: &str = "await-interrupted-v1";
 /// True when a hello payload's capability list names `capability.
 /// Pure so guest hello handling and unit pins share the check.
 #[must_use]
-pub fn offered_capability(payload: &serde_json::Value, capability: &str) -> bool {
+pub fn offered_capability(
+    payload: &serde_json::Value,
+    capability: &str,
+) -> bool {
     payload
         .get("capabilities")
         .and_then(|capabilities| capabilities.as_array())
@@ -216,15 +219,20 @@ fn is_pending(payload: &Value) -> bool {
 /// # Errors
 ///
 /// Returns `CistellaError::Protocol` on select failure.
-pub(crate) fn wait_readable(fd: &impl AsFd, deadline: Instant) -> Result<bool> {
+pub(crate) fn wait_readable(
+    fd: &impl AsFd,
+    deadline: Instant,
+) -> Result<bool> {
     loop {
         let now = Instant::now();
         if now >= deadline {
             return Ok(false);
         }
         let remaining = deadline - now;
-        let mut timeout =
-            TimeVal::new(remaining.as_secs() as i64, remaining.subsec_micros() as i64);
+        let mut timeout = TimeVal::new(
+            remaining.as_secs() as i64,
+            remaining.subsec_micros() as i64,
+        );
         let raw = fd.as_fd();
         let mut set = FdSet::new();
         set.insert(raw);
@@ -294,7 +302,9 @@ fn masked<T>(op: impl FnOnce() -> T) -> Result<T> {
         let out = op();
         if !had {
             let mut now: libc::sigset_t = std::mem::zeroed();
-            if libc::sigpending(&mut now) == 0 && libc::sigismember(&now, libc::SIGPIPE) == 1 {
+            if libc::sigpending(&mut now) == 0
+                && libc::sigismember(&now, libc::SIGPIPE) == 1
+            {
                 // Zero-timeout wait consumes exactly the signal this
                 // write generated; EAGAIN (raced away) is harmless.
                 let timeout = libc::timespec {
@@ -305,7 +315,11 @@ fn masked<T>(op: impl FnOnce() -> T) -> Result<T> {
                 libc::sigtimedwait(&block, &mut info, &timeout);
             }
         }
-        let restore_error = libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        let restore_error = libc::pthread_sigmask(
+            libc::SIG_SETMASK,
+            &old,
+            std::ptr::null_mut(),
+        );
         if restore_error != 0 {
             return Err(protocol_error(format!(
                 "sigmask restore: {}",
@@ -330,8 +344,10 @@ fn wait_writable(fd: &impl AsFd, deadline: Instant) -> Result<bool> {
             return Ok(false);
         }
         let remaining = deadline - now;
-        let mut timeout =
-            TimeVal::new(remaining.as_secs() as i64, remaining.subsec_micros() as i64);
+        let mut timeout = TimeVal::new(
+            remaining.as_secs() as i64,
+            remaining.subsec_micros() as i64,
+        );
         let raw = fd.as_fd();
         let mut set = FdSet::new();
         set.insert(raw);
@@ -365,15 +381,19 @@ fn write_all_deadline(
             return Err(protocol_error(WRITE_TIMEOUT));
         }
         match masked(|| writer.write(buf)) {
-            Ok(Ok(0)) => return Err(protocol_error("frame write: closed pipe")),
+            Ok(Ok(0)) => {
+                return Err(protocol_error("frame write: closed pipe"));
+            },
             Ok(Ok(n)) => buf = &buf[n..],
             Ok(Err(e))
                 if e.kind() == std::io::ErrorKind::Interrupted
                     || e.kind() == std::io::ErrorKind::WouldBlock =>
             {
                 continue;
-            }
-            Ok(Err(e)) => return Err(protocol_error(format!("frame write: {e}"))),
+            },
+            Ok(Err(e)) => {
+                return Err(protocol_error(format!("frame write: {e}")));
+            },
             Err(e) => return Err(e),
         }
     }
@@ -422,7 +442,8 @@ pub fn write_frame_deadline(
 /// Returns `CistellaError::Protocol` on invalid UTF-8, malformed
 /// JSON, shape violations, or grammar violations.
 pub fn parse_envelope(body: &[u8]) -> Result<Envelope> {
-    let text = std::str::from_utf8(body).map_err(|_| protocol_error("bad envelope: not UTF-8"))?;
+    let text = std::str::from_utf8(body)
+        .map_err(|_| protocol_error("bad envelope: not UTF-8"))?;
     let envelope: Envelope = serde_json::from_str(text).map_err(|e| {
         if e.is_eof() {
             return protocol_error("bad envelope: truncated JSON");

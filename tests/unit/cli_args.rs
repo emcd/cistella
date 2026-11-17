@@ -23,7 +23,7 @@ fn session_directory_replaces_directory() {
         } => {
             assert_eq!(session_directory.as_deref(), Some("/repo:/repo"));
             assert!(mounts.is_empty());
-        }
+        },
         other => panic!("expected conduct, got {other:?}"),
     }
 }
@@ -49,8 +49,11 @@ fn mount_flag_is_repeatable() {
         "/b:/b:rw",
     ]) {
         Command::Conduct { mounts, .. } => {
-            assert_eq!(mounts, vec!["/a:/a:ro".to_string(), "/b:/b:rw".to_string()]);
-        }
+            assert_eq!(
+                mounts,
+                vec!["/a:/a:ro".to_string(), "/b:/b:rw".to_string()]
+            );
+        },
         other => panic!("expected conduct, got {other:?}"),
     }
 }
@@ -60,20 +63,27 @@ fn project_name_flag_reaches_conduct() {
     match conduct(&["--profile", "x", "--project-name", "qa"]) {
         Command::Conduct { project_name, .. } => {
             assert_eq!(project_name.as_deref(), Some("qa"));
-        }
+        },
         other => panic!("expected conduct, got {other:?}"),
     }
 }
 
 #[test]
 fn selectors_keep_directory() {
-    match Cli::try_parse_from(["cistella", "enter", "--directory", "/repo", "--", "sh"])
-        .unwrap()
-        .command
+    match Cli::try_parse_from([
+        "cistella",
+        "enter",
+        "--directory",
+        "/repo",
+        "--",
+        "sh",
+    ])
+    .unwrap()
+    .command
     {
         Command::Enter { directory, .. } => {
             assert_eq!(directory.as_deref(), Some("/repo"));
-        }
+        },
         other => panic!("expected enter, got {other:?}"),
     }
 }

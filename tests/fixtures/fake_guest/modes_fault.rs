@@ -11,8 +11,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::{
-    HEADER_LEN, PROTOCOL_MAJOR, hello_response_ok, libc, protocol_error_exit, read_exact,
-    read_frame_from_stdin, write_frame,
+    HEADER_LEN, PROTOCOL_MAJOR, hello_response_ok, libc, protocol_error_exit,
+    read_exact, read_frame_from_stdin, write_frame,
 };
 
 /// Runs one Framing/timeout mode; `None` falls through to the next group.
@@ -31,7 +31,7 @@ pub(crate) fn run(
             let _ = stdout_lock.write_all(&header_bytes);
             let _ = stdout_lock.flush();
             ExitCode::SUCCESS
-        }
+        },
         "oversize-frame" => {
             let mut header = [0u8; 4];
             let _ = read_exact(&mut stdin_lock, &mut header);
@@ -42,12 +42,13 @@ pub(crate) fn run(
             let _ = stdout_lock.write_all(&header_bytes);
             let _ = stdout_lock.flush();
             ExitCode::SUCCESS
-        }
+        },
         "unknown-fields" => hello_response_unknown_field(),
         "duplicate-id" => {
             let mut header = [0u8; 4];
             let _ = read_exact(&mut stdin_lock, &mut header);
-            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body1 =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // Now send a second response with the same id but a different op —
             // the host's correlation check should refuse the duplicate id.
@@ -60,10 +61,11 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body2, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "pending-on-solo" => {
             let _ = read_frame_from_stdin(&mut stdin_lock);
-            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body1 =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // Read the host's first request frame...
             let _ = read_frame_from_stdin(&mut stdin_lock);
@@ -77,7 +79,7 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body2, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "hang-hello" => {
             // Read the host hello (so the host does not get EOF on its first recv),
             // then sleep forever. The host's hello deadline (5s default) fires.
@@ -85,15 +87,16 @@ pub(crate) fn run(
             let _ = read_exact(&mut stdin_lock, &mut header);
             std::thread::sleep(Duration::from_secs(60));
             ExitCode::SUCCESS
-        }
+        },
         "hang-request" => {
             let _ = read_frame_from_stdin(&mut stdin_lock);
-            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body1 =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // After hello, sleep before responding to any request.
             std::thread::sleep(Duration::from_secs(60));
             ExitCode::SUCCESS
-        }
+        },
         "partial-response" => {
             let mut header = [0u8; 4];
             let _ = read_exact(&mut stdin_lock, &mut header);
@@ -105,10 +108,11 @@ pub(crate) fn run(
             let _ = stdout_lock.flush();
             // Close stdout to surface EOF mid-frame.
             ExitCode::SUCCESS
-        }
+        },
         "spurious-after-terminal" => {
             let _ = read_frame_from_stdin(&mut stdin_lock);
-            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body1 =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // Read the host's request frame...
             let _ = read_frame_from_stdin(&mut stdin_lock);
@@ -131,10 +135,11 @@ pub(crate) fn run(
             .expect("serialize");
             let _ = write_frame(&mut stdout_lock, &stray, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "cleanup-then-write" => {
             let _ = read_frame_from_stdin(&mut stdin_lock);
-            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body1 =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body1, 64 * 1024);
             // Read the host's request, then close fd 1 entirely so any
             // subsequent write fails with EBADF. The host's recv sees
@@ -150,7 +155,7 @@ pub(crate) fn run(
             }
             std::thread::sleep(Duration::from_millis(100));
             ExitCode::SUCCESS
-        }
+        },
         "stderr-fill" => {
             // Never write to stdout (host hangs on hello until deadline).
             // Fill stderr past STDERR_CAP (1 MiB).
@@ -162,13 +167,14 @@ pub(crate) fn run(
             }
             let _ = handle.flush();
             ExitCode::SUCCESS
-        }
+        },
         "normal-echo" => {
             // Default: hello + echo one request frame as a response.
             if read_frame_from_stdin(&mut stdin_lock).is_err() {
                 return Some(protocol_error_exit());
             }
-            let body1 = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body1 =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             if write_frame(&mut stdout_lock, &body1, 64 * 1024).is_err() {
                 return Some(protocol_error_exit());
             }
@@ -191,7 +197,7 @@ pub(crate) fn run(
                 let _ = write_frame(&mut stdout_lock, &body, 64 * 1024);
             }
             ExitCode::SUCCESS
-        }
+        },
         // ---- Prepare-transaction fault modes (peer-driven
         //      boundary coverage per the frozen 2.2 wire shape).
         //
@@ -220,8 +226,11 @@ fn hello_response_unknown_field() -> ExitCode {
     let mut header = [0u8; 4];
     let len = raw.len() as u32;
     header.copy_from_slice(&len.to_be_bytes());
-    let header_write = unsafe { libc::write(1, &header as *const u8 as *const _, HEADER_LEN) };
-    let body_write = unsafe { libc::write(1, raw.as_ptr() as *const _, raw.len()) };
+    let header_write = unsafe {
+        libc::write(1, &header as *const u8 as *const _, HEADER_LEN)
+    };
+    let body_write =
+        unsafe { libc::write(1, raw.as_ptr() as *const _, raw.len()) };
     debug_assert_eq!(header_write, HEADER_LEN as isize);
     debug_assert_eq!(body_write, raw.len() as isize);
     std::thread::sleep(Duration::from_millis(50));

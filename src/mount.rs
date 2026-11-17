@@ -85,13 +85,14 @@ pub struct Placement {
 /// ```
 pub fn parse_mount_triple(s: &str) -> Result<MountTriple> {
     let mut parts = s.split(':');
-    let triple = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+    let triple = match (parts.next(), parts.next(), parts.next(), parts.next())
+    {
         (Some(host), Some(target), Some(mode), None) => (host, target, mode),
         _ => {
             return Err(CistellaError::Mount(format!(
                 "--mount must be <host>:<target>:<mode>: {s}"
             )));
-        }
+        },
     };
     if triple.0.is_empty() || triple.1.is_empty() {
         return Err(CistellaError::Mount(format!(
@@ -205,15 +206,15 @@ pub fn merge_cli_mounts(
     let mut merged: Vec<MountTriple> = profile.to_vec();
     for t in cli {
         let canon = canonicalize_container_target(&t.container_target);
-        if let Some(pos) = merged
-            .iter()
-            .position(|p| canonicalize_container_target(&p.container_target) == canon)
-        {
+        if let Some(pos) = merged.iter().position(|p| {
+            canonicalize_container_target(&p.container_target) == canon
+        }) {
             merged[pos] = t.clone();
             continue;
         }
         for p in profile {
-            let canon_profile = canonicalize_container_target(&p.container_target);
+            let canon_profile =
+                canonicalize_container_target(&p.container_target);
             if canon_profile != canon
                 && (is_ancestor_or_equal(&canon_profile, &canon)
                     || is_ancestor_or_equal(&canon, &canon_profile))
@@ -240,13 +241,20 @@ pub fn merge_cli_mounts(
 /// Modes ride along unused (underscore parameters): the stacking rule is
 /// deliberately mode-agnostic, and the signature stays symmetric with
 /// the rest of the validation pipeline.
-fn overlap_allowed(canon_a: &str, _mode_a: MountMode, canon_b: &str, _mode_b: MountMode) -> bool {
+fn overlap_allowed(
+    canon_a: &str,
+    _mode_a: MountMode,
+    canon_b: &str,
+    _mode_b: MountMode,
+) -> bool {
     canon_a != canon_b
-        && (is_ancestor_or_equal(canon_a, canon_b) || is_ancestor_or_equal(canon_b, canon_a))
+        && (is_ancestor_or_equal(canon_a, canon_b)
+            || is_ancestor_or_equal(canon_b, canon_a))
 }
 
 /// Sensitive container roots that must not be used as target.
-const SENSITIVE_ROOTS: &[&str] = &["/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64"];
+const SENSITIVE_ROOTS: &[&str] =
+    &["/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64"];
 
 /// Validates the allowlist triples against the two-tier topology.
 ///
@@ -254,7 +262,10 @@ const SENSITIVE_ROOTS: &[&str] = &["/", "/etc", "/usr", "/bin", "/sbin", "/lib",
 ///
 /// Returns `CistellaError::Mount` on overlap, sensitive target, or
 /// malformed paths.
-pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<()> {
+pub fn validate_mounts(
+    triples: &[MountTriple],
+    container_home: &str,
+) -> Result<()> {
     for t in triples {
         if t.host_source.contains('\n')
             || t.host_source.contains('\r')
@@ -288,7 +299,9 @@ pub fn validate_mounts(triples: &[MountTriple], container_home: &str) -> Result<
         }
         let canon_target = canonicalize_container_target(&t.container_target);
         for root in SENSITIVE_ROOTS {
-            if canon_target == *root || canon_target.starts_with(&format!("{root}/")) {
+            if canon_target == *root
+                || canon_target.starts_with(&format!("{root}/"))
+            {
                 // Allow nesting under session-home even if session-home is under
                 // a sensitive prefix? No — session-home is outside triples.
                 // Reject triples at or above sensitive roots.
@@ -408,7 +421,8 @@ fn overlap_allowed_host(
     host_a: &Path,
     host_b: &Path,
 ) -> bool {
-    host_a != host_b && (host_a.starts_with(host_b) || host_b.starts_with(host_a))
+    host_a != host_b
+        && (host_a.starts_with(host_b) || host_b.starts_with(host_a))
 }
 
 /// Canonicalizes a container target: cleans `.`, `..`, duplicate slashes
@@ -417,11 +431,13 @@ pub(crate) fn canonicalize_container_target(path: &str) -> String {
     let mut out = PathBuf::new();
     for comp in Path::new(path).components() {
         match comp {
-            Component::Prefix(_) | Component::RootDir => out.push(Component::RootDir),
-            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir => {
+                out.push(Component::RootDir)
+            },
+            Component::CurDir => {},
             Component::ParentDir => {
                 out.pop();
-            }
+            },
             Component::Normal(s) => out.push(s),
         }
     }
@@ -596,7 +612,8 @@ pub fn nested_ro_checks(triples: &[MountTriple]) -> Vec<NestedRoCheck> {
 /// Returns the first offending path, if any.
 #[must_use]
 pub fn nested_ro_missing(check: &NestedRoCheck) -> Option<PathBuf> {
-    let Ok(suffix) = check.host_path.strip_prefix(&check.ancestor_source) else {
+    let Ok(suffix) = check.host_path.strip_prefix(&check.ancestor_source)
+    else {
         return Some(check.host_path.clone());
     };
     let mut cur = check.ancestor_source.clone();
@@ -652,13 +669,17 @@ pub fn canonicalize_host_source(path: &str) -> PathBuf {
 /// visible); no covering triple yields no routes (the caller
 /// refuses untranslatable paths fail-closed).
 #[must_use]
-pub fn guest_routes_for_host(placements: &[Placement], host_path: &std::path::Path) -> Vec<String> {
+pub fn guest_routes_for_host(
+    placements: &[Placement],
+    host_path: &std::path::Path,
+) -> Vec<String> {
     let host = canonicalize_host_source(&host_path.to_string_lossy());
     let mut routes = Vec::new();
     for triple in placements {
         let source = canonicalize_host_source(&triple.host_source);
         if let Ok(remainder) = host.strip_prefix(&source) {
-            let target = canonicalize_container_target(&triple.container_target);
+            let target =
+                canonicalize_container_target(&triple.container_target);
             // An empty remainder joins as a trailing slash; the
             // route is the target itself then.
             let route = if remainder.as_os_str().is_empty() {
@@ -734,8 +755,10 @@ pub fn graft_alias_preflight(
     ancestor_host: &std::path::Path,
     subtree_host: &std::path::Path,
 ) -> Result<()> {
-    let ancestor_canon = canonicalize_host_source(&ancestor_host.to_string_lossy());
-    let subtree_canon = canonicalize_host_source(&subtree_host.to_string_lossy());
+    let ancestor_canon =
+        canonicalize_host_source(&ancestor_host.to_string_lossy());
+    let subtree_canon =
+        canonicalize_host_source(&subtree_host.to_string_lossy());
     for triple in triples {
         // Actual granted rights, not declared mode: a
         // read-only-declared graft with effective write-capable
@@ -749,7 +772,8 @@ pub fn graft_alias_preflight(
             continue;
         }
         let source = canonicalize_host_source(&triple.host_source);
-        let under_ancestor = source.starts_with(&ancestor_canon) && source != ancestor_canon;
+        let under_ancestor =
+            source.starts_with(&ancestor_canon) && source != ancestor_canon;
         let outside_subtree = !source.starts_with(&subtree_canon);
         if under_ancestor && outside_subtree {
             return Err(CistellaError::Mount(format!(
@@ -785,7 +809,10 @@ pub fn graft_alias_preflight(
 /// root is the admitted feature, not symlink smuggling);
 /// every other beneath-bind resolution still refuses.
 #[must_use]
-pub fn managed_bind_targets(triples: &[MountTriple], cleanup_roots: &[String]) -> Vec<String> {
+pub fn managed_bind_targets(
+    triples: &[MountTriple],
+    cleanup_roots: &[String],
+) -> Vec<String> {
     let roots: Vec<PathBuf> = cleanup_roots
         .iter()
         .map(|root| canonicalize_host_source(root))
@@ -808,7 +835,10 @@ pub fn managed_bind_targets(triples: &[MountTriple], cleanup_roots: &[String]) -
 /// Whether a canonical host source sits at or under a
 /// FULL-backed source (component-wise, same spelling the
 /// revision retains on).
-pub(crate) fn under_full_source(source: &std::path::Path, full_sources: &[PathBuf]) -> bool {
+pub(crate) fn under_full_source(
+    source: &std::path::Path,
+    full_sources: &[PathBuf],
+) -> bool {
     full_sources
         .iter()
         .any(|root| source == root || source.starts_with(root))
@@ -821,7 +851,7 @@ pub(crate) fn under_full_source(source: &std::path::Path, full_sources: &[PathBu
 /// cannot dodge retention.
 pub(crate) fn under_full_route(target: &str, full_routes: &[String]) -> bool {
     let canon = canonicalize_container_target(target);
-    full_routes
-        .iter()
-        .any(|route| canon == *route || canon.starts_with(&format!("{route}/")))
+    full_routes.iter().any(|route| {
+        canon == *route || canon.starts_with(&format!("{route}/"))
+    })
 }

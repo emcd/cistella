@@ -5,7 +5,9 @@
 //! prepare_hooks.
 
 /// Strips triples to modeless placements for the map-reading grant path.
-fn placements_of(triples: &[cistella::mount::MountTriple]) -> Vec<cistella::mount::Placement> {
+fn placements_of(
+    triples: &[cistella::mount::MountTriple],
+) -> Vec<cistella::mount::Placement> {
     triples
         .iter()
         .map(|triple| cistella::mount::Placement {
@@ -19,10 +21,17 @@ fn placements_of(triples: &[cistella::mount::MountTriple]) -> Vec<cistella::moun
 fn fixture_effective(
     triples: &[cistella::mount::MountTriple],
 ) -> cistella::framework::contract::EffectivePermissions {
-    cistella::framework::contract::EffectivePermissions::assemble(triples, &[], &[], &[])
-        .expect("driver-only assembly")
+    cistella::framework::contract::EffectivePermissions::assemble(
+        triples,
+        &[],
+        &[],
+        &[],
+    )
+    .expect("driver-only assembly")
 }
-fn singleton_hook(prefix: Vec<String>) -> cistella::framework::contract::GuestHookRequest {
+fn singleton_hook(
+    prefix: Vec<String>,
+) -> cistella::framework::contract::GuestHookRequest {
     use cistella::framework::contract::{HookArtifact, HookProbe, HookSource};
     cistella::framework::contract::GuestHookRequest {
         artifact: HookArtifact {
@@ -438,7 +447,8 @@ fn compose_skips_proven_nondirectories_but_grants_missing() {
     // a non-directory is ENOTDIR) and refuses the whole
     // session — proven live by an agent socket.
     std::fs::write(dir.path().join("agent-file"), b"x").expect("agent file");
-    let _socket = UnixListener::bind(dir.path().join("agent.sock")).expect("agent socket");
+    let _socket = UnixListener::bind(dir.path().join("agent.sock"))
+        .expect("agent socket");
     let hook = singleton_hook(vec![STAGED_WRAPPER_GUEST_PATH.to_string()]);
     let triples = vec![
         MountTriple {

@@ -70,10 +70,14 @@ pub fn discover_in(exe_dir: &Path, name: &str) -> Result<PathBuf> {
 /// path is unavailable or [`discover_in`] refuses.
 pub fn discover_sibling(name: &str) -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(|e| {
-        CistellaError::Contract(format!("current executable path unavailable: {e}"))
+        CistellaError::Contract(format!(
+            "current executable path unavailable: {e}"
+        ))
     })?;
     let dir = exe.parent().ok_or_else(|| {
-        CistellaError::Contract("current executable has no parent directory".to_string())
+        CistellaError::Contract(
+            "current executable has no parent directory".to_string(),
+        )
     })?;
     discover_in(dir, name)
 }

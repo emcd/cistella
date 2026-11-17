@@ -173,7 +173,9 @@ pub fn classify_marker_output(stdout: &str) -> MarkerExec {
     match stdout.trim() {
         "present" => MarkerExec::Present,
         "absent" => MarkerExec::Absent,
-        other => MarkerExec::Failed(format!("unexpected marker output: {other:?}")),
+        other => {
+            MarkerExec::Failed(format!("unexpected marker output: {other:?}"))
+        },
     }
 }
 
@@ -192,7 +194,10 @@ pub trait SigintOps {
     /// govern: the per-attempt `iter_end` bounds exec
     /// execution (via run_bounded_at), the overall
     /// `marker_end` governs evidence acceptance.
-    fn exec_marker(&mut self, iter_end: std::time::Instant) -> (MarkerExec, std::time::Instant);
+    fn exec_marker(
+        &mut self,
+        iter_end: std::time::Instant,
+    ) -> (MarkerExec, std::time::Instant);
 }
 
 /// Budgets for one collection run. Tests pass tiny values;
@@ -210,7 +215,10 @@ pub struct SigintBudgets {
 /// observation — each step gated on the previous one, so a
 /// missing premise forbids every later operation. Returns
 /// facts; `sigint_verdict` decides.
-pub fn run_sigint_collection<O: SigintOps>(ops: &mut O, budgets: &SigintBudgets) -> SigintFacts {
+pub fn run_sigint_collection<O: SigintOps>(
+    ops: &mut O,
+    budgets: &SigintBudgets,
+) -> SigintFacts {
     let mut facts = SigintFacts::new();
     // READY must be observed: expiry or a terminal read
     // without it fails the collection before anything is
@@ -225,7 +233,7 @@ pub fn run_sigint_collection<O: SigintOps>(ops: &mut O, budgets: &SigintBudgets)
                     facts.ready = true;
                     break;
                 }
-            }
+            },
             PtyRead::WouldBlock => std::thread::sleep(budgets.poll_interval),
             PtyRead::Eof | PtyRead::Error => break,
         }
@@ -271,7 +279,9 @@ pub fn run_sigint_collection<O: SigintOps>(ops: &mut O, budgets: &SigintBudgets)
     let marker_end = std::time::Instant::now() + budgets.marker;
     loop {
         let Some(iter_end) = super::helpers::poll_at(marker_end) else {
-            eprintln!("sigint marker budget exhausted with no present observed");
+            eprintln!(
+                "sigint marker budget exhausted with no present observed"
+            );
             facts.marker = MarkerState::AbsentExpired;
             break;
         };
@@ -279,19 +289,21 @@ pub fn run_sigint_collection<O: SigintOps>(ops: &mut O, budgets: &SigintBudgets)
         match outcome {
             MarkerExec::Present => {
                 if observed_at > marker_end {
-                    eprintln!("sigint marker arrived past its deadline; refusing overrun evidence");
+                    eprintln!(
+                        "sigint marker arrived past its deadline; refusing overrun evidence"
+                    );
                     facts.marker = MarkerState::AbsentExpired;
                 } else {
                     facts.marker = MarkerState::Present;
                 }
                 break;
-            }
+            },
             MarkerExec::Absent => std::thread::sleep(budgets.marker_interval),
             MarkerExec::Failed(why) => {
                 eprintln!("sigint marker exec terminal: {why}");
                 facts.marker = MarkerState::ExecFailed;
                 break;
-            }
+            },
         }
     }
     facts
@@ -314,7 +326,9 @@ impl SigintOps for PtySigintOps {
             // so fail fast instead of polling to the bound.
             Ok(0) => PtyRead::Eof,
             Ok(n) => PtyRead::Data(buf[..n].to_vec()),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => PtyRead::WouldBlock,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                PtyRead::WouldBlock
+            },
             Err(_) => PtyRead::Error,
         }
     }
@@ -328,8 +342,12 @@ impl SigintOps for PtySigintOps {
         let mut reaped = false;
         let mut exited_at = None;
         let mut disposition = super::capture::ChildDisposition::Unknown;
-        if super::capture::child_gone(self.child, &mut reaped, &mut exited_at, &mut disposition)
-            && reaped
+        if super::capture::child_gone(
+            self.child,
+            &mut reaped,
+            &mut exited_at,
+            &mut disposition,
+        ) && reaped
         {
             Some(disposition)
         } else {
@@ -337,7 +355,10 @@ impl SigintOps for PtySigintOps {
         }
     }
 
-    fn exec_marker(&mut self, iter_end: std::time::Instant) -> (MarkerExec, std::time::Instant) {
+    fn exec_marker(
+        &mut self,
+        iter_end: std::time::Instant,
+    ) -> (MarkerExec, std::time::Instant) {
         let mut cmd = Command::new("podman");
         cmd.args([
             "exec",
@@ -353,12 +374,16 @@ impl SigintOps for PtySigintOps {
         // child's exit, not the moment this caller consumes
         // the result (drain + join can land after iter_end).
         let outcome = match run_bounded_at(cmd, iter_end) {
-            Err(why) => MarkerExec::Failed(format!("exec failed to run: {why:?}")),
+            Err(why) => {
+                MarkerExec::Failed(format!("exec failed to run: {why:?}"))
+            },
             Ok(out) if !out.status.success() => MarkerExec::Failed(format!(
                 "exec refused: {}",
                 String::from_utf8_lossy(&out.stderr)
             )),
-            Ok(out) => classify_marker_output(&String::from_utf8_lossy(&out.stdout)),
+            Ok(out) => {
+                classify_marker_output(&String::from_utf8_lossy(&out.stdout))
+            },
         };
         (outcome, std::time::Instant::now())
     }
@@ -407,7 +432,10 @@ impl SigintOps for ScriptOps {
             .expect("script exhausted: unexpected exit poll")
     }
 
-    fn exec_marker(&mut self, _iter_end: std::time::Instant) -> (MarkerExec, std::time::Instant) {
+    fn exec_marker(
+        &mut self,
+        _iter_end: std::time::Instant,
+    ) -> (MarkerExec, std::time::Instant) {
         self.calls.push("exec");
         self.execs.pop().expect("script exhausted: unexpected exec")
     }
@@ -498,7 +526,8 @@ fn sigint_collection_absent_then_present_passes() {
     ops.deliver = true;
     ops.exits = vec![Some(super::capture::ChildDisposition::Exited(0))];
     let fresh = std::time::Instant::now();
-    ops.execs = vec![(MarkerExec::Present, fresh), (MarkerExec::Absent, fresh)];
+    ops.execs =
+        vec![(MarkerExec::Present, fresh), (MarkerExec::Absent, fresh)];
     let facts = run_sigint_collection(&mut ops, &test_budgets());
     assert_eq!(facts.marker, MarkerState::Present);
     assert_eq!(
@@ -541,7 +570,9 @@ fn sigint_collection_unknown_stops_without_second_exec() {
             std::time::Instant::now() + std::time::Duration::from_secs(3600),
         ),
         (
-            MarkerExec::Failed("unexpected marker output: \"garbled\"".to_string()),
+            MarkerExec::Failed(
+                "unexpected marker output: \"garbled\"".to_string(),
+            ),
             std::time::Instant::now(),
         ),
     ];
@@ -644,7 +675,9 @@ fn classify_marker_output_admits_only_exact_words() {
         classify_marker_output("absent"),
         MarkerExec::Absent
     ));
-    for unknown in ["", "   ", "garbled", "Present", "PRESENT", "present absent"] {
+    for unknown in
+        ["", "   ", "garbled", "Present", "PRESENT", "present absent"]
+    {
         assert!(
             matches!(classify_marker_output(unknown), MarkerExec::Failed(_)),
             "{unknown:?} is terminal unknown, never retryable"

@@ -25,7 +25,7 @@ pub fn reap_bounded_pid(child: nix::unistd::Pid, timeout: Duration) -> bool {
                     return false;
                 }
                 std::thread::sleep(Duration::from_millis(50));
-            }
+            },
             Ok(_) => return true,
             Err(_) => return false,
         }
@@ -62,10 +62,16 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
             // (false + diagnostic), never degrades silently — and
             // the forkpty child is killed first, never leaked to
             // interfere with sibling tests.
-            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+            if let Ok(flags) =
+                nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            {
                 let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
                 oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                if nix::fcntl::fcntl(
+                    f.as_raw_fd(),
+                    nix::fcntl::FcntlArg::F_SETFL(oflags),
+                )
+                .is_err()
                 {
                     eprintln!("enter pty: O_NONBLOCK setup refused");
                     kill_reap_pty_child(child);
@@ -94,9 +100,17 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 None,
             );
             let deadline = start + Duration::from_secs(30);
-            let fin = super::capture::finalize_capture(child, "enter pty", &outcome, deadline);
+            let fin = super::capture::finalize_capture(
+                child,
+                "enter pty",
+                &outcome,
+                deadline,
+            );
             let txt = String::from_utf8_lossy(&outcome.bytes).to_string();
-            let final_exit = super::capture::ms_since(outcome.phases.started, fin.exit_observed);
+            let final_exit = super::capture::ms_since(
+                outcome.phases.started,
+                fin.exit_observed,
+            );
             eprintln!(
                 "enter pty acc: {}",
                 super::capture::excerpt_capped(&outcome.bytes)
@@ -131,12 +145,13 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
             // partial capture.
             let end_ok = matches!(
                 outcome.end,
-                super::capture::CaptureEnd::Eof | super::capture::CaptureEnd::PtyEio { .. }
+                super::capture::CaptureEnd::Eof
+                    | super::capture::CaptureEnd::PtyEio { .. }
             );
-            let content_ok =
-                txt.contains("30 100") || (txt.contains("DONE") && !txt.contains("0 0"));
+            let content_ok = txt.contains("30 100")
+                || (txt.contains("DONE") && !txt.contains("0 0"));
             super::capture::verdict_ready(end_ok, &fin, content_ok)
-        }
+        },
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
             let home = home.to_string();
@@ -156,10 +171,10 @@ pub fn enter_stty_via_pty(home: &str, worktree: &str) -> bool {
                 .exec();
             eprintln!("cistella enter {e:?}");
             std::process::exit(1);
-        }
+        },
         Err(e) => {
             eprintln!("forkpty {e}");
             false
-        }
+        },
     }
 }

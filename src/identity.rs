@@ -9,10 +9,17 @@ use crate::error::{CistellaError, Result};
 /// Writes an `allowed_signers` file for the seat's signing key.
 ///
 /// Format: `principal ssh-ed25519 AAAAC3...`
-pub fn write_allowed_signers(path: &std::path::Path, principal: &str, pubkey: &str) -> Result<()> {
+pub fn write_allowed_signers(
+    path: &std::path::Path,
+    principal: &str,
+    pubkey: &str,
+) -> Result<()> {
     let content = format!("{principal} {pubkey}\n");
     std::fs::write(path, content).map_err(|e| {
-        CistellaError::Identity(format!("write allowed_signers {}: {e}", path.display()))
+        CistellaError::Identity(format!(
+            "write allowed_signers {}: {e}",
+            path.display()
+        ))
     })?;
     Ok(())
 }

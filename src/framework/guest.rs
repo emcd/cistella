@@ -9,7 +9,9 @@ use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{
+    Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio,
+};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -80,8 +82,8 @@ pub struct GuestHost<R: Read + AsFd, W: Write + AsFd> {
 /// Returns `CistellaError::Protocol` on open or read failure.
 fn pin_executable(executable: &Path) -> Result<(std::fs::File, String)> {
     use sha2::{Digest, Sha256};
-    let file =
-        std::fs::File::open(executable).map_err(|e| protocol_error(format!("open guest: {e}")))?;
+    let file = std::fs::File::open(executable)
+        .map_err(|e| protocol_error(format!("open guest: {e}")))?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut &file, &mut hasher)
         .map_err(|e| protocol_error(format!("digest guest: {e}")))?;
@@ -170,7 +172,9 @@ impl GuestHost<ChildStdout, ChildStdin> {
                 .pre_exec(move || {
                     nix::fcntl::fcntl(
                         exec_fd,
-                        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
+                        nix::fcntl::FcntlArg::F_SETFD(
+                            nix::fcntl::FdFlag::empty(),
+                        ),
                     )
                     .map_err(std::io::Error::other)?;
                     nix::unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0))
@@ -194,15 +198,20 @@ impl GuestHost<ChildStdout, ChildStdin> {
         // poll-readable pipe always resolves a read immediately.
         {
             use std::os::fd::AsRawFd;
-            let flags = nix::fcntl::fcntl(stdin.as_fd().as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
-                .map_err(|e| protocol_error(format!("guest stdin flags: {e}")))?;
+            let flags = nix::fcntl::fcntl(
+                stdin.as_fd().as_raw_fd(),
+                nix::fcntl::FcntlArg::F_GETFL,
+            )
+            .map_err(|e| protocol_error(format!("guest stdin flags: {e}")))?;
             let mut flags = nix::fcntl::OFlag::from_bits_retain(flags);
             flags.insert(nix::fcntl::OFlag::O_NONBLOCK);
             nix::fcntl::fcntl(
                 stdin.as_fd().as_raw_fd(),
                 nix::fcntl::FcntlArg::F_SETFL(flags),
             )
-            .map_err(|e| protocol_error(format!("guest stdin nonblocking: {e}")))?;
+            .map_err(|e| {
+                protocol_error(format!("guest stdin nonblocking: {e}"))
+            })?;
         }
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -302,7 +311,7 @@ impl<R: Read + AsFd, W: Write + AsFd> GuestHost<R, W> {
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => reaped = true,
-                Ok(None) => {}
+                Ok(None) => {},
                 Err(e) => return Err(protocol_error(format!("reap: {e}"))),
             }
             if reaped && group_gone(group) {
@@ -315,9 +324,9 @@ impl<R: Read + AsFd, W: Write + AsFd> GuestHost<R, W> {
         }
         let _ = kill(group, Signal::SIGKILL);
         if !reaped {
-            self.child
-                .wait()
-                .map_err(|e| protocol_error(format!("reap after kill: {e}")))?;
+            self.child.wait().map_err(|e| {
+                protocol_error(format!("reap after kill: {e}"))
+            })?;
         }
         let settle = Instant::now() + KILL_SETTLE;
         while !group_gone(group) {
@@ -467,15 +476,18 @@ pub fn host_external(
 ) -> Result<(GuestHost<ChildStdout, ChildStdin>, Vec<String>)> {
     let path = discover_in(exe_dir, name)?;
     let mut host = GuestHost::spawn(&path, args, deadlines)?;
-    let negotiated = match host.exchange_mut().hello(capabilities, deadlines.hello) {
-        Ok(negotiated) => negotiated,
-        Err(error) => return shutdown_return(host, error),
-    };
+    let negotiated =
+        match host.exchange_mut().hello(capabilities, deadlines.hello) {
+            Ok(negotiated) => negotiated,
+            Err(error) => return shutdown_return(host, error),
+        };
     for (index, advertised) in negotiated.capabilities.iter().enumerate() {
         if !capabilities.contains(advertised) {
             return shutdown_return(
                 host,
-                protocol_error(format!("unsupported guest capability at index {index}")),
+                protocol_error(format!(
+                    "unsupported guest capability at index {index}"
+                )),
             );
         }
     }
@@ -527,7 +539,8 @@ pub fn host_registered(
         &args,
         deadlines,
     )?;
-    let negotiated = match host.exchange_mut().hello(offered, deadlines.hello) {
+    let negotiated = match host.exchange_mut().hello(offered, deadlines.hello)
+    {
         Ok(negotiated) => negotiated,
         Err(error) => return shutdown_return(host, error),
     };
@@ -535,7 +548,9 @@ pub fn host_registered(
         if !offered.contains(advertised) {
             return shutdown_return(
                 host,
-                protocol_error(format!("unsupported guest capability at index {index}")),
+                protocol_error(format!(
+                    "unsupported guest capability at index {index}"
+                )),
             );
         }
     }

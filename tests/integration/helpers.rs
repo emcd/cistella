@@ -78,13 +78,13 @@ impl Drop for ArcCloseGuard {
             match std::sync::Arc::try_unwrap(arc) {
                 Ok(client) => {
                     let _ = client.close();
-                }
+                },
                 Err(arc) => {
                     eprintln!(
                         "ArcCloseGuard: wedged holder; worker/rendezvous residue possible (refs={})",
                         std::sync::Arc::strong_count(&arc),
                     );
-                }
+                },
             }
         }
     }
@@ -99,7 +99,8 @@ pub fn home_dir() -> String {
 }
 
 pub fn run_cistella(home: &str, args: &[&str]) -> Output {
-    run_bounded(spawn_cistella_cmd(home, args), RUN_CISTELLA_TIMEOUT).expect("bounded cistella run")
+    run_bounded(spawn_cistella_cmd(home, args), RUN_CISTELLA_TIMEOUT)
+        .expect("bounded cistella run")
 }
 
 /// Owned-session teardown WITHOUT panicking: the `Drop` path.
@@ -107,7 +108,10 @@ pub fn run_cistella(home: &str, args: &[&str]) -> Output {
 /// that panics (e.g. on a cleanup timeout) during an assertion
 /// unwind would double-panic and abort the test process, masking
 /// the original failure and bypassing sibling cleanup.
-pub fn guard_terminate(home: &str, id: &str) -> Result<Output, BoundedRunError> {
+pub fn guard_terminate(
+    home: &str,
+    id: &str,
+) -> Result<Output, BoundedRunError> {
     run_bounded(
         spawn_cistella_cmd(home, &["terminate", id]),
         RUN_CISTELLA_TIMEOUT,
@@ -150,7 +154,8 @@ pub fn rdv_gone(id: &str) -> bool {
 pub fn container_absent(container: &str) -> bool {
     let mut cmd = Command::new("podman");
     cmd.args(["container", "exists", container]);
-    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman container exists");
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
+        .expect("podman container exists");
     match out.status.code() {
         Some(1) => true,
         Some(0) => false,
@@ -236,13 +241,16 @@ impl Drop for Guard {
 /// `Err(VarError::NotPresent)` to exercise the HOME-missing path,
 /// any `id` to exercise the terminate path. Every branch returns
 /// normally and logs; none panics.
-pub fn guard_drop_inner(home: Result<String, std::env::VarError>, id: Option<String>) {
+pub fn guard_drop_inner(
+    home: Result<String, std::env::VarError>,
+    id: Option<String>,
+) {
     let (home, id) = match (home, id) {
         (Ok(home), Some(id)) => (home, id),
         (Err(_), _) => {
             eprintln!("guard teardown skipped: HOME not set (best effort)");
             return;
-        }
+        },
         (_, None) => return,
     };
     if let Err(why) = guard_terminate(&home, &id) {
@@ -260,7 +268,11 @@ pub fn fixture_profile(name: &str) -> String {
 
 /// Spawns `conduct -- sleep 300` in the background and returns the child
 /// plus the minted id from its first stdout line.
-pub fn spawn_conduct(home: &str, worktree: &str, extra: &[&str]) -> (Child, String, Guard) {
+pub fn spawn_conduct(
+    home: &str,
+    worktree: &str,
+    extra: &[&str],
+) -> (Child, String, Guard) {
     let profile = fixture_profile("default.toml");
     spawn_conduct_full(
         home,
@@ -382,7 +394,7 @@ impl ConductTaps {
                     drain_clean: true,
                     drain_note: "drain clean EOF".to_string(),
                 }
-            }
+            },
             Ok(DrainOutcome { error: Some(error) }) => {
                 if let Some(handle) = self.drain_handle.take() {
                     let _ = handle.join();
@@ -392,7 +404,7 @@ impl ConductTaps {
                     drain_clean: false,
                     drain_note: format!("drain read error: {error}"),
                 }
-            }
+            },
             Err(_) => FinalizedTap {
                 stderr,
                 drain_clean: false,
@@ -426,7 +438,7 @@ pub fn run_tap_drain(
                     break DrainOutcome {
                         error: Some(error.to_string()),
                     };
-                }
+                },
             }
         };
         let _ = done.send(outcome);
@@ -439,8 +451,11 @@ impl ConductTaps {
     /// `run_tap_drain`, so pins exercise the production worker).
     pub fn for_reader(reader: impl std::io::Read + Send + 'static) -> Self {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let tail = std::sync::Arc::new(std::sync::Mutex::new(TailBuffer { buf: Vec::new() }));
-        let handle = run_tap_drain(reader, std::sync::Arc::clone(&tail), done_tx);
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(TailBuffer {
+            buf: Vec::new(),
+        }));
+        let handle =
+            run_tap_drain(reader, std::sync::Arc::clone(&tail), done_tx);
         Self {
             stderr_tail: tail,
             drain_done: done_rx,
@@ -489,7 +504,10 @@ pub fn spawn_conduct_tapped(
         .expect("spawn conduct");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let (id, stdout_rest, leftover) = match read_conduct_id(stdout, CONDUCT_ID_TIMEOUT) {
+    let (id, stdout_rest, leftover) = match read_conduct_id(
+        stdout,
+        CONDUCT_ID_TIMEOUT,
+    ) {
         Ok(found) => found,
         Err(why) => {
             let _ = child.kill();
@@ -498,7 +516,7 @@ pub fn spawn_conduct_tapped(
                 "conduct id line unreadable ({why}; child reaped: {reaped}); conduct stderr: {}",
                 drain_stderr(stderr)
             );
-        }
+        },
     };
     // Blocking restore BEFORE the lifetime drain: the id reader
     // leaves stdout O_NONBLOCK, and the one-shot copy below would
@@ -508,7 +526,9 @@ pub fn spawn_conduct_tapped(
     if let Err(why) = restore_blocking(&stdout_rest) {
         let _ = child.kill();
         let reaped = reap_bounded(&mut child, REAP_ALLOWANCE).is_some();
-        panic!("conduct stdout blocking restore failed ({why}; child reaped: {reaped})");
+        panic!(
+            "conduct stdout blocking restore failed ({why}; child reaped: {reaped})"
+        );
     }
     // Drain for conduct lifetime: dropping the readers closes the
     // pipes, and conduct's later gate writes would die SIGPIPE
@@ -523,7 +543,9 @@ pub fn spawn_conduct_tapped(
     // still drains to the sink.
     let (drain_tx, drain_rx) = std::sync::mpsc::channel();
     let mut taps = ConductTaps {
-        stderr_tail: std::sync::Arc::new(std::sync::Mutex::new(TailBuffer { buf: Vec::new() })),
+        stderr_tail: std::sync::Arc::new(std::sync::Mutex::new(TailBuffer {
+            buf: Vec::new(),
+        })),
         drain_done: drain_rx,
         drain_handle: None,
     };
@@ -548,7 +570,9 @@ pub fn spawn_conduct_tapped(
 /// fine. Time-bounded by the caller's patience: each empty poll sleeps
 /// 50ms against a 2s wall, so a descendant-held fd delays — never
 /// hangs — the panic path.
-pub fn drain_pipe<R: std::io::Read + std::os::unix::io::AsRawFd>(pipe: R) -> String {
+pub fn drain_pipe<R: std::io::Read + std::os::unix::io::AsRawFd>(
+    pipe: R,
+) -> String {
     let mut collected = Vec::new();
     let mut buf = [0u8; 4096];
     let mut pipe = pipe;
@@ -556,11 +580,20 @@ pub fn drain_pipe<R: std::io::Read + std::os::unix::io::AsRawFd>(pipe: R) -> Str
     // the reads below can block past the deadline on a held-open
     // pipe. Setup failure returns empty immediately (logged) instead
     // of risking the hang — diagnostics degrade, boundedness holds.
-    if let Ok(flags) = nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+    if let Ok(flags) =
+        nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+    {
         let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
         oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-        if nix::fcntl::fcntl(pipe.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err() {
-            eprintln!("drain_pipe: O_NONBLOCK setup refused; no diagnostics captured");
+        if nix::fcntl::fcntl(
+            pipe.as_raw_fd(),
+            nix::fcntl::FcntlArg::F_SETFL(oflags),
+        )
+        .is_err()
+        {
+            eprintln!(
+                "drain_pipe: O_NONBLOCK setup refused; no diagnostics captured"
+            );
             return String::new();
         }
     } else {
@@ -576,13 +609,13 @@ pub fn drain_pipe<R: std::io::Read + std::os::unix::io::AsRawFd>(pipe: R) -> Str
                 if collected.len() > 8192 {
                     break;
                 }
-            }
+            },
             Err(_) => {
                 if Instant::now() > deadline {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
-            }
+            },
         }
     }
     String::from_utf8_lossy(&collected).trim().to_string()
@@ -614,14 +647,17 @@ pub const POLL_SUBPROCESS_BUDGET: Duration = Duration::from_secs(10);
 /// subprocess polls under one outer bound.
 pub fn poll_at(outer: Instant) -> Option<Instant> {
     let remaining = outer.saturating_duration_since(Instant::now());
-    if remaining < REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT + Duration::from_secs(1) {
+    if remaining
+        < REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT + Duration::from_secs(1)
+    {
         return None;
     }
-    Some(
-        outer.min(
-            Instant::now() + POLL_SUBPROCESS_BUDGET + REAP_ALLOWANCE + POST_EXIT_DRAIN_TIMEOUT,
-        ),
-    )
+    Some(outer.min(
+        Instant::now()
+            + POLL_SUBPROCESS_BUDGET
+            + REAP_ALLOWANCE
+            + POST_EXIT_DRAIN_TIMEOUT,
+    ))
 }
 
 pub fn wait_active(id: &str) {
@@ -647,7 +683,7 @@ pub fn wait_active(id: &str) {
                 if last.contains("ActiveState=active") {
                     return;
                 }
-            }
+            },
             // A nonzero poll exit is failed evidence, not state:
             // record stderr, keep polling to the outer deadline.
             Ok(out) => {
@@ -659,10 +695,10 @@ pub fn wait_active(id: &str) {
                         .unwrap_or_else(|| "signal".to_string()),
                     String::from_utf8_lossy(&out.stderr)
                 );
-            }
+            },
             Err(why) => {
                 last = format!("poll failed: {why}");
-            }
+            },
         }
         if Instant::now() > deadline {
             panic!("service cistella-{id} never active: {last}");
@@ -702,7 +738,7 @@ pub fn wait_harness(container: &str, argv: &str) {
                 if last.contains(argv) {
                     return;
                 }
-            }
+            },
             // A nonzero poll exit is failed evidence, not state:
             // record stderr, keep polling to the outer deadline.
             Ok(out) => {
@@ -714,10 +750,10 @@ pub fn wait_harness(container: &str, argv: &str) {
                         .unwrap_or_else(|| "signal".to_string()),
                     String::from_utf8_lossy(&out.stderr)
                 );
-            }
+            },
             Err(why) => {
                 last = format!("poll failed: {why}");
-            }
+            },
         }
         if Instant::now() > deadline {
             panic!("harness {argv} never visible in {container}: {last}");
@@ -727,7 +763,8 @@ pub fn wait_harness(container: &str, argv: &str) {
 }
 
 pub fn unit_label(home: &str, id: &str, key: &str) -> String {
-    let content = std::fs::read_to_string(unit_path(home, id)).expect("unit readable");
+    let content =
+        std::fs::read_to_string(unit_path(home, id)).expect("unit readable");
     let prefix = format!("Label={key}=");
     let raw = content
         .lines()
@@ -807,9 +844,10 @@ pub fn cistella_tmp_names() -> Vec<String> {
     // across the test since the guard is acquired before snapshotting);
     // host /tmp carries the `cistella-` prefix (slices and rendezvous).
     let mut out = match std::env::var("XDG_RUNTIME_DIR") {
-        Ok(rt) if !rt.is_empty() => {
-            dir_names_filtered(&std::path::PathBuf::from(rt).join("cistella"), None)
-        }
+        Ok(rt) if !rt.is_empty() => dir_names_filtered(
+            &std::path::PathBuf::from(rt).join("cistella"),
+            None,
+        ),
         _ => Vec::new(),
     };
     out.extend(dir_names_filtered(
@@ -820,7 +858,10 @@ pub fn cistella_tmp_names() -> Vec<String> {
     out
 }
 
-fn dir_names_filtered(dir: &std::path::Path, prefix: Option<&str>) -> Vec<String> {
+fn dir_names_filtered(
+    dir: &std::path::Path,
+    prefix: Option<&str>,
+) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -846,18 +887,21 @@ pub fn example_binary(name: &str) -> std::path::PathBuf {
         .nth(2)
         .expect("target/<profile>/deps ancestors")
         .join("examples");
-    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+        Vec::new();
     if let Ok(entries) = std::fs::read_dir(&examples_dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().into_owned();
-            if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+            if file_name != name && !file_name.starts_with(&format!("{name}-"))
+            {
                 continue;
             }
             let metadata = entry.metadata().expect("metadata");
             if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
                 continue;
             }
-            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+            candidates
+                .push((metadata.modified().expect("mtime"), entry.path()));
         }
     }
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
@@ -886,8 +930,11 @@ pub fn example_binary(name: &str) -> std::path::PathBuf {
     // binaries, and cargo honors the host umask (0002 builders
     // emit 775): normalize the peer to 755 at resolution so
     // every consumer conducts a conforming binary.
-    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod peer binary");
+    std::fs::set_permissions(
+        &selected,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod peer binary");
     selected
 }
 

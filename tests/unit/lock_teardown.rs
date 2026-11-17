@@ -18,8 +18,12 @@
 fn lock_held_inner_teardown_completes() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _guard = cistella::lock::LockGuard::acquire().expect("lock acquires");
-        let _ = cistella::runtime::teardown_inner("no-such-container", "no-such-session");
+        let _guard =
+            cistella::lock::LockGuard::acquire().expect("lock acquires");
+        let _ = cistella::runtime::teardown_inner(
+            "no-such-container",
+            "no-such-session",
+        );
         let _ = done_tx.send(());
     });
     done_rx

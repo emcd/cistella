@@ -9,7 +9,8 @@
 
 use cistella::framework::contract::ReconciliationKey;
 use cistella::isolators::wire::{
-    IsolatorGuest, OP_CREATE, OP_INITIATE, OP_INSPECT, OP_REMOVE, OP_STATE, OP_TERMINATE,
+    IsolatorGuest, OP_CREATE, OP_INITIATE, OP_INSPECT, OP_REMOVE, OP_STATE,
+    OP_TERMINATE,
 };
 
 use super::wire_fake::{FakeBackend, create_payload, replay_spec};

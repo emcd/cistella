@@ -17,7 +17,8 @@ use super::helpers::*;
 fn tap_drain_completion_attests_and_retains() {
     let (reader, mut writer) = UnixStream::pair().expect("socket pair");
     let mut taps = ConductTaps::for_reader(reader);
-    std::io::Write::write_all(&mut writer, b"conduct teardown line\n").expect("write tap");
+    std::io::Write::write_all(&mut writer, b"conduct teardown line\n")
+        .expect("write tap");
     drop(writer);
     let tap = taps.finalize(std::time::Duration::from_secs(10));
     assert!(tap.drain_clean, "clean EOF attested: {}", tap.drain_note);

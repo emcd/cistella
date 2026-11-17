@@ -13,13 +13,15 @@ use cistella::framework::contract::MergeContext;
 use cistella::framework::credentials::{admit_all, parse_wire};
 
 fn test_owner() -> cistella::framework::contract::Provenance {
-    cistella::framework::contract::Provenance::Extension("test-guest".to_string())
+    cistella::framework::contract::Provenance::Extension(
+        "test-guest".to_string(),
+    )
 }
 use cistella::framework::policy::PolicySet;
 use cistella::framework::prepare::run_prepare;
 use cistella::framework::protocol::{
-    Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope,
-    read_frame, write_frame,
+    Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR,
+    envelope_bytes, parse_envelope, read_frame, write_frame,
 };
 
 const FAST: Duration = Duration::from_secs(3);
@@ -119,7 +121,8 @@ fn unknown_variants_and_fields_refuse() {
     ]))
     .unwrap_err();
     // Non-array top level.
-    parse_wire(&json!({"kind": "opaque-reference", "id": "abc123"})).unwrap_err();
+    parse_wire(&json!({"kind": "opaque-reference", "id": "abc123"}))
+        .unwrap_err();
 }
 
 #[test]
@@ -147,7 +150,8 @@ fn scripted_peer(
     let host = Exchange::new(a.try_clone().unwrap(), a);
     let handle = std::thread::spawn(move || {
         let mut peer = b;
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         let response = Envelope {
             protocol: PROTOCOL_MAJOR,
@@ -231,7 +235,8 @@ fn prepare_bad_handle_fails_whole_transaction() {
 #[test]
 fn seat_socket_declared_locator_admits_by_equality() {
     let owner = test_owner();
-    let authorized = vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
+    let authorized =
+        vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
     let handles = parse_wire(&json!([
         {"kind": "seat-socket", "path": "/run/user/1000/agent.sock"},
     ]))
@@ -246,8 +251,11 @@ fn seat_socket_other_owner_refuses_despite_declared_path() {
     // Same path, different instance: authorization is
     // instance-bound, never path-bound — no borrowing.
     let owner = test_owner();
-    let stranger = cistella::framework::contract::Provenance::Extension("other".to_string());
-    let authorized = vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
+    let stranger = cistella::framework::contract::Provenance::Extension(
+        "other".to_string(),
+    );
+    let authorized =
+        vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
     let handles = parse_wire(&json!([
         {"kind": "seat-socket", "path": "/run/user/1000/agent.sock"},
     ]))
@@ -261,7 +269,8 @@ fn seat_socket_other_owner_refuses_despite_declared_path() {
 #[test]
 fn seat_socket_undeclared_path_refuses_when_locators_exist() {
     let owner = test_owner();
-    let authorized = vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
+    let authorized =
+        vec![(owner.clone(), "/run/user/1000/agent.sock".to_string())];
     let handles = parse_wire(&json!([
         {"kind": "seat-socket", "path": "/run/cistella/seats/agent.sock"},
     ]))

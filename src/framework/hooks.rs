@@ -19,7 +19,10 @@ use crate::framework::prepare::{
 /// Returns `CistellaError::Runtime` on spawn/wait failure and
 /// `CistellaError::Contract` on timeout, probe failure, or matrix
 /// shortfall.
-pub fn probe_landlock_wrapper(container: &str, timeout: std::time::Duration) -> Result<()> {
+pub fn probe_landlock_wrapper(
+    container: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
     use crate::framework::registry::STAGED_WRAPPER_GUEST_PATH;
     use CistellaError;
     let mut child = std::process::Command::new("podman")
@@ -35,18 +38,20 @@ pub fn probe_landlock_wrapper(container: &str, timeout: std::time::Duration) -> 
             .map_err(|e| CistellaError::Runtime(format!("probe wait: {e}")))?
         {
             Some(_) => {
-                break child
-                    .wait_with_output()
-                    .map_err(|e| CistellaError::Runtime(format!("probe wait: {e}")))?;
-            }
+                break child.wait_with_output().map_err(|e| {
+                    CistellaError::Runtime(format!("probe wait: {e}"))
+                })?;
+            },
             None => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(CistellaError::Contract("probe timed out".to_string()));
+                    return Err(CistellaError::Contract(
+                        "probe timed out".to_string(),
+                    ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+            },
         }
     };
     if !output.status.success() {
@@ -138,8 +143,10 @@ fn drain_hook_diagnostics(
         // classified shape returns (detail, success, or
         // error), so an unclassified remainder simply
         // accumulates for the next read.
-        if let Some(position) = pending.iter().position(|&byte| byte == b'\n') {
-            let line = String::from_utf8_lossy(&pending[..position]).into_owned();
+        if let Some(position) = pending.iter().position(|&byte| byte == b'\n')
+        {
+            let line =
+                String::from_utf8_lossy(&pending[..position]).into_owned();
             pending.drain(..=position);
             match check_transition_line(&line)? {
                 Some(detail) => return Ok(Some(detail)),
@@ -164,7 +171,7 @@ fn drain_hook_diagnostics(
                         ));
                     }
                     return Ok(None);
-                }
+                },
             }
         }
         if total > 64 * 1024 {
@@ -179,26 +186,31 @@ fn drain_hook_diagnostics(
             read.as_fd(),
             nix::poll::PollFlags::POLLIN,
         )];
-        let wait =
-            nix::poll::PollTimeout::try_from(remaining).unwrap_or(nix::poll::PollTimeout::ZERO);
+        let wait = nix::poll::PollTimeout::try_from(remaining)
+            .unwrap_or(nix::poll::PollTimeout::ZERO);
         match nix::poll::poll(&mut pollfds, wait) {
             Ok(0) => {
                 return Err(CistellaError::Contract(
                     "hook diagnostics drain timed out".to_string(),
                 ));
-            }
+            },
             Err(e) => {
                 return Err(CistellaError::Contract(format!(
                     "hook diagnostics wait failed: {e}"
                 )));
-            }
-            Ok(_) => {}
+            },
+            Ok(_) => {},
         }
         let mut chunk = [0u8; 8192];
         // SAFETY: borrowed read-end, transient buffer; count
         // checked below, no ownership transfer.
-        let count =
-            unsafe { nix::libc::read(read.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
+        let count = unsafe {
+            nix::libc::read(
+                read.as_raw_fd(),
+                chunk.as_mut_ptr().cast(),
+                chunk.len(),
+            )
+        };
         if count < 0 {
             return Err(CistellaError::Runtime(
                 "hook diagnostics read failed".to_string(),
@@ -248,9 +260,10 @@ pub fn plan_hook_argv(
     harness_argv: &[String],
 ) -> Result<Vec<String>> {
     use crate::framework::prepare::{compose_hook_argv, confinement_roots};
-    let home =
-        std::env::var("HOME").map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
-    let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
+    let home = std::env::var("HOME")
+        .map_err(|_| CistellaError::Runtime("HOME not set".to_string()))?;
+    let (ancestor_host, subtree_host) =
+        confinement_roots(std::path::Path::new(&home), directory)?;
     compose_hook_argv(
         hooks,
         placements,
@@ -296,11 +309,19 @@ pub fn hook_full_sets(
     use crate::framework::landlock_compiler::full_grant_routes;
     use crate::framework::landlock_compiler::full_grant_sources;
     use crate::framework::prepare::confinement_roots;
-    let home = std::env::var("HOME")
-        .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
-    let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
+    let home = std::env::var("HOME").map_err(|_| {
+        crate::error::CistellaError::Runtime("HOME not set".to_string())
+    })?;
+    let (ancestor_host, subtree_host) =
+        confinement_roots(std::path::Path::new(&home), directory)?;
     Ok(HookFullSets {
-        routes: full_grant_routes(hooks, placements, effective, &ancestor_host, &subtree_host)?,
+        routes: full_grant_routes(
+            hooks,
+            placements,
+            effective,
+            &ancestor_host,
+            &subtree_host,
+        )?,
         sources: full_grant_sources(placements, effective, &subtree_host),
     })
 }
@@ -349,9 +370,11 @@ pub fn hook_graft_alias_preflight(
 ) -> crate::error::Result<()> {
     use crate::framework::prepare::confinement_roots;
     use crate::mount::graft_alias_preflight;
-    let home = std::env::var("HOME")
-        .map_err(|_| crate::error::CistellaError::Runtime("HOME not set".to_string()))?;
-    let (ancestor_host, subtree_host) = confinement_roots(std::path::Path::new(&home), directory)?;
+    let home = std::env::var("HOME").map_err(|_| {
+        crate::error::CistellaError::Runtime("HOME not set".to_string())
+    })?;
+    let (ancestor_host, subtree_host) =
+        confinement_roots(std::path::Path::new(&home), directory)?;
     graft_alias_preflight(triples, effective, &ancestor_host, &subtree_host)
 }
 
@@ -362,8 +385,10 @@ pub fn hook_graft_alias_preflight(
 ///
 /// Returns `CistellaError::Runtime` on pipe failure.
 pub fn plan_hook_launch(argv: Vec<String>) -> Result<HookLaunchPlan> {
-    let (diag_read, diag_write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
-        .map_err(|e| CistellaError::Runtime(format!("diagnostics pipe: {e}")))?;
+    let (diag_read, diag_write) =
+        nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).map_err(|e| {
+            CistellaError::Runtime(format!("diagnostics pipe: {e}"))
+        })?;
     Ok(HookLaunchPlan {
         argv,
         diag_read,
@@ -460,7 +485,9 @@ pub fn prepare_conduct_topology(
     let revised = if hooks.is_empty() {
         triples.clone()
     } else {
-        use crate::framework::landlock_compiler::{compile_topology, freeze_snapshot};
+        use crate::framework::landlock_compiler::{
+            compile_topology, freeze_snapshot,
+        };
         use crate::framework::prepare::confinement_roots;
         // Compiler claimant is the single admitted hook: two
         // claimants never reach here (admission refuses), and a
@@ -511,7 +538,9 @@ pub fn prepare_conduct_topology(
 /// no new guests, no new paths, no new deletion authority, no
 /// live-guest spawning. The pin proves it creates nothing.
 #[must_use]
-pub fn run_finalize_observations(_merged: &crate::framework::contract::MergedPlan) -> Vec<String> {
+pub fn run_finalize_observations(
+    _merged: &crate::framework::contract::MergedPlan,
+) -> Vec<String> {
     Vec::new()
 }
 
@@ -538,7 +567,9 @@ pub fn verify_compiled_binding(
     hook: &crate::framework::contract::GuestHookRequest,
 ) -> crate::error::Result<()> {
     use crate::framework::landlock_compiler::recompute_fingerprint;
-    use crate::mount::{canonicalize_container_target, canonicalize_host_source};
+    use crate::mount::{
+        canonicalize_container_target, canonicalize_host_source,
+    };
     // Recompute, never trust: a mutated snapshot field cannot
     // reuse its stored fingerprint.
     if recompute_fingerprint(snapshot) != snapshot.fingerprint {

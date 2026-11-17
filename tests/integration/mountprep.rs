@@ -86,7 +86,8 @@ fn mountpoint_host_alias_conducts() {
     let real = TempDir::new().unwrap();
     std::fs::write(real.path().join("canary"), "host content").unwrap();
     let linkdir = TempDir::new().unwrap();
-    std::os::unix::fs::symlink(real.path(), linkdir.path().join("alias")).unwrap();
+    std::os::unix::fs::symlink(real.path(), linkdir.path().join("alias"))
+        .unwrap();
     let aliased = linkdir.path().join("alias");
     let profile = worktree.path().join("tmpl-adv.toml");
     std::fs::write(
@@ -249,7 +250,8 @@ fn mountpoint_noncanonical_spelling_prepared() {
         ],
     );
     assert!(
-        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("SIBLING_OK"),
+        out.status.success()
+            && String::from_utf8_lossy(&out.stdout).contains("SIBLING_OK"),
         "noncanonical target prepared: {} {}",
         out.status,
         String::from_utf8_lossy(&out.stderr)
@@ -312,7 +314,8 @@ fn mountpoint_prepare_timeout_fails_closed() {
     // Residue check: no unit files remain for the attempt.
     // The id is unknown (conduct never printed it), so scan the registry
     // for leftovers from this worktree instead.
-    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    let survey =
+        run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         !String::from_utf8_lossy(&survey.stdout).contains("cistella-"),
         "no residue sessions: {}",
@@ -437,7 +440,8 @@ fn nested_ro_missing_chain_refuses_pre_mutation() {
     // No-residue proof is directory-scoped, not registry-wide: the
     // refused conduct never mints an id, so survey for this worktree must
     // show no session — immune to concurrent tests' unit files.
-    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    let survey =
+        run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         !String::from_utf8_lossy(&survey.stdout).contains("cistella-"),
         "no residue session for refused conduct: {}",
@@ -491,7 +495,8 @@ fn nested_ro_session_dogfood_shape_passes() {
         ],
     );
     assert!(
-        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("DOGFOOD_OK"),
+        out.status.success()
+            && String::from_utf8_lossy(&out.stdout).contains("DOGFOOD_OK"),
         "dogfood shape conducts: {} {}",
         out.status,
         String::from_utf8_lossy(&out.stderr)
@@ -512,7 +517,8 @@ fn nested_ro_symlinked_source_resolves() {
     let real = TempDir::new().unwrap();
     std::fs::create_dir_all(real.path().join("deep").join("leaf")).unwrap();
     let linkdir = TempDir::new().unwrap();
-    std::os::unix::fs::symlink(real.path(), linkdir.path().join("alias")).unwrap();
+    std::os::unix::fs::symlink(real.path(), linkdir.path().join("alias"))
+        .unwrap();
     let leaf_host = TempDir::new().unwrap();
     let profile = worktree.path().join("tmpl-sym.toml");
     std::fs::write(
@@ -550,7 +556,8 @@ fn nested_ro_symlinked_source_resolves() {
         ],
     );
     assert!(
-        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("SYMLINK_OK"),
+        out.status.success()
+            && String::from_utf8_lossy(&out.stdout).contains("SYMLINK_OK"),
         "symlinked source resolves: {} {}",
         out.status,
         String::from_utf8_lossy(&out.stderr)
@@ -635,8 +642,10 @@ fn same_tree_rw_graft_refuses_pre_create() {
     let home = home_dir();
     // Sibling of the session dir: strictly under ~/src,
     // outside the session subtree (random name, auto-cleaned).
-    let sib = tempfile::TempDir::new_in(worktree.path().parent().expect("worktree sits in ~/src"))
-        .expect("sibling tmpdir");
+    let sib = tempfile::TempDir::new_in(
+        worktree.path().parent().expect("worktree sits in ~/src"),
+    )
+    .expect("sibling tmpdir");
     let sib_str = sib.path().to_string_lossy().to_string();
     let src_root = format!("{home}/src");
     let profile = worktree.path().join("tmpl-graft-alias.toml");
@@ -677,11 +686,13 @@ fn same_tree_rw_graft_refuses_pre_create() {
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(!out.status.success(), "aliasing graft must refuse");
     assert!(
-        stderr.contains("/graft") && stderr.contains("aliases read-only ancestor content"),
+        stderr.contains("/graft")
+            && stderr.contains("aliases read-only ancestor content"),
         "typed error names the graft: {stderr}"
     );
     // Refused conduct mints no session: survey stays clean.
-    let survey = run_cistella(&home, &["survey", "--directory", &worktree_str]);
+    let survey =
+        run_cistella(&home, &["survey", "--directory", &worktree_str]);
     assert!(
         !String::from_utf8_lossy(&survey.stdout).contains("cistella-"),
         "no residue session for refused conduct: {}",
@@ -820,7 +831,8 @@ fn bind_alias_graft_refuses_precreate() {
     cmd.arg("sh");
     cmd.arg("-c");
     cmd.arg(&script);
-    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman unshare must spawn");
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
+        .expect("podman unshare must spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "unshare script must run: {stderr}");
@@ -861,7 +873,8 @@ fn bind_alias_graft_refuses_precreate() {
     // device-disagreement refusal (fail-closed) must NOT
     // satisfy these — only the containment/equality legs
     // proving shared dentries with read-only content.
-    let alias_diagnostic = "shares dentries with read-only content through a bind mount";
+    let alias_diagnostic =
+        "shares dentries with read-only content through a bind mount";
     // Subdir bind: same dentries as the denied sibling under
     // a disjoint spelling — the graft FULL would admit
     // through every alias.
@@ -890,5 +903,7 @@ fn bind_alias_graft_refuses_precreate() {
     // Execution record: a pass means the binds established
     // and all three cases ran (the skip path returns early;
     // MOUNT_FAILED markers fail loudly above).
-    eprintln!("bind-alias cases EXECUTED: subdir+exact refused, control allowed");
+    eprintln!(
+        "bind-alias cases EXECUTED: subdir+exact refused, control allowed"
+    );
 }

@@ -6,7 +6,9 @@
 use std::process::Command;
 
 use super::helpers::*;
-use super::sigint::{PtySigintOps, SigintBudgets, run_sigint_collection, sigint_verdict};
+use super::sigint::{
+    PtySigintOps, SigintBudgets, run_sigint_collection, sigint_verdict,
+};
 use nix::pty::{ForkptyResult, forkpty};
 use nix::sys::wait::{self, WaitStatus};
 
@@ -35,12 +37,18 @@ fn reap_pty_child(child: nix::unistd::Pid) -> bool {
                     eprintln!(
                         "pty child {child} outlived its window; forcing SIGKILL (timeout, not success)"
                     );
-                    let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-                    let _ = reap_bounded_pid(child, std::time::Duration::from_secs(10));
+                    let _ = nix::sys::signal::kill(
+                        child,
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                    let _ = reap_bounded_pid(
+                        child,
+                        std::time::Duration::from_secs(10),
+                    );
                     return false;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+            },
             Ok(_) => return true,
             Err(_) => return false,
         }
@@ -59,10 +67,12 @@ fn transport_harness() {
         return;
     }
 
-    let cname = format!("cistella-it-{}-{}", std::process::id(), rand_suffix());
+    let cname =
+        format!("cistella-it-{}-{}", std::process::id(), rand_suffix());
 
     // Start detached container with keep-id and closed env, no TERMINFO, baked terminfo
-    let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-ghostty".to_string());
+    let term =
+        std::env::var("TERM").unwrap_or_else(|_| "xterm-ghostty".to_string());
     let mut run = Command::new("podman");
     run.args([
         "run",
@@ -158,10 +168,16 @@ fn check_isatty(cname: &str) -> bool {
             // bounds the window on a nonblocking fd; a blocking
             // read would sit past it on a silent child. Setup
             // failure kills the child first — never leaked.
-            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+            if let Ok(flags) =
+                nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            {
                 let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
                 oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                if nix::fcntl::fcntl(
+                    f.as_raw_fd(),
+                    nix::fcntl::FcntlArg::F_SETFL(oflags),
+                )
+                .is_err()
                 {
                     eprintln!("isatty pty: O_NONBLOCK setup refused");
                     kill_reap_pty_child(child);
@@ -192,7 +208,10 @@ fn check_isatty(cname: &str) -> bool {
                 std::time::Instant::now() + std::time::Duration::from_secs(5),
             );
             let txt = String::from_utf8_lossy(&outcome.bytes).to_string();
-            let final_exit = super::capture::ms_since(outcome.phases.started, fin.exit_observed);
+            let final_exit = super::capture::ms_since(
+                outcome.phases.started,
+                fin.exit_observed,
+            );
             eprintln!(
                 "isatty forkpty acc: {}",
                 super::capture::excerpt_capped(&outcome.bytes)
@@ -223,10 +242,15 @@ fn check_isatty(cname: &str) -> bool {
             // loud instead of passing on a partial capture.
             let end_ok = matches!(
                 outcome.end,
-                super::capture::CaptureEnd::Eof | super::capture::CaptureEnd::PtyEio { .. }
+                super::capture::CaptureEnd::Eof
+                    | super::capture::CaptureEnd::PtyEio { .. }
             );
-            super::capture::verdict_ready(end_ok, &fin, txt.contains("isatty:true"))
-        }
+            super::capture::verdict_ready(
+                end_ok,
+                &fin,
+                txt.contains("isatty:true"),
+            )
+        },
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
             let e = Command::new("podman")
@@ -237,11 +261,11 @@ fn check_isatty(cname: &str) -> bool {
                 .exec();
             eprintln!("exec failed: {e:?}");
             std::process::exit(1);
-        }
+        },
         Err(e) => {
             eprintln!("forkpty failed: {e}");
             false
-        }
+        },
     }
 }
 
@@ -278,10 +302,16 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
             // Nonblocking master: the WouldBlock arm below only
             // bounds the window if the fd is actually nonblocking
             // (forkpty hands back a blocking master).
-            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+            if let Ok(flags) =
+                nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            {
                 let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
                 oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                if nix::fcntl::fcntl(
+                    f.as_raw_fd(),
+                    nix::fcntl::FcntlArg::F_SETFL(oflags),
+                )
+                .is_err()
                 {
                     eprintln!("DA1 pty: O_NONBLOCK setup refused");
                     kill_reap_pty_child(child);
@@ -305,9 +335,11 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            50,
+                        ));
                         continue;
-                    }
+                    },
                     Err(_) => break,
                 };
                 acc.extend_from_slice(&buf[..n]);
@@ -351,7 +383,7 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
             let _ = run_bounded(rm, RUN_CISTELLA_TIMEOUT);
             eprintln!("DA1 container reply {txt:?} saw {saw}");
             saw && (txt.contains("?6") || txt.contains("6c"))
-        }
+        },
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
             let e = Command::new("podman")
@@ -362,11 +394,11 @@ fn check_da1_via_forkpty(cname: &str) -> bool {
                 .exec();
             eprintln!("exec {e:?}");
             std::process::exit(1);
-        }
+        },
         Err(e) => {
             eprintln!("forkpty {e}");
             false
-        }
+        },
     }
 }
 
@@ -377,10 +409,16 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
             let f = std::fs::File::from(master);
             // Nonblocking master: without this the `read` below can
             // sit past the READY window on a silent child.
-            if let Ok(flags) = nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL) {
+            if let Ok(flags) =
+                nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            {
                 let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
                 oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-                if nix::fcntl::fcntl(f.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags)).is_err()
+                if nix::fcntl::fcntl(
+                    f.as_raw_fd(),
+                    nix::fcntl::FcntlArg::F_SETFL(oflags),
+                )
+                .is_err()
                 {
                     eprintln!("sigint pty: O_NONBLOCK setup refused");
                     kill_reap_pty_child(child);
@@ -427,7 +465,9 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
             // descendant holds sibling fds open. Any other
             // disposition already reaped.
             if facts.disposition == super::capture::ChildDisposition::Unknown {
-                eprintln!("sigint pty child never reaped; forcing SIGKILL (timeout, not success)");
+                eprintln!(
+                    "sigint pty child never reaped; forcing SIGKILL (timeout, not success)"
+                );
                 kill_reap_pty_child(child);
             }
             // Cleanup allowance, separate from every verdict
@@ -439,7 +479,7 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
             }
             eprintln!("sigint marker {:?}", facts.marker);
             sigint_verdict(&facts)
-        }
+        },
         Ok(ForkptyResult::Child) => {
             use std::os::unix::process::CommandExt;
             let e = Command::new("podman")
@@ -450,11 +490,11 @@ fn check_sigint_via_forkpty(cname: &str) -> bool {
                 .exec();
             eprintln!("exec {e:?}");
             std::process::exit(1);
-        }
+        },
         Err(e) => {
             eprintln!("forkpty {e}");
             false
-        }
+        },
     }
 }
 

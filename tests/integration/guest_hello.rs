@@ -11,8 +11,8 @@ use std::time::Duration;
 use cistella::framework::contract::Deadlines;
 use cistella::framework::guest::host_external;
 use cistella::framework::protocol::{
-    AWAIT_INTERRUPTED_V1, Envelope, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes,
-    parse_envelope, read_frame, write_frame,
+    AWAIT_INTERRUPTED_V1, Envelope, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR,
+    envelope_bytes, parse_envelope, read_frame, write_frame,
 };
 
 use super::helpers::*;
@@ -77,7 +77,8 @@ fn hello_exchange(offered: &[&str]) -> Vec<String> {
     // before any op must reap exit 0.
     drop(stdin);
     drop(stdout);
-    let status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("reap guest");
+    let status =
+        reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("reap guest");
     assert!(
         status.success(),
         "guest exits quietly after hello: {status:?}"

@@ -11,7 +11,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "cistella", version, about = "Driver for agent dev containers")]
+#[command(
+    name = "cistella",
+    version,
+    about = "Driver for agent dev containers"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

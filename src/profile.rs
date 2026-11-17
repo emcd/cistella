@@ -29,7 +29,9 @@ use crate::error::{CistellaError, Result};
 use crate::guest_registry::{Guest, GuestTable, Registry};
 use crate::template::expand_templates;
 
-use crate::mount::{MountTriple, canonicalize_container_target, validate_mounts};
+use crate::mount::{
+    MountTriple, canonicalize_container_target, validate_mounts,
+};
 use crate::session::validate_generic_label;
 /// Re-exported template inputs for conduct and tests.
 pub use crate::template::{ProjectName, Supplements, parse_supplement_arg};
@@ -151,7 +153,9 @@ impl Profile {
     /// provenance): the single conversion point for the merge
     /// feed on every path (0/1/N extensions alike).
     #[must_use]
-    pub fn explicit_permissions(&self) -> Vec<crate::framework::contract::PermissionContribution> {
+    pub fn explicit_permissions(
+        &self,
+    ) -> Vec<crate::framework::contract::PermissionContribution> {
         self.permissions
             .iter()
             .map(|entry| crate::framework::contract::PermissionContribution {
@@ -226,7 +230,10 @@ impl ResolutionSource {
     /// Builds lookup inputs from explicit parts (tests and callers that
     /// already resolved the environment).
     #[must_use]
-    pub fn new(configuration_directories: Vec<PathBuf>, xdg_profiles_dir: PathBuf) -> Self {
+    pub fn new(
+        configuration_directories: Vec<PathBuf>,
+        xdg_profiles_dir: PathBuf,
+    ) -> Self {
         Self {
             configuration_directories,
             xdg_profiles_dir,
@@ -239,7 +246,9 @@ impl ResolutionSource {
     ///
     /// Returns `CistellaError::Profile` when neither `XDG_CONFIG_HOME` nor
     /// `HOME` yields a config base.
-    pub fn from_host_env(configuration_directory: Option<&str>) -> Result<Self> {
+    pub fn from_host_env(
+        configuration_directory: Option<&str>,
+    ) -> Result<Self> {
         let mut configuration_directories = Vec::new();
         if let Some(dir) = configuration_directory.filter(|s| !s.is_empty()) {
             configuration_directories.push(PathBuf::from(dir));
@@ -263,8 +272,9 @@ fn xdg_config_base() -> Result<PathBuf> {
     {
         return Ok(PathBuf::from(dir));
     }
-    let home = std::env::var("HOME")
-        .map_err(|_| CistellaError::Profile("HOME not set for XDG config base".to_string()))?;
+    let home = std::env::var("HOME").map_err(|_| {
+        CistellaError::Profile("HOME not set for XDG config base".to_string())
+    })?;
     Ok(PathBuf::from(home).join(".config"))
 }
 
@@ -279,21 +289,22 @@ fn xdg_config_base() -> Result<PathBuf> {
 /// Returns `CistellaError::Profile` when the directory cannot be created
 /// or a missing example cannot be written.
 pub fn seed_baked_examples(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| CistellaError::Profile(format!("create {}: {e}", dir.display())))?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        CistellaError::Profile(format!("create {}: {e}", dir.display()))
+    })?;
     for (name, text) in BAKED_PROFILES {
         let path = dir.join(format!("{name}.toml"));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => file
-                .write_all(text.as_bytes())
-                .map_err(|e| CistellaError::Profile(format!("seed {}: {e}", path.display())))?,
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Ok(mut file) => file.write_all(text.as_bytes()).map_err(|e| {
+                CistellaError::Profile(format!("seed {}: {e}", path.display()))
+            })?,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {},
             Err(e) => {
                 return Err(CistellaError::Profile(format!(
                     "seed {}: {e}",
                     path.display()
                 )));
-            }
+            },
         }
     }
     Ok(())
@@ -321,8 +332,9 @@ fn resolve_profile_path(
 ) -> Result<(PathBuf, ProfileText)> {
     if reference.contains('/') || reference.ends_with(".toml") {
         let path = PathBuf::from(reference);
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| CistellaError::Profile(format!("read {}: {e}", path.display())))?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            CistellaError::Profile(format!("read {}: {e}", path.display()))
+        })?;
         return Ok((path, ProfileText::File(raw)));
     }
     if let Some(dir) = source.configuration_directories.first() {
@@ -334,13 +346,13 @@ fn resolve_profile_path(
                     "profile {reference} not found in configuration directory {} (closed tier, no fallthrough)",
                     dir.display()
                 )));
-            }
+            },
             Err(e) => {
                 return Err(CistellaError::Profile(format!(
                     "read {}: {e}",
                     path.display()
                 )));
-            }
+            },
         }
     }
     seed_baked_examples(&source.xdg_profiles_dir)?;
@@ -352,8 +364,8 @@ fn resolve_profile_path(
                 "read {}: {e}",
                 xdg_path.display()
             )));
-        }
-        Err(_) => {}
+        },
+        Err(_) => {},
     }
     if let Some(baked) = baked_example(reference) {
         return Ok((xdg_path, ProfileText::Named(baked.to_string())));
@@ -363,7 +375,8 @@ fn resolve_profile_path(
         "baked examples".to_string(),
     ];
     if let Some(dir) = source.configuration_directories.first() {
-        searched.insert(0, format!("configuration directory {}", dir.display()));
+        searched
+            .insert(0, format!("configuration directory {}", dir.display()));
     }
     Err(CistellaError::Profile(format!(
         "profile {reference} not found (searched {})",
@@ -392,19 +405,26 @@ impl Profile {
     /// Returns `CistellaError::Profile` naming an unknown isolator
     /// or a wrong-slot entry. Diagnostics name the declaration,
     /// never values.
-    pub fn resolve_isolator(&self, registry: &Registry) -> Result<IsolatorResolution> {
+    pub fn resolve_isolator(
+        &self,
+        registry: &Registry,
+    ) -> Result<IsolatorResolution> {
         match self.isolator.name.as_str() {
             "podman" => Ok(IsolatorResolution::Podman),
             other => match registry.find(GuestTable::Isolators, other) {
-                Some(entry) => Ok(IsolatorResolution::Registered(entry.clone())),
+                Some(entry) => {
+                    Ok(IsolatorResolution::Registered(entry.clone()))
+                },
                 None => {
                     if registry.find(GuestTable::Extensions, other).is_some() {
                         return Err(CistellaError::Profile(format!(
                             "isolator {other} is registered as an extension, not an isolator"
                         )));
                     }
-                    Err(CistellaError::Profile(format!("unknown isolator: {other}")))
-                }
+                    Err(CistellaError::Profile(format!(
+                        "unknown isolator: {other}"
+                    )))
+                },
             },
         }
     }
@@ -422,7 +442,10 @@ impl Profile {
     /// Returns `CistellaError::Profile` naming an unknown,
     /// duplicated, or wrong-slot extension. Diagnostics name
     /// declarations, never values.
-    pub fn resolve_extensions(&self, registry: &Registry) -> Result<Vec<ExtensionResolution>> {
+    pub fn resolve_extensions(
+        &self,
+        registry: &Registry,
+    ) -> Result<Vec<ExtensionResolution>> {
         let mut out = Vec::with_capacity(self.extensions.len());
         let mut seen = Vec::with_capacity(self.extensions.len());
         for entry in &self.extensions {
@@ -438,9 +461,14 @@ impl Profile {
                 "tmpdir" => ExtensionResolution::Tmpdir,
                 "ssh" => ExtensionResolution::Ssh,
                 other => match registry.find(GuestTable::Extensions, other) {
-                    Some(registered) => ExtensionResolution::Registered(registered.clone()),
+                    Some(registered) => {
+                        ExtensionResolution::Registered(registered.clone())
+                    },
                     None => {
-                        if registry.find(GuestTable::Isolators, other).is_some() {
+                        if registry
+                            .find(GuestTable::Isolators, other)
+                            .is_some()
+                        {
                             return Err(CistellaError::Profile(format!(
                                 "extension {other} is registered as an isolator, not an extension"
                             )));
@@ -448,7 +476,7 @@ impl Profile {
                         return Err(CistellaError::Profile(format!(
                             "unknown extension: {other}"
                         )));
-                    }
+                    },
                 },
             };
             out.push(id);
@@ -483,13 +511,16 @@ impl Profile {
         // declared `ssh` the instance owns the name, so a profile
         // assignment of the same name refuses here (same value or
         // not — two claimants, no silent winner).
-        if ssh_declared && self.environment_assignments.contains_key("SSH_AUTH_SOCK") {
+        if ssh_declared
+            && self.environment_assignments.contains_key("SSH_AUTH_SOCK")
+        {
             return Err(CistellaError::Profile(
                 "environment-assignments must not name SSH_AUTH_SOCK; owned by declared ssh"
                     .to_string(),
             ));
         }
-        let mut extra_args: Vec<Vec<String>> = vec![Vec::new(); resolutions.len()];
+        let mut extra_args: Vec<Vec<String>> =
+            vec![Vec::new(); resolutions.len()];
         for (index, entry) in resolutions.iter().enumerate() {
             if !matches!(entry, ExtensionResolution::Ssh) {
                 continue;
@@ -501,12 +532,14 @@ impl Profile {
             })?;
             if ambient.is_empty() || !ambient.starts_with('/') {
                 return Err(CistellaError::Profile(
-                    "declared ssh requires an absolute invoker SSH_AUTH_SOCK".to_string(),
+                    "declared ssh requires an absolute invoker SSH_AUTH_SOCK"
+                        .to_string(),
                 ));
             }
             let canonical = std::fs::canonicalize(&ambient).map_err(|_| {
                 CistellaError::Profile(
-                    "declared ssh requires a resolvable invoker SSH_AUTH_SOCK".to_string(),
+                    "declared ssh requires a resolvable invoker SSH_AUTH_SOCK"
+                        .to_string(),
                 )
             })?;
             // Exact UTF-8 conversion, never lossy display: a
@@ -515,7 +548,8 @@ impl Profile {
             // wire is UTF-8; identity conversion is exact).
             let canonical = canonical.to_str().ok_or_else(|| {
                 CistellaError::Profile(
-                    "declared ssh requires a UTF-8 invoker SSH_AUTH_SOCK".to_string(),
+                    "declared ssh requires a UTF-8 invoker SSH_AUTH_SOCK"
+                        .to_string(),
                 )
             })?;
             let is_socket = std::fs::metadata(canonical)
@@ -580,7 +614,9 @@ impl Profile {
             // naming it refuses. Without declared `ssh` the
             // acceptance forwards ambient verbatim (explicit
             // operator override).
-            if name == "SSH_AUTH_SOCK" && self.extensions.iter().any(|entry| entry.name == "ssh") {
+            if name == "SSH_AUTH_SOCK"
+                && self.extensions.iter().any(|entry| entry.name == "ssh")
+            {
                 return Err(CistellaError::Profile(
                     "environment-acceptances must not name SSH_AUTH_SOCK; owned by declared ssh"
                         .to_string(),
@@ -588,7 +624,10 @@ impl Profile {
             }
         }
         for (name, value) in &out {
-            if value.contains('\n') || value.contains('\r') || value.contains('\0') {
+            if value.contains('\n')
+                || value.contains('\r')
+                || value.contains('\0')
+            {
                 return Err(CistellaError::Profile(format!(
                     "environment-acceptances value must not contain control characters: {name}"
                 )));
@@ -650,7 +689,7 @@ impl Profile {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| reference.to_string());
                 (raw, stem)
-            }
+            },
         };
         let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
         let mut profile = parse_profile(&raw)?;
@@ -665,8 +704,9 @@ impl Profile {
     /// Returns `CistellaError::Profile` if the file cannot be read or
     /// parsed, or validation fails.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| CistellaError::Profile(format!("read {}: {e}", path.display())))?;
+        let raw = std::fs::read_to_string(path).map_err(|e| {
+            CistellaError::Profile(format!("read {}: {e}", path.display()))
+        })?;
         Self::from_toml(&raw)
     }
 
@@ -700,14 +740,17 @@ impl Profile {
 /// Returns `CistellaError::Profile` on parse failure or missing `HOME`
 /// for `~` expansion.
 fn parse_profile(text: &str) -> Result<Profile> {
-    let mut profile: Profile =
-        toml::from_str(text).map_err(|e| CistellaError::Profile(format!("parse: {e}")))?;
+    let mut profile: Profile = toml::from_str(text)
+        .map_err(|e| CistellaError::Profile(format!("parse: {e}")))?;
     // Expand a leading `~` in host sources so shipped profiles stay
     // portable across seats (`~/.config/opencode`, never bare `~`).
     for triple in &mut profile.mounts {
         if triple.host_source == "~" || triple.host_source.starts_with("~/") {
-            let home = std::env::var("HOME")
-                .map_err(|_| CistellaError::Profile("HOME not set for ~ expansion".to_string()))?;
+            let home = std::env::var("HOME").map_err(|_| {
+                CistellaError::Profile(
+                    "HOME not set for ~ expansion".to_string(),
+                )
+            })?;
             triple.host_source = format!("{home}{}", &triple.host_source[1..]);
         }
     }
@@ -764,7 +807,8 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
         for arg in command {
             if arg.contains('\n') || arg.contains('\r') || arg.contains('\0') {
                 return Err(CistellaError::Profile(
-                    "command argv must not contain control characters".to_string(),
+                    "command argv must not contain control characters"
+                        .to_string(),
                 ));
             }
         }
@@ -772,7 +816,8 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
     for (key, value) in &profile.labels {
         validate_generic_label(key, value).map_err(CistellaError::Profile)?;
     }
-    profile.container_home = normalize_container_home(&profile.container_home)?;
+    profile.container_home =
+        normalize_container_home(&profile.container_home)?;
     let canon_home = profile.container_home.clone();
     // container_home is not a triple but must not be a sensitive root or traversal to one.
     if canon_home == "/" {
@@ -794,12 +839,17 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
     for ch in ["\n", "\r", "\0"] {
         if profile.container_home.contains(ch) {
             return Err(CistellaError::Profile(
-                "container-home must not contain control characters".to_string(),
+                "container-home must not contain control characters"
+                    .to_string(),
             ));
         }
     }
     for (k, v) in &profile.environment_assignments {
-        if k.contains('\n') || k.contains('\r') || v.contains('\n') || v.contains('\r') {
+        if k.contains('\n')
+            || k.contains('\r')
+            || v.contains('\n')
+            || v.contains('\r')
+        {
             return Err(CistellaError::Profile(format!(
                 "env key/value must not contain newlines: {k}"
             )));
@@ -824,7 +874,8 @@ fn validate_profile(mut profile: Profile) -> Result<Profile> {
     // HOME is derived from container_home, not freely overridden via assignments.
     if profile.environment_assignments.contains_key("HOME") {
         return Err(CistellaError::Profile(
-            "HOME must not be set in env; derived from container_home".to_string(),
+            "HOME must not be set in env; derived from container_home"
+                .to_string(),
         ));
     }
     validate_mounts(&profile.mounts, &profile.container_home)?;

@@ -2,23 +2,27 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::Duration;
 
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+use nix::sys::signal::{
+    SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction,
+};
 
 use super::{
-    PendingExec, PodmanIsolator, UnitEntry, UnitRecord, classify_state, container_pidns,
-    inspect_container, unit_file_present,
+    PendingExec, PodmanIsolator, UnitEntry, UnitRecord, classify_state,
+    container_pidns, inspect_container, unit_file_present,
 };
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::{
-    CancelFlag, Capability, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
+    CancelFlag, Capability, ExecutionHandle, LifecycleState,
+    ReconciliationKey, UnitHandle,
 };
 use crate::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
-    StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities,
+    RemovedAttestation, StartedAttestation, StdioBinding, StoppedAttestation,
+    UnitSnapshot,
 };
 use crate::isolators::quadlet::{
-    container_exists, generate_quadlet_unit, install_quadlet, query_unit_props, remove_unit_file,
-    start_quadlet, stop_settle,
+    container_exists, generate_quadlet_unit, install_quadlet,
+    query_unit_props, remove_unit_file, start_quadlet, stop_settle,
 };
 use crate::operation_log;
 
@@ -30,8 +34,14 @@ impl Isolator for PodmanIsolator {
         }
     }
 
-    fn create(&self, spec: &CreateSpec, key: &ReconciliationKey) -> Result<UnitHandle> {
-        operation_log::scoped("install", None, |op| self.create_inner(spec, key, op))
+    fn create(
+        &self,
+        spec: &CreateSpec,
+        key: &ReconciliationKey,
+    ) -> Result<UnitHandle> {
+        operation_log::scoped("install", None, |op| {
+            self.create_inner(spec, key, op)
+        })
     }
 
     fn initiate(
@@ -39,7 +49,9 @@ impl Isolator for PodmanIsolator {
         handle: &UnitHandle,
         _key: &ReconciliationKey,
     ) -> Result<StartedAttestation> {
-        operation_log::scoped("start", None, |op| self.initiate_inner(handle, op))
+        operation_log::scoped("start", None, |op| {
+            self.initiate_inner(handle, op)
+        })
     }
 
     fn execute_launch(
@@ -73,7 +85,9 @@ impl Isolator for PodmanIsolator {
                 crate::framework::isolator::is_session_tty(stdin),
                 *conductor,
             ),
-            StdioBinding::Inherit => crate::framework::isolator::ForegroundJoin::Stay,
+            StdioBinding::Inherit => {
+                crate::framework::isolator::ForegroundJoin::Stay
+            },
         };
         // Join target carries all three identities pre_exec
         // verifies: our own pid (are we still the guest's child),
@@ -81,19 +95,23 @@ impl Isolator for PodmanIsolator {
         // capture), and the captured foreground pgid (the setpgid
         // target). Comparing the guest's own pgid here would differ
         // by design and refuse every launch.
-        let join_target: Option<(u32, u32, nix::unistd::Pid)> = match foreground {
-            crate::framework::isolator::ForegroundJoin::Join((conductor_pid, pgid)) => Some((
-                std::process::id(),
-                conductor_pid,
-                nix::unistd::Pid::from_raw(pgid as i32),
-            )),
-            crate::framework::isolator::ForegroundJoin::Stay => None,
-            crate::framework::isolator::ForegroundJoin::Refuse => {
-                return Err(CistellaError::Contract(
+        let join_target: Option<(u32, u32, nix::unistd::Pid)> =
+            match foreground {
+                crate::framework::isolator::ForegroundJoin::Join((
+                    conductor_pid,
+                    pgid,
+                )) => Some((
+                    std::process::id(),
+                    conductor_pid,
+                    nix::unistd::Pid::from_raw(pgid as i32),
+                )),
+                crate::framework::isolator::ForegroundJoin::Stay => None,
+                crate::framework::isolator::ForegroundJoin::Refuse => {
+                    return Err(CistellaError::Contract(
                     "pty foreground group unavailable: no verified conductor".to_string(),
                 ));
-            }
-        };
+                },
+            };
         let (stdin, stdout, stderr, diagnostics) = match stdio {
             StdioBinding::Inherit => (
                 std::process::Stdio::inherit(),
@@ -132,25 +150,36 @@ impl Isolator for PodmanIsolator {
         let super::hook::HookedPreservation {
             hooked,
             guard: _hook_guard,
-        } = super::hook::resolve_hooked_preservation(diagnostics_owned.as_ref(), &mut argv)?;
+        } = super::hook::resolve_hooked_preservation(
+            diagnostics_owned.as_ref(),
+            &mut argv,
+        )?;
         let args = match (workdir, hooked) {
-            (Some(target), None) => {
-                crate::transport::exec_harness_args(&record.container_name, target, &argv)
-            }
-            (None, None) => crate::transport::exec_args(&record.container_name, &argv),
-            (Some(target), Some((strategy, fd))) => crate::transport::exec_hooked_args(
+            (Some(target), None) => crate::transport::exec_harness_args(
                 &record.container_name,
                 target,
                 &argv,
-                strategy,
-                fd,
             ),
-            (None, Some((strategy, fd))) => crate::transport::exec_hooked_plain_args(
-                &record.container_name,
-                &argv,
-                strategy,
-                fd,
-            ),
+            (None, None) => {
+                crate::transport::exec_args(&record.container_name, &argv)
+            },
+            (Some(target), Some((strategy, fd))) => {
+                crate::transport::exec_hooked_args(
+                    &record.container_name,
+                    target,
+                    &argv,
+                    strategy,
+                    fd,
+                )
+            },
+            (None, Some((strategy, fd))) => {
+                crate::transport::exec_hooked_plain_args(
+                    &record.container_name,
+                    &argv,
+                    strategy,
+                    fd,
+                )
+            },
         };
         let child = unsafe {
             Command::new("podman")
@@ -160,10 +189,16 @@ impl Isolator for PodmanIsolator {
                 .stderr(stderr)
                 .pre_exec(move || {
                     // The child resets to default so it still dies with the pane.
-                    let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+                    let dfl = SigAction::new(
+                        SigHandler::SigDfl,
+                        SaFlags::empty(),
+                        SigSet::empty(),
+                    );
                     let _ = sigaction(Signal::SIGHUP, &dfl);
                     let _ = sigaction(Signal::SIGTERM, &dfl);
-                    if let Some((guest_pid, conductor_pid, caller)) = join_target {
+                    if let Some((guest_pid, conductor_pid, caller)) =
+                        join_target
+                    {
                         // Identity, two independent questions: (1)
                         // are we still the guest's child (parent
                         // must equal the guest pid captured above);
@@ -181,18 +216,26 @@ impl Isolator for PodmanIsolator {
                                 "pty join: reparented since capture",
                             ));
                         }
-                        let conductor = nix::unistd::Pid::from_raw(conductor_pid as i32);
-                        let current =
-                            nix::unistd::getpgid(Some(conductor)).map_err(std::io::Error::other)?;
+                        let conductor =
+                            nix::unistd::Pid::from_raw(conductor_pid as i32);
+                        let current = nix::unistd::getpgid(Some(conductor))
+                            .map_err(std::io::Error::other)?;
                         if current != caller {
                             return Err(std::io::Error::other(
                                 "pty join: caller group drifted since capture",
                             ));
                         }
-                        nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), caller)
-                            .map_err(std::io::Error::other)?;
+                        nix::unistd::setpgid(
+                            nix::unistd::Pid::from_raw(0),
+                            caller,
+                        )
+                        .map_err(std::io::Error::other)?;
                     }
-                    if let Some((crate::transport::PreserveStrategy::Plural, diag)) = hooked {
+                    if let Some((
+                        crate::transport::PreserveStrategy::Plural,
+                        diag,
+                    )) = hooked
+                    {
                         // Plural: dup onto fd 3 child-side (parent
                         // fd 3 may be live); assertion proved the
                         // table clean pre-spawn.
@@ -244,10 +287,12 @@ impl Isolator for PodmanIsolator {
                     session_id: String::new(),
                     image: String::new(),
                 });
-            }
+            },
         };
-        let (container, session_id, image) = inspect_container(&record.container_name)?;
-        let props = query_unit_props(&format!("{}.service", record.container_name));
+        let (container, session_id, image) =
+            inspect_container(&record.container_name)?;
+        let props =
+            query_unit_props(&format!("{}.service", record.container_name));
         let active_state = props
             .get("ActiveState")
             .cloned()
@@ -258,8 +303,10 @@ impl Isolator for PodmanIsolator {
         // never another unit's live child (per-unit scope: a second
         // unit's harness must not ready this unit). Predicate is
         // shared with the scope pin below.
-        let executing =
-            unit_has_live_child(&self.executions.lock().expect("exec table lock"), handle);
+        let executing = unit_has_live_child(
+            &self.executions.lock().expect("exec table lock"),
+            handle,
+        );
         let lifecycle = classify_state(
             Some(&active_state),
             container.as_deref(),
@@ -289,8 +336,14 @@ impl Isolator for PodmanIsolator {
             self.terminate_inner(handle, grace, op)
         })
     }
-    fn remove(&self, handle: &UnitHandle, _key: &ReconciliationKey) -> Result<RemovedAttestation> {
-        operation_log::scoped("terminate", None, |op| self.remove_inner(handle, op))
+    fn remove(
+        &self,
+        handle: &UnitHandle,
+        _key: &ReconciliationKey,
+    ) -> Result<RemovedAttestation> {
+        operation_log::scoped("terminate", None, |op| {
+            self.remove_inner(handle, op)
+        })
     }
 
     fn locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
@@ -299,10 +352,12 @@ impl Isolator for PodmanIsolator {
         // reaped unit and greenlight a duplicate install. Tombstones
         // never satisfy the hint (removed means gone by definition);
         // an entry pointing at one falls through to the scan.
-        if let Some(handle) = self.keys.lock().expect("key table lock").get(key).cloned()
+        if let Some(handle) =
+            self.keys.lock().expect("key table lock").get(key).cloned()
             && let Ok(UnitEntry::Live(record)) = self.resolve(&handle)
         {
-            let alive = container_exists(&record.container_name).unwrap_or(false)
+            let alive = container_exists(&record.container_name)
+                .unwrap_or(false)
                 || unit_file_present(&record.unit_name);
             if alive {
                 return Ok(Some(handle));
@@ -326,12 +381,12 @@ impl Isolator for PodmanIsolator {
             Ok(LifecycleState::Absent) => {
                 self.remove(handle, key)?;
                 Ok(())
-            }
+            },
             Ok(_) => {
                 self.terminate(handle, grace, key)?;
                 self.remove(handle, key)?;
                 Ok(())
-            }
+            },
             Err(e) => Err(e),
         }
     }
@@ -431,7 +486,9 @@ impl PodmanIsolator {
         // retained names (a stray recreated out-of-band still
         // settles; absence reports clean without backend records).
         let (container_name, unit_name) = match self.resolve(handle)? {
-            UnitEntry::Live(record) => (record.container_name, record.unit_name),
+            UnitEntry::Live(record) => {
+                (record.container_name, record.unit_name)
+            },
             UnitEntry::Removed {
                 container_name,
                 unit_name,
@@ -440,7 +497,9 @@ impl PodmanIsolator {
         };
         // Absent units succeed: a missing service with no container is
         // already stopped, which is the converged state.
-        if !unit_file_present(&unit_name) && !container_exists(&container_name)? {
+        if !unit_file_present(&unit_name)
+            && !container_exists(&container_name)?
+        {
             operation_log::record_step(
                 op,
                 serde_json::json!({
@@ -513,7 +572,7 @@ impl PodmanIsolator {
                     }),
                 );
                 return Err(error);
-            }
+            },
         };
         // Execution records die with the unit: outcomes stay
         // replayable until `remove`, never after.
@@ -595,7 +654,9 @@ mod scope_tests {
             PendingExec {
                 unit: unit_b.clone(),
                 child: None,
-                outcome: Some(crate::framework::isolator::ExecutionOutcome::Exited(0)),
+                outcome: Some(
+                    crate::framework::isolator::ExecutionOutcome::Exited(0),
+                ),
             },
         );
         assert!(

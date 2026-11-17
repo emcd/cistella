@@ -63,10 +63,13 @@ pub fn complete_close(
 ///
 /// Returns `CistellaError::Contract` on shapes outside the exact
 /// schema, on unsolicited variants, or on out-of-bounds fields.
-pub fn parse_await_outcome(value: &Value, guest_offers: bool) -> Result<ExecutionOutcome> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| CistellaError::Contract("bad await response: shape".to_string()))?;
+pub fn parse_await_outcome(
+    value: &Value,
+    guest_offers: bool,
+) -> Result<ExecutionOutcome> {
+    let object = value.as_object().ok_or_else(|| {
+        CistellaError::Contract("bad await response: shape".to_string())
+    })?;
     let known = ["exit_status", "signal", "unobservable"];
     let present = known
         .iter()
@@ -77,20 +80,26 @@ pub fn parse_await_outcome(value: &Value, guest_offers: bool) -> Result<Executio
             "bad await response: exactly one outcome variant".to_string(),
         ));
     }
-    if let Some(code) = value.get("exit_status").and_then(|code| code.as_i64()) {
-        let code = i32::try_from(code)
-            .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
+    if let Some(code) = value.get("exit_status").and_then(|code| code.as_i64())
+    {
+        let code = i32::try_from(code).map_err(|_| {
+            CistellaError::Contract("bad await response: shape".to_string())
+        })?;
         return Ok(ExecutionOutcome::Exited(code));
     }
-    if let Some(signum) = value.get("signal").and_then(|signum| signum.as_i64()) {
-        let signum = i32::try_from(signum)
-            .map_err(|_| CistellaError::Contract("bad await response: shape".to_string()))?;
+    if let Some(signum) =
+        value.get("signal").and_then(|signum| signum.as_i64())
+    {
+        let signum = i32::try_from(signum).map_err(|_| {
+            CistellaError::Contract("bad await response: shape".to_string())
+        })?;
         return Ok(ExecutionOutcome::Signaled(signum));
     }
     if let Some(unobservable) = value.get("unobservable") {
         if !guest_offers {
             return Err(CistellaError::Contract(
-                "bad await response: unsolicited unobservable variant".to_string(),
+                "bad await response: unsolicited unobservable variant"
+                    .to_string(),
             ));
         }
         return parse_unobservable(unobservable);
@@ -112,14 +121,22 @@ const OBSERVATION_STRING_CAP: usize = 256;
 ///
 /// Returns `CistellaError::Contract` on malformed payloads.
 fn parse_unobservable(value: &Value) -> Result<ExecutionOutcome> {
-    use crate::framework::isolator::{AbsenceObservation, RawClientResult, UnobservableOutcome};
-    let shape_err = || CistellaError::Contract("bad await response: unobservable".to_string());
+    use crate::framework::isolator::{
+        AbsenceObservation, RawClientResult, UnobservableOutcome,
+    };
+    let shape_err = || {
+        CistellaError::Contract("bad await response: unobservable".to_string())
+    };
     let object = value.as_object().ok_or_else(shape_err)?;
-    if object.len() != 2 || !object.contains_key("observation") || !object.contains_key("raw") {
+    if object.len() != 2
+        || !object.contains_key("observation")
+        || !object.contains_key("raw")
+    {
         return Err(shape_err());
     }
     let observation_value = &object["observation"];
-    let observation_object = observation_value.as_object().ok_or_else(shape_err)?;
+    let observation_object =
+        observation_value.as_object().ok_or_else(shape_err)?;
     if observation_object.len() != 4
         || !observation_object.contains_key("container_exists_code")
         || !observation_object.contains_key("service_active_state")
@@ -206,6 +223,8 @@ pub(crate) fn wire_error(code: &str, message: &str) -> CistellaError {
         "selector" => CistellaError::Selector(message.to_string()),
         "detached" => CistellaError::Detached(message.to_string()),
         "io" => CistellaError::Runtime(format!("guest io: {message}")),
-        _ => CistellaError::Contract(format!("unknown guest error code: {code}")),
+        _ => CistellaError::Contract(format!(
+            "unknown guest error code: {code}"
+        )),
     }
 }
