@@ -75,4 +75,3 @@ The driver SHALL preserve byte-for-byte integrity for ≥1 MB payloads through s
 #### Scenario: 1 MB sha256
 - **WHEN** `head -c 1M /dev/zero | tr '\0' 'A'` is streamed via `podman exec` from container to host
 - **THEN** `sha256` inside (`4e29ad18…`) equals host `sha256` and byte count is `1048576`
-

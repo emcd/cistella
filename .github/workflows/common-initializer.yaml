@@ -1,0 +1,30 @@
+name: init
+
+on:
+  workflow_call:
+    outputs:
+      cells:
+        description: 'Array of OS by CPU cells in JSON format.'
+        value: '${{ jobs.define-constants.outputs.cells }}'
+
+jobs:
+
+  define-constants:
+    runs-on: ubuntu-latest
+    outputs:
+      cells: '${{ steps.cells.outputs.cells }}'
+    steps:
+
+      - name: Declare Cells
+        id: cells
+        run: |
+          set -eu
+          cells="$(jq --compact-output --slurp '.' <<'EOF'
+
+
+          {"os": "linux", "cpu": "x86_64", "runner": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu"}
+          {"os": "linux", "cpu": "arm64", "runner": "ubuntu-24.04-arm", "target": "aarch64-unknown-linux-gnu"}
+          EOF
+          )"
+          echo "cells=${cells}" >>${GITHUB_OUTPUT}
+          cat ${GITHUB_OUTPUT}

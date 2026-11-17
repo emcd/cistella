@@ -338,4 +338,3 @@ The conduct owner SHALL capture the native incarnation (container ID + StartedAt
 
 - **WHEN** unit A has a live harness child and unit B has none, with both containers running
 - **THEN** `inspect` on B reports `initiated`, not `executing`
-

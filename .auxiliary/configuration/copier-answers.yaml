@@ -1,0 +1,24 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 0.9.0
+_src_path: gh:emcd/rust-project-common
+authors: ''
+cpu_architectures:
+- x86_64
+- arm64
+crate_name: cistella
+crate_shape:
+- library
+- executable
+description: Isolates agent sessions via various technologies.
+enable_benchmarking: false
+enable_custom_ci: true
+enable_fuzzing: false
+enable_property_tests: false
+enable_publication: true
+gh_owner: emcd
+license: Apache-2.0
+operating_systems:
+- linux
+project_name: cistella
+rust_version: '1.98'
+workspace_mode: none

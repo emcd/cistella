@@ -2,11 +2,11 @@ name: release
 
 on:
   push:
-    tags: ['v[0-9]+.*']
+    tags: [ 'v[0-9]+.*' ]
   workflow_dispatch:
     inputs:
       dry-run:
-        description: 'Skip artifact upload and publishing (test build only)'
+        description: 'Skip actual publishing (test build only)'
         required: false
         type: boolean
         default: true
@@ -17,14 +17,220 @@ env:
 jobs:
 
   initialize:
-    uses: ./.github/workflows/core--initializer.yaml
+    uses: ./.github/workflows/common-initializer.yaml
+
+  release-gates:
+    needs: [initialize]
+    strategy:
+      fail-fast: true
+      matrix:
+        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
+    runs-on: ${{ matrix.cell.runner }}
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v7
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Target
+        run: rustup target add ${{ matrix.cell.target }}
+
+      - name: Install nextest
+        run: cargo install cargo-nextest --version 0.9.146 --locked
+
+      - name: Generate Lockfile If Missing
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Build Release
+        run: cargo build --release --locked --all-targets
+
+      - name: Test Release
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo nextest run --release --locked --no-tests=warn
+
+      - name: Test Release Doctests
+        run: cargo test --doc --release --locked
+
+      - name: Package
+        run: cargo package --locked --no-verify
+  # Operator prerequisites, both one-time per crate:
+  # - Register a crates.io trusted publisher before the first release. The
+  #   template promises no tokenless first publication and stores no
+  #   long-lived token.
+  # - Binary GitHub releases require repository attestation support: a public
+  #   repository, or GitHub Enterprise Cloud for a private one. On plans
+  #   without it the publish-github job fails visibly at the attest step;
+  #   attestation is never silently skipped.
+  publish-crates-io:
+    if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/') }}
+    # Project-owned graft (cistella): publish also waits on the live suite.
+    needs: [initialize, release-gates, test]
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v7
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Lockfile If Missing
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1.0.6
+
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  build-binaries:
+    # Project-owned graft (cistella): binaries wait on the live suite too.
+    needs: [initialize, release-gates, test, pre-push]
+    strategy:
+      fail-fast: true
+      matrix:
+        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
+    runs-on: ${{ matrix.cell.runner }}
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v7
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Target
+        run: rustup target add ${{ matrix.cell.target }}
+
+      - name: Generate Lockfile If Missing
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Build Release Binary
+        run: cargo build --release --locked
+
+      - name: Determine Binary Name
+        id: binary
+        shell: bash
+        # Matrix values arrive via env, never interpolated into the script:
+        # they are template-generated constants, but the habit must be uniform.
+        env:
+          BINARY_TARGET: ${{ matrix.cell.target }}
+          BINARY_OS: ${{ matrix.cell.os }}
+        run: |
+          set -eu
+          target="${BINARY_TARGET}"
+          if [[ "${BINARY_OS}" == "windows" ]]; then
+            binary_name="cistella-${target}.exe"
+            cp "target/release/cistella.exe" "${binary_name}"
+          else
+            binary_name="cistella-${target}"
+            cp "target/release/cistella" "${binary_name}"
+          fi
+          echo "name=${binary_name}" >>${GITHUB_OUTPUT}
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.cell.os }}-${{ matrix.cell.cpu }}
+          path: ${{ steps.binary.outputs.name }}
+
+  publish-github:
+    if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/') }}
+    needs: [initialize, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v7
+
+      - name: Download All Binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Generate Checksums
+        working-directory: artifacts
+        run: |
+          shopt -s nullglob
+          sha256sum cistella-* >SHA256SUMS.txt
+
+      - name: Attest Build Provenance
+        id: attest
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            artifacts/SHA256SUMS.txt
+            artifacts/cistella-*
+
+      - name: Stage Attestation Bundle
+        # actions/attest records provenance in the repository API and emits a
+        # local bundle at an action-chosen path. Copy it under a deterministic
+        # name into artifacts/ so the release upload below attaches it. The
+        # output reference arrives via env so no expression text is
+        # interpolated into the script.
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -eu
+          cp "${BUNDLE_PATH}" "artifacts/cistella-provenance.sigstore.json"
+
+      - name: Create Release
+        # Tag and repository metadata arrive via env, never interpolated into
+        # the script: a tag name is attacker-reachable ref metadata and must
+        # be treated as data, so gh receives it literally. Options precede a
+        # `--` delimiter with the tag after it, so a leading-dash tag on a
+        # manual dispatch cannot parse as a gh option.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --generate-notes \
+            -- "${RELEASE_TAG}"
+
+      - name: Upload Release Artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload \
+            --repo "${GITHUB_REPOSITORY}" \
+            -- "${RELEASE_TAG}" \
+            artifacts/*
+  # =====================================================================
+  # Project-owned jobs (cistella). Everything below this line is ours,
+  # appended after the template-owned jobs above, which stay byte-verbatim
+  # (modulo the two marked publish needs-grafts) so `copier update`
+  # 3-way-merges cleanly. The leg matrix below is self-contained (see
+  # note) rather than drawn from initializer cells.
+  # =====================================================================
 
   roster:
     # Quarantine roster resolution and proof. REQUIRED gate (not
     # informational): validates the generated selections and
     # exposes the -E filters. Needs no podman or systemd
     # (`nextest list` enumerates without executing).
-    needs: [initialize]
     runs-on: ubuntu-latest
     outputs:
       inclusion: ${{ steps.filters.outputs.inclusion }}
@@ -33,12 +239,10 @@ jobs:
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -87,22 +291,24 @@ jobs:
           python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/releaser.yaml
 
   test:
-    needs: [initialize, roster]
+    needs: [roster]
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
-        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+        # Project-owned leg set (cistella): 24.04 + 26.04 LTS on both
+        # CPUs, self-contained so the template initializer stays
+        # pristine. Keep in sync with the OS/CPU answers (linux,
+        # x86_64 + arm64) plus the 26.04 surgery-watch legs.
+        platform: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
     runs-on: ${{ matrix.platform }}
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
           components: rustfmt, clippy
 
       - name: Check Formatting
@@ -178,27 +384,28 @@ jobs:
 
   flaky:
     # Informational quarantine tier: runs exactly the rostered
-    # tests under the `flaky` profile on the same matrix.
+    # tests under the `flaky` profile on the same cell matrix.
     # Non-gating by construction — failures here are tracked
     # evidence, never a red gate and never retried to green.
     # The test step itself discriminates infra failures from
     # test failures (see below); setup failures fail the job.
-    needs: [initialize, roster]
+    needs: [roster]
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
-        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
+        # Project-owned leg set (cistella): 24.04 + 26.04 LTS on both
+        # CPUs, self-contained so the template initializer stays
+        # pristine. Keep in sync with the OS/CPU answers (linux,
+        # x86_64 + arm64) plus the 26.04 surgery-watch legs.
+        platform: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
     runs-on: ${{ matrix.platform }}
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -294,17 +501,16 @@ jobs:
     # to the matrix test above, it runs the full pre-push hook suite
     # (release build + live tier) from the same pre-commit config
     # developers run locally.
-    needs: [initialize, test]
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
           components: rustfmt, clippy
 
       - name: Install linecheck
@@ -316,7 +522,7 @@ jobs:
           tool: cargo-nextest@0.9
 
       - name: Install pre-commit
-        run: pip install pre-commit
+        run: pipx install pre-commit==4.6.2
 
       - name: Run pre-push hooks
         # Skips the live-test hook: the matrix test job above already
@@ -325,116 +531,3 @@ jobs:
         env:
           SKIP: 'cargo-nextest-release'
         run: pre-commit run --hook-stage pre-push --all-files --config .auxiliary/configuration/pre-commit.yaml
-
-  build-binaries:
-    needs: [initialize, test, pre-push]
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
-        exclude: ${{ fromJSON(needs.initialize.outputs.matrix-exclusions) }}
-    runs-on: ${{ matrix.platform }}
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
-
-      - name: Build Release Binary
-        run: cargo build --release --locked
-
-      - name: Determine Binary Name
-        id: binary
-        shell: bash
-        run: |
-          target="${{ fromJSON(needs.initialize.outputs.rust-targets)[matrix.platform] }}"
-          binary_name="cistella-${target}"
-          cp target/release/cistella "${binary_name}"
-          echo "name=${binary_name}" >>${GITHUB_OUTPUT}
-
-      - name: Upload Binary Artifact
-        if: ${{ !inputs.dry-run }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: binary-${{ matrix.platform }}
-          path: ${{ steps.binary.outputs.name }}
-
-  publish-crates-io:
-    if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/') }}
-    needs: [initialize, test]
-    runs-on: ubuntu-latest
-    environment: crates-io
-    permissions:
-      id-token: write
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ needs.initialize.outputs.rust-toolchain }}
-
-      - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@v1.0.4
-        id: auth
-
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --locked
-
-  publish-github:
-    if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/') }}
-    needs: [initialize, build-binaries]
-    runs-on: ubuntu-latest
-    permissions:
-      artifact-metadata: write
-      attestations: write
-      contents: write
-      id-token: write
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download All Binaries
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-          pattern: binary-*
-          merge-multiple: true
-
-      - name: Generate Checksums
-        working-directory: artifacts
-        run: |
-          shopt -s nullglob
-          sha256sum cistella-* >SHA256SUMS.txt
-
-      - name: Attest Build Provenance
-        uses: actions/attest@v4
-        with:
-          subject-path: |
-            artifacts/SHA256SUMS.txt
-            artifacts/cistella-*
-
-      - name: Create Release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          gh release create '${{ github.ref_name }}' \
-            --repo '${{ github.repository }}' \
-            --generate-notes
-
-      - name: Upload Release Artifacts
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload '${{ github.ref_name }}' \
-            artifacts/* \
-            --repo '${{ github.repository }}'

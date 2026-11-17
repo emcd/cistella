@@ -31,4 +31,3 @@ The driver SHALL pin `debian:bookworm-slim` and SHALL depend on host prerequisit
 #### Scenario: Host preflight
 - **WHEN** `scripts/validate-rootless-podman` (pc-setup `eb8f6cb` on `origin/master`) is run
 - **THEN** it verifies command presence, cgroup v2, `subuid`/`subgid` entries for the invoking user, `podman info` `rootless:true` `cgroupVersion:v2` `storageDriver:overlay` `networkBackend:netavark`, `podman unshare`, and `~/.config/containers/systemd/` exists
-
