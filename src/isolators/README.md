@@ -5,7 +5,7 @@ when the guest dies, and how a replacement guest converges by key.
 
 ## Components
 
-- `conduct` (`src/main.rs`) owns the session. It hosts one guest,
+- `conduct` (`src/bin/cistella.rs`) owns the session. It hosts one guest,
   drives create → initiate → execute → await → teardown through the
   `Isolator` trait, and owns the creation-window lock across install
   and start.
@@ -34,7 +34,7 @@ the same tombstone rule, so parity holds through teardown.
 
 ```mermaid
 flowchart LR
-    conduct["conduct<br/>(main.rs)"] -->|"Isolator trait"| client["WireClient<br/>(client.rs)"]
+    conduct["conduct<br/>(cistella.rs)"] -->|"Isolator trait"| client["WireClient<br/>(client.rs)"]
     client -->|"stdio frames<br/>+ fd bundles"| guest["guest binary<br/>(IsolatorGuest)"]
     guest -->|"Isolator trait"| backend["PodmanIsolator<br/>(podman.rs)"]
     backend -->|"unit files, systemd"| podman["podman / systemd"]
