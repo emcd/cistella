@@ -24,8 +24,8 @@ use std::time::Duration;
 use cistella::error::CistellaError;
 use cistella::framework::protocol::{
     AWAIT_INTERRUPTED_V1, AWAIT_RESULT_OP, DEFAULT_MAX_FRAME, HOST_MAX_FRAME,
-    PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, offered_capability, parse_envelope,
-    read_frame, write_frame,
+    PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes,
+    offered_capability, parse_envelope, read_frame, write_frame,
 };
 use cistella::isolators::wire::IsolatorGuest;
 
@@ -126,7 +126,9 @@ fn error_code(error: &CistellaError) -> &'static str {
 /// Error messages travel inner (prefix-free): the envelope carries
 /// the class separately as `code`, and the framework applies its
 /// single prefix on reconstruction — never doubled.
-fn terminal_payload(result: Result<serde_json::Value, CistellaError>) -> serde_json::Value {
+fn terminal_payload(
+    result: Result<serde_json::Value, CistellaError>,
+) -> serde_json::Value {
     match result {
         Ok(payload) => serde_json::json!({"ok": payload}),
         Err(error) => serde_json::json!({"error": {
@@ -204,7 +206,7 @@ fn serve_await(
                         max_frame,
                     );
                     return;
-                }
+                },
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     let mut stdout = match writer.lock() {
                         Ok(stdout) => stdout,
@@ -221,7 +223,7 @@ fn serve_await(
                     {
                         return;
                     }
-                }
+                },
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
@@ -249,10 +251,11 @@ fn main() -> ExitCode {
 
     // Hello under the pre-negotiation ceiling: version must match
     // before any planning, and the request must actually be hello.
-    let hello_body = match read_frame(&mut reader, PRE_NEGOTIATION_MAX_FRAME, HELLO_WAIT) {
-        Ok(body) => body,
-        Err(_) => return ExitCode::from(2),
-    };
+    let hello_body =
+        match read_frame(&mut reader, PRE_NEGOTIATION_MAX_FRAME, HELLO_WAIT) {
+            Ok(body) => body,
+            Err(_) => return ExitCode::from(2),
+        };
     let hello = match parse_envelope(&hello_body) {
         Ok(envelope) => envelope,
         Err(_) => return ExitCode::from(2),
@@ -267,7 +270,8 @@ fn main() -> ExitCode {
     // capability ONLY when offered: an old host admits exactly the
     // offered set, so an unsolicited advertisement would refuse
     // hello before legacy downgrade matters.
-    let await_interrupted = offered_capability(&hello.payload, AWAIT_INTERRUPTED_V1);
+    let await_interrupted =
+        offered_capability(&hello.payload, AWAIT_INTERRUPTED_V1);
     let mut capabilities = vec![ROLE_CAPABILITY.to_string()];
     if await_interrupted {
         capabilities.push(AWAIT_INTERRUPTED_V1.to_string());
@@ -286,7 +290,8 @@ fn main() -> ExitCode {
     let body = envelope_bytes(&response);
     {
         let mut writer = stdout.lock();
-        if write_frame(&mut writer, &body, PRE_NEGOTIATION_MAX_FRAME).is_err() {
+        if write_frame(&mut writer, &body, PRE_NEGOTIATION_MAX_FRAME).is_err()
+        {
             return ExitCode::from(2);
         }
     }
@@ -311,7 +316,8 @@ fn main() -> ExitCode {
                 position += 1;
             }
         }
-        let guest = IsolatorGuest::new().with_await_interrupted(await_interrupted);
+        let guest =
+            IsolatorGuest::new().with_await_interrupted(await_interrupted);
         let guest = match channel {
             Some(sock) => guest.with_fd_channel(sock),
             None => guest,
@@ -333,19 +339,23 @@ fn main() -> ExitCode {
                     && !guest.has_live_state() =>
             {
                 return ExitCode::SUCCESS;
-            }
-            Err(error) if cistella::framework::protocol::is_read_timeout(&error) => continue,
+            },
+            Err(error)
+                if cistella::framework::protocol::is_read_timeout(&error) =>
+            {
+                continue;
+            },
             Err(_) => {
                 converge_report(&guest);
                 return ExitCode::from(2);
-            }
+            },
         };
         let envelope = match parse_envelope(&frame) {
             Ok(envelope) => envelope,
             Err(_) => {
                 converge_report(&guest);
                 return ExitCode::from(2);
-            }
+            },
         };
         // A second hello is a protocol violation: the session
         // negotiated exactly once, and re-negotiation would fork
@@ -355,7 +365,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
         if envelope.op == AWAIT_RESULT_OP {
-            serve_await(&writer, &guest, &envelope.id, &envelope.payload, max_frame);
+            serve_await(
+                &writer,
+                &guest,
+                &envelope.id,
+                &envelope.payload,
+                max_frame,
+            );
             continue;
         }
         let result = guest.dispatch(&envelope.op, &envelope.payload);
@@ -378,7 +394,7 @@ fn main() -> ExitCode {
                 Err(_) => {
                     converge_report(&guest);
                     return ExitCode::from(2);
-                }
+                },
             };
             if send(
                 &mut *stdout,

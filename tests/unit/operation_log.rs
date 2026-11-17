@@ -4,7 +4,8 @@
 //! reader, gc-integration, and prune pins live beside it.
 
 use cistella::operation_log::{
-    Budget, Injected, Operation, Outcome, encode_frame, mint_op_id, op_id_valid, read_operation,
+    Budget, Injected, Operation, Outcome, encode_frame, mint_op_id,
+    op_id_valid, read_operation,
 };
 
 pub(crate) fn state_root() -> tempfile::TempDir {
@@ -12,12 +13,18 @@ pub(crate) fn state_root() -> tempfile::TempDir {
 }
 
 pub(crate) fn start_only_frame() -> Vec<u8> {
-    let payload = serde_json::json!({"seq": 0u64, "kind": "start"}).to_string();
+    let payload =
+        serde_json::json!({"seq": 0u64, "kind": "start"}).to_string();
     encode_frame(payload.as_bytes()).expect("encode")
 }
 
-pub(crate) fn oversize_frame(total_len: usize, seq: u64, kind: &str) -> Vec<u8> {
-    let mut payload = serde_json::json!({"seq": seq, "kind": kind}).to_string();
+pub(crate) fn oversize_frame(
+    total_len: usize,
+    seq: u64,
+    kind: &str,
+) -> Vec<u8> {
+    let mut payload =
+        serde_json::json!({"seq": seq, "kind": kind}).to_string();
     while payload.len() < total_len {
         payload.push(' ');
     }
@@ -27,7 +34,12 @@ pub(crate) fn oversize_frame(total_len: usize, seq: u64, kind: &str) -> Vec<u8> 
     out
 }
 
-pub(crate) fn craft_incomplete_op(root: &std::path::Path, name: &str, pid: u32, starttime: u64) {
+pub(crate) fn craft_incomplete_op(
+    root: &std::path::Path,
+    name: &str,
+    pid: u32,
+    starttime: u64,
+) {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
     let start = serde_json::json!({
@@ -95,7 +107,8 @@ fn finalization_seam_creates_and_removes_the_marker() {
     // drives the seam) is pinned separately below.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
     assert!(op.begin_finalization(), "marker created");
     assert!(dir.join(".finalizing").is_file(), "marker present");
@@ -123,7 +136,8 @@ fn close_leaves_finalized_evidence_itself() {
     // and fails this pin.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
     op.close("success");
     assert!(
@@ -217,7 +231,8 @@ fn envelope_carries_role_and_end_timestamp() {
     // clock beside the monotonic duration.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
     op.close("success");
     let read = read_operation(&dir).expect("read");
@@ -251,7 +266,8 @@ fn child_operation_records_its_parent() {
     // Nested operations link to their parent by id.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let parent = Operation::open(&log_root, "gc", None, &Injected::default()).expect("parent");
+    let parent = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("parent");
     let parent_id = parent
         .dir()
         .file_name()
@@ -283,7 +299,8 @@ fn close_records_a_locked_finalization() {
     // lock acquisition would flip this field and fail the pin.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
     op.close("success");
     let read = read_operation(&dir).expect("read");
@@ -304,8 +321,8 @@ fn open_builds_a_missing_parent_chain() {
     // missed the final level, which is why this escaped.
     let root = state_root();
     let log_root = root.path().join("nope").join("logs");
-    let op =
-        Operation::open(&log_root, "gc", None, &Injected::default()).expect("fresh chain opens");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("fresh chain opens");
     let dir = op.dir().to_path_buf();
     op.close("success");
     assert!(dir.exists(), "operation landed under the built chain");

@@ -13,8 +13,9 @@ fn session_slice_snapshot(session: &str) -> Vec<std::path::PathBuf> {
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy().starts_with(&prefix)
+            })
         })
         .collect()
 }
@@ -41,7 +42,8 @@ fn unique_session(tag: &str) -> String {
 /// Assert-before-sweep, so a failure never reaps a foreign slice.
 fn sweep_minted_slices(before: &[std::path::PathBuf], session: &str) {
     let after = session_slice_snapshot(session);
-    let minted: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+    let minted: Vec<_> =
+        after.iter().filter(|path| !before.contains(path)).collect();
     assert_eq!(
         minted.len(),
         1,
@@ -59,19 +61,24 @@ fn example_binary(name: &str) -> std::path::PathBuf {
         .ancestors()
         .nth(2)
         .expect("target/<profile>/deps ancestors");
-    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+        Vec::new();
     for dir in [profile_dir.join("examples"), profile_dir.to_path_buf()] {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                let file_name = entry.file_name().to_string_lossy().into_owned();
-                if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+                let file_name =
+                    entry.file_name().to_string_lossy().into_owned();
+                if file_name != name
+                    && !file_name.starts_with(&format!("{name}-"))
+                {
                     continue;
                 }
                 let metadata = entry.metadata().expect("metadata");
                 if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
                     continue;
                 }
-                candidates.push((metadata.modified().expect("mtime"), entry.path()));
+                candidates
+                    .push((metadata.modified().expect("mtime"), entry.path()));
             }
         }
     }
@@ -105,7 +112,8 @@ fn peer_entry(
     let dir = tempfile::tempdir().expect("tmpdir");
     let path = dir.path().join(binary);
     std::fs::write(&path, &bytes).expect("stage peer copy");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
     let entry = cistella::guest_registry::Guest {
         name: "test-peer".to_string(),
         role: role.to_string(),
@@ -116,7 +124,8 @@ fn peer_entry(
         },
         arguments,
     };
-    let ctx = cistella::guest_source::ResolveCtx::new(dir.path().join("cache"));
+    let ctx =
+        cistella::guest_source::ResolveCtx::new(dir.path().join("cache"));
     (entry, ctx, dir)
 }
 
@@ -141,7 +150,8 @@ fn peer_entry_named(
     let dir = tempfile::tempdir().expect("tmpdir");
     let path = dir.path().join(binary);
     std::fs::write(&path, &bytes).expect("stage peer copy");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
     let entry = cistella::guest_registry::Guest {
         name: name.to_string(),
         role: role.to_string(),
@@ -152,7 +162,8 @@ fn peer_entry_named(
         },
         arguments,
     };
-    let ctx = cistella::guest_source::ResolveCtx::new(dir.path().join("cache"));
+    let ctx =
+        cistella::guest_source::ResolveCtx::new(dir.path().join("cache"));
     (entry, ctx, dir)
 }
 
@@ -171,11 +182,14 @@ fn two_non_landlock_extensions_compose() {
     // order, transact, shut down in reverse, and merge empty.
     use cistella::framework::prepare_select::prepare_selected_extension;
     use cistella::profile::ExtensionResolution;
-    let (first, _ctx1, _dir1) = peer_entry("example_guest", "example", Vec::new());
-    let (second, _ctx2, _dir2) = peer_entry("example_guest", "example", Vec::new());
+    let (first, _ctx1, _dir1) =
+        peer_entry("example_guest", "example", Vec::new());
+    let (second, _ctx2, _dir2) =
+        peer_entry("example_guest", "example", Vec::new());
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, lease) = prepare_selected_extension(
         vec![
@@ -217,7 +231,8 @@ fn unadvertised_credentials_do_not_launder_through_sibling() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
@@ -255,7 +270,8 @@ fn unadvertised_permissions_do_not_launder_through_sibling() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
@@ -296,7 +312,8 @@ fn foreign_claim_refuses_before_concat() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
@@ -332,7 +349,8 @@ fn single_guest_returning_two_hooks_refuses() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![ExtensionResolution::Registered(guest)],
@@ -370,7 +388,8 @@ fn two_single_hook_guests_refuse_naming_both() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
@@ -434,7 +453,10 @@ fn group_dead(pgid: u32) -> bool {
     // NOT used here — it proves leader absence, not group
     // quiescence (a surviving descendant would pass it).
     matches!(
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), None),
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(pgid as i32)),
+            None
+        ),
         Err(nix::errno::Errno::ESRCH)
     )
 }
@@ -449,8 +471,10 @@ fn bad_peer(dir: &tempfile::TempDir) -> cistella::guest_registry::Guest {
     use sha2::Digest;
     use std::os::unix::fs::PermissionsExt;
     let path = dir.path().join("dying-guest");
-    std::fs::write(&path, b"#!/bin/sh\nsleep 2\nexit 1\n").expect("stage dying guest");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::write(&path, b"#!/bin/sh\nsleep 2\nexit 1\n")
+        .expect("stage dying guest");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
     let bytes = std::fs::read(&path).expect("read peer binary");
     let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
     cistella::guest_registry::Guest {
@@ -480,7 +504,8 @@ fn three_guests_compose_through_prepare_many() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, lease) = prepare_selected_extension(
         vec![
@@ -531,7 +556,8 @@ fn later_guest_gating_refuses_with_clean_shutdown() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = unique_session("late-gate");
     let slice_before = session_slice_snapshot(&session);
@@ -575,7 +601,8 @@ fn mid_host_failure_retains_lease() {
     let peer = bad_peer(&stage);
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = "test-session-host-fail";
     let error = prepare_selected_extension(
@@ -597,7 +624,8 @@ fn mid_host_failure_retains_lease() {
             || error.to_string().contains("eof at frame boundary"),
         "hosting failure surfaces, got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), session).expect("lease path");
+    let path = PrepareLease::path_for(lease_base.path(), session)
+        .expect("lease path");
     assert!(
         path.exists(),
         "unprovable failed-host shutdown retains the lease"
@@ -619,7 +647,8 @@ fn mid_prepare_failure_preserves_original_error() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = unique_session("prepare-fail");
     let slice_before = session_slice_snapshot(&session);
@@ -642,7 +671,8 @@ fn mid_prepare_failure_preserves_original_error() {
         error.to_string().contains("shape violation"),
         "original fault preserved, got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), &session).expect("lease path");
+    let path = PrepareLease::path_for(lease_base.path(), &session)
+        .expect("lease path");
     assert!(
         !path.exists(),
         "clean shutdowns prove quiescence: lease drops"
@@ -672,7 +702,8 @@ fn collision_refusal_drops_lease_without_attribution() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = "test-session-collide";
     let error = prepare_selected_extension(
@@ -693,7 +724,8 @@ fn collision_refusal_drops_lease_without_attribution() {
         error.to_string().contains("SESSION_ID_ECHO"),
         "collision names the name, got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), session).expect("lease path");
+    let path = PrepareLease::path_for(lease_base.path(), session)
+        .expect("lease path");
     assert!(!path.exists(), "lease drops on clean collision abort");
 }
 
@@ -739,10 +771,17 @@ fn placement_less_plan_conducts_topology() {
     // empty plan, never accept-then-ignore).
     use cistella::framework::contract::EffectivePermissions;
     use cistella::framework::hooks::prepare_conduct_topology;
-    let effective = EffectivePermissions::assemble(&[], &[], &[], &[]).expect("empty assembles");
-    let (revised, placements, _) =
-        prepare_conduct_topology(Vec::new(), &[], &[], &effective, &[], "/work")
-            .expect("empty plan conducts");
+    let effective = EffectivePermissions::assemble(&[], &[], &[], &[])
+        .expect("empty assembles");
+    let (revised, placements, _) = prepare_conduct_topology(
+        Vec::new(),
+        &[],
+        &[],
+        &effective,
+        &[],
+        "/work",
+    )
+    .expect("empty plan conducts");
     assert!(revised.is_empty() && placements.is_empty());
 }
 
@@ -769,9 +808,11 @@ fn broad_claim_constrains_only_its_owner() {
     let dir = tempfile::tempdir().expect("tmpdir");
     let mut text = String::from("format_version = 1\n");
     text.push_str("[[acknowledgements]]\nname = \"MY_NAME\"\n");
-    std::fs::write(dir.path().join("policies.toml"), text).expect("write policies.toml");
+    std::fs::write(dir.path().join("policies.toml"), text)
+        .expect("write policies.toml");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(dir.path())).expect("policy loads");
+        cistella::framework::policy::PolicySet::load(Some(dir.path()))
+            .expect("policy loads");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = prepare_selected_extension(
         vec![
@@ -800,12 +841,14 @@ fn mid_host_failure_across_three_groups_retains_ordered_lease() {
     use cistella::framework::prepare_select::prepare_selected_extension;
     use cistella::lock::PrepareLease;
     use cistella::profile::ExtensionResolution;
-    let (peer, _pctx, _pdir) = peer_entry("example_guest", "example", Vec::new());
+    let (peer, _pctx, _pdir) =
+        peer_entry("example_guest", "example", Vec::new());
     let stage = tempfile::tempdir().expect("tmpdir");
     let dying = bad_peer(&stage);
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = "test-session-host-fail-3";
     let error = prepare_selected_extension(
@@ -827,8 +870,10 @@ fn mid_host_failure_across_three_groups_retains_ordered_lease() {
         error.to_string().contains("eof at frame boundary"),
         "hosting failure surfaces, got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), session).expect("lease path");
-    let content = std::fs::read_to_string(&path).expect("retained lease readable");
+    let path = PrepareLease::path_for(lease_base.path(), session)
+        .expect("lease path");
+    let content =
+        std::fs::read_to_string(&path).expect("retained lease readable");
     let guests: Vec<&str> = content
         .lines()
         .filter(|line| line.starts_with("guest "))
@@ -891,7 +936,8 @@ fn collision_with_minted_slice_orphans_for_gc() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let session = unique_session("collide-slice");
     let slice_before = session_slice_snapshot(&session);
@@ -914,7 +960,8 @@ fn collision_with_minted_slice_orphans_for_gc() {
         error.to_string().contains("SESSION_ID_ECHO"),
         "got: {error}"
     );
-    let path = PrepareLease::path_for(lease_base.path(), &session).expect("lease path");
+    let path = PrepareLease::path_for(lease_base.path(), &session)
+        .expect("lease path");
     assert!(!path.exists(), "lease drops on clean collision abort");
     // The minted slice orphans with session attribution for gc;
     // the test sweeps its own litter after proving existence.

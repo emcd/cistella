@@ -63,7 +63,10 @@ fn read_frame<R: Read>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     Ok(body)
 }
 
-fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> std::io::Result<()> {
+fn write_frame<W: Write>(
+    writer: &mut W,
+    payload: &[u8],
+) -> std::io::Result<()> {
     const MAX_FRAME: usize = 64 * 1024;
     if payload.len() > MAX_FRAME {
         return Err(std::io::Error::new(
@@ -100,12 +103,14 @@ fn main() -> ExitCode {
         Ok(body) => body,
         Err(_) => return ExitCode::from(2),
     };
-    let hello_request: Value = serde_json::from_slice(&hello_body).unwrap_or(json!({}));
+    let hello_request: Value =
+        serde_json::from_slice(&hello_body).unwrap_or(json!({}));
     if hello_request
         .get("protocol")
         .and_then(|value| value.as_u64())
         != Some(PROTOCOL_MAJOR as u64)
-        || hello_request.get("op").and_then(|value| value.as_str()) != Some("hello")
+        || hello_request.get("op").and_then(|value| value.as_str())
+            != Some("hello")
     {
         return ExitCode::from(2);
     }
@@ -137,8 +142,10 @@ fn main() -> ExitCode {
         Err(_) => return ExitCode::from(2),
     };
     let request: Value = serde_json::from_slice(&request).unwrap_or(json!({}));
-    if request.get("protocol").and_then(|value| value.as_u64()) != Some(PROTOCOL_MAJOR as u64)
-        || request.get("op").and_then(|value| value.as_str()) != Some("prepare")
+    if request.get("protocol").and_then(|value| value.as_u64())
+        != Some(PROTOCOL_MAJOR as u64)
+        || request.get("op").and_then(|value| value.as_str())
+            != Some("prepare")
     {
         return ExitCode::from(2);
     }

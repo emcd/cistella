@@ -27,7 +27,8 @@ fn describe_state_absent_for_unknown_full_id() {
     );
     let shown = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
-        shown.contains("state=absent") && shown.contains("commitment=unattested"),
+        shown.contains("state=absent")
+            && shown.contains("commitment=unattested"),
         "all-absent reports absent+unattested, got: {shown}"
     );
 }
@@ -133,7 +134,8 @@ fn describe_state_absent_for_attestation_only_residue() {
     );
     let shown = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
-        shown.contains("state=absent") && shown.contains("commitment=attested"),
+        shown.contains("state=absent")
+            && shown.contains("commitment=attested"),
         "inert residue reports absent+attested, got: {shown}"
     );
 }
@@ -200,7 +202,8 @@ fn describe_state_contradictory_commitment_refuses_typed() {
     // is discovered at install, never from post-stall stdout.
     let gate_dir = tempfile::tempdir().expect("gate dir");
     let gate = gate_dir.path().join("start-gate");
-    let mut parked = ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
+    let mut parked =
+        ParkedConduct::spawn(&home, &worktree_str, &profile, &gate);
     let id = parked.discover_id();
     let container = format!("cistella-{id}");
     let unit = unit_path(&home, &id);

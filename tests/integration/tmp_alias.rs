@@ -84,7 +84,8 @@ fn bind_alias_tmp_backing_refuses_precreate() {
     cmd.arg("sh");
     cmd.arg("-c");
     cmd.arg(&script);
-    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman unshare must spawn");
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
+        .expect("podman unshare must spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "unshare script must run: {stderr}");
@@ -145,5 +146,7 @@ fn bind_alias_tmp_backing_refuses_precreate() {
         "case-control:ALLOWED",
         "disjoint backing must stay allowed"
     );
-    eprintln!("tmp-backing bind cases EXECUTED: subdir+exact refused, control allowed");
+    eprintln!(
+        "tmp-backing bind cases EXECUTED: subdir+exact refused, control allowed"
+    );
 }

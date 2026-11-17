@@ -32,7 +32,9 @@ fn volume_targets_parse_and_canonicalize() {
 fn parse_stat_map_survives_spaces() {
     // `%u %n` puts the uid first so names with spaces parse; missing
     // paths have no entry (the created-vs-preexisting signal).
-    let map = parse_stat_map("0 /home/cistella/.config\n1000 /home/cistella/my dir\n");
+    let map = parse_stat_map(
+        "0 /home/cistella/.config\n1000 /home/cistella/my dir\n",
+    );
     assert_eq!(
         map.get("/home/cistella/.config").map(String::as_str),
         Some("0")
@@ -65,7 +67,8 @@ fn preparation_sources_cover_user_mounts_only() {
     // Profile + CLI + session targets seed candidates; credential-style
     // internals never do (they join the authorization set via
     // volume_targets, not here).
-    let profile = vec![triple("/data", "/home/cistella/.config/x", MountMode::Rw)];
+    let profile =
+        vec![triple("/data", "/home/cistella/.config/x", MountMode::Rw)];
     let cli = vec![triple("/n", "/srv/data", MountMode::Ro)];
     let got = preparation_sources(&profile, &cli, "/work");
     assert!(
@@ -86,7 +89,9 @@ fn ssh_expectation_builds_exact_tuple_from_argv() {
     let expected = ssh_expectation(&extra).expect("argv parses");
     assert_eq!(
         expected.owner,
-        cistella::framework::contract::Provenance::Extension("shipped:ssh".to_string())
+        cistella::framework::contract::Provenance::Extension(
+            "shipped:ssh".to_string()
+        )
     );
     assert_eq!(
         expected.env,
@@ -119,8 +124,12 @@ fn ssh_expectation_builds_exact_tuple_from_argv() {
 fn ssh_expectation_absent_without_both_argv() {
     use cistella::framework::prepare::ssh_expectation;
     assert!(ssh_expectation(&[]).is_none());
-    assert!(ssh_expectation(&["--socket=/run/seat.sock".to_string()]).is_none());
-    assert!(ssh_expectation(&["--socket-canonical=/run/x".to_string()]).is_none());
+    assert!(
+        ssh_expectation(&["--socket=/run/seat.sock".to_string()]).is_none()
+    );
+    assert!(
+        ssh_expectation(&["--socket-canonical=/run/x".to_string()]).is_none()
+    );
 }
 
 fn ssh_declared_profile(extra: &str) -> cistella::profile::Profile {
@@ -196,8 +205,9 @@ fn ssh_selection_ambient_contract() {
     }
     // Missing path refuses.
     {
-        let _guard =
-            AmbientGuard::set(std::ffi::OsStr::new("/nonexistent-cistella-ssh/agent.sock"));
+        let _guard = AmbientGuard::set(std::ffi::OsStr::new(
+            "/nonexistent-cistella-ssh/agent.sock",
+        ));
         assert!(prof.ssh_selection_argv(&resolutions).is_err());
     }
     // Regular file refuses the kind gate.

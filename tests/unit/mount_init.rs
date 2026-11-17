@@ -10,15 +10,19 @@ use cistella::mount::{MountMode, MountTriple};
 /// traversal trust (lifetime test) refuses.
 fn test_tree() -> tempfile::TempDir {
     let tree = tempfile::tempdir().expect("tree");
-    std::fs::set_permissions(tree.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("chmod base");
+    std::fs::set_permissions(
+        tree.path(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("chmod base");
     tree
 }
 
 fn test_subdir(tree: &tempfile::TempDir, name: &str) -> std::path::PathBuf {
     let path = tree.path().join(name);
     std::fs::create_dir(&path).expect("mkdir subdir");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
     path
 }
 
@@ -62,7 +66,8 @@ fn precreate_nested_mountpoints_seeds_parent_source() {
         container_target: "/data/sub".to_string(),
         mode: MountMode::Rw,
     };
-    precreate_nested_mountpoints(&[orphan, nested_orphan], &roots).expect("orphan skips");
+    precreate_nested_mountpoints(&[orphan, nested_orphan], &roots)
+        .expect("orphan skips");
     assert!(
         !tree.path().join("other").exists(),
         "no tree created under a missing parent"
@@ -81,7 +86,8 @@ fn precreate_nested_mountpoints_seeds_parent_source() {
         container_target: "/work/sub".to_string(),
         mode: MountMode::Rw,
     };
-    precreate_nested_mountpoints(&[work, work_child], &roots).expect("out-of-scope skips");
+    precreate_nested_mountpoints(&[work, work_child], &roots)
+        .expect("out-of-scope skips");
     assert!(
         !tree.path().join("work/sub").exists(),
         "no mountpoint outside cleanup roots"
@@ -97,7 +103,8 @@ fn precreate_refuses_planted_symlink() {
     // Guest plants a symlink where the mountpoint will land,
     // pointing outside the admitted source.
     let outside = test_subdir(&tree, "outside");
-    std::os::unix::fs::symlink(&outside, tree.path().join("slice/cache")).expect("plant link");
+    std::os::unix::fs::symlink(&outside, tree.path().join("slice/cache"))
+        .expect("plant link");
     let roots = [format!("{host}/slice")];
     let triples = [
         MountTriple {
@@ -111,13 +118,15 @@ fn precreate_refuses_planted_symlink() {
             mode: MountMode::Rw,
         },
     ];
-    let error = precreate_nested_mountpoints(&triples, &roots).expect_err("link refuses");
+    let error = precreate_nested_mountpoints(&triples, &roots)
+        .expect_err("link refuses");
     assert!(
         error.to_string().contains("cache"),
         "names the link, got: {error}"
     );
     assert!(
-        !outside.join("cache").exists() && outside.read_dir().expect("read").next().is_none(),
+        !outside.join("cache").exists()
+            && outside.read_dir().expect("read").next().is_none(),
         "nothing created through the link"
     );
 }
@@ -134,7 +143,8 @@ fn precreated_mountpoint_dies_with_cleanup_root() {
     let host = tree.path().to_string_lossy().to_string();
     test_subdir(&tree, "slice");
     let roots = [format!("{host}/slice")];
-    record_cleanup(base.path(), "test-session-9", &roots).expect("record admits");
+    record_cleanup(base.path(), "test-session-9", &roots)
+        .expect("record admits");
     let triples = [
         MountTriple {
             host_source: format!("{host}/slice"),

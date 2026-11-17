@@ -9,7 +9,9 @@
 
 use crate::error::{CistellaError, Result};
 use crate::framework::contract::Provenance;
-use crate::mount::{MountMode, MountTriple, Placement, canonicalize_container_target};
+use crate::mount::{
+    MountMode, MountTriple, Placement, canonicalize_container_target,
+};
 use serde::{Deserialize, Serialize};
 
 /// Declared access right: the policy half of a former mode.
@@ -135,7 +137,8 @@ impl EffectivePermissions {
         let mut grants: std::collections::HashMap<String, EffectiveGrant> =
             std::collections::HashMap::new();
         for triple in driver_triples {
-            let target = canonicalize_container_target(&triple.container_target);
+            let target =
+                canonicalize_container_target(&triple.container_target);
             let (rights, intent_ro) = match triple.mode {
                 MountMode::Ro => (Rights::Read, true),
                 MountMode::Rw => (Rights::Full, false),
@@ -152,7 +155,9 @@ impl EffectivePermissions {
         }
         let contributed: std::collections::HashSet<String> = placements
             .iter()
-            .map(|placement| canonicalize_container_target(&placement.container_target))
+            .map(|placement| {
+                canonicalize_container_target(&placement.container_target)
+            })
             .collect();
         let mut seen: Vec<(String, Provenance, Rights)> = Vec::new();
         for permission in permissions {
@@ -184,17 +189,24 @@ impl EffectivePermissions {
                 .entry(target.clone())
                 .and_modify(|grant| {
                     grant.rights = grant.rights.join(rights);
-                    grant
-                        .claimants
-                        .push((permission.provenance.clone(), permission.rights));
-                    grant.binding_intent_ro =
-                        grant.binding_intent_ro || matches!(permission.rights, Rights::Read);
+                    grant.claimants.push((
+                        permission.provenance.clone(),
+                        permission.rights,
+                    ));
+                    grant.binding_intent_ro = grant.binding_intent_ro
+                        || matches!(permission.rights, Rights::Read);
                 })
                 .or_insert(EffectiveGrant {
                     target,
                     rights,
-                    claimants: vec![(permission.provenance.clone(), permission.rights)],
-                    binding_intent_ro: matches!(permission.rights, Rights::Read),
+                    claimants: vec![(
+                        permission.provenance.clone(),
+                        permission.rights,
+                    )],
+                    binding_intent_ro: matches!(
+                        permission.rights,
+                        Rights::Read
+                    ),
                 });
         }
         for target in &contributed {
@@ -223,7 +235,10 @@ impl EffectivePermissions {
     /// Returns a typed internal error on a missing grant (all
     /// production callers classify assembled triples whose
     /// coverage merge proved).
-    pub fn rights_of(&self, container_target: &str) -> crate::error::Result<Rights> {
+    pub fn rights_of(
+        &self,
+        container_target: &str,
+    ) -> crate::error::Result<Rights> {
         use crate::mount::canonicalize_container_target;
         let target = canonicalize_container_target(container_target);
         self.get(&target).map(|grant| grant.rights).ok_or_else(|| {
@@ -243,7 +258,8 @@ impl EffectivePermissions {
     /// after merge with driver provenance.
     pub fn ingest_driver(&mut self, triples: &[MountTriple]) {
         for triple in triples {
-            let target = canonicalize_container_target(&triple.container_target);
+            let target =
+                canonicalize_container_target(&triple.container_target);
             let (rights, intent_ro) = match triple.mode {
                 MountMode::Ro => (Rights::Read, true),
                 MountMode::Rw => (Rights::Full, false),
@@ -292,14 +308,18 @@ pub fn render_placements(
     placements
         .iter()
         .map(|placement| {
-            let target = canonicalize_container_target(&placement.container_target);
+            let target =
+                canonicalize_container_target(&placement.container_target);
             let mode = match effective.get(&target) {
                 // No grant is unreachable past merge validation;
                 // render read-only (fail-closed at the VFS layer).
                 None => MountMode::Ro,
-                Some(grant) if grant.rights == Rights::Read || grant.binding_intent_ro => {
+                Some(grant)
+                    if grant.rights == Rights::Read
+                        || grant.binding_intent_ro =>
+                {
                     MountMode::Ro
-                }
+                },
                 _ => MountMode::Rw,
             };
             MountTriple {

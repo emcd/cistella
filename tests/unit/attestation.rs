@@ -5,8 +5,8 @@
 //! stays a live-tier concern (podman contact).
 
 use cistella::attestation::{
-    Attestation, CommitDecision, Currency, Incarnation, commit_decision, decide_currency,
-    parse_identity,
+    Attestation, CommitDecision, Currency, Incarnation, commit_decision,
+    decide_currency, parse_identity,
 };
 
 fn sample() -> Attestation {
@@ -150,7 +150,8 @@ fn round_trip_preserves_all_fields() {
 #[test]
 fn absent_reads_as_none_not_error() {
     let dir = state_root();
-    let found = cistella::attestation::read(dir.path(), "never-published-1").expect("read");
+    let found = cistella::attestation::read(dir.path(), "never-published-1")
+        .expect("read");
     assert!(found.is_none(), "missing file is unattested, not an error");
 }
 
@@ -176,7 +177,8 @@ fn corrupt_content_fails_loud() {
     // Corrupt the file through the same anchored dir the module
     // uses (proves the read path refuses, not the write path).
     let state_dir = cistella::lock::PrepareLease::state_dir(base);
-    let anchored = cistella::guest_anchor::open_state_dir(&state_dir).expect("state dir opens");
+    let anchored = cistella::guest_anchor::open_state_dir(&state_dir)
+        .expect("state dir opens");
     anchored
         .replace_file(
             &format!("cistella-attestation-{}", attestation.session_id),
@@ -221,7 +223,8 @@ fn session_mismatch_refuses() {
     tampered.session_id = "other-session-9".to_string();
     let tampered_bytes = serde_json::to_vec(&tampered).expect("encodes");
     let state_dir = cistella::lock::PrepareLease::state_dir(base);
-    let anchored = cistella::guest_anchor::open_state_dir(&state_dir).expect("state dir opens");
+    let anchored = cistella::guest_anchor::open_state_dir(&state_dir)
+        .expect("state dir opens");
     anchored
         .replace_file(
             &format!("cistella-attestation-{}", sample().session_id),
@@ -264,7 +267,8 @@ fn reap_removes_without_failing() {
     let attestation = sample();
     cistella::attestation::publish(base, &attestation).expect("publish");
     cistella::attestation::reap(base, &attestation.session_id);
-    let found = cistella::attestation::read(base, &attestation.session_id).expect("read");
+    let found = cistella::attestation::read(base, &attestation.session_id)
+        .expect("read");
     assert!(found.is_none(), "reaped attestation reads absent");
     // Reaping absence never fails.
     cistella::attestation::reap(base, &attestation.session_id);
@@ -277,7 +281,8 @@ fn foreign_commitment_round_trips_without_incarnation() {
     let base = dir.path();
     let mut attestation = sample();
     attestation.incarnation = None;
-    cistella::attestation::publish(base, &attestation).expect("publish foreign");
+    cistella::attestation::publish(base, &attestation)
+        .expect("publish foreign");
     let back = cistella::attestation::read(base, &attestation.session_id)
         .expect("read")
         .expect("present");
@@ -337,12 +342,16 @@ fn orphan_sweep_skips_unparseable_and_absent_dir() {
     let dir = state_root();
     let base = dir.path();
     // Absent state dir sweeps empty without creating noise.
-    let empty = cistella::attestation::reap_orphans(base, &std::collections::HashSet::new());
+    let empty = cistella::attestation::reap_orphans(
+        base,
+        &std::collections::HashSet::new(),
+    );
     assert!(empty.is_empty());
     // Unparseable names skip (planted through the anchored dir
     // to prove the sweep — not the planter — skips).
     let state_dir = cistella::lock::PrepareLease::state_dir(base);
-    let anchored = cistella::guest_anchor::open_state_dir(&state_dir).expect("state dir opens");
+    let anchored = cistella::guest_anchor::open_state_dir(&state_dir)
+        .expect("state dir opens");
     {
         use std::io::Write as _;
         let mut f = anchored
@@ -355,7 +364,10 @@ fn orphan_sweep_skips_unparseable_and_absent_dir() {
         let mut f = anchored.create_file("unrelated-file").expect("plant");
         f.write_all(b"junk").expect("write");
     }
-    let reaped = cistella::attestation::reap_orphans(base, &std::collections::HashSet::new());
+    let reaped = cistella::attestation::reap_orphans(
+        base,
+        &std::collections::HashSet::new(),
+    );
     assert!(
         reaped.is_empty(),
         "unparseable names must skip, got: {reaped:?}"
@@ -369,8 +381,8 @@ fn parse_identity_keeps_spaceful_startedat_whole() {
     // Only the first token boundary is structural; StartedAt
     // is the entire remainder, so same-day restarts stay
     // visible on spaceful renderings.
-    let single =
-        parse_identity("abc123 2026-10-24T14:51:00Z\n").expect("single-token rendering parses");
+    let single = parse_identity("abc123 2026-10-24T14:51:00Z\n")
+        .expect("single-token rendering parses");
     assert_eq!(single.container_id, "abc123");
     assert_eq!(single.started_at, "2026-10-24T14:51:00Z");
     let spaced = parse_identity("abc123 2026-10-24 14:51:00 +0000 UTC\n")

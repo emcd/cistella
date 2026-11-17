@@ -82,7 +82,7 @@ fn gated_post_closure_round(
                 Instant::now() + Duration::from_secs(10),
             );
             (outcome, fin)
-        }
+        },
         nix::unistd::ForkResult::Child => {
             unsafe { libc::close(gate_write.into_raw_fd()) };
             let gate = gate_read.into_raw_fd();
@@ -118,7 +118,7 @@ fn gated_post_closure_round(
                     libc::_exit(3);
                 },
             }
-        }
+        },
     }
 }
 
@@ -142,7 +142,8 @@ fn capture_finalize_carries_post_closure_exit() {
         ChildDisposition::Exited(0),
         "post-closure exit is carried, not left Unknown"
     );
-    let end_ok = matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
+    let end_ok =
+        matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
     assert!(
         verdict_ready(end_ok, &fin, outcome.matched),
         "clean closure plus clean exit verifies"
@@ -162,7 +163,8 @@ fn capture_finalize_reports_nonzero_exit() {
     );
     assert!(fin.reaped, "final reap converges");
     assert_eq!(fin.disposition, ChildDisposition::Exited(3));
-    let end_ok = matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
+    let end_ok =
+        matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
     assert!(
         !verdict_ready(end_ok, &fin, true),
         "nonzero exit never verifies, even with clean end and content"
@@ -186,7 +188,8 @@ fn capture_finalize_reports_signal_death() {
         ChildDisposition::Signaled(libc::SIGTERM),
         "signal death recorded, not an exit code"
     );
-    let end_ok = matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
+    let end_ok =
+        matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
     assert!(
         !verdict_ready(end_ok, &fin, true),
         "signaled child never verifies, even with clean end and content"
@@ -217,11 +220,14 @@ fn capture_pty_early_close_admitted_after_clean_exit() {
                 Duration::from_secs(10),
                 Duration::from_secs(2),
                 CAPTURE_CAP,
-                |bytes| String::from_utf8_lossy(bytes).contains("PTY-EARLY-CLOSE"),
+                |bytes| {
+                    String::from_utf8_lossy(bytes).contains("PTY-EARLY-CLOSE")
+                },
                 None,
             );
             assert!(
-                outcome.bytes == b"PTY-EARLY-CLOSE\n" || outcome.bytes == b"PTY-EARLY-CLOSE\r\n",
+                outcome.bytes == b"PTY-EARLY-CLOSE\n"
+                    || outcome.bytes == b"PTY-EARLY-CLOSE\r\n",
                 "queued bytes complete (pty may translate LF to CRLF), got: {:?}",
                 outcome.bytes
             );
@@ -253,7 +259,10 @@ fn capture_pty_early_close_admitted_after_clean_exit() {
             // open slave) with the probe's own children, which
             // never reopen the slave. A reopened slave is
             // outside this contract.
-            let end_ok = matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
+            let end_ok = matches!(
+                outcome.end,
+                CaptureEnd::Eof | CaptureEnd::PtyEio { .. }
+            );
             assert!(end_ok, "probe policy admits the early close");
             let wrote = nix::unistd::write(&gate_write, &[1u8]);
             assert!(wrote.is_ok(), "gate release delivers");
@@ -275,7 +284,7 @@ fn capture_pty_early_close_admitted_after_clean_exit() {
                 verdict_ready(end_ok, &fin, outcome.matched),
                 "early EIO plus clean exit verifies under the probe contract"
             );
-        }
+        },
         nix::pty::ForkptyResult::Child => {
             // Minimal post-fork body: close the unneeded gate
             // end, write, close the slave (fds 0/1/2), wait on
@@ -305,6 +314,6 @@ fn capture_pty_early_close_admitted_after_clean_exit() {
                 libc::close(gate);
                 libc::_exit(0);
             }
-        }
+        },
     }
 }

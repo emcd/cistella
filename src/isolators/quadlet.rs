@@ -14,9 +14,10 @@ use crate::error::{CistellaError, Result};
 use crate::lock::LockGuard;
 use crate::operation_log;
 use crate::session::{
-    LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_LANDLOCK,
-    LABEL_PROFILE, LABEL_PROFILE_DIGEST, LABEL_RECONCILIATION_KEY, Session, command_label,
-    ensure_minted_id, ensure_no_injection, ensure_session_field, validate_generic_label,
+    LABEL_COMMAND, LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE,
+    LABEL_LANDLOCK, LABEL_PROFILE, LABEL_PROFILE_DIGEST,
+    LABEL_RECONCILIATION_KEY, Session, command_label, ensure_minted_id,
+    ensure_no_injection, ensure_session_field, validate_generic_label,
 };
 
 /// Quotes a value for a Quadlet `Label=` or `Environment=` directive.
@@ -43,7 +44,7 @@ pub fn quote_systemd(value: &str) -> String {
             '"' | '\\' => {
                 out.push('\\');
                 out.push(c);
-            }
+            },
             _ => out.push(c),
         }
     }
@@ -85,7 +86,7 @@ pub fn unquote_systemd(value: &str) -> String {
                 Some(c) => {
                     out.push('%');
                     out.push(c);
-                }
+                },
                 None => out.push('%'),
             },
             Some('\\') => match chars.next() {
@@ -113,7 +114,9 @@ pub fn resolve_image_digest(image: &str) -> Result<String> {
     let exists = Command::new("podman")
         .args(["image", "exists", image])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman image exists: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman image exists: {e}"))
+        })?;
     if !exists.status.success() {
         return Err(CistellaError::Runtime(format!(
             "image {image} not present locally: pull it, or run check"
@@ -125,7 +128,9 @@ pub fn resolve_image_digest(image: &str) -> Result<String> {
     let out = Command::new("podman")
         .args(["image", "inspect", "--format", "{{.Digest}}", image])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman image inspect: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman image inspect: {e}"))
+        })?;
     if !out.status.success() {
         return Err(CistellaError::Runtime(format!(
             "image {image} not present locally: pull it, or run check"
@@ -180,7 +185,8 @@ pub fn generate_quadlet_unit(
     for (key, value) in generic_labels {
         validate_generic_label(key, value).map_err(CistellaError::Runtime)?;
     }
-    let container_home = crate::mount::canonicalize_container_target(&session.container_home);
+    let container_home =
+        crate::mount::canonicalize_container_target(&session.container_home);
     // Env keys are [A-Z_][A-Z0-9_]*, values newline-free.
     for e in env_extra {
         ensure_no_injection(e, "env")?;
@@ -190,9 +196,9 @@ pub fn generate_quadlet_unit(
                     .chars()
                     .next()
                     .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
-                || !k
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+                || !k.chars().all(|c| {
+                    c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
+                }))
         {
             return Err(CistellaError::Runtime(format!(
                 "env key must match [A-Z_][A-Z0-9_]*: {k}"
@@ -302,7 +308,10 @@ pub fn generate_quadlet_unit(
         // intact, verified live); quoting here would keep literal quotes
         // in the mount, while a bare `%` would expand at start time.
         if flag == "--tmpfs" {
-            out.push_str(&format!("Tmpfs={}\n", escape_percent(&container_home)));
+            out.push_str(&format!(
+                "Tmpfs={}\n",
+                escape_percent(&container_home)
+            ));
         } else if flag == "--volume" {
             out.push_str(&format!("Volume={}\n", escape_percent(val)));
         }
@@ -317,9 +326,9 @@ pub fn generate_quadlet_unit(
 /// Returns the Quadlet unit directory (`~/.config/containers/systemd/`).
 #[must_use]
 pub fn quadlet_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|home| std::path::Path::new(&home).join(".config/containers/systemd"))
+    std::env::var("HOME").ok().map(|home| {
+        std::path::Path::new(&home).join(".config/containers/systemd")
+    })
 }
 
 /// Writes a Quadlet unit to `~/.config/containers/systemd/` and reloads.
@@ -334,16 +343,19 @@ pub fn install_quadlet(unit_name: &str, content: &str) -> Result<PathBuf> {
     let Some(dir) = quadlet_dir() else {
         return Err(CistellaError::Runtime("HOME not set".to_string()));
     };
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| CistellaError::Runtime(format!("create {}: {e}", dir.display())))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        CistellaError::Runtime(format!("create {}: {e}", dir.display()))
+    })?;
     let path = dir.join(unit_name);
-    std::fs::write(&path, content)
-        .map_err(|e| CistellaError::Runtime(format!("write {}: {e}", path.display())))?;
+    std::fs::write(&path, content).map_err(|e| {
+        CistellaError::Runtime(format!("write {}: {e}", path.display()))
+    })?;
     if systemd_user_available() {
-        let out = systemctl_user()
-            .args(["daemon-reload"])
-            .output()
-            .map_err(|e| CistellaError::Runtime(format!("systemctl daemon-reload: {e}")))?;
+        let out = systemctl_user().args(["daemon-reload"]).output().map_err(
+            |e| {
+                CistellaError::Runtime(format!("systemctl daemon-reload: {e}"))
+            },
+        )?;
         if !out.status.success() {
             return Err(CistellaError::Runtime(format!(
                 "daemon-reload failed: {}",
@@ -383,7 +395,9 @@ pub fn start_quadlet(unit_name: &str) -> Result<()> {
     let out = systemctl_user()
         .args(["start", "--no-block", &service])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("systemctl start: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("systemctl start: {e}"))
+        })?;
     if !out.status.success() {
         return Err(CistellaError::Runtime(format!(
             "start {service} failed: {}",
@@ -399,8 +413,8 @@ pub fn start_quadlet(unit_name: &str) -> Result<()> {
                 return Err(CistellaError::Runtime(format!(
                     "start {service} entered failed"
                 )));
-            }
-            _ => {}
+            },
+            _ => {},
         }
         if Instant::now() > deadline {
             return Err(CistellaError::Runtime(format!(
@@ -450,11 +464,15 @@ pub(crate) fn query_unit_props(service: &str) -> HashMap<String, String> {
 ///
 /// Returns `CistellaError::Runtime` on spawn failure, nonzero
 /// systemctl exit, or a response missing `LoadState`.
-pub(crate) fn query_unit_props_checked(service: &str) -> Result<HashMap<String, String>> {
+pub(crate) fn query_unit_props_checked(
+    service: &str,
+) -> Result<HashMap<String, String>> {
     let out = systemctl_user()
         .args(["show", "-p", "LoadState", "-p", "ActiveState", service])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("systemctl show {service}: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("systemctl show {service}: {e}"))
+        })?;
     if !out.status.success() {
         return Err(CistellaError::Runtime(format!(
             "systemctl show {service} failed: {}",
@@ -510,16 +528,19 @@ pub(crate) fn unit_file_absent_checked(unit_name: &str) -> Result<bool> {
 /// # Errors
 ///
 /// Returns `CistellaError::Runtime` on stop failure for a present unit.
-pub(crate) fn stop_settle(container_name: &str, grace: Duration) -> Result<()> {
+pub(crate) fn stop_settle(
+    container_name: &str,
+    grace: Duration,
+) -> Result<()> {
     let service = format!("{container_name}.service");
     if systemd_user_available() {
-        let out = systemctl_user()
-            .args(["stop", &service])
-            .output()
-            .map_err(|e| CistellaError::Runtime(format!("systemctl stop: {e}")))?;
+        let out = systemctl_user().args(["stop", &service]).output().map_err(
+            |e| CistellaError::Runtime(format!("systemctl stop: {e}")),
+        )?;
         if !out.status.success() {
             let props = query_unit_props(&service);
-            let not_found = props.get("LoadState").is_some_and(|v| v == "not-found");
+            let not_found =
+                props.get("LoadState").is_some_and(|v| v == "not-found");
             if !not_found {
                 return Err(CistellaError::Runtime(format!(
                     "systemctl stop {service} failed: {}",
@@ -584,7 +605,10 @@ pub(crate) struct UnlinkOutcome {
 ///
 /// Returns `CistellaError::Runtime` on removal or reload failure.
 /// `NotFound` on unlink is converged absence, never an error.
-pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<UnlinkOutcome> {
+pub(crate) fn remove_unit_file(
+    container_name: &str,
+    unit_name: &str,
+) -> Result<UnlinkOutcome> {
     if !systemd_user_available() {
         return Ok(UnlinkOutcome { unlinked: false });
     }
@@ -595,7 +619,11 @@ pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<
             let out = systemctl_user()
                 .args(["daemon-reload"])
                 .output()
-                .map_err(|e| CistellaError::Runtime(format!("systemctl daemon-reload: {e}")))?;
+                .map_err(|e| {
+                    CistellaError::Runtime(format!(
+                        "systemctl daemon-reload: {e}"
+                    ))
+                })?;
             if !out.status.success() {
                 return Err(CistellaError::Runtime(format!(
                     "daemon-reload failed: {}",
@@ -626,7 +654,9 @@ pub(crate) fn remove_unit_file(container_name: &str, unit_name: &str) -> Result<
 pub fn unlink_unit_file(path: &std::path::Path) -> Result<bool> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(false)
+        },
         Err(error) => Err(CistellaError::Runtime(format!(
             "remove {}: {error}",
             path.display()
@@ -714,7 +744,7 @@ fn teardown_inner_impl(
                     }),
                 );
                 return Err(error);
-            }
+            },
         }
     } else {
         // Fallback for environments without systemd user instance (tests)
@@ -725,7 +755,10 @@ fn teardown_inner_impl(
         // reports without failing teardown (the unit is gone
         // either way — removal failure is litter, never residue).
         let mut litter_count = 0usize;
-        for litter in crate::cleanup::reap_cleanup(&crate::lock::runtime_base(), session_id) {
+        for litter in crate::cleanup::reap_cleanup(
+            &crate::lock::runtime_base(),
+            session_id,
+        ) {
             litter_count += 1;
             eprintln!("warning: cleanup litter: {litter}");
         }
@@ -829,7 +862,9 @@ pub(crate) fn container_exists_code(name: &str) -> Result<i32> {
     let exists = Command::new("podman")
         .args(["container", "exists", name])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman container exists: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman container exists: {e}"))
+        })?;
     match exists.status.code() {
         Some(code @ (0 | 1)) => Ok(code),
         _ => Err(CistellaError::Runtime(format!(

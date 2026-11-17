@@ -93,7 +93,8 @@ fn inspect_compares_whole_pairs_with_started_at_intact() {
 
 #[test]
 fn inspect_nonzero_is_unqueryable_not_absence() {
-    let (class, pair) = classify_inspect(Some(&ok_out(125, "", "")), "id", "st");
+    let (class, pair) =
+        classify_inspect(Some(&ok_out(125, "", "")), "id", "st");
     assert_eq!(class, InspectClass::Unqueryable);
     assert_eq!(pair, None);
     let (class, pair) = classify_inspect(
@@ -112,7 +113,8 @@ fn inspect_nonzero_is_unqueryable_not_absence() {
 
 #[test]
 fn inspect_unparseable_is_its_own_class() {
-    let (class, pair) = classify_inspect(Some(&ok_out(0, "\n", "")), "id", "st");
+    let (class, pair) =
+        classify_inspect(Some(&ok_out(0, "\n", "")), "id", "st");
     assert_eq!(class, InspectClass::Unparseable);
     assert_eq!(pair, None);
 }
@@ -336,7 +338,8 @@ fn builders_name_the_real_unit_and_properties() {
     let ps = ps_argv("cistella-abc");
     assert!(ps.join(" ").contains("name=cistella-abc"), "{ps:?}");
     assert!(ps.contains(&"--no-trunc".to_string()), "{ps:?}");
-    let full = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
+    let full =
+        "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
     let listing = format!("{full} cistella-abc Up 2 minutes\n");
     assert!(ps_id_present(listing.as_bytes(), full));
     assert!(!ps_id_present(listing.as_bytes(), "abc123"));

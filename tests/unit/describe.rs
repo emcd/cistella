@@ -4,7 +4,8 @@
 //! live-tier concerns; this file pins the pure decision table.
 
 use cistella::describe::{
-    NativeEvidence, ProbeOutcome, full_id_shape, probe_table, render_state, snapshot_checked,
+    NativeEvidence, ProbeOutcome, full_id_shape, probe_table, render_state,
+    snapshot_checked,
 };
 use cistella::framework::isolator::UnitSnapshot;
 use cistella::framework::lifecycle::LifecycleState;

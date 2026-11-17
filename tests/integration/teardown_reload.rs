@@ -87,7 +87,8 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
     );
     let mut cmd = spawn_cistella_cmd(&home, &["terminate", &id]);
     cmd.env("PATH", &shim_path);
-    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("bounded terminate runs");
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT)
+        .expect("bounded terminate runs");
     assert!(
         !out.status.success(),
         "reload-failed teardown must not converge"
@@ -154,7 +155,8 @@ fn teardown_surfaces_reload_failure_instead_of_converging() {
             .is_none(),
         "gc reaps the orphan attestation"
     );
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
     assert!(

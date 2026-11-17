@@ -156,13 +156,13 @@ impl BaselineBinding {
     pub fn revalidate(&self, live: &HashMap<String, String>) -> Result<()> {
         for assumption in &self.assumptions {
             match live.get(&assumption.key) {
-                Some(digest) if digest == &assumption.digest => {}
+                Some(digest) if digest == &assumption.digest => {},
                 _ => {
                     return Err(CistellaError::Contract(format!(
                         "plan assumption drifted at gate: {}",
                         assumption.key
                     )));
-                }
+                },
             }
         }
         Ok(())

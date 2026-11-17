@@ -116,9 +116,14 @@ where
 {
     let path = peer_path();
     let mut host =
-        GuestHost::spawn(&path, &[format!("--mode={mode}")], deadlines()).expect("peer must spawn");
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut host)));
-    let body_outcome = result.unwrap_or_else(|_| Err("body panicked".to_string()));
+        GuestHost::spawn(&path, &[format!("--mode={mode}")], deadlines())
+            .expect("peer must spawn");
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            body(&mut host)
+        }));
+    let body_outcome =
+        result.unwrap_or_else(|_| Err("body panicked".to_string()));
     let cleanup = host.shutdown();
     assert!(
         body_outcome.is_err(),
@@ -145,7 +150,8 @@ where
 #[test]
 fn hello_version_mismatch_refuses() {
     hello_negotiation_refuses("hello-version-mismatch", |exchange| {
-        let result = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+        let result =
+            exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
         if let Err(error) = &result {
             let message = error.to_string();
             assert!(
@@ -186,7 +192,8 @@ fn hello_bad_capability_does_not_crash_host() {
 #[test]
 fn hello_then_eof_recovers() {
     hello_negotiation_refuses("hello-then-eof", |exchange| {
-        let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+        let _ =
+            exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
         // After hello, peer closes stdout. Any subsequent recv fails typed.
         let result = exchange.recv(Duration::from_secs(1));
         if let Err(error) = &result {
@@ -207,8 +214,12 @@ fn oversize_frame_header_refuses() {
     // `oversize-frame` declares a length just past `PRE_NEGOTIATION_MAX_FRAME`.
     // The host's read_frame refuses before allocating the body.
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=oversize-frame".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=oversize-frame".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let result = host
         .exchange_mut()
         .hello(&["test-cap".to_string()], Duration::from_secs(1));
@@ -216,7 +227,8 @@ fn oversize_frame_header_refuses() {
     assert!(result.is_err(), "oversize hello frame must refuse");
     let message = result.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(
-        message.contains("exceeds maximum") || message.contains("frame length"),
+        message.contains("exceeds maximum")
+            || message.contains("frame length"),
         "expected oversize error, got: {message}"
     );
     assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
@@ -228,8 +240,12 @@ fn unknown_fields_envelope_refuses() {
     // The host's `Envelope` has `deny_unknown_fields`, so `parse_envelope`
     // refuses before negotiation completes.
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=unknown-fields".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=unknown-fields".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let result = host
         .exchange_mut()
         .hello(&["test-cap".to_string()], Duration::from_secs(1));
@@ -246,8 +262,12 @@ fn unknown_fields_envelope_refuses() {
 #[test]
 fn hang_hello_killed_by_deadline() {
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=hang-hello".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=hang-hello".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let start = std::time::Instant::now();
     let result = host
         .exchange_mut()
@@ -270,8 +290,12 @@ fn hang_hello_killed_by_deadline() {
 #[test]
 fn partial_response_recovers() {
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=partial-response".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=partial-response".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let result = host
         .exchange_mut()
         .hello(&["test-cap".to_string()], Duration::from_secs(1));
@@ -302,9 +326,17 @@ fn spurious_after_terminal_recovers() {
     // way, the second request must surface as a typed error
     // (correlation refusal on the stray frame, or pipe write error
     // when the peer has already closed its read end).
-    let first = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let first = exchange.request(
+        "ping",
+        serde_json::json!({}),
+        Duration::from_secs(1),
+    );
     assert!(first.is_ok(), "first request must succeed: {first:?}");
-    let second = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let second = exchange.request(
+        "ping",
+        serde_json::json!({}),
+        Duration::from_secs(1),
+    );
     let cleanup = host.shutdown();
     assert!(
         second.is_err(),
@@ -331,10 +363,15 @@ fn duplicate_id_refuses() {
     // correlation id for hello). After hello succeeds, the host's
     // next recv should refuse the duplicate id.
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=duplicate-id".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=duplicate-id".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let exchange = host.exchange_mut();
-    let hello = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+    let hello =
+        exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
     let cleanup = host.shutdown();
     assert!(hello.is_ok(), "first hello must succeed: {hello:?}");
     // No second recv: peer did not provide a request-response cycle
@@ -348,11 +385,19 @@ fn pending_on_solo_refuses() {
     // Peer responds to a single-shot request with `{pending: true}`.
     // The host's `request` (non-streaming) refuses pending frames.
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=pending-on-solo".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=pending-on-solo".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let exchange = host.exchange_mut();
     let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
-    let result = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let result = exchange.request(
+        "ping",
+        serde_json::json!({}),
+        Duration::from_secs(1),
+    );
     let cleanup = host.shutdown();
     assert!(result.is_err(), "pending-on-solo must refuse");
     let message = result.err().map(|e| e.to_string()).unwrap_or_default();
@@ -368,12 +413,20 @@ fn hang_request_killed_by_deadline() {
     // Peer hangs after hello. Host's request fires the apply
     // deadline; the kill+reap is residue-dominated.
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=hang-request".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=hang-request".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let exchange = host.exchange_mut();
     let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
     let start = std::time::Instant::now();
-    let result = exchange.request("ping", serde_json::json!({}), Duration::from_millis(500));
+    let result = exchange.request(
+        "ping",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    );
     let elapsed = start.elapsed();
     let cleanup = host.shutdown();
     assert!(result.is_err(), "hang-request must time out");
@@ -404,7 +457,11 @@ fn cleanup_then_write_surfaces_typed_error() {
     .expect("peer spawn");
     let exchange = host.exchange_mut();
     let _ = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
-    let result = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let result = exchange.request(
+        "ping",
+        serde_json::json!({}),
+        Duration::from_secs(1),
+    );
     let cleanup = host.shutdown();
     assert!(result.is_err(), "cleanup-then-write must surface as Err");
     let message = result.err().map(|e| e.to_string()).unwrap_or_default();
@@ -451,15 +508,24 @@ fn normal_echo_round_trip_succeeds() {
     // round-trip cleanly. Proves the harness is not
     // self-rejecting valid traffic.
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &["--mode=normal-echo".to_string()], deadlines())
-        .expect("peer spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &["--mode=normal-echo".to_string()],
+        deadlines(),
+    )
+    .expect("peer spawn");
     let exchange = host.exchange_mut();
-    let hello = exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
+    let hello =
+        exchange.hello(&["test-cap".to_string()], Duration::from_secs(1));
     assert!(
         hello.is_ok(),
         "hello must succeed in normal-echo: {hello:?}"
     );
-    let response = exchange.request("ping", serde_json::json!({}), Duration::from_secs(1));
+    let response = exchange.request(
+        "ping",
+        serde_json::json!({}),
+        Duration::from_secs(1),
+    );
     let cleanup = host.shutdown();
     assert!(
         response.is_ok(),
@@ -560,12 +626,13 @@ fn epoch2_tmpdir_guest_refuses_legacy_v1_host() {
     // Refusal before answering means refusal before minting —
     // no slice can exist without a prepare that never arrives.
     use std::io::Write;
-    let mut child = std::process::Command::new(shipped_bin("cistella-extension-tmpdir"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("tmpdir guest spawns");
+    let mut child =
+        std::process::Command::new(shipped_bin("cistella-extension-tmpdir"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("tmpdir guest spawns");
     child
         .stdin
         .as_mut()
@@ -595,12 +662,13 @@ fn tmpdir_prepare_without_session_id_refuses_before_mint() {
     // Missing opaque identity: the guest refuses instead of
     // minting under a fallback name (attribution would break).
     use std::io::{Read, Write};
-    let mut child = std::process::Command::new(shipped_bin("cistella-extension-tmpdir"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("tmpdir guest spawns");
+    let mut child =
+        std::process::Command::new(shipped_bin("cistella-extension-tmpdir"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("tmpdir guest spawns");
     let hello = framed(
         "hello",
         2,
@@ -618,7 +686,8 @@ fn tmpdir_prepare_without_session_id_refuses_before_mint() {
         .expect("stdout")
         .read_to_end(&mut stdout)
         .expect("stdout drains");
-    let output = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
+    let output =
+        reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect("guest exits");
     assert_eq!(
         output.code(),
         Some(2),

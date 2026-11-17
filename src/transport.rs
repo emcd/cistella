@@ -49,7 +49,11 @@ pub fn exec_args(container: &str, command: &[String]) -> Vec<String> {
 /// default. Companion `enter` keeps plain [`exec_args`] (operator's
 /// shell, operator's cwd).
 #[must_use]
-pub fn exec_harness_args(container: &str, workdir: &str, command: &[String]) -> Vec<String> {
+pub fn exec_harness_args(
+    container: &str,
+    workdir: &str,
+    command: &[String],
+) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
     args.extend(env_forward_args());
     args.extend([
@@ -84,7 +88,12 @@ pub fn exec_help_supports_preserve_fd(help: &str) -> bool {
     help.lines().any(|line| {
         line.trim_start()
             .strip_prefix("--preserve-fd")
-            .is_some_and(|rest| matches!(rest.chars().next(), None | Some(' ' | '\t' | '=' | ',')))
+            .is_some_and(|rest| {
+                matches!(
+                    rest.chars().next(),
+                    None | Some(' ' | '\t' | '=' | ',')
+                )
+            })
     })
 }
 
@@ -102,7 +111,9 @@ pub fn check_podman_preserve_fd() -> Result<()> {
     let output = std::process::Command::new("podman")
         .args(["exec", "--help"])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman exec --help: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman exec --help: {e}"))
+        })?;
     if !output.status.success() {
         return Err(CistellaError::Runtime(
             "podman exec --help failed".to_string(),
@@ -181,8 +192,11 @@ pub fn resolve_preserve_strategy() -> Result<PreserveStrategy> {
 /// CLOEXEC and `CistellaError::Runtime` on fcntl failure.
 pub fn assert_diag_inheritable(diag: std::os::fd::RawFd) -> Result<()> {
     let flags = nix::fcntl::fcntl(diag, nix::fcntl::FcntlArg::F_GETFD)
-        .map_err(|e| CistellaError::Runtime(format!("diagnostics fcntl: {e}")))?;
-    if nix::fcntl::FdFlag::from_bits_retain(flags) & nix::fcntl::FdFlag::FD_CLOEXEC
+        .map_err(|e| {
+            CistellaError::Runtime(format!("diagnostics fcntl: {e}"))
+        })?;
+    if nix::fcntl::FdFlag::from_bits_retain(flags)
+        & nix::fcntl::FdFlag::FD_CLOEXEC
         != nix::fcntl::FdFlag::empty()
     {
         return Err(CistellaError::Contract(format!(
@@ -209,7 +223,9 @@ pub fn exec_hooked_plain_args(
         "-i".to_string(),
         "-t".to_string(),
         match strategy {
-            PreserveStrategy::Singular => format!("--preserve-fd={preserve_fd}"),
+            PreserveStrategy::Singular => {
+                format!("--preserve-fd={preserve_fd}")
+            },
             PreserveStrategy::Plural => "--preserve-fds=1".to_string(),
         },
         container.to_string(),
@@ -241,7 +257,9 @@ pub fn exec_hooked_args(
         "-i".to_string(),
         "-t".to_string(),
         match strategy {
-            PreserveStrategy::Singular => format!("--preserve-fd={preserve_fd}"),
+            PreserveStrategy::Singular => {
+                format!("--preserve-fd={preserve_fd}")
+            },
             PreserveStrategy::Plural => "--preserve-fds=1".to_string(),
         },
         "--workdir".to_string(),

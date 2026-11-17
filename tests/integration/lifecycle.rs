@@ -92,7 +92,11 @@ fn conduct_exit_passthrough_and_mint() {
 
     // Missing images are typed refusals naming the image (never pulled).
     let profile = worktree.path().join("missing.toml");
-    std::fs::write(&profile, "image = \"localhost/cistella/missing:example\"\n").unwrap();
+    std::fs::write(
+        &profile,
+        "image = \"localhost/cistella/missing:example\"\n",
+    )
+    .unwrap();
     let out = run_cistella(
         &home,
         &[
@@ -107,7 +111,8 @@ fn conduct_exit_passthrough_and_mint() {
     );
     assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("localhost/cistella/missing:example"),
+        String::from_utf8_lossy(&out.stderr)
+            .contains("localhost/cistella/missing:example"),
         "refusal names the image"
     );
 
@@ -184,8 +189,12 @@ fn conduct_lifecycle_terminate_while_attached() {
     assert!(content.contains("SuccessExitStatus=143"));
     assert!(!content.contains("Environment=TERM="));
     // cistella.command JSON array round-trips argv -> label -> argv.
-    let round = cistella::session::parse_command_label(&unit_label(&home, &id, "cistella.command"))
-        .unwrap();
+    let round = cistella::session::parse_command_label(&unit_label(
+        &home,
+        &id,
+        "cistella.command",
+    ))
+    .unwrap();
     assert_eq!(round, vec!["sleep".to_string(), "300".to_string()]);
     assert_eq!(unit_label(&home, &id, "agentmux.session"), corr);
 
@@ -223,7 +232,8 @@ fn conduct_lifecycle_terminate_while_attached() {
         "terminate: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
 
@@ -241,7 +251,8 @@ fn conduct_lifecycle_terminate_while_attached() {
     let show = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).unwrap();
     let show_txt = String::from_utf8_lossy(&show.stdout).to_string();
     assert!(
-        show_txt.contains("ActiveState=inactive") || show_txt.contains("LoadState=not-found"),
+        show_txt.contains("ActiveState=inactive")
+            || show_txt.contains("LoadState=not-found"),
         "service inactive/not-found: {show_txt}"
     );
     let mut cmd = Command::new("systemctl");
@@ -479,7 +490,8 @@ fn terminate_stops_promptly_without_sigkill() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 
-    let (mut conduct, id, mut guard) = spawn_conduct(&home, &worktree_str, &[]);
+    let (mut conduct, id, mut guard) =
+        spawn_conduct(&home, &worktree_str, &[]);
     wait_active(&id);
     let service = format!("cistella-{id}.service");
 
@@ -537,7 +549,8 @@ fn terminate_stops_promptly_without_sigkill() {
     // The harness exec ends with the stopped container, so the attached
     // conduct runs shared teardown itself: unit file converges
     // away with no separate terminate needed.
-    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct reaped");
+    let status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("conduct reaped");
     eprintln!("conduct end: {status:?}");
     guard.id = None;
     assert!(!unit_path(&home, &id).exists(), "no unit residue");
@@ -584,7 +597,8 @@ fn template_env_and_labels_resolve_live() {
     // Harness-observed environment shows substituted values.
     let mut cmd = Command::new("podman");
     cmd.args(["exec", &container, "sh", "-c", "echo $PROBE_ALL"]);
-    let env_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env");
+    let env_out =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env");
     assert!(env_out.status.success(), "podman exec env");
     let observed = String::from_utf8_lossy(&env_out.stdout).trim().to_string();
     assert_eq!(
@@ -595,7 +609,8 @@ fn template_env_and_labels_resolve_live() {
     // No literal span text survives anywhere in the environment.
     let mut cmd = Command::new("podman");
     cmd.args(["exec", &container, "sh", "-c", "env"]);
-    let all_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env dump");
+    let all_out =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env dump");
     let all_txt = String::from_utf8_lossy(&all_out.stdout).to_string();
     assert!(
         !all_txt.contains("{{"),
@@ -664,7 +679,8 @@ fn environment_acceptances_forward_live() {
     // preservation, and actual Quadlet/systemd delivery.
     let mut cmd = Command::new("podman");
     cmd.args(["exec", &container, "printenv", "CISTELLA_LIVE_ACCEPT"]);
-    let env_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec printenv");
+    let env_out =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec printenv");
     assert!(env_out.status.success(), "podman exec printenv");
     assert_eq!(
         String::from_utf8_lossy(&env_out.stdout).to_string(),
@@ -708,7 +724,8 @@ fn environment_acceptances_absent_refuses_residue_free() {
     // creation-window lock is held here, no other conduct can create
     // units or containers, so the before/after diff is exact.
     // The refusal path never reaches lock acquisition, so no self-deadlock.
-    let _creation = cistella::lock::LockGuard::acquire().expect("creation lock");
+    let _creation =
+        cistella::lock::LockGuard::acquire().expect("creation lock");
     let units_before = cistella_unit_names(&home);
     let tmp_before = cistella_tmp_names()
         .into_iter()
@@ -758,8 +775,9 @@ fn environment_acceptances_absent_refuses_residue_free() {
         }
         if Instant::now() > deadline {
             child.kill().ok();
-            let _ = reap_bounded(&mut child, CHILD_REAP_TIMEOUT)
-                .expect("reap child post-kill (missing reap is wedged-child evidence)");
+            let _ = reap_bounded(&mut child, CHILD_REAP_TIMEOUT).expect(
+                "reap child post-kill (missing reap is wedged-child evidence)",
+            );
             panic!(
                 "conduct reached the mutation gate (blocked on the creation lock): \
                  acceptance refusal must precede lock acquisition"
@@ -897,7 +915,8 @@ fn template_namespaces_resolve_live() {
     // Early-home showcase: container HOME equals host HOME.
     let mut cmd = Command::new("podman");
     cmd.args(["exec", &container, "sh", "-c", "echo $HOME"]);
-    let home_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec home");
+    let home_out =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec home");
     assert!(home_out.status.success(), "podman exec home");
     assert_eq!(
         String::from_utf8_lossy(&home_out.stdout).trim(),
@@ -907,7 +926,8 @@ fn template_namespaces_resolve_live() {
     // Supplement and environment spans resolve in-container.
     let mut cmd = Command::new("podman");
     cmd.args(["exec", &container, "sh", "-c", "echo $PROBE_NS"]);
-    let env_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env");
+    let env_out =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec env");
     assert!(env_out.status.success(), "podman exec env");
     assert_eq!(
         String::from_utf8_lossy(&env_out.stdout).trim(),
@@ -923,7 +943,8 @@ fn template_namespaces_resolve_live() {
         "-c",
         "test -d /ns-livedata && echo yes",
     ]);
-    let mount_out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec mount");
+    let mount_out =
+        run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("podman exec mount");
     assert_eq!(
         String::from_utf8_lossy(&mount_out.stdout).trim(),
         "yes",

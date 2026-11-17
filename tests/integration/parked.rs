@@ -30,7 +30,12 @@ impl ParkedConduct {
     /// ownership immediately: the gate file is test-owned and
     /// absent (never pre-created — creation IS the release),
     /// and from here on the Drop owns converge-on-every-path.
-    pub fn spawn(home: &str, worktree: &str, profile: &str, gate: &std::path::Path) -> Self {
+    pub fn spawn(
+        home: &str,
+        worktree: &str,
+        profile: &str,
+        gate: &std::path::Path,
+    ) -> Self {
         Self::spawn_with_argv(home, worktree, profile, gate, &["sleep", "300"])
     }
 
@@ -45,14 +50,18 @@ impl ParkedConduct {
         gate: &std::path::Path,
         argv: &[&str],
     ) -> Self {
-        let unit_dir = std::path::PathBuf::from(home).join(".config/containers/systemd");
-        let before: std::collections::HashSet<String> = std::fs::read_dir(&unit_dir)
-            .map(|r| {
-                r.flatten()
-                    .map(|entry| entry.file_name().to_string_lossy().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let unit_dir =
+            std::path::PathBuf::from(home).join(".config/containers/systemd");
+        let before: std::collections::HashSet<String> =
+            std::fs::read_dir(&unit_dir)
+                .map(|r| {
+                    r.flatten()
+                        .map(|entry| {
+                            entry.file_name().to_string_lossy().to_string()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
         // Raw spawn (no id-line wait): the test learns the id
         // from the installed unit file, never from post-stall
         // stdout (which would race publication). Piped stdio
@@ -94,7 +103,8 @@ impl ParkedConduct {
     /// file lands at install, pre-gate, so this is where the
     /// pre-commit window starts.
     pub fn discover_id(&mut self) -> String {
-        let (id, _) = wait_for_unit_file(&self.unit_dir, &self.before, &self.worktree);
+        let (id, _) =
+            wait_for_unit_file(&self.unit_dir, &self.before, &self.worktree);
         self.id = Some(id.clone());
         id
     }
@@ -134,17 +144,17 @@ impl ParkedConduct {
     /// accepted.
     fn converge_unit(&self, id: &str) {
         match guard_terminate(&self.home, id) {
-            Ok(output) if output.status.success() => {}
+            Ok(output) if output.status.success() => {},
             Ok(output) => {
                 eprintln!(
                     "parked conduct teardown of {id} exited {}: {}",
                     output.status,
                     String::from_utf8_lossy(&output.stderr)
                 );
-            }
+            },
             Err(error) => {
                 eprintln!("parked conduct teardown of {id} failed: {error:?}");
-            }
+            },
         }
     }
 
@@ -180,7 +190,8 @@ impl ParkedConduct {
     /// after an explicit converge, exactly as with `reap_child`.
     pub fn reap_output(&mut self) -> std::process::Output {
         let child = self.child.take().expect("conduct alive for reap");
-        wait_bounded(child, CHILD_REAP_TIMEOUT).expect("conduct reaped with output")
+        wait_bounded(child, CHILD_REAP_TIMEOUT)
+            .expect("conduct reaped with output")
     }
 
     /// Marks the session converged by an explicit path so
@@ -207,7 +218,10 @@ impl ParkedConduct {
 /// or a byte cap. Post-kill EOF is immediate (no writer
 /// survives the reaped child); the cap bounds pathological
 /// cases (a leaked writer elsewhere) instead of hanging.
-fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(mut pipe: R, what: &str) {
+fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(
+    mut pipe: R,
+    what: &str,
+) {
     let fd = pipe.as_raw_fd();
     // Best effort: if nonblocking setup cannot be established,
     // close without reading rather than risk blocking forever
@@ -218,7 +232,10 @@ fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(mut pipe: R, wha
         eprintln!("drain {what}: cannot query flags, closing unread");
         return;
     }
-    if unsafe { ::libc::fcntl(fd, ::libc::F_SETFL, flags | ::libc::O_NONBLOCK) } < 0 {
+    if unsafe {
+        ::libc::fcntl(fd, ::libc::F_SETFL, flags | ::libc::O_NONBLOCK)
+    } < 0
+    {
         eprintln!("drain {what}: cannot set nonblocking, closing unread");
         return;
     }
@@ -233,12 +250,14 @@ fn drain_bounded<R: std::io::Read + std::os::unix::io::AsRawFd>(mut pipe: R, wha
                     eprintln!("drain {what}: exceeded 1MiB cap, stopping");
                     break;
                 }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                break;
+            },
             Err(error) => {
                 eprintln!("drain {what} failed: {error}");
                 break;
-            }
+            },
         }
     }
 }
@@ -255,8 +274,10 @@ impl Drop for ParkedConduct {
             // always owned at this point — explicit paths never
             // take it out — so this arm runs on every Drop.
             match reap_bounded(&mut child, CHILD_REAP_TIMEOUT) {
-                Some(_) => {}
-                None => eprintln!("parked conduct reap failed or timed out after kill"),
+                Some(_) => {},
+                None => eprintln!(
+                    "parked conduct reap failed or timed out after kill"
+                ),
             }
             if let Some(out) = child.stdout.take() {
                 drain_bounded(out, "stdout");
@@ -285,9 +306,11 @@ impl Drop for ParkedConduct {
             }
         });
         match candidates.as_slice() {
-            [] => {}
+            [] => {},
             [id] => self.converge_unit(id),
-            many => eprintln!("parked conduct found ambiguous units, leaving untouched: {many:?}"),
+            many => eprintln!(
+                "parked conduct found ambiguous units, leaving untouched: {many:?}"
+            ),
         }
     }
 }

@@ -99,12 +99,15 @@ fn attestation_name(session_id: &str) -> std::result::Result<String, String> {
 fn open_attestation_dir(
     base: &Path,
 ) -> std::result::Result<crate::guest_anchor::AnchoredDir, String> {
-    crate::guest_anchor::open_state_dir(&crate::lock::PrepareLease::state_dir(base))
+    crate::guest_anchor::open_state_dir(&crate::lock::PrepareLease::state_dir(
+        base,
+    ))
 }
 
 /// Publication counter for unique staging names (pid + nanos
 /// join below; the counter closes the same-nanosecond case).
-static PUBLISH_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PUBLISH_TMP_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Publishes one attestation exactly once, atomically: bytes go
 /// to an O_EXCL temp file, then linkat binds the final name —
@@ -121,8 +124,9 @@ static PUBLISH_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 /// identity fields, state-dir refusal, name clash, or I/O
 /// failure.
 pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
-    let name = attestation_name(&attestation.session_id)
-        .map_err(|error| CistellaError::Runtime(format!("attestation: {error}")))?;
+    let name = attestation_name(&attestation.session_id).map_err(|error| {
+        CistellaError::Runtime(format!("attestation: {error}"))
+    })?;
     if attestation.session_id.is_empty()
         || attestation.container_name.is_empty()
         || attestation.attempt_key.is_empty()
@@ -133,16 +137,19 @@ pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
         ));
     }
     if let Some(incarnation) = &attestation.incarnation
-        && (incarnation.container_id.is_empty() || incarnation.started_at.is_empty())
+        && (incarnation.container_id.is_empty()
+            || incarnation.started_at.is_empty())
     {
         return Err(CistellaError::Runtime(
             "attestation refuses empty incarnation fields".to_string(),
         ));
     }
-    let bytes = serde_json::to_vec(attestation)
-        .map_err(|e| CistellaError::Runtime(format!("encode attestation: {e}")))?;
-    let dir = open_attestation_dir(base)
-        .map_err(|error| CistellaError::Runtime(format!("attestation state: {error}")))?;
+    let bytes = serde_json::to_vec(attestation).map_err(|e| {
+        CistellaError::Runtime(format!("encode attestation: {e}"))
+    })?;
+    let dir = open_attestation_dir(base).map_err(|error| {
+        CistellaError::Runtime(format!("attestation state: {error}"))
+    })?;
     let tmp = format!(
         ".tmp-attestation-{}-{}-{}",
         std::process::id(),
@@ -152,12 +159,12 @@ pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
             .unwrap_or(0),
         PUBLISH_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    let mut staged = dir
-        .create_file(&tmp)
-        .map_err(|e| CistellaError::Runtime(format!("stage attestation {tmp}: {e}")))?;
-    let write_outcome = staged
-        .write_all(&bytes)
-        .map_err(|e| CistellaError::Runtime(format!("write attestation staging {tmp}: {e}")));
+    let mut staged = dir.create_file(&tmp).map_err(|e| {
+        CistellaError::Runtime(format!("stage attestation {tmp}: {e}"))
+    })?;
+    let write_outcome = staged.write_all(&bytes).map_err(|e| {
+        CistellaError::Runtime(format!("write attestation staging {tmp}: {e}"))
+    });
     drop(staged);
     if let Err(error) = write_outcome {
         dir.remove_file(&tmp);
@@ -180,9 +187,9 @@ pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
     dir.remove_file(&tmp);
     match linked {
         Ok(()) => Ok(()),
-        Err(nix::errno::Errno::EEXIST) => Err(CistellaError::Runtime(format!(
-            "attestation {name} already published (write-once)"
-        ))),
+        Err(nix::errno::Errno::EEXIST) => Err(CistellaError::Runtime(
+            format!("attestation {name} already published (write-once)"),
+        )),
         Err(errno) => Err(CistellaError::Runtime(format!(
             "link attestation {name}: {errno}"
         ))),
@@ -198,18 +205,22 @@ pub fn publish(base: &Path, attestation: &Attestation) -> Result<()> {
 /// Returns `CistellaError::Runtime` on state-dir refusal or
 /// corrupt content, `CistellaError::Io` on I/O failure.
 pub fn read(base: &Path, session_id: &str) -> Result<Option<Attestation>> {
-    let name = attestation_name(session_id)
-        .map_err(|error| CistellaError::Runtime(format!("attestation: {error}")))?;
-    let dir = open_attestation_dir(base)
-        .map_err(|error| CistellaError::Runtime(format!("attestation state: {error}")))?;
-    let bytes = dir
-        .read_file(&name, ATTESTATION_CEILING)
-        .map_err(|e| CistellaError::Runtime(format!("read attestation {name}: {e}")))?;
+    let name = attestation_name(session_id).map_err(|error| {
+        CistellaError::Runtime(format!("attestation: {error}"))
+    })?;
+    let dir = open_attestation_dir(base).map_err(|error| {
+        CistellaError::Runtime(format!("attestation state: {error}"))
+    })?;
+    let bytes = dir.read_file(&name, ATTESTATION_CEILING).map_err(|e| {
+        CistellaError::Runtime(format!("read attestation {name}: {e}"))
+    })?;
     let Some(bytes) = bytes else {
         return Ok(None);
     };
-    let attestation: Attestation = serde_json::from_slice(&bytes)
-        .map_err(|e| CistellaError::Runtime(format!("corrupt attestation {name}: {e}")))?;
+    let attestation: Attestation =
+        serde_json::from_slice(&bytes).map_err(|e| {
+            CistellaError::Runtime(format!("corrupt attestation {name}: {e}"))
+        })?;
     if attestation.session_id != session_id {
         return Err(CistellaError::Runtime(format!(
             "attestation {name} names session {}",
@@ -237,7 +248,10 @@ pub fn reap(base: &Path, session_id: &str) {
 /// reaped file names for reporting. Unparseable names skip
 /// (never a baseline comparison — name-attribution plus the
 /// live-set gate is the safety, mirroring the tmpdir sweep).
-pub fn reap_orphans(base: &Path, live_sessions: &std::collections::HashSet<String>) -> Vec<String> {
+pub fn reap_orphans(
+    base: &Path,
+    live_sessions: &std::collections::HashSet<String>,
+) -> Vec<String> {
     let mut reaped = Vec::new();
     let state_dir = crate::lock::PrepareLease::state_dir(base);
     if !state_dir.exists() {
@@ -286,7 +300,9 @@ pub fn reap_orphans(base: &Path, live_sessions: &std::collections::HashSet<Strin
 /// Returns `CistellaError::Runtime` when the rendering does
 /// not carry both fields.
 pub fn parse_identity(text: &str) -> Result<Incarnation> {
-    let Some((id, started)) = text.trim().split_once(|c: char| c.is_whitespace()) else {
+    let Some((id, started)) =
+        text.trim().split_once(|c: char| c.is_whitespace())
+    else {
         return Err(CistellaError::Runtime("unexpected shape".to_string()));
     };
     let started = started.trim();
@@ -318,7 +334,9 @@ pub fn query_incarnation(container_name: &str) -> Result<Incarnation> {
         ])
         .output()
         .map_err(|e| {
-            CistellaError::Runtime(format!("incarnation inspect {container_name}: {e}"))
+            CistellaError::Runtime(format!(
+                "incarnation inspect {container_name}: {e}"
+            ))
         })?;
     if !out.status.success() {
         return Err(CistellaError::Runtime(format!(
@@ -384,13 +402,22 @@ pub fn decide_currency(
 /// Resolves pre-capture vs post-check into a commit decision.
 /// `post = None` means the post-launch identity query failed.
 #[must_use]
-pub fn commit_decision(pre: Option<&Incarnation>, post: Option<&Incarnation>) -> CommitDecision {
+pub fn commit_decision(
+    pre: Option<&Incarnation>,
+    post: Option<&Incarnation>,
+) -> CommitDecision {
     match (pre, post) {
         (Some(bound), Some(observed)) if bound == observed => {
             CommitDecision::Publish(bound.clone())
-        }
-        (Some(_), Some(_)) => CommitDecision::Refuse("launch incarnation changed during launch"),
-        (_, None) => CommitDecision::Refuse("launch incarnation unestablishable"),
-        (None, Some(_)) => CommitDecision::Refuse("launch incarnation pre-capture missing"),
+        },
+        (Some(_), Some(_)) => {
+            CommitDecision::Refuse("launch incarnation changed during launch")
+        },
+        (_, None) => {
+            CommitDecision::Refuse("launch incarnation unestablishable")
+        },
+        (None, Some(_)) => {
+            CommitDecision::Refuse("launch incarnation pre-capture missing")
+        },
     }
 }

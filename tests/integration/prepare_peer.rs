@@ -30,7 +30,9 @@ fn defaults() -> PolicySet {
 }
 
 /// Negotiate hello with the peer advertising the full capability set.
-fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>) {
+fn negotiate_full(
+    host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
+) {
     host.exchange_mut()
         .hello(
             &[
@@ -50,7 +52,10 @@ fn negotiate_full(host: &mut GuestHost<std::process::ChildStdout, std::process::
 /// empty acceptances, and the container_home the merge gate expects.
 fn run_full_prepare(
     host: &mut GuestHost<std::process::ChildStdout, std::process::ChildStdin>,
-) -> Result<cistella::framework::prepare::EvaluatedPlan, cistella::error::CistellaError> {
+) -> Result<
+    cistella::framework::prepare::EvaluatedPlan,
+    cistella::error::CistellaError,
+> {
     let policy = defaults();
     let acceptances: HashSet<String> = HashSet::new();
     run_prepare(
@@ -84,8 +89,12 @@ fn tight_deadlines() -> Deadlines {
 
 fn run_fault(mode: &str) -> cistella::error::CistellaError {
     let path = peer_path();
-    let mut host = GuestHost::spawn(&path, &[format!("--mode={mode}")], tight_deadlines())
-        .expect("peer must spawn");
+    let mut host = GuestHost::spawn(
+        &path,
+        &[format!("--mode={mode}")],
+        tight_deadlines(),
+    )
+    .expect("peer must spawn");
     negotiate_full(&mut host);
     let result = run_full_prepare(&mut host);
     let cleanup = host.shutdown();
@@ -93,7 +102,9 @@ fn run_fault(mode: &str) -> cistella::error::CistellaError {
         cleanup.is_ok(),
         "fault mode `{mode}` cleanup must succeed: {cleanup:?}"
     );
-    result.expect_err(&format!("fault mode `{mode}` must produce an Err; got Ok"))
+    result.expect_err(&format!(
+        "fault mode `{mode}` must produce an Err; got Ok"
+    ))
 }
 
 #[test]
@@ -134,7 +145,8 @@ fn prepare_unadvertised_capability_refuses() {
     let error = result.expect_err("unadvertised capability must refuse");
     let message = error.to_string();
     assert!(
-        message.contains("unadvertised") || message.contains("contribution type"),
+        message.contains("unadvertised")
+            || message.contains("contribution type"),
         "expected unadvertised-contribution error, got: {message}"
     );
     assert!(cleanup.is_ok(), "shutdown must clean up: {cleanup:?}");
@@ -155,7 +167,8 @@ fn prepare_mount_violation_refuses() {
     let error = run_fault("prepare-mount-violation");
     let message = error.to_string();
     assert!(
-        message.contains("host_source must not contain") || message.contains("="),
+        message.contains("host_source must not contain")
+            || message.contains("="),
         "expected mount-shape error, got: {message}"
     );
 }

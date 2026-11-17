@@ -8,11 +8,14 @@
 
 pub(crate) use crate::isolators::quadlet::query_unit_props;
 pub use crate::isolators::quadlet::{
-    escape_percent, generate_quadlet_unit, install_quadlet, logs_container, quadlet_dir,
-    quote_systemd, residue_gone, residue_gone_for_paths, resolve_image_digest, start_quadlet,
-    systemd_user_available, teardown, teardown_inner, teardown_inner_with_parent, unquote_systemd,
+    escape_percent, generate_quadlet_unit, install_quadlet, logs_container,
+    quadlet_dir, quote_systemd, residue_gone, residue_gone_for_paths,
+    resolve_image_digest, start_quadlet, systemd_user_available, teardown,
+    teardown_inner, teardown_inner_with_parent, unquote_systemd,
 };
-pub use crate::isolators::quadlet_gc::{GcResult, gc_exited, gc_exited_locked};
+pub use crate::isolators::quadlet_gc::{
+    GcResult, gc_exited, gc_exited_locked,
+};
 
 use crate::framework::isolator::{AbsenceObservation, RawClientResult};
 
@@ -20,7 +23,8 @@ use crate::framework::isolator::{AbsenceObservation, RawClientResult};
 /// quotes included, control bytes/newlines escaped — no terminal
 /// injection through observed state strings.
 fn report_field(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"<unencodable>\"".to_string())
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "\"<unencodable>\"".to_string())
 }
 
 /// Renders the finalized unobservable-outcome report: one stable

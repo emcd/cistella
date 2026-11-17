@@ -19,7 +19,8 @@ use nix::fcntl::{FcntlArg, FdFlag};
 
 use crate::error::{CistellaError, Result};
 use crate::transport::{
-    PLURAL_DIAG_FD, PreserveStrategy, assert_diag_inheritable, resolve_preserve_strategy,
+    PLURAL_DIAG_FD, PreserveStrategy, assert_diag_inheritable,
+    resolve_preserve_strategy,
 };
 
 /// Prepares diagnostics forwarding for a hooked launch:
@@ -51,12 +52,13 @@ pub fn prepare_diagnostics_hook(
 ) -> Result<RawFd> {
     use crate::framework::registry::STAGED_WRAPPER_GUEST_PATH;
     match argv.first() {
-        Some(first) if first == STAGED_WRAPPER_GUEST_PATH => {}
+        Some(first) if first == STAGED_WRAPPER_GUEST_PATH => {},
         _ => {
             return Err(CistellaError::Contract(
-                "hook launch argv must start with the staged wrapper".to_string(),
+                "hook launch argv must start with the staged wrapper"
+                    .to_string(),
             ));
-        }
+        },
     }
     let runtime = oci_runtime_name()?;
     if !runtime_admitted(strategy, &runtime) {
@@ -65,11 +67,13 @@ pub fn prepare_diagnostics_hook(
         )));
     }
     let raw = diag.as_raw_fd();
-    let current = nix::fcntl::fcntl(raw, FcntlArg::F_GETFD)
-        .map_err(|e| CistellaError::Runtime(format!("diagnostics fcntl: {e}")))?;
+    let current = nix::fcntl::fcntl(raw, FcntlArg::F_GETFD).map_err(|e| {
+        CistellaError::Runtime(format!("diagnostics fcntl: {e}"))
+    })?;
     let cleared = FdFlag::from_bits_retain(current) & !FdFlag::FD_CLOEXEC;
-    nix::fcntl::fcntl(raw, FcntlArg::F_SETFD(cleared))
-        .map_err(|e| CistellaError::Runtime(format!("diagnostics fcntl: {e}")))?;
+    nix::fcntl::fcntl(raw, FcntlArg::F_SETFD(cleared)).map_err(|e| {
+        CistellaError::Runtime(format!("diagnostics fcntl: {e}"))
+    })?;
     let number = match strategy {
         PreserveStrategy::Singular => raw,
         PreserveStrategy::Plural => PLURAL_DIAG_FD,
@@ -106,7 +110,9 @@ fn oci_runtime_name() -> Result<String> {
     let out = Command::new("podman")
         .args(["info", "--format", "json"])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman info failed: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman info failed: {e}"))
+        })?;
     if !out.status.success() {
         return Err(CistellaError::Runtime(format!(
             "podman info non-zero: {}",
@@ -114,7 +120,9 @@ fn oci_runtime_name() -> Result<String> {
         )));
     }
     let value: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| CistellaError::Runtime(format!("podman info json parse: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman info json parse: {e}"))
+        })?;
     let name = value
         .get("host")
         .and_then(|host| host.get("ociRuntime"))
@@ -138,9 +146,9 @@ fn oci_runtime_name() -> Result<String> {
 /// (fail-closed, never silent).
 pub fn lock_hook_spawn() -> Result<std::sync::MutexGuard<'static, ()>> {
     static HOOK_SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    HOOK_SPAWN_LOCK
-        .lock()
-        .map_err(|_| CistellaError::Contract("hook spawn lock poisoned".to_string()))
+    HOOK_SPAWN_LOCK.lock().map_err(|_| {
+        CistellaError::Contract("hook spawn lock poisoned".to_string())
+    })
 }
 
 /// Resolved hook preservation for one launch: the strategy
@@ -199,7 +207,8 @@ pub fn resolve_hooked_preservation(
 /// calls (dup2, close).
 pub fn dup_plural_diag(diag: RawFd) -> std::io::Result<()> {
     if diag != PLURAL_DIAG_FD {
-        nix::unistd::dup2(diag, PLURAL_DIAG_FD).map_err(std::io::Error::from)?;
+        nix::unistd::dup2(diag, PLURAL_DIAG_FD)
+            .map_err(std::io::Error::from)?;
         nix::unistd::close(diag).map_err(std::io::Error::from)?;
     }
     Ok(())

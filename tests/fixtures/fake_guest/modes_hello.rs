@@ -10,8 +10,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::{
-    PROTOCOL_MAJOR, hello_response_ok, protocol_error_exit, read_exact, read_frame_from_stdin,
-    write_frame,
+    PROTOCOL_MAJOR, hello_response_ok, protocol_error_exit, read_exact,
+    read_frame_from_stdin, write_frame,
 };
 
 /// Runs one Hello-negotiation mode; `None` falls through to the next group.
@@ -33,7 +33,7 @@ pub(crate) fn run(
                 return Some(protocol_error_exit());
             }
             ExitCode::SUCCESS
-        }
+        },
         "hello-bad-capability" => {
             let mut header = [0u8; 4];
             if read_exact(&mut stdin_lock, &mut header).is_err() {
@@ -53,7 +53,7 @@ pub(crate) fn run(
                 return Some(protocol_error_exit());
             }
             ExitCode::SUCCESS
-        }
+        },
         "hello-real-capabilities" => {
             // Advertises the five real framework capability names so
             // the production closed-negotiation path (`host_external`)
@@ -101,7 +101,7 @@ pub(crate) fn run(
                 let _ = write_frame(&mut stdout_lock, &body, 64 * 1024);
             }
             ExitCode::SUCCESS
-        }
+        },
         "extension-no-hooks" => {
             // Role-only hello (landlock without guest-hooks): passes
             // closed negotiation, then idles for the shutdown. Lets
@@ -126,7 +126,7 @@ pub(crate) fn run(
             }
             let _ = read_frame_from_stdin(&mut stdin_lock);
             ExitCode::SUCCESS
-        }
+        },
         "hello-evil-capability" => {
             // Advertises a capability name carrying control bytes and
             // a fake secret assignment. Refusal diagnostics must
@@ -152,16 +152,17 @@ pub(crate) fn run(
             }
             std::thread::sleep(Duration::from_secs(60));
             ExitCode::SUCCESS
-        }
+        },
         "hello-then-eof" => {
             let mut header = [0u8; 4];
             let _ = read_exact(&mut stdin_lock, &mut header);
             // Reply with a valid hello then close our stdout (host sees EOF on next recv).
-            let body = serde_json::to_vec(&hello_response_ok()).expect("serialize");
+            let body =
+                serde_json::to_vec(&hello_response_ok()).expect("serialize");
             let _ = write_frame(&mut stdout_lock, &body, 64 * 1024);
             // Drop stdout to close it.
             ExitCode::SUCCESS
-        }
+        },
         _ => return None,
     })
 }

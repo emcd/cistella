@@ -25,19 +25,24 @@ fn example_binary(name: &str) -> std::path::PathBuf {
         .ancestors()
         .nth(2)
         .expect("target/<profile>/deps ancestors");
-    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+        Vec::new();
     for dir in [profile_dir.join("examples"), profile_dir.to_path_buf()] {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                let file_name = entry.file_name().to_string_lossy().into_owned();
-                if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+                let file_name =
+                    entry.file_name().to_string_lossy().into_owned();
+                if file_name != name
+                    && !file_name.starts_with(&format!("{name}-"))
+                {
                     continue;
                 }
                 let metadata = entry.metadata().expect("metadata");
                 if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
                     continue;
                 }
-                candidates.push((metadata.modified().expect("mtime"), entry.path()));
+                candidates
+                    .push((metadata.modified().expect("mtime"), entry.path()));
             }
         }
     }
@@ -81,7 +86,8 @@ fn peer_entry(
     // own fixture perms instead of inheriting the build's.
     let path = dir.path().join(binary);
     std::fs::write(&path, &bytes).expect("stage peer copy");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
     let entry = Guest {
         name: "test-peer".to_string(),
         role: role.to_string(),
@@ -102,23 +108,27 @@ fn registered_hello_role_matches() {
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let offered = ["test-cap".to_string()];
     let (mut host, negotiated) =
-        host_registered(resolved, &[], &offered, short_deadlines()).expect("role matches");
+        host_registered(resolved, &[], &offered, short_deadlines())
+            .expect("role matches");
     assert_eq!(negotiated, vec!["test-cap".to_string()]);
     host.shutdown().expect("clean shutdown");
 }
 
 #[test]
 fn role_mismatch_refuses_pre_planning() {
-    let (entry, ctx, _dir) = peer_entry("fake_guest", "other-role", Vec::new());
+    let (entry, ctx, _dir) =
+        peer_entry("fake_guest", "other-role", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let offered = ["test-cap".to_string(), "other-role".to_string()];
-    let error = match host_registered(resolved, &[], &offered, short_deadlines()) {
-        Ok(_) => panic!("wrong role must refuse"),
-        Err(error) => error,
-    };
+    let error =
+        match host_registered(resolved, &[], &offered, short_deadlines()) {
+            Ok(_) => panic!("wrong role must refuse"),
+            Err(error) => error,
+        };
     // Names the registry declaration, never guest bytes.
     assert!(
-        error.to_string().contains("role mismatch") && error.to_string().contains("test-peer"),
+        error.to_string().contains("role mismatch")
+            && error.to_string().contains("test-peer"),
         "got: {error}"
     );
 }
@@ -132,10 +142,11 @@ fn unadvertised_capability_refuses_by_index() {
     );
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let offered = ["test-cap".to_string()];
-    let error = match host_registered(resolved, &[], &offered, short_deadlines()) {
-        Ok(_) => panic!("junk capabilities must refuse"),
-        Err(error) => error,
-    };
+    let error =
+        match host_registered(resolved, &[], &offered, short_deadlines()) {
+            Ok(_) => panic!("junk capabilities must refuse"),
+            Err(error) => error,
+        };
     assert!(
         error
             .to_string()
@@ -148,11 +159,13 @@ fn unadvertised_capability_refuses_by_index() {
 fn example_guest_advertises_configured_role() {
     // Second conformance datapoint beside the peer: the minimal
     // correct-behavior guest, default role plus argv-configured.
-    let (entry, ctx, _dir) = peer_entry("example_guest", "example", Vec::new());
+    let (entry, ctx, _dir) =
+        peer_entry("example_guest", "example", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("example resolves");
     let offered = ["example".to_string()];
     let (mut host, negotiated) =
-        host_registered(resolved, &[], &offered, short_deadlines()).expect("example hosts");
+        host_registered(resolved, &[], &offered, short_deadlines())
+            .expect("example hosts");
     assert_eq!(negotiated, vec!["example".to_string()]);
     host.shutdown().expect("clean shutdown");
     let (entry, ctx, _dir) = peer_entry(
@@ -163,7 +176,8 @@ fn example_guest_advertises_configured_role() {
     let resolved = resolve(&entry, &ctx).expect("example resolves");
     let offered = ["custom-role".to_string()];
     let (mut host, negotiated) =
-        host_registered(resolved, &[], &offered, short_deadlines()).expect("custom role hosts");
+        host_registered(resolved, &[], &offered, short_deadlines())
+            .expect("custom role hosts");
     assert_eq!(negotiated, vec!["custom-role".to_string()]);
     host.shutdown().expect("clean shutdown");
 }
@@ -187,13 +201,15 @@ fn registered_argv_rides_spawn_verbatim() {
         vec!["--mode=hello-real-capabilities".to_string()],
     );
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
-    let (mut host, negotiated) = host_registered(resolved, &[], &real_caps, short_deadlines())
-        .expect("registered argv rides");
+    let (mut host, negotiated) =
+        host_registered(resolved, &[], &real_caps, short_deadlines())
+            .expect("registered argv rides");
     assert_eq!(negotiated, real_caps);
     host.shutdown().expect("clean shutdown");
     // Call-site args append after registered argv (peer mode
     // selectors stay scriptable per call).
-    let (entry, ctx, _dir) = peer_entry("fake_guest", "environment", Vec::new());
+    let (entry, ctx, _dir) =
+        peer_entry("fake_guest", "environment", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let (mut host, negotiated) = host_registered(
         resolved,
@@ -216,17 +232,21 @@ fn minimal_profile() -> cistella::profile::Profile {
 
 #[test]
 fn registered_extension_prepare_converges_plain() {
-    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    use cistella::framework::prepare::{
+        ExtensionSpawn, run_extension_prepare,
+    };
     // The example guest answers prepare with zero hooks through
     // the registered path: conduct proceeds on the plain path
     // with empty contributions merged (no refusal; hooks were
     // never promised). Divergence from the shipped-path merge
     // behavior is a conformance failure.
-    let (entry, ctx, _dir) = peer_entry("example_guest", "example", Vec::new());
+    let (entry, ctx, _dir) =
+        peer_entry("example_guest", "example", Vec::new());
     let resolved = resolve(&entry, &ctx).expect("example resolves");
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
@@ -306,7 +326,11 @@ fn swap_after_resolve_executes_pinned_bytes() {
     let bytes = std::fs::read(&peer).expect("read peer binary");
     let seat_copy = dir.path().join("seat-copy");
     std::fs::write(&seat_copy, &bytes).expect("stage seat copy");
-    std::fs::set_permissions(&seat_copy, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(
+        &seat_copy,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
     let digest = {
         use sha2::Digest;
         sha2::Sha256::digest(&bytes).into()
@@ -331,11 +355,13 @@ fn swap_after_resolve_executes_pinned_bytes() {
     // pathname swaps.)
     let swap = dir.path().join("swap");
     std::fs::write(&swap, b"#!/bin/sh\nexit 99\n").expect("stage swap");
-    std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
     std::fs::rename(&swap, &seat_copy).expect("swap over path");
     let offered = ["example".to_string()];
     let (mut host, negotiated) =
-        host_registered(resolved, &[], &offered, short_deadlines()).expect("pinned bytes execute");
+        host_registered(resolved, &[], &offered, short_deadlines())
+            .expect("pinned bytes execute");
     assert_eq!(negotiated, vec!["example".to_string()]);
     host.shutdown().expect("clean shutdown");
     // A fresh resolve admits the swap only by re-verifying — and
@@ -349,7 +375,9 @@ fn swap_after_resolve_executes_pinned_bytes() {
 
 #[test]
 fn registered_nonempty_contribution_merges() {
-    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    use cistella::framework::prepare::{
+        ExtensionSpawn, run_extension_prepare,
+    };
     // A non-hook registered extension contributes for real: the
     // agentmux vector's env pair plus its read-only bus mount merge
     // through the central gates (the full contribution offer set
@@ -372,9 +400,11 @@ fn registered_nonempty_contribution_merges() {
         text.push_str(name);
         text.push_str("\"\n");
     }
-    std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
-    let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
-        .expect("policy loads");
+    std::fs::write(policy_dir.path().join("policies.toml"), text)
+        .expect("write policy");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("policy loads");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
@@ -404,7 +434,9 @@ fn registered_nonempty_contribution_merges() {
 
 #[test]
 fn session_id_threads_into_prepare() {
-    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    use cistella::framework::prepare::{
+        ExtensionSpawn, run_extension_prepare,
+    };
     // The runner's session id reaches the guest verbatim: the peer
     // echoes the request's session_id back as an env contribution.
     // Old-shape peers (generic request parsing, predating the
@@ -418,9 +450,11 @@ fn session_id_threads_into_prepare() {
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let text = "format_version = 1\n[[acknowledgements]]\nname = \"SESSION_ID_ECHO\"\n";
-    std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
-    let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
-        .expect("policy loads");
+    std::fs::write(policy_dir.path().join("policies.toml"), text)
+        .expect("write policy");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("policy loads");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
@@ -444,7 +478,9 @@ fn session_id_threads_into_prepare() {
 
 #[test]
 fn extension_rw_mount_contribution_merges() {
-    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    use cistella::framework::prepare::{
+        ExtensionSpawn, run_extension_prepare,
+    };
     // No blanket refusal: a valid-shape RW triple merges through
     // the central validators like any declared triple (reserved
     // collisions still refuse at the contract layer).
@@ -456,7 +492,8 @@ fn extension_rw_mount_contribution_merges() {
     let resolved = resolve(&entry, &ctx).expect("peer resolves");
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Registered(resolved),
@@ -495,10 +532,12 @@ fn extension_rw_mount_contribution_merges() {
 /// umask-independent discipline as registered staging).
 fn stage_landlock_peer(dir: &tempfile::TempDir) {
     use std::os::unix::fs::PermissionsExt;
-    let bytes = std::fs::read(example_binary("fake_guest")).expect("read peer binary");
+    let bytes =
+        std::fs::read(example_binary("fake_guest")).expect("read peer binary");
     let path = dir.path().join("cistella-extension-landlock");
     std::fs::write(&path, &bytes).expect("stage landlock peer");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
 }
 
 #[test]
@@ -523,9 +562,11 @@ fn landlock_plus_registered_compose_through_production_select() {
         text.push_str(name);
         text.push_str("\"\n");
     }
-    std::fs::write(policy_dir.path().join("policies.toml"), text).expect("write policy");
-    let policy = cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
-        .expect("policy loads");
+    std::fs::write(policy_dir.path().join("policies.toml"), text)
+        .expect("write policy");
+    let policy =
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("policy loads");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = prepare_selected_extension(
         vec![
@@ -561,7 +602,9 @@ fn landlock_plus_registered_compose_through_production_select() {
 
 #[test]
 fn tmpdir_extension_mints_contributes_declares() {
-    use cistella::framework::prepare::{ExtensionSpawn, run_extension_prepare};
+    use cistella::framework::prepare::{
+        ExtensionSpawn, run_extension_prepare,
+    };
     // The shipped tmpdir extension through the shipped path:
     // mints an owner-only slice, contributes the RW triple
     // targeting /tmp, and declares it for cleanup — all three
@@ -576,7 +619,8 @@ fn tmpdir_extension_mints_contributes_declares() {
         .to_path_buf();
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let (plan, _lease) = run_extension_prepare(
         ExtensionSpawn::Tmpdir,
@@ -603,7 +647,8 @@ fn tmpdir_extension_mints_contributes_declares() {
         "slice attributed to the session under host /tmp, got: {}",
         placement.host_source
     );
-    let metadata = std::fs::symlink_metadata(&placement.host_source).expect("slice exists");
+    let metadata = std::fs::symlink_metadata(&placement.host_source)
+        .expect("slice exists");
     assert!(metadata.is_dir(), "slice is a directory");
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
@@ -635,7 +680,8 @@ fn unadvertised_hook_does_not_launder_through_pair() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![
@@ -677,7 +723,8 @@ fn second_guest_host_failure_shuts_first_and_retains() {
     );
     let policy_dir = tempfile::tempdir().expect("tmpdir");
     let policy =
-        cistella::framework::policy::PolicySet::load(Some(policy_dir.path())).expect("defaults");
+        cistella::framework::policy::PolicySet::load(Some(policy_dir.path()))
+            .expect("defaults");
     let lease_base = tempfile::tempdir().expect("tmpdir");
     let error = prepare_selected_extension(
         vec![

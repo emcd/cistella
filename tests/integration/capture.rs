@@ -111,7 +111,11 @@ pub fn excerpt_capped(bytes: &[u8]) -> String {
     fn escape(byte: u8) -> String {
         if byte == b'\x1b' {
             "<ESC>".to_string()
-        } else if byte.is_ascii_graphic() || byte == b' ' || byte == b'\n' || byte == b'\t' {
+        } else if byte.is_ascii_graphic()
+            || byte == b' '
+            || byte == b'\n'
+            || byte == b'\t'
+        {
             (byte as char).to_string()
         } else {
             format!("<{byte:02X}>")
@@ -165,7 +169,10 @@ pub fn child_gone(
     exited_at: &mut Option<Instant>,
     disposition: &mut ChildDisposition,
 ) -> bool {
-    match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+    match nix::sys::wait::waitpid(
+        child,
+        Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+    ) {
         Ok(nix::sys::wait::WaitStatus::StillAlive) => false,
         Ok(status) => {
             // Only terminal observations converge: a WNOHANG
@@ -182,10 +189,10 @@ pub fn child_gone(
                     *disposition = match status {
                         nix::sys::wait::WaitStatus::Exited(_, code) => {
                             ChildDisposition::Exited(code)
-                        }
+                        },
                         nix::sys::wait::WaitStatus::Signaled(_, signal, _) => {
                             ChildDisposition::Signaled(signal as i32)
-                        }
+                        },
                         _ => ChildDisposition::Unknown,
                     };
                 }
@@ -194,7 +201,7 @@ pub fn child_gone(
                 }
             }
             terminal
-        }
+        },
         Err(nix::errno::Errno::ECHILD) => {
             *reaped = true;
             if matches!(disposition, ChildDisposition::Unknown) {
@@ -204,7 +211,7 @@ pub fn child_gone(
                 *exited_at = Some(Instant::now());
             }
             true
-        }
+        },
         Err(_) => false,
     }
 }
@@ -271,7 +278,7 @@ pub fn capture_master(
                 attempts += 1;
                 phases.closed_at = Some(Instant::now());
                 break CaptureEnd::Eof;
-            }
+            },
             Ok(n) => {
                 attempts += 1;
                 bytes.extend_from_slice(&buf[..n]);
@@ -291,7 +298,7 @@ pub fn capture_master(
                 if past_grace {
                     break CaptureEnd::GraceExpired;
                 }
-            }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 attempts += 1;
                 if past_grace {
@@ -303,7 +310,7 @@ pub fn capture_master(
                     stage();
                 }
                 std::thread::sleep(Duration::from_millis(50));
-            }
+            },
             Err(error) if error.raw_os_error() == Some(libc::EIO) => {
                 attempts += 1;
                 phases.closed_at = Some(Instant::now());
@@ -317,14 +324,14 @@ pub fn capture_master(
                     &mut disposition,
                 );
                 break CaptureEnd::PtyEio { child_reaped };
-            }
+            },
             Err(error) => {
                 attempts += 1;
                 break CaptureEnd::ReadErr {
                     message: error.to_string(),
                     errno: error.raw_os_error(),
                 };
-            }
+            },
         }
         // Reconcile child status every iteration (not only on
         // EIO): the record keeps read observation and
@@ -372,7 +379,9 @@ pub fn phase_offsets(phases: &CapturePhases) -> String {
 /// unset, never as zero.
 pub fn ms_since(start: Instant, point: Option<Instant>) -> String {
     match point {
-        Some(instant) => format!("+{}ms", instant.duration_since(start).as_millis()),
+        Some(instant) => {
+            format!("+{}ms", instant.duration_since(start).as_millis())
+        },
         None => "unset".to_string(),
     }
 }
@@ -411,11 +420,19 @@ pub fn finalize_capture(
                 eprintln!(
                     "{label} child outlived its window; forcing SIGKILL (timeout, not success)"
                 );
-                let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+                let _ = nix::sys::signal::kill(
+                    child,
+                    nix::sys::signal::Signal::SIGKILL,
+                );
                 forced_kill = true;
                 break;
             }
-            if child_gone(child, &mut reaped, &mut exit_observed, &mut disposition) {
+            if child_gone(
+                child,
+                &mut reaped,
+                &mut exit_observed,
+                &mut disposition,
+            ) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -425,7 +442,12 @@ pub fn finalize_capture(
             // reaps is unproven, never success.
             let reap_end = Instant::now() + Duration::from_secs(10);
             while Instant::now() <= reap_end {
-                if child_gone(child, &mut reaped, &mut exit_observed, &mut disposition) {
+                if child_gone(
+                    child,
+                    &mut reaped,
+                    &mut exit_observed,
+                    &mut disposition,
+                ) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -448,7 +470,11 @@ pub fn finalize_capture(
 /// error, truncation, timeout, or grace expiry never becomes
 /// a PASS; neither does an unknown, unsuccessful, or
 /// unavailable disposition.
-pub fn verdict_ready(end_ok: bool, final_: &Finalization, content_ok: bool) -> bool {
+pub fn verdict_ready(
+    end_ok: bool,
+    final_: &Finalization,
+    content_ok: bool,
+) -> bool {
     final_.reaped
         && !final_.forced_kill
         && end_ok

@@ -4,7 +4,9 @@
 //! fixtures live there.
 
 use super::operation_log::{oversize_frame, start_only_frame, state_root};
-use cistella::operation_log::{Outcome, decode_frames, encode_frame, read_operation};
+use cistella::operation_log::{
+    Outcome, decode_frames, encode_frame, read_operation,
+};
 #[test]
 fn frame_round_trip_preserves_sequence() {
     let first = encode_frame(br#"{"seq":0,"kind":"start"}"#).expect("encode");
@@ -23,8 +25,10 @@ fn oversize_payload_refuses_before_allocation() {
         encode_frame(&big).is_err(),
         "oversize frame refuses at encode"
     );
-    let mut stream =
-        u32::to_be_bytes((cistella::operation_log::MAX_FRAME_PAYLOAD + 1) as u32).to_vec();
+    let mut stream = u32::to_be_bytes(
+        (cistella::operation_log::MAX_FRAME_PAYLOAD + 1) as u32,
+    )
+    .to_vec();
     stream.extend_from_slice(&[0u8; 8]);
     let (records, discards) = decode_frames(&stream);
     assert!(records.is_empty(), "oversize claim reads nothing");
@@ -47,9 +51,12 @@ fn torn_tail_discards_and_keeps_prefix() {
 #[test]
 fn sequence_gap_and_bad_json_stop_the_stream() {
     let first = start_only_frame();
-    let gap_payload = serde_json::json!({"seq": 5u64, "kind": "body"}).to_string();
+    let gap_payload =
+        serde_json::json!({"seq": 5u64, "kind": "body"}).to_string();
     let mut bytes = first;
-    bytes.extend_from_slice(&encode_frame(gap_payload.as_bytes()).expect("encode"));
+    bytes.extend_from_slice(
+        &encode_frame(gap_payload.as_bytes()).expect("encode"),
+    );
     let (records, discards) = decode_frames(&bytes);
     assert_eq!(records.len(), 1, "gap discards from the gap on");
     assert_eq!(discards, 1, "gap counted");
@@ -83,7 +90,11 @@ fn oversize_prefix_with_full_payload_reads_nothing() {
     // The prefix declares more than the maximum while the file
     // actually holds that many bytes: only the max-payload check
     // can reject it (the remaining-bytes check passes).
-    let frame = oversize_frame(cistella::operation_log::MAX_FRAME_PAYLOAD + 1, 0, "start");
+    let frame = oversize_frame(
+        cistella::operation_log::MAX_FRAME_PAYLOAD + 1,
+        0,
+        "start",
+    );
     let (records, discards) = decode_frames(&frame);
     assert!(records.is_empty(), "oversize reads nothing");
     assert_eq!(discards, 1, "oversize counted once");
@@ -122,7 +133,9 @@ fn terminal_without_start_reads_unknown() {
     let root = state_root();
     let dir = root.path().join("abc123");
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let terminal = encode_frame(br#"{"seq":0,"kind":"terminal","outcome":"x"}"#).expect("encode");
+    let terminal =
+        encode_frame(br#"{"seq":0,"kind":"terminal","outcome":"x"}"#)
+            .expect("encode");
     let (records, discards) = decode_frames(&terminal);
     assert!(
         records.is_empty(),
@@ -145,7 +158,8 @@ fn body_outcome_without_terminal_reads_unknown() {
     let dir = root.path().join("abc123");
     std::fs::create_dir_all(&dir).expect("mkdir");
     let start = encode_frame(br#"{"seq":0,"kind":"start"}"#).expect("encode");
-    let body = encode_frame(br#"{"seq":1,"kind":"body","outcome":"success"}"#).expect("encode");
+    let body = encode_frame(br#"{"seq":1,"kind":"body","outcome":"success"}"#)
+        .expect("encode");
     let mut bytes = start;
     bytes.extend_from_slice(&body);
     std::fs::write(dir.join("records.log"), bytes).expect("write");
@@ -162,8 +176,11 @@ fn frames_after_terminal_end_the_prefix() {
     // A terminal closes the stream: trailing bytes are corruption,
     // not records, even when they would parse on their own.
     let start = encode_frame(br#"{"seq":0,"kind":"start"}"#).expect("encode");
-    let terminal = encode_frame(br#"{"seq":1,"kind":"terminal","outcome":"ok"}"#).expect("encode");
-    let trailing = encode_frame(br#"{"seq":2,"kind":"body"}"#).expect("encode");
+    let terminal =
+        encode_frame(br#"{"seq":1,"kind":"terminal","outcome":"ok"}"#)
+            .expect("encode");
+    let trailing =
+        encode_frame(br#"{"seq":2,"kind":"body"}"#).expect("encode");
     let mut bytes = start;
     bytes.extend_from_slice(&terminal);
     bytes.extend_from_slice(&trailing);
@@ -175,14 +192,16 @@ fn frames_after_terminal_end_the_prefix() {
 #[test]
 fn duplicate_start_and_unknown_kind_end_the_prefix() {
     let start = encode_frame(br#"{"seq":0,"kind":"start"}"#).expect("encode");
-    let restart = encode_frame(br#"{"seq":1,"kind":"start"}"#).expect("encode");
+    let restart =
+        encode_frame(br#"{"seq":1,"kind":"start"}"#).expect("encode");
     let mut bytes = start;
     bytes.extend_from_slice(&restart);
     let (records, discards) = decode_frames(&bytes);
     assert_eq!(records.len(), 1, "second start rejected");
     assert_eq!(discards, 1, "rejected start counted");
     let start = encode_frame(br#"{"seq":0,"kind":"start"}"#).expect("encode");
-    let bogus = encode_frame(br#"{"seq":1,"kind":"teardown"}"#).expect("encode");
+    let bogus =
+        encode_frame(br#"{"seq":1,"kind":"teardown"}"#).expect("encode");
     let mut bytes = start;
     bytes.extend_from_slice(&bogus);
     let (records, discards) = decode_frames(&bytes);
@@ -224,7 +243,9 @@ fn injected_claims_are_bounded_and_validated() {
     values.insert("CISTELLA_TEST_RUN_ID".to_string(), evil);
     values.insert("CISTELLA_PARENT_OP_ID".to_string(), "../evil".to_string());
     values.insert("CISTELLA_TEST_NAME".to_string(), "ok".to_string());
-    let injected = cistella::operation_log::read_injected_from(&|key| values.get(key).cloned());
+    let injected = cistella::operation_log::read_injected_from(&|key| {
+        values.get(key).cloned()
+    });
     let run_id = injected.run_id.expect("run id kept");
     assert!(
         run_id.is_char_boundary(run_id.len() - "[truncated]".len()),

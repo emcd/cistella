@@ -8,7 +8,9 @@
 //! substitution with no rescan.
 
 use crate::error::{CistellaError, Result};
-use crate::profile::{Profile, default_project_name, normalize_container_home};
+use crate::profile::{
+    Profile, default_project_name, normalize_container_home,
+};
 
 /// Template names expanded in mounts and command argv.
 const CORE_CONTAINER_HOME: &str = "container-home";
@@ -72,7 +74,7 @@ fn classify_span(inner: &str) -> Result<ClassifiedSpan> {
             return Err(CistellaError::Profile(format!(
                 "unknown template context {unknown}"
             )));
-        }
+        },
     };
     let name = name_raw.trim().to_string();
     if name.is_empty() {
@@ -102,7 +104,8 @@ impl Supplements {
     /// Builds the table from parsed pairs (later pairs win on duplicates).
     #[must_use]
     pub fn from_pairs(pairs: Vec<(String, String)>) -> Self {
-        let mut deduped: Vec<(String, String)> = Vec::with_capacity(pairs.len());
+        let mut deduped: Vec<(String, String)> =
+            Vec::with_capacity(pairs.len());
         for (key, value) in pairs {
             if let Some(slot) = deduped.iter_mut().find(|(k, _)| *k == key) {
                 slot.1 = value;
@@ -166,10 +169,9 @@ fn validate_supplement_key(key: &str) -> Result<()> {
             "supplement key must not use the reserved permission namespace: {key}"
         )));
     }
-    if !key
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
-    {
+    if !key.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ')
+    }) {
         return Err(CistellaError::Profile(format!(
             "supplement key must match [A-Za-z0-9_. -]+: {key}"
         )));
@@ -227,8 +229,9 @@ fn resolve_environment(name: &str) -> Result<String> {
             "environment {name} is not allowlisted (allowlist is compile-time; extend by code-reviewed change)"
         )));
     }
-    std::env::var(name)
-        .map_err(|_| CistellaError::Profile(format!("environment {name} is not set")))
+    std::env::var(name).map_err(|_| {
+        CistellaError::Profile(format!("environment {name} is not set"))
+    })
 }
 
 /// Validates a project name before expansion: non-empty ASCII
@@ -292,7 +295,9 @@ fn expand_early_home(home: &str, supplements: &Supplements) -> Result<String> {
                         CistellaError::Profile(msg) => msg,
                         other => other.to_string(),
                     };
-                    CistellaError::Profile(format!("{inner} in container-home"))
+                    CistellaError::Profile(format!(
+                        "{inner} in container-home"
+                    ))
                 })?;
                 match span.context {
                     TemplateContext::Core => {
@@ -300,7 +305,7 @@ fn expand_early_home(home: &str, supplements: &Supplements) -> Result<String> {
                             "self-referential template {{{{{}}}}} in container-home",
                             raw
                         )));
-                    }
+                    },
                     TemplateContext::Supplement => {
                         let Some(value) = supplements.get(&span.name) else {
                             return Err(CistellaError::Profile(format!(
@@ -309,12 +314,12 @@ fn expand_early_home(home: &str, supplements: &Supplements) -> Result<String> {
                             )));
                         };
                         out.push_str(value);
-                    }
+                    },
                     TemplateContext::Environment => {
                         out.push_str(&resolve_environment(&span.name)?);
-                    }
+                    },
                 }
-            }
+            },
         }
     }
     Ok(out)
@@ -348,8 +353,10 @@ pub(crate) fn expand_templates(
     project: Option<ProjectName<'_>>,
     supplements: &Supplements,
 ) -> Result<()> {
-    profile.container_home = expand_early_home(&profile.container_home, supplements)?;
-    profile.container_home = normalize_container_home(&profile.container_home)?;
+    profile.container_home =
+        expand_early_home(&profile.container_home, supplements)?;
+    profile.container_home =
+        normalize_container_home(&profile.container_home)?;
     // Exact span recognition across every value first: structural span
     // errors outrank supplement, environment, HOME, and charset errors.
     let mut spans: Vec<ClassifiedSpan> = Vec::new();
@@ -381,7 +388,9 @@ pub(crate) fn expand_templates(
     // Unknown core names are structural: they outrank every resolution
     // error, matching the old unknown-template-first discipline.
     for span in &spans {
-        if span.context == TemplateContext::Core && !is_known_core_template(&span.name) {
+        if span.context == TemplateContext::Core
+            && !is_known_core_template(&span.name)
+        {
             return Err(CistellaError::Profile(format!(
                 "unknown core template: {}",
                 span.name
@@ -422,7 +431,8 @@ pub(crate) fn expand_templates(
     // Lazy resolution in first-seen span order: the first unresolvable
     // span reports, and unreferenced contexts are never consulted (no
     // HOME read, no basename derivation, no environment lookup).
-    let mut values: Vec<(ClassifiedSpan, String)> = Vec::with_capacity(spans.len());
+    let mut values: Vec<(ClassifiedSpan, String)> =
+        Vec::with_capacity(spans.len());
     let mut project_value: Option<String> = None;
     let mut host_home_value: Option<String> = None;
     for span in &spans {
@@ -432,21 +442,25 @@ pub(crate) fn expand_templates(
         let value = match span.context {
             TemplateContext::Core if span.name == CORE_CONTAINER_HOME => {
                 profile.container_home.clone()
-            }
+            },
             TemplateContext::Core if span.name == CORE_HOST_HOME => {
                 if host_home_value.is_none() {
-                    host_home_value = Some(std::env::var("HOME").map_err(|_| {
-                        CistellaError::Profile("HOME not set for template expansion".to_string())
-                    })?);
+                    host_home_value =
+                        Some(std::env::var("HOME").map_err(|_| {
+                            CistellaError::Profile(
+                                "HOME not set for template expansion"
+                                    .to_string(),
+                            )
+                        })?);
                 }
                 host_home_value.clone().unwrap_or_default()
-            }
+            },
             TemplateContext::Core if span.name == CORE_PROJECT_NAME => {
                 if project_value.is_none() {
                     project_value = Some(resolve_project_value(project)?);
                 }
                 project_value.clone().unwrap_or_default()
-            }
+            },
             TemplateContext::Core => {
                 // Defensive: the structural pass above rejects every
                 // unknown core name, so this is unreachable without a
@@ -455,7 +469,7 @@ pub(crate) fn expand_templates(
                     "unknown core template: {}",
                     span.name
                 )));
-            }
+            },
             TemplateContext::Supplement => {
                 let Some(value) = supplements.get(&span.name) else {
                     return Err(CistellaError::Profile(format!(
@@ -464,14 +478,15 @@ pub(crate) fn expand_templates(
                     )));
                 };
                 value.to_string()
-            }
+            },
             TemplateContext::Environment => resolve_environment(&span.name)?,
         };
         values.push((span.clone(), value));
     }
     for triple in &mut profile.mounts {
         triple.host_source = substitute(&triple.host_source, &values)?;
-        triple.container_target = substitute(&triple.container_target, &values)?;
+        triple.container_target =
+            substitute(&triple.container_target, &values)?;
     }
     if let Some(command) = &mut profile.command {
         for arg in command {
@@ -495,12 +510,12 @@ fn resolve_project_value(project: ProjectName<'_>) -> Result<String> {
         ProjectName::Explicit(name) => {
             validate_project_name(name)?;
             Ok(name.to_string())
-        }
+        },
         ProjectName::DirectoryDefault(directory) => {
             let derived = default_project_name(directory)?;
             validate_project_name(&derived)?;
             Ok(derived)
-        }
+        },
     }
 }
 
@@ -516,7 +531,9 @@ fn template_values(profile: &Profile) -> Vec<(&str, &str)> {
         out.push(("mount container_target", triple.container_target.as_str()));
     }
     if let Some(command) = &profile.command {
-        out.extend(command.iter().map(|a| ("command argv", String::as_str(a))));
+        out.extend(
+            command.iter().map(|a| ("command argv", String::as_str(a))),
+        );
     }
     out.extend(
         profile
@@ -589,7 +606,10 @@ fn split_spans(value: &str) -> Result<Vec<Part<'_>>> {
 
 /// Substitutes classified spans into a value (all spans pre-validated
 /// by the recognition pass; single pass, no rescan).
-fn substitute(value: &str, values: &[(ClassifiedSpan, String)]) -> Result<String> {
+fn substitute(
+    value: &str,
+    values: &[(ClassifiedSpan, String)],
+) -> Result<String> {
     let mut out = String::with_capacity(value.len());
     for part in split_spans(value)? {
         match part {
@@ -598,7 +618,9 @@ fn substitute(value: &str, values: &[(ClassifiedSpan, String)]) -> Result<String
                 // Pre-validated by the recognition pass; classify again
                 // for the lookup key, reporting identically if reached.
                 let span = classify_span(&raw)?;
-                let Some((_, replacement)) = values.iter().find(|(known, _)| *known == span) else {
+                let Some((_, replacement)) =
+                    values.iter().find(|(known, _)| *known == span)
+                else {
                     // No raw value: names are bounded identifiers, but the
                     // surrounding text may be secret (see split_spans).
                     return Err(CistellaError::Profile(format!(
@@ -606,7 +628,7 @@ fn substitute(value: &str, values: &[(ClassifiedSpan, String)]) -> Result<String
                     )));
                 };
                 out.push_str(replacement);
-            }
+            },
         }
     }
     Ok(out)

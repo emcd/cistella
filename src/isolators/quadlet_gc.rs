@@ -96,7 +96,7 @@ pub fn classify_candidate(
                 },
                 abort: None,
             }
-        }
+        },
         None => match exists {
             Err(error) => CandidateClassification {
                 is_exited_container: false,
@@ -143,7 +143,10 @@ pub fn classify_candidate(
                         .get("LoadState")
                         .cloned()
                         .unwrap_or_else(|| "not-found".to_string());
-                    if load == "not-found" || active == "inactive" || active == "failed" {
+                    if load == "not-found"
+                        || active == "inactive"
+                        || active == "failed"
+                    {
                         orphan = true;
                     }
                 }
@@ -163,7 +166,7 @@ pub fn classify_candidate(
                     },
                     abort: None,
                 }
-            }
+            },
         },
     }
 }
@@ -233,7 +236,7 @@ pub fn ps_candidate_names(
             let detail = format!("podman ps: {error}");
             operation_log::record_gc_scan(op, "aborted-ps-failed", &detail);
             return Err(CistellaError::Runtime(detail));
-        }
+        },
     };
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -253,7 +256,9 @@ pub fn ps_candidate_names(
 
 /// Scans and reaps under the held creation lock. Records what the
 /// scan observed (never more); any logging failure is silent.
-fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<GcResult> {
+fn gc_exited_locked_inner(
+    op: &mut Option<operation_log::Operation>,
+) -> Result<GcResult> {
     let mut reaped = Vec::new();
     let systemd = systemd_user_available();
     // Enumerate candidates from both sources: unit files + podman ps
@@ -264,7 +269,8 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
     {
         for e in entries.flatten() {
             let fname = e.file_name().to_string_lossy().to_string();
-            if fname.starts_with("cistella-") && fname.ends_with(".container") {
+            if fname.starts_with("cistella-") && fname.ends_with(".container")
+            {
                 let cname = fname.trim_end_matches(".container").to_string();
                 candidates.insert(cname);
             }
@@ -283,7 +289,8 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
     // them. A failed unit scan aborts the whole gc before any
     // mutation (above), so this set never reads failure as
     // absence — failed scan is not "no unit".
-    let mut live_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut live_sessions: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut ordered: Vec<String> = candidates.into_iter().collect();
     ordered.sort();
     for name in ordered {
@@ -319,7 +326,7 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
                     _ => String::new(),
                 };
                 (Some(status), sid)
-            }
+            },
             None => (None, String::new()),
         };
         // Reads for this candidate: the present-container path never
@@ -327,8 +334,11 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
         // file (for the session id) and the unit properties only
         // when a unit file exists. Classification itself is the pure
         // `classify_candidate` mapping, recorded exactly as returned.
-        let mut unit_props: Option<std::collections::HashMap<String, String>> = None;
-        let exists_result: std::result::Result<bool, String> = match status.as_deref() {
+        let mut unit_props: Option<std::collections::HashMap<String, String>> =
+            None;
+        let exists_result: std::result::Result<bool, String> = match status
+            .as_deref()
+        {
             Some(_) => Ok(true),
             None => match container_exists(&name) {
                 Ok(present) => {
@@ -348,16 +358,21 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
                                 }
                                 if systemd {
                                     let service = format!("{name}.service");
-                                    unit_props = Some(query_unit_props(&service));
+                                    unit_props =
+                                        Some(query_unit_props(&service));
                                 }
                             }
                         }
                     }
                     Ok(present)
-                }
+                },
                 Err(error) => {
-                    let classification =
-                        classify_candidate(None, Err(error.to_string()), None, &sid);
+                    let classification = classify_candidate(
+                        None,
+                        Err(error.to_string()),
+                        None,
+                        &sid,
+                    );
                     operation_log::record_gc_classify(
                         op,
                         &operation_log::Classify {
@@ -374,11 +389,15 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
                         },
                     );
                     return Err(error);
-                }
+                },
             },
         };
-        let classification =
-            classify_candidate(status.as_deref(), exists_result, unit_props.as_ref(), &sid);
+        let classification = classify_candidate(
+            status.as_deref(),
+            exists_result,
+            unit_props.as_ref(),
+            &sid,
+        );
         if classification.abort == Some(AbortKind::FailClosed) {
             // Present but uninspectable: a real invocation failure,
             // not Quadlet `--rm` absence. Fail closed, with the
@@ -402,8 +421,13 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
                 "podman inspect {name} failed while container exists: {inspect_err}"
             )));
         }
-        if classification.is_exited_container || classification.is_orphan_unit {
-            to_reap.push((name.clone(), sid.clone(), classification.is_orphan_unit));
+        if classification.is_exited_container || classification.is_orphan_unit
+        {
+            to_reap.push((
+                name.clone(),
+                sid.clone(),
+                classification.is_orphan_unit,
+            ));
         } else if !sid.is_empty() {
             live_sessions.insert(sid.clone());
         }
@@ -446,8 +470,10 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
             &sid,
             is_orphan_unit,
             rm_ok,
-            &rm.map(|output| String::from_utf8_lossy(&output.stderr).to_string())
-                .unwrap_or_default(),
+            &rm.map(|output| {
+                String::from_utf8_lossy(&output.stderr).to_string()
+            })
+            .unwrap_or_default(),
         );
     }
     // Phase 3: tmpdir orphans attributable to dead sessions. Unit
@@ -460,8 +486,10 @@ fn gc_exited_locked_inner(op: &mut Option<operation_log::Operation>) -> Result<G
     // Phase 3b: attestation orphans (sessions with no live unit:
     // crashed conducts, pre-teardown kills). Same live-set gate;
     // reaped names report alongside containers.
-    let attestation_reaped =
-        crate::attestation::reap_orphans(&crate::lock::runtime_base(), &live_sessions);
+    let attestation_reaped = crate::attestation::reap_orphans(
+        &crate::lock::runtime_base(),
+        &live_sessions,
+    );
     operation_log::record_gc_phase(op, "attestation", &attestation_reaped);
     reaped.extend(attestation_reaped);
     Ok(GcResult { reaped })

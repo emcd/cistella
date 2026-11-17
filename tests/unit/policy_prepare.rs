@@ -11,12 +11,14 @@ use std::time::Duration;
 use serde_json::json;
 
 use cistella::framework::contract::parse_capability;
-use cistella::framework::contract::{MergeContext, Provenance, Scope, Severity};
+use cistella::framework::contract::{
+    MergeContext, Provenance, Scope, Severity,
+};
 use cistella::framework::policy::{PolicySet, acceptance_set, evaluate_all};
 use cistella::framework::prepare::run_prepare;
 use cistella::framework::protocol::{
-    Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope,
-    read_frame, write_frame,
+    Envelope, Exchange, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR,
+    envelope_bytes, parse_envelope, read_frame, write_frame,
 };
 
 const FAST: Duration = Duration::from_secs(3);
@@ -87,7 +89,10 @@ fn file_contract_refusals() {
     )
     .unwrap_err();
     // Bad acknowledgement name (env grammar).
-    PolicySet::parse(b"format_version = 1\n[[acknowledgements]]\nname = 'lower'\n").unwrap_err();
+    PolicySet::parse(
+        b"format_version = 1\n[[acknowledgements]]\nname = 'lower'\n",
+    )
+    .unwrap_err();
     // User inviolable universal impersonates site authority.
     PolicySet::parse(
         b"format_version = 1\n[[denials]]\npattern = 'X'\nseverity = 'inviolable'\nscope = 'universal'\n",
@@ -157,7 +162,8 @@ fn inviolable_on_extensions_refuses_despite_acknowledgement() {
 #[test]
 fn present_empty_file_refuses_instead_of_defaulting() {
     let dir = tempfile::tempdir().expect("tmpdir");
-    std::fs::write(dir.path().join("policies.toml"), b"").expect("write empty");
+    std::fs::write(dir.path().join("policies.toml"), b"")
+        .expect("write empty");
     let error = PolicySet::load(Some(dir.path())).unwrap_err();
     assert!(error.to_string().contains("empty"));
     // And the pure half agrees.
@@ -234,7 +240,8 @@ fn scripted_peer(
     let host = Exchange::new(a.try_clone().unwrap(), a);
     let handle = std::thread::spawn(move || {
         let mut peer = b;
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         let response = Envelope {
             protocol: PROTOCOL_MAJOR,
@@ -424,8 +431,10 @@ fn prepare_upheld_claim_enforces_with_ack_escape() {
         "environment": [{"name": "PROBE_A", "value": "1"}],
         "policy_claims": [{"pattern": "^PROBE_", "severity": "suppressible", "scope": "universal"}],
     }));
-    let acked =
-        PolicySet::parse(b"format_version = 1\n[[acknowledgements]]\nname = 'PROBE_A'\n").unwrap();
+    let acked = PolicySet::parse(
+        b"format_version = 1\n[[acknowledgements]]\nname = 'PROBE_A'\n",
+    )
+    .unwrap();
     run_prepare(
         &mut host,
         "probe",

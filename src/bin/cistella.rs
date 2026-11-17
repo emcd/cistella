@@ -1,13 +1,13 @@
 //! Cistella CLI entry point.
 
-#[path = "../cli_conduct.rs"]
 mod cli_conduct;
 #[path = "../cli_util.rs"]
 mod cli_util;
 
 use crate::cli_conduct::conduct_session;
 use crate::cli_util::{
-    canonical_directory, describe_state, gate_enter, parse_label_filters, select_exact,
+    canonical_directory, describe_state, gate_enter, parse_label_filters,
+    select_exact,
 };
 use cistella::cli::{Cli, Command, DescribeTarget};
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
@@ -21,8 +21,14 @@ fn main() -> std::process::ExitCode {
     // Standard CLI hygiene: Rust ignores SIGPIPE by default, which turns
     // `cistella inspect | head -1` into a panic instead of a quiet exit.
     unsafe {
-        use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
-        let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        use nix::sys::signal::{
+            SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction,
+        };
+        let action = SigAction::new(
+            SigHandler::SigDfl,
+            SaFlags::empty(),
+            SigSet::empty(),
+        );
         let _ = sigaction(Signal::SIGPIPE, &action);
     }
     let cli = Cli::parse();
@@ -31,7 +37,7 @@ fn main() -> std::process::ExitCode {
         Err(e) => {
             eprintln!("error: {e}");
             std::process::ExitCode::from(1)
-        }
+        },
     }
 }
 
@@ -65,28 +71,31 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
                 &command,
             )?;
             std::process::exit(code);
-        }
+        },
         Command::Enter {
             id,
             directory,
             labels,
             command,
         } => {
-            let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
+            let record =
+                select_exact(id.as_deref(), directory.as_deref(), &labels)?;
             // Readiness edge (single pass, no retries): commitment
             // + incarnation + native admittability, refusing typed
             // on the first unmet condition. Foreign commitments
             // route to the legacy direct exec below with no gate
             // and no readiness claim.
             match gate_enter(&record)? {
-                cistella::describe::EnterDecision::ProceedNative => {}
-                cistella::describe::EnterDecision::ProceedLegacyDirect => {}
+                cistella::describe::EnterDecision::ProceedNative => {},
+                cistella::describe::EnterDecision::ProceedLegacyDirect => {},
                 cistella::describe::EnterDecision::Refuse(reason) => {
-                    return Err(cistella::error::CistellaError::Runtime(format!(
-                        "enter refuses (session {}): {reason}",
-                        record.container_name,
-                    )));
-                }
+                    return Err(cistella::error::CistellaError::Runtime(
+                        format!(
+                            "enter refuses (session {}): {reason}",
+                            record.container_name,
+                        ),
+                    ));
+                },
             }
             // Companion exec is deliberately OUTSIDE the Landlock
             // guarantee (operator decision): the operator is
@@ -99,10 +108,13 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             // a future wrapper-sidecar path will key on).
             let container = record.container_name;
             for (field, val) in [("session", &container)] {
-                if val.contains('\n') || val.contains('\r') || val.contains('\0') {
-                    return Err(cistella::error::CistellaError::Runtime(format!(
-                        "{field} must not contain control characters"
-                    )));
+                if val.contains('\n')
+                    || val.contains('\r')
+                    || val.contains('\0')
+                {
+                    return Err(cistella::error::CistellaError::Runtime(
+                        format!("{field} must not contain control characters"),
+                    ));
                 }
             }
             let cmd: Vec<String> = if command.is_empty() {
@@ -118,32 +130,41 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
                 .stderr(std::process::Stdio::inherit())
                 .spawn()
                 .map_err(|e| {
-                    cistella::error::CistellaError::Runtime(format!("podman exec: {e}"))
+                    cistella::error::CistellaError::Runtime(format!(
+                        "podman exec: {e}"
+                    ))
                 })?;
-            let status = child
-                .wait()
-                .map_err(|e| cistella::error::CistellaError::Runtime(format!("wait: {e}")))?;
+            let status = child.wait().map_err(|e| {
+                cistella::error::CistellaError::Runtime(format!("wait: {e}"))
+            })?;
             exit_with_status(status);
-        }
+        },
         Command::Survey { directory, labels } => {
             let records = list_sessions()?;
             let parsed = parse_label_filters(&labels)?;
-            let canon_dir = directory.as_deref().map(canonical_directory).transpose()?;
-            let shown = filter_records(&records, canon_dir.as_deref(), &parsed);
+            let canon_dir =
+                directory.as_deref().map(canonical_directory).transpose()?;
+            let shown =
+                filter_records(&records, canon_dir.as_deref(), &parsed);
             for r in shown {
                 println!(
                     "{} {} profile={} directory={} identity={}",
-                    r.container_name, r.active_state, r.profile, r.directory, r.identity
+                    r.container_name,
+                    r.active_state,
+                    r.profile,
+                    r.directory,
+                    r.identity
                 );
             }
             Ok(())
-        }
+        },
         Command::Inspect {
             id,
             directory,
             labels,
         } => {
-            let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
+            let record =
+                select_exact(id.as_deref(), directory.as_deref(), &labels)?;
             println!(
                 "{} profile={} directory={} identity={} image={}",
                 record.container_name,
@@ -155,7 +176,7 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             let logs = logs_container(&record.container_name)?;
             print!("{logs}");
             Ok(())
-        }
+        },
         Command::Terminate {
             id,
             directory,
@@ -165,18 +186,25 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
             // resolving first and locking only for teardown could observe a
             // half-installed unit and reap a session being born.
             let _guard = cistella::lock::LockGuard::acquire()?;
-            let record = select_exact(id.as_deref(), directory.as_deref(), &labels)?;
+            let record =
+                select_exact(id.as_deref(), directory.as_deref(), &labels)?;
             let isolator = PodmanIsolator::new();
             let handle = isolator.adopt(&record.container_name, &record.id);
             let key = ReconciliationKey::generate();
             let grace = Deadlines::default().terminate_grace;
             isolator.terminate(&handle, grace, &key)?;
             isolator.remove(&handle, &key)?;
-            cistella::cleanup::reap_and_report(&cistella::lock::runtime_base(), &record.id);
-            cistella::attestation::reap(&cistella::lock::runtime_base(), &record.id);
+            cistella::cleanup::reap_and_report(
+                &cistella::lock::runtime_base(),
+                &record.id,
+            );
+            cistella::attestation::reap(
+                &cistella::lock::runtime_base(),
+                &record.id,
+            );
             println!("terminate {}", record.container_name);
             Ok(())
-        }
+        },
         Command::Describe { target } => match target {
             DescribeTarget::State {
                 id,
@@ -194,12 +222,12 @@ fn run(cli: Cli) -> Result<(), cistella::error::CistellaError> {
                 }
             }
             Ok(())
-        }
+        },
         Command::Check => {
             cistella::preflight::run_preflight()?;
             println!("check: ok");
             Ok(())
-        }
+        },
     }
 }
 /// Exits the process with a waited child's disposition (or 128+signal).

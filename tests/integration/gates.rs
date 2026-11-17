@@ -41,7 +41,7 @@ pub fn systemd_probe() -> Probe {
                     "systemctl killed by signal (not a missing prerequisite): {stderr}"
                 )),
             }
-        }
+        },
         Err(why) => Probe::Broken(format!("systemctl probe failed: {why}")),
     }
 }
@@ -56,8 +56,10 @@ pub fn systemd_gate() -> bool {
         Probe::Unavailable(reason) => {
             skip(&reason);
             false
-        }
-        Probe::Broken(detail) => panic!("seat operational failure (not a skip): {detail}"),
+        },
+        Probe::Broken(detail) => {
+            panic!("seat operational failure (not a skip): {detail}")
+        },
     }
 }
 
@@ -75,7 +77,7 @@ pub fn podman_probe() -> Probe {
                 String::from_utf8_lossy(&out.stderr)
             );
             classify_probe_exit("podman info", out.status, &combined, &[])
-        }
+        },
         Err(why) => Probe::Broken(format!("podman probe failed: {why}")),
     }
 }
@@ -88,8 +90,10 @@ pub fn podman_gate() -> bool {
         Probe::Unavailable(reason) => {
             skip(&reason);
             false
-        }
-        Probe::Broken(detail) => panic!("seat operational failure (not a skip): {detail}"),
+        },
+        Probe::Broken(detail) => {
+            panic!("seat operational failure (not a skip): {detail}")
+        },
     }
 }
 
@@ -155,10 +159,14 @@ pub fn image_present(image: &str) -> bool {
             Probe::Unavailable(reason) => {
                 skip(reason);
                 false
-            }
-            Probe::Broken(detail) => panic!("seat operational failure (not a skip): {detail}"),
+            },
+            Probe::Broken(detail) => {
+                panic!("seat operational failure (not a skip): {detail}")
+            },
         },
-        Err(why) => panic!("seat operational failure (not a skip): image probe failed: {why}"),
+        Err(why) => panic!(
+            "seat operational failure (not a skip): image probe failed: {why}"
+        ),
     }
 }
 
@@ -183,9 +191,11 @@ pub fn podman_unshare_capable() -> bool {
                         "podman unshare unavailable (exit {code}): {stderr}"
                     ));
                     false
-                }
+                },
             }
-        }
-        Err(why) => panic!("seat operational failure (not a skip): unshare probe failed: {why}"),
+        },
+        Err(why) => panic!(
+            "seat operational failure (not a skip): unshare probe failed: {why}"
+        ),
     }
 }

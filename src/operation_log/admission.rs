@@ -40,7 +40,9 @@ pub(crate) fn admission_lock_bounded(
     for _ in 0..tries {
         match admission_lock(root) {
             Ok(guard) => return Ok(guard),
-            Err(_) => std::thread::sleep(std::time::Duration::from_micros(100)),
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_micros(100))
+            },
         }
     }
     admission_lock(root)
@@ -59,16 +61,21 @@ pub(crate) fn admission_lock(
             | nix::fcntl::OFlag::O_CLOEXEC,
         nix::sys::stat::Mode::from_bits_truncate(0o600),
     )
-    .map_err(|errno| CistellaError::Runtime(format!("operation log admission: {errno}")))?;
+    .map_err(|errno| {
+        CistellaError::Runtime(format!("operation log admission: {errno}"))
+    })?;
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
-    let file: std::fs::File = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw).into() };
+    let file: std::fs::File =
+        unsafe { std::os::fd::OwnedFd::from_raw_fd(raw).into() };
     // A planted non-regular file (symlink target aside, a FIFO
     // would make a blocking opener hang elsewhere): the lock must
     // be a regular file or there is no lock to hold.
     {
         if !file
             .metadata()
-            .map(|meta| meta.file_type().is_file() && !meta.file_type().is_symlink())
+            .map(|meta| {
+                meta.file_type().is_file() && !meta.file_type().is_symlink()
+            })
             .unwrap_or(false)
         {
             return Err(CistellaError::Runtime(
@@ -89,8 +96,9 @@ pub(crate) fn admission_lock(
 pub(crate) fn reserved_dir(
     root: &crate::guest_anchor::AnchoredDir,
 ) -> Result<crate::guest_anchor::AnchoredDir> {
-    open_verified_dir(&root.path().join(RESERVED_DIR))
-        .map_err(|error| CistellaError::Runtime(format!("operation log reservations: {error}")))
+    open_verified_dir(&root.path().join(RESERVED_DIR)).map_err(|error| {
+        CistellaError::Runtime(format!("operation log reservations: {error}"))
+    })
 }
 
 /// Reads live reservations under the held admission lock, reaping
@@ -106,9 +114,14 @@ pub(crate) fn write_reservation(
     id: &str,
     share: u64,
 ) -> Result<()> {
-    let mut file = reserved
-        .create_file(&format!("{id}.json"))
-        .map_err(|error| CistellaError::Runtime(format!("operation log reservation: {error}")))?;
+    let mut file =
+        reserved
+            .create_file(&format!("{id}.json"))
+            .map_err(|error| {
+                CistellaError::Runtime(format!(
+                    "operation log reservation: {error}"
+                ))
+            })?;
     let owner = self_owner();
     let body = serde_json::json!({
         "op": id,
@@ -116,10 +129,12 @@ pub(crate) fn write_reservation(
         "process_start": owner.map(|o| o.starttime),
         "bytes": share,
     });
-    let bytes = serde_json::to_vec(&body)
-        .map_err(|error| CistellaError::Runtime(format!("operation log reservation: {error}")))?;
-    file.write_all(&bytes)
-        .map_err(|error| CistellaError::Runtime(format!("operation log reservation: {error}")))?;
+    let bytes = serde_json::to_vec(&body).map_err(|error| {
+        CistellaError::Runtime(format!("operation log reservation: {error}"))
+    })?;
+    file.write_all(&bytes).map_err(|error| {
+        CistellaError::Runtime(format!("operation log reservation: {error}"))
+    })?;
     Ok(())
 }
 
@@ -162,14 +177,19 @@ const MAX_RESERVATION_BYTES: u64 = 8192;
 /// ever creates regular files, so they hold no capacity — but
 /// the open is non-blocking and type-checked, so they can never
 /// stall this scan either.
-pub(crate) fn live_reserved_bytes(reserved: &crate::guest_anchor::AnchoredDir) -> Result<u64> {
+pub(crate) fn live_reserved_bytes(
+    reserved: &crate::guest_anchor::AnchoredDir,
+) -> Result<u64> {
     let mut total = 0u64;
     let mut seen = 0u32;
-    let listing = std::fs::read_dir(reserved.path())
-        .map_err(|error| CistellaError::Runtime(format!("operation log reservations: {error}")))?;
+    let listing = std::fs::read_dir(reserved.path()).map_err(|error| {
+        CistellaError::Runtime(format!("operation log reservations: {error}"))
+    })?;
     for entry in listing {
         let entry = entry.map_err(|error| {
-            CistellaError::Runtime(format!("operation log reservations: {error}"))
+            CistellaError::Runtime(format!(
+                "operation log reservations: {error}"
+            ))
         })?;
         seen += 1;
         if seen > MAX_RESERVED_ENTRIES {
@@ -196,11 +216,12 @@ pub(crate) fn live_reserved_bytes(reserved: &crate::guest_anchor::AnchoredDir) -
             Err(_) => {
                 total += RESERVATION_BYTES;
                 continue;
-            }
+            },
             Ok(raw) => raw,
         };
         // SAFETY: freshly opened above, owned here, wrapped exactly once.
-        let mut file: std::fs::File = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw).into() };
+        let mut file: std::fs::File =
+            unsafe { std::os::fd::OwnedFd::from_raw_fd(raw).into() };
         // fstat on the open description: FIFOs, directories and
         // symlinks are not our reservations and hold no capacity,
         // and O_NONBLOCK kept their open from stalling us. An
@@ -211,7 +232,7 @@ pub(crate) fn live_reserved_bytes(reserved: &crate::guest_anchor::AnchoredDir) -
             Err(_) => {
                 total = total.saturating_add(RESERVATION_BYTES);
                 continue;
-            }
+            },
         };
         if !is_regular {
             continue;
@@ -251,11 +272,13 @@ pub(crate) fn live_reserved_bytes(reserved: &crate::guest_anchor::AnchoredDir) -
                     .and_then(serde_json::Value::as_u64)
                     .filter(|starttime| *starttime != 0);
                 let owner = match (pid, starttime) {
-                    (Some(pid), Some(starttime)) => Some(Owner { pid, starttime }),
+                    (Some(pid), Some(starttime)) => {
+                        Some(Owner { pid, starttime })
+                    },
                     _ => None,
                 };
                 (owner, RESERVATION_BYTES)
-            }
+            },
             None => (None, RESERVATION_BYTES),
         };
         let dead = match owner {

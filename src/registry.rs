@@ -8,9 +8,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{CistellaError, Result};
-use crate::runtime::{query_unit_props, systemd_user_available, unquote_systemd};
+use crate::runtime::{
+    query_unit_props, systemd_user_available, unquote_systemd,
+};
 use crate::session::{
-    LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_PROFILE, RESERVED_PREFIX,
+    LABEL_DIRECTORY, LABEL_ID, LABEL_IDENTITY, LABEL_IMAGE, LABEL_PROFILE,
+    RESERVED_PREFIX,
 };
 
 /// One registry row: driver labels parsed from the unit file plus liveness.
@@ -154,7 +157,8 @@ pub fn list_sessions() -> Result<Vec<SessionRecord>> {
                     && let Some((key, value)) = rest.split_once('=')
                     && !key.starts_with(RESERVED_PREFIX)
                 {
-                    generic_labels.push((key.to_string(), unquote_systemd(value)));
+                    generic_labels
+                        .push((key.to_string(), unquote_systemd(value)));
                 }
             }
         }
@@ -184,7 +188,10 @@ pub fn list_sessions() -> Result<Vec<SessionRecord>> {
             // label from a READABLE unit defaults plain. An
             // unreadable file or an unexpected value is unknown,
             // and unknown refuses companion exec below.
-            hooked: match unit_file_label(&path, crate::session::LABEL_LANDLOCK) {
+            hooked: match unit_file_label(
+                &path,
+                crate::session::LABEL_LANDLOCK,
+            ) {
                 Ok(Some(value)) if value == "hooked" => Some(true),
                 Ok(None) => Some(false),
                 Ok(Some(_)) | Err(_) => None,
@@ -261,14 +268,16 @@ pub fn resolve_exact(
             .collect()
     };
     if matches.is_empty() {
-        let names: Vec<&str> = records.iter().map(|r| r.container_name.as_str()).collect();
+        let names: Vec<&str> =
+            records.iter().map(|r| r.container_name.as_str()).collect();
         return Err(CistellaError::Selector(format!(
             "no session matches; candidates: {}",
             names.join(", ")
         )));
     }
     if matches.len() > 1 {
-        let names: Vec<&str> = matches.iter().map(|r| r.container_name.as_str()).collect();
+        let names: Vec<&str> =
+            matches.iter().map(|r| r.container_name.as_str()).collect();
         return Err(CistellaError::Selector(format!(
             "ambiguous selector; candidates: {}",
             names.join(", ")

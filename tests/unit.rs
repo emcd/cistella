@@ -57,6 +57,8 @@ mod mount_permissions;
 mod operation_log;
 #[path = "unit/operation_log_gc.rs"]
 mod operation_log_gc;
+#[path = "unit/operation_log_locks.rs"]
+mod operation_log_locks;
 #[path = "unit/operation_log_prune.rs"]
 mod operation_log_prune;
 #[path = "unit/operation_log_reader.rs"]

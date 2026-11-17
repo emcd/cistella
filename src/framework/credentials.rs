@@ -64,12 +64,14 @@ const SOCKET_NAME_PATTERN: &str = r"^[A-Za-z0-9_.-]{1,128}$";
 const OPAQUE_ID_PATTERN: &str = r"^[a-z0-9]{1,128}$";
 
 /// Opaque identifier grammar, compiled once per process.
-static OPAQUE_ID_GRAMMAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(OPAQUE_ID_PATTERN).expect("opaque pattern compiles"));
+static OPAQUE_ID_GRAMMAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(OPAQUE_ID_PATTERN).expect("opaque pattern compiles")
+});
 
 /// Socket filename grammar, compiled once per process.
-static SOCKET_NAME_GRAMMAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(SOCKET_NAME_PATTERN).expect("socket pattern compiles"));
+static SOCKET_NAME_GRAMMAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(SOCKET_NAME_PATTERN).expect("socket pattern compiles")
+});
 
 /// Credential handle variants: the only admissible shapes.
 ///
@@ -121,12 +123,14 @@ impl CredentialHandle {
             Self::OpaqueReference { id } => {
                 if id.len() > MAX_LOCATOR_LEN {
                     return Err(CistellaError::Contract(
-                        "credential handle oversize: opaque-reference".to_string(),
+                        "credential handle oversize: opaque-reference"
+                            .to_string(),
                     ));
                 }
                 if !OPAQUE_ID_GRAMMAR.is_match(id) {
                     return Err(CistellaError::Contract(
-                        "credential handle refused: opaque-reference grammar".to_string(),
+                        "credential handle refused: opaque-reference grammar"
+                            .to_string(),
                     ));
                 }
                 Ok(AdmittedCredential {
@@ -134,7 +138,7 @@ impl CredentialHandle {
                     locator_class: "opaque-id",
                     owner: owner.clone(),
                 })
-            }
+            },
             Self::SeatSocket { path } => {
                 if path.len() > MAX_LOCATOR_LEN {
                     return Err(CistellaError::Contract(
@@ -155,12 +159,14 @@ impl CredentialHandle {
                 let name = path.rsplit('/').next().unwrap_or_default();
                 if !SOCKET_NAME_GRAMMAR.is_match(name) {
                     return Err(CistellaError::Contract(
-                        "credential handle refused: seat-socket name grammar".to_string(),
+                        "credential handle refused: seat-socket name grammar"
+                            .to_string(),
                     ));
                 }
                 if path.contains("/../") || path.ends_with("/..") {
                     return Err(CistellaError::Contract(
-                        "credential handle refused: seat-socket traversal".to_string(),
+                        "credential handle refused: seat-socket traversal"
+                            .to_string(),
                     ));
                 }
                 Ok(AdmittedCredential {
@@ -168,7 +174,7 @@ impl CredentialHandle {
                     locator_class: "seat-socket",
                     owner: owner.clone(),
                 })
-            }
+            },
         }
     }
 }
@@ -246,6 +252,7 @@ fn admit_one(
 ///
 /// Returns `CistellaError::Contract` on shape violations.
 pub fn parse_wire(value: &serde_json::Value) -> Result<Vec<CredentialHandle>> {
-    serde_json::from_value(value.clone())
-        .map_err(|e| CistellaError::Contract(format!("bad credential handle: {e}")))
+    serde_json::from_value(value.clone()).map_err(|e| {
+        CistellaError::Contract(format!("bad credential handle: {e}"))
+    })
 }

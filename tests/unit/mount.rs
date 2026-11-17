@@ -1,6 +1,8 @@
 //! Mount allowlist validation.
 
-use cistella::mount::{MountMode, MountTriple, podman_volume_args, validate_mounts};
+use cistella::mount::{
+    MountMode, MountTriple, podman_volume_args, validate_mounts,
+};
 use cistella::profile::Profile;
 
 #[test]
@@ -278,7 +280,9 @@ fn session_directory_pair_rejects_bad_sides() {
     use cistella::mount::parse_session_directory;
     assert!(parse_session_directory("/repo:").is_err());
     assert!(parse_session_directory("/repo:relative").is_err());
-    assert!(parse_session_directory(": /work".replace(' ', "").as_str()).is_err());
+    assert!(
+        parse_session_directory(": /work".replace(' ', "").as_str()).is_err()
+    );
 }
 
 #[test]
@@ -336,7 +340,12 @@ fn merge_rejects_duplicate_cli_targets() {
 #[test]
 fn merge_rejects_cli_on_worktree_target() {
     use cistella::mount::merge_cli_mounts;
-    let err = merge_cli_mounts(&[], &[triple("/a", "/work", MountMode::Ro)], "/work").unwrap_err();
+    let err = merge_cli_mounts(
+        &[],
+        &[triple("/a", "/work", MountMode::Ro)],
+        "/work",
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("worktree"));
 }
 
@@ -371,7 +380,8 @@ fn merge_allows_ro_ancestor_stacking() {
 #[test]
 fn validation_allows_ro_parent_rw_child() {
     let parent = triple("/tmp/notes", "/notes", MountMode::Ro);
-    let child = triple("/tmp/notes/cistella", "/notes/cistella", MountMode::Rw);
+    let child =
+        triple("/tmp/notes/cistella", "/notes/cistella", MountMode::Rw);
     assert!(validate_mounts(&[parent, child], "/home/cistella").is_ok());
 }
 
@@ -526,7 +536,10 @@ fn guest_routes_translate_subtree_through_topology() {
         host_source: "/home/op/src".to_string(),
         container_target: "/src".to_string(),
     }];
-    let routes = guest_routes_for_host(&triples, std::path::Path::new("/home/op/src/proj"));
+    let routes = guest_routes_for_host(
+        &triples,
+        std::path::Path::new("/home/op/src/proj"),
+    );
     assert_eq!(routes, vec!["/src/proj".to_string()]);
 }
 
@@ -546,7 +559,10 @@ fn guest_routes_cover_identity_and_second_binds() {
             container_target: "/second/proj".to_string(),
         },
     ];
-    let routes = guest_routes_for_host(&triples, std::path::Path::new("/home/op/src/proj"));
+    let routes = guest_routes_for_host(
+        &triples,
+        std::path::Path::new("/home/op/src/proj"),
+    );
     assert_eq!(
         routes,
         vec!["/home/op/src/proj".to_string(), "/second/proj".to_string()]
@@ -560,7 +576,8 @@ fn guest_routes_empty_without_cover() {
         host_source: "/home/op/src".to_string(),
         container_target: "/src".to_string(),
     }];
-    let routes = guest_routes_for_host(&triples, std::path::Path::new("/elsewhere"));
+    let routes =
+        guest_routes_for_host(&triples, std::path::Path::new("/elsewhere"));
     assert!(routes.is_empty(), "untranslatable paths yield no routes");
 }
 
@@ -624,7 +641,8 @@ fn revise_ro_directories_for_confinement() {
             mode: MountMode::Rw,
         },
     ];
-    let revised = revise_ro_for_confinement(&triples, &["/work".to_string()], &[]);
+    let revised =
+        revise_ro_for_confinement(&triples, &["/work".to_string()], &[]);
     // Directory RO outside FULL flips (Podman materializes
     // submounts under RW); file RO stays (Landlock cannot carry
     // file policy, so Podman-level RO remains its enforcement);

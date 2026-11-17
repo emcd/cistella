@@ -13,11 +13,17 @@
 
 use std::os::unix::net::UnixStream;
 
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+use nix::sys::signal::{
+    SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction,
+};
 
 fn main() -> std::process::ExitCode {
     unsafe {
-        let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        let dfl = SigAction::new(
+            SigHandler::SigDfl,
+            SaFlags::empty(),
+            SigSet::empty(),
+        );
         if sigaction(Signal::SIGPIPE, &dfl).is_err() {
             eprintln!("PROBE_FAIL: cannot set SIG_DFL");
             return std::process::ExitCode::from(1);
@@ -28,21 +34,25 @@ fn main() -> std::process::ExitCode {
         Err(e) => {
             eprintln!("PROBE_FAIL: socketpair: {e}");
             return std::process::ExitCode::from(1);
-        }
+        },
     };
     drop(reader);
-    match cistella::framework::protocol::write_frame(&mut writer, b"hello", 1024) {
+    match cistella::framework::protocol::write_frame(
+        &mut writer,
+        b"hello",
+        1024,
+    ) {
         Err(e) if e.to_string().contains("frame write") => {
             println!("PROBE_OK: {e}");
             std::process::ExitCode::SUCCESS
-        }
+        },
         Err(e) => {
             eprintln!("PROBE_FAIL: wrong error: {e}");
             std::process::ExitCode::from(1)
-        }
+        },
         Ok(()) => {
             eprintln!("PROBE_FAIL: write to closed pipe succeeded");
             std::process::ExitCode::from(1)
-        }
+        },
     }
 }

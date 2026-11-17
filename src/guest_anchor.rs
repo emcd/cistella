@@ -45,10 +45,16 @@ use crate::error::{CistellaError, Result};
 /// Returns `CistellaError::Profile` on symlink, non-regular,
 /// ownership, or mode refusal, and `CistellaError::Io` on
 /// open/stat failure.
-pub fn begin_anchored(path: &Path, ceiling: u64) -> Result<Option<AnchoredOpen>> {
+pub fn begin_anchored(
+    path: &Path,
+    ceiling: u64,
+) -> Result<Option<AnchoredOpen>> {
     let raw = match open(
         path,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        OFlag::O_RDONLY
+            | OFlag::O_NOFOLLOW
+            | OFlag::O_NONBLOCK
+            | OFlag::O_CLOEXEC,
         Mode::empty(),
     ) {
         Ok(raw) => raw,
@@ -63,7 +69,7 @@ pub fn begin_anchored(path: &Path, ceiling: u64) -> Result<Option<AnchoredOpen>>
                 )));
             }
             return Err(CistellaError::Io(std::io::Error::from(errno)));
-        }
+        },
     };
     // SAFETY: freshly opened above, owned here, wrapped exactly
     // once (same discipline as the hook-registry read path).
@@ -101,7 +107,10 @@ pub fn openat_anchored(
     let raw = match openat(
         Some(dirfd),
         Path::new(name),
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        OFlag::O_RDONLY
+            | OFlag::O_NOFOLLOW
+            | OFlag::O_NONBLOCK
+            | OFlag::O_CLOEXEC,
         Mode::empty(),
     ) {
         Ok(raw) => raw,
@@ -116,7 +125,7 @@ pub fn openat_anchored(
                 )));
             }
             return Err(CistellaError::Io(std::io::Error::from(errno)));
-        }
+        },
     };
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
@@ -126,9 +135,13 @@ pub fn openat_anchored(
 /// Fstats one freshly opened FD and wraps the ownership-checked
 /// guard: the shared tail of every anchored open (path or
 /// directory-relative).
-fn anchor_from_fd(fd: OwnedFd, path: PathBuf, ceiling: u64) -> Result<AnchoredOpen> {
-    let before =
-        fstat(fd.as_raw_fd()).map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
+fn anchor_from_fd(
+    fd: OwnedFd,
+    path: PathBuf,
+    ceiling: u64,
+) -> Result<AnchoredOpen> {
+    let before = fstat(fd.as_raw_fd())
+        .map_err(|errno| CistellaError::Io(std::io::Error::from(errno)))?;
     check_anchored_stat(&before, &path)?;
     Ok(AnchoredOpen {
         file: fd.into(),
@@ -281,7 +294,10 @@ pub(crate) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
 
 /// Checks one fstat result: regular file, seat-or-root owner, no
 /// group/other write bits.
-fn check_anchored_stat(stat: &nix::sys::stat::FileStat, path: &Path) -> Result<()> {
+fn check_anchored_stat(
+    stat: &nix::sys::stat::FileStat,
+    path: &Path,
+) -> Result<()> {
     if stat.st_mode & nix::libc::S_IFMT != nix::libc::S_IFREG {
         return Err(CistellaError::Profile(format!(
             "registry {} must be a regular file",
@@ -312,7 +328,8 @@ pub const MAX_STATE_BYTES: u64 = 64 * 1024;
 
 /// Sequence for staging-temp uniqueness within the process
 /// (uniqueness across processes comes from the pid).
-static STATE_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STATE_TMP_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Open verified private directory: the single enforcement point
 /// for driver state directories (fetch cache, cleanup/lease
@@ -330,7 +347,9 @@ static STATE_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 ///
 /// Returns `Err` on symlink, non-directory, ownership, or I/O
 /// refusal with a message naming the path.
-pub fn open_state_dir(path: &Path) -> std::result::Result<AnchoredDir, String> {
+pub fn open_state_dir(
+    path: &Path,
+) -> std::result::Result<AnchoredDir, String> {
     // 0700-at-creation (DirBuilder mode is umask-masked, but
     // 0700 has no group/other bits for any umask to clear), then
     // fchmod hardening below covers pre-existing directories.
@@ -339,16 +358,20 @@ pub fn open_state_dir(path: &Path) -> std::result::Result<AnchoredDir, String> {
     {
         use std::os::unix::fs::DirBuilderExt;
         match std::fs::DirBuilder::new().mode(0o700).create(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Ok(()) => {},
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists => {},
             Err(error) => {
                 return Err(format!("state dir {}: {error}", path.display()));
-            }
+            },
         }
     }
     let raw = nix::fcntl::open(
         path,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        OFlag::O_RDONLY
+            | OFlag::O_NOFOLLOW
+            | OFlag::O_DIRECTORY
+            | OFlag::O_CLOEXEC,
         Mode::empty(),
     )
     .map_err(|errno| {
@@ -394,9 +417,12 @@ pub fn open_state_dir(path: &Path) -> std::result::Result<AnchoredDir, String> {
 /// Checks seat-or-root ownership on an already-open directory
 /// description. Used at every level of the anchored walk,
 /// including the root anchor itself.
-fn check_dir_owner(fd: &OwnedFd, path: &Path) -> std::result::Result<(), String> {
-    let stat =
-        fstat(fd.as_raw_fd()).map_err(|errno| format!("state dir {}: {errno}", path.display()))?;
+fn check_dir_owner(
+    fd: &OwnedFd,
+    path: &Path,
+) -> std::result::Result<(), String> {
+    let stat = fstat(fd.as_raw_fd())
+        .map_err(|errno| format!("state dir {}: {errno}", path.display()))?;
     // SAFETY: getuid is inherently safe.
     let seat = unsafe { nix::libc::getuid() };
     if stat.st_uid != seat && stat.st_uid != 0 {
@@ -428,7 +454,9 @@ fn check_dir_owner(fd: &OwnedFd, path: &Path) -> std::result::Result<(), String>
 ///
 /// Returns `Err` on symlink, non-directory, ownership, or I/O
 /// refusal with a message naming the path.
-pub fn open_state_dir_all(path: &Path) -> std::result::Result<AnchoredDir, String> {
+pub fn open_state_dir_all(
+    path: &Path,
+) -> std::result::Result<AnchoredDir, String> {
     open_state_dir_all_with_hook(path, None)
 }
 
@@ -454,10 +482,13 @@ pub fn open_state_dir_all_with_hook(
     // one containing `.` or `..` — has no anchor and is refused.
     let mut components = path.components();
     match components.next() {
-        Some(Component::RootDir) => {}
+        Some(Component::RootDir) => {},
         _ => {
-            return Err(format!("state dir {} must be absolute", path.display()));
-        }
+            return Err(format!(
+                "state dir {} must be absolute",
+                path.display()
+            ));
+        },
     }
     let mut names: Vec<&std::ffi::OsStr> = Vec::new();
     for component in components {
@@ -468,7 +499,7 @@ pub fn open_state_dir_all_with_hook(
                     "state dir {} must not contain . or ..",
                     path.display()
                 ));
-            }
+            },
         }
     }
     if names.is_empty() {
@@ -483,10 +514,15 @@ pub fn open_state_dir_all_with_hook(
         OwnedFd::from_raw_fd(
             open(
                 "/",
-                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+                OFlag::O_RDONLY
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_DIRECTORY
+                    | OFlag::O_CLOEXEC,
                 Mode::empty(),
             )
-            .map_err(|errno| format!("state dir {}: {errno}", path.display()))?,
+            .map_err(|errno| {
+                format!("state dir {}: {errno}", path.display())
+            })?,
         )
     };
     check_dir_owner(&parent, path)?;
@@ -507,12 +543,17 @@ pub fn open_state_dir_all_with_hook(
         ) {
             Ok(()) => true,
             Err(nix::errno::Errno::EEXIST) => false,
-            Err(errno) => return Err(format!("state dir {}: {errno}", path.display())),
+            Err(errno) => {
+                return Err(format!("state dir {}: {errno}", path.display()));
+            },
         };
         let raw = openat(
             Some(parent.as_raw_fd()),
             Path::new(name),
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            OFlag::O_RDONLY
+                | OFlag::O_NOFOLLOW
+                | OFlag::O_DIRECTORY
+                | OFlag::O_CLOEXEC,
             Mode::empty(),
         )
         .map_err(|errno| {
@@ -530,11 +571,15 @@ pub fn open_state_dir_all_with_hook(
                     nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
                 )
                 .map(|stat| {
-                    stat.st_mode as nix::libc::mode_t & nix::libc::S_IFMT == nix::libc::S_IFLNK
+                    stat.st_mode as nix::libc::mode_t & nix::libc::S_IFMT
+                        == nix::libc::S_IFLNK
                 })
                 .unwrap_or(false);
                 if is_link {
-                    format!("state dir {} must not be a symlink", path.display())
+                    format!(
+                        "state dir {} must not be a symlink",
+                        path.display()
+                    )
                 } else {
                     format!("state dir {} must be a directory", path.display())
                 }
@@ -546,8 +591,13 @@ pub fn open_state_dir_all_with_hook(
         let child: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
         check_dir_owner(&child, path)?;
         if created || is_final {
-            nix::sys::stat::fchmod(child.as_raw_fd(), Mode::from_bits_truncate(0o700))
-                .map_err(|errno| format!("state dir {}: {errno}", path.display()))?;
+            nix::sys::stat::fchmod(
+                child.as_raw_fd(),
+                Mode::from_bits_truncate(0o700),
+            )
+            .map_err(|errno| {
+                format!("state dir {}: {errno}", path.display())
+            })?;
         }
         parent = child;
     }
@@ -591,14 +641,22 @@ impl AnchoredDir {
     /// # Errors
     ///
     /// Returns `Err` on symlink, existing name, or I/O refusal.
-    pub fn create_file(&self, name: &str) -> std::result::Result<std::fs::File, String> {
+    pub fn create_file(
+        &self,
+        name: &str,
+    ) -> std::result::Result<std::fs::File, String> {
         if name.contains('/') {
-            return Err("anchored relative name must be single-component".to_string());
+            return Err(
+                "anchored relative name must be single-component".to_string()
+            );
         }
         let raw = nix::fcntl::openat(
             Some(self.dirfd()),
             Path::new(name),
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC,
+            OFlag::O_WRONLY
+                | OFlag::O_CREAT
+                | OFlag::O_EXCL
+                | OFlag::O_CLOEXEC,
             Mode::from_bits_truncate(0o600),
         )
         .map_err(|errno| {
@@ -612,8 +670,11 @@ impl AnchoredDir {
         })?;
         // SAFETY: freshly opened above, owned here, wrapped exactly once.
         let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
-        nix::sys::stat::fchmod(fd.as_raw_fd(), Mode::from_bits_truncate(0o600))
-            .map_err(|errno| format!("state file {name}: {errno}"))?;
+        nix::sys::stat::fchmod(
+            fd.as_raw_fd(),
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(|errno| format!("state file {name}: {errno}"))?;
         Ok(std::fs::File::from(fd))
     }
 
@@ -630,10 +691,13 @@ impl AnchoredDir {
         ceiling: u64,
     ) -> std::result::Result<Option<Vec<u8>>, String> {
         if name.contains('/') {
-            return Err("anchored relative name must be single-component".to_string());
+            return Err(
+                "anchored relative name must be single-component".to_string()
+            );
         }
-        let Some(open) = openat_anchored(self.dirfd(), name, ceiling, &self.path)
-            .map_err(|error| error.to_string())?
+        let Some(open) =
+            openat_anchored(self.dirfd(), name, ceiling, &self.path)
+                .map_err(|error| error.to_string())?
         else {
             return Ok(None);
         };
@@ -651,9 +715,15 @@ impl AnchoredDir {
     /// # Errors
     ///
     /// Returns `Err` on staging or I/O refusal.
-    pub fn replace_file(&self, name: &str, bytes: &[u8]) -> std::result::Result<(), String> {
+    pub fn replace_file(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> std::result::Result<(), String> {
         if name.contains('/') {
-            return Err("anchored relative name must be single-component".to_string());
+            return Err(
+                "anchored relative name must be single-component".to_string()
+            );
         }
         let tmp = format!(
             ".tmp-{}-{}-{}",
@@ -662,7 +732,8 @@ impl AnchoredDir {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0),
-            STATE_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            STATE_TMP_COUNTER
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let mut staged = self.create_file(&tmp)?;
         use std::io::Write;

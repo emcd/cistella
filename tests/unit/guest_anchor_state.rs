@@ -49,12 +49,14 @@ fn existing_tree_opens_unchanged() {
     let root = tempfile::TempDir::new().expect("tmpdir");
     let anchor = root.path().join("anchor");
     std::fs::create_dir(&anchor).expect("anchor");
-    std::fs::set_permissions(&anchor, std::fs::Permissions::from_mode(0o755)).expect("perms");
+    std::fs::set_permissions(&anchor, std::fs::Permissions::from_mode(0o755))
+        .expect("perms");
     let root_before = mode(root.path());
     open_state_dir_all(&anchor).expect("existing dir opens");
     assert_eq!(mode(&anchor), 0o700, "target adopted and hardened");
     assert_eq!(mode(root.path()), root_before, "ancestor untouched");
-    let entries: Vec<_> = std::fs::read_dir(root.path()).expect("list").collect();
+    let entries: Vec<_> =
+        std::fs::read_dir(root.path()).expect("list").collect();
     assert_eq!(entries.len(), 1, "nothing created beside the anchor");
 }
 
@@ -79,7 +81,8 @@ fn symlink_ancestor_refuses_without_creating_through() {
     std::fs::create_dir(&real).expect("real dir");
     let link = root.path().join("link");
     std::os::unix::fs::symlink(&real, &link).expect("symlink");
-    let err = open_state_dir_all(&link.join("child")).expect_err("link mid-chain refuses");
+    let err = open_state_dir_all(&link.join("child"))
+        .expect_err("link mid-chain refuses");
     assert!(
         err.contains("must not be a symlink"),
         "refusal names the symlink: {err}"
@@ -106,7 +109,8 @@ fn missing_chain_hardens_pre_existing_umask_modes() {
     let root = tempfile::TempDir::new().expect("tmpdir");
     let anchor = root.path().join("anchor");
     std::fs::create_dir(&anchor).expect("anchor");
-    std::fs::set_permissions(&anchor, std::fs::Permissions::from_mode(0o755)).expect("perms");
+    std::fs::set_permissions(&anchor, std::fs::Permissions::from_mode(0o755))
+        .expect("perms");
     let deep = anchor.join("x").join("y");
     open_state_dir_all(&deep).expect("chain opens");
     assert_eq!(mode(&anchor), 0o755, "ancestor mode untouched");
@@ -123,13 +127,15 @@ fn intermediate_symlink_with_descendants_refuses_missing_leaf() {
     let root = tempfile::TempDir::new().expect("tmpdir");
     let outside = root.path().join("outside");
     std::fs::create_dir(&outside).expect("outside");
-    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).expect("perms");
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755))
+        .expect("perms");
     let existing = outside.join("existing");
     std::fs::create_dir(&existing).expect("existing");
     std::fs::write(outside.join("sentinel"), b"untouched").expect("sentinel");
     let link = root.path().join("link");
     std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-    let err = open_state_dir_all(&link.join("existing").join("new")).expect_err("link refuses");
+    let err = open_state_dir_all(&link.join("existing").join("new"))
+        .expect_err("link refuses");
     assert!(
         err.contains("must not be a symlink"),
         "refusal names the symlink: {err}"
@@ -155,13 +161,19 @@ fn intermediate_symlink_with_descendants_refuses_existing_leaf() {
     let root = tempfile::TempDir::new().expect("tmpdir");
     let outside = root.path().join("outside");
     std::fs::create_dir(&outside).expect("outside");
-    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).expect("perms");
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755))
+        .expect("perms");
     let existing = outside.join("existing");
     std::fs::create_dir(&existing).expect("existing");
-    std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o755)).expect("perms");
+    std::fs::set_permissions(
+        &existing,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("perms");
     let link = root.path().join("link");
     std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-    let err = open_state_dir_all(&link.join("existing")).expect_err("link refuses");
+    let err =
+        open_state_dir_all(&link.join("existing")).expect_err("link refuses");
     assert!(
         err.contains("must not be a symlink"),
         "refusal names the symlink: {err}"
@@ -182,7 +194,8 @@ fn replaced_parent_symlink_refuses_without_traversal() {
     std::fs::write(outside.join("sentinel"), b"untouched").expect("sentinel");
     let victim = root.path().join("victim");
     std::os::unix::fs::symlink(&outside, &victim).expect("symlink");
-    let err = open_state_dir_all(&victim.join("new")).expect_err("link refuses");
+    let err =
+        open_state_dir_all(&victim.join("new")).expect_err("link refuses");
     assert!(
         err.contains("must not be a symlink"),
         "refusal names the symlink: {err}"
@@ -232,7 +245,8 @@ fn checked_parent_replacement_stays_on_held_identity() {
     drop(marker);
     let orig = root.path().join("a_orig");
     assert_eq!(
-        std::fs::read(orig.join("b").join("c").join("marker")).expect("marker"),
+        std::fs::read(orig.join("b").join("c").join("marker"))
+            .expect("marker"),
         b"held",
         "creation and writes went to the held original, not the link"
     );

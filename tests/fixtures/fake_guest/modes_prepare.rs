@@ -8,7 +8,9 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::{PROTOCOL_MAJOR, protocol_error_exit, read_frame_from_stdin, write_frame};
+use crate::{
+    PROTOCOL_MAJOR, protocol_error_exit, read_frame_from_stdin, write_frame,
+};
 
 /// Runs one Prepare-transaction mode; `None` falls through to the next group.
 pub(crate) fn run(
@@ -31,7 +33,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-duplicate-env-name" => {
             send_prepare_with_payload(
                 stdin_lock,
@@ -47,7 +49,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-mount-violation" => {
             // host_source contains `=` — `validate_mounts` refuses
             // with "host_source must not contain control/'='".
@@ -71,7 +73,7 @@ pub(crate) fn run(
                 &["test-cap", "mounts", "permissions"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-malformed-policy-claim" => {
             // Empty pattern — `check_claims` refuses.
             send_prepare_with_payload(
@@ -91,7 +93,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-duplicate-hook-order" => {
             send_prepare_with_payload(
                 stdin_lock,
@@ -129,7 +131,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-credential-shape-fault" => {
             // Schema-level shape fault: a credential contribution that
             // carries a forbidden `value` field. The host's
@@ -153,7 +155,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-empty-claim-pattern" => {
             // Same shape as `prepare-malformed-policy-claim` (empty
             // pattern). Kept separate so the harness enumerates the
@@ -170,7 +172,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         // ---- Design-vector happy paths: realistic
         //      fleet-wiring shapes proving the typed contribution
         //      schemas express today's per-profile wiring. Paths are
@@ -212,7 +214,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-echo-session-id" => {
             // Reads the prepare request's session_id and returns it
             // as an env contribution: proves the session id threads
@@ -240,7 +242,8 @@ pub(crate) fn run(
                 Ok(body) => body,
                 Err(_) => return Some(protocol_error_exit()),
             };
-            let request: Value = serde_json::from_slice(&req_body).unwrap_or(json!({}));
+            let request: Value =
+                serde_json::from_slice(&req_body).unwrap_or(json!({}));
             let id = request.get("id").cloned().unwrap_or(json!("req-0"));
             let session = request
                 .get("payload")
@@ -260,7 +263,7 @@ pub(crate) fn run(
             let body = serde_json::to_vec(&response).expect("serialize");
             let _ = write_frame(stdout_lock, &body, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-rw-mount" => {
             // One read-write mount contribution with otherwise
             // valid shape: proves RW triples merge through the
@@ -286,7 +289,7 @@ pub(crate) fn run(
                 &["test-cap", "mounts", "permissions"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-hook-unadvertised" => {
             // Contributes a valid-shape hook WITHOUT advertising
             // guest-hooks: the per-plan gate must refuse it even
@@ -318,7 +321,7 @@ pub(crate) fn run(
                 &["test-cap"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-registered" => {
             // Same payload as the agentmux vector, but the hello
             // advertises the contribution types alongside the role:
@@ -362,7 +365,7 @@ pub(crate) fn run(
                 ],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-ssh" => {
             // SSH identity wiring as a prepare transaction: the
             // `SSH_AUTH_SOCK` pointer env plus the socket bind
@@ -399,7 +402,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-ssh-advertised" => {
             // Same SSH payload, but advertising every type it
             // returns (including credentials): the sibling that
@@ -441,7 +444,7 @@ pub(crate) fn run(
                 ],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-ssh-almost" => {
             // SSH payload advertising everything EXCEPT
             // credentials while still returning a credential
@@ -478,7 +481,7 @@ pub(crate) fn run(
                 &["test-cap", "environment", "mounts", "permissions"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-perms-unadvertised" => {
             // Returns permissions WITHOUT advertising the type:
             // the per-plan gate must refuse even when a paired
@@ -504,7 +507,7 @@ pub(crate) fn run(
                 &["test-cap", "mounts"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-claim-broad" => {
             // Broad `.*` claim over the peer's OWN acknowledged
             // name: owner-grouped evaluation must constrain only
@@ -531,7 +534,7 @@ pub(crate) fn run(
                 &["test-cap", "environment", "policy-claims"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-claim-foreign" => {
             // Claims a pattern matching only ANOTHER guest's name
             // while contributing no names itself: guest-local
@@ -555,7 +558,7 @@ pub(crate) fn run(
                 &["test-cap", "policy-claims"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-token" => {
             // Negative vector: a token-shaped env name contributed by
             // an extension. The compiled-default push-credential guard
@@ -575,7 +578,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-vector-token-weakening" => {
             // Weakening vector: a claim restating the
             // compiled-default token pattern at a narrower scope
@@ -602,7 +605,7 @@ pub(crate) fn run(
                 }),
             );
             ExitCode::SUCCESS
-        }
+        },
         "prepare-double-hook" => {
             // One guest returning TWO valid-shape hooks (distinct
             // orders, staged singleton prefix): admission must
@@ -646,7 +649,7 @@ pub(crate) fn run(
                 &["test-cap", "guest-hooks"],
             );
             ExitCode::SUCCESS
-        }
+        },
         "extension-landlock-hook" => {
             // Extension-role hello (landlock plus guest-hooks) then
             // one valid full-shape hook answer. Lets fast tests drive
@@ -705,7 +708,7 @@ pub(crate) fn run(
             let body = serde_json::to_vec(&response).expect("serialize");
             let _ = write_frame(stdout_lock, &body, 64 * 1024);
             ExitCode::SUCCESS
-        }
+        },
         _ => return None,
     })
 }

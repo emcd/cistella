@@ -64,7 +64,7 @@ pub fn split_outcome(result: Result<Output, BoundedRunError>) -> ProbeOutcome {
                 stdout: out.stdout,
                 stderr: out.stderr,
             }
-        }
+        },
         Err(BoundedRunError::Timeout {
             waited,
             reaped,
@@ -147,7 +147,7 @@ pub fn escape_capped(bytes: &[u8], cap: usize) -> String {
             '\x1b' => out.push_str("\\x1b"),
             other if other.is_control() => {
                 out.push_str(&format!("\\x{:02x}", other as u32));
-            }
+            },
             other => out.push(other),
         }
     }
@@ -212,7 +212,9 @@ pub fn classify_inspect(
     if outcome.end != ProbeEnd::Exited(0) {
         return (InspectClass::Unqueryable, None);
     }
-    match cistella::attestation::parse_identity(&String::from_utf8_lossy(&outcome.stdout)) {
+    match cistella::attestation::parse_identity(&String::from_utf8_lossy(
+        &outcome.stdout,
+    )) {
         Ok(identity) => {
             let pair = (identity.container_id, identity.started_at);
             if pair.0 == bound_id && pair.1 == bound_started {
@@ -220,7 +222,7 @@ pub fn classify_inspect(
             } else {
                 (InspectClass::Changed, Some(pair))
             }
-        }
+        },
         Err(_) => (InspectClass::Unparseable, None),
     }
 }
@@ -383,7 +385,9 @@ pub fn report_history(history: &PollHistory) -> String {
             .join(" | "),
     );
     out.push_str("] last=[");
-    out.push_str(&history.last.iter().cloned().collect::<Vec<_>>().join(" | "));
+    out.push_str(
+        &history.last.iter().cloned().collect::<Vec<_>>().join(" | "),
+    );
     out.push(']');
     out
 }
@@ -412,7 +416,8 @@ pub fn unqueryable_section(history: &PollHistory) -> String {
         );
     }
     if missing > 0 && history.total == missing {
-        return "no probe could be scheduled; absence not established".to_string();
+        return "no probe could be scheduled; absence not established"
+            .to_string();
     }
     if history.inspect_clean > 0 {
         return format!(
@@ -473,7 +478,10 @@ pub fn render_detail(detail: &str) -> String {
 /// Render one collected command's evidence body: end state,
 /// detail, and capped raw streams. Pure.
 #[must_use]
-pub fn render_outcome_body(outcome: &ProbeOutcome, stream_cap: usize) -> String {
+pub fn render_outcome_body(
+    outcome: &ProbeOutcome,
+    stream_cap: usize,
+) -> String {
     if outcome.detail.is_empty() {
         format!(
             "{:?} stdout={} stderr={}",
@@ -495,7 +503,11 @@ pub fn render_outcome_body(outcome: &ProbeOutcome, stream_cap: usize) -> String 
 /// Render one collected command's evidence line from its end
 /// state and raw streams. Pure.
 #[must_use]
-pub fn render_outcome(argv: &str, outcome: &ProbeOutcome, stream_cap: usize) -> String {
+pub fn render_outcome(
+    argv: &str,
+    outcome: &ProbeOutcome,
+    stream_cap: usize,
+) -> String {
     render_cmd_evidence(argv, &render_outcome_body(outcome, stream_cap))
 }
 

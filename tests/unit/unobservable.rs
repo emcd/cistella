@@ -7,9 +7,12 @@
 use std::process::Command;
 
 use cistella::framework::isolator::{
-    AbsenceObservation, ExecutionOutcome as Outcome, RawClientResult, UnobservableOutcome,
+    AbsenceObservation, ExecutionOutcome as Outcome, RawClientResult,
+    UnobservableOutcome,
 };
-use cistella::isolators::corroboration::{CorroborationFacts, classify_completion};
+use cistella::isolators::corroboration::{
+    CorroborationFacts, classify_completion,
+};
 
 fn exited(code: i32) -> std::process::ExitStatus {
     Command::new("sh")
@@ -217,7 +220,9 @@ fn wire_encode_negotiation_gate() {
 
 #[test]
 fn hello_capability_gate_pins() {
-    use cistella::framework::protocol::{AWAIT_INTERRUPTED_V1, offered_capability};
+    use cistella::framework::protocol::{
+        AWAIT_INTERRUPTED_V1, offered_capability,
+    };
     let offered = serde_json::json!({"capabilities": ["isolator", AWAIT_INTERRUPTED_V1]});
     assert!(offered_capability(&offered, AWAIT_INTERRUPTED_V1));
     let legacy = serde_json::json!({"capabilities": ["isolator"]});
@@ -239,12 +244,20 @@ fn renderer_goldens_pin_shape_and_escaping() {
     };
     // Exact golden: one line, exited form, JSON-quoted states.
     assert_eq!(
-        format_unobservable_report(&observation, &RawClientResult::Exited(255), true),
+        format_unobservable_report(
+            &observation,
+            &RawClientResult::Exited(255),
+            true
+        ),
         "error: execution outcome unobservable (container absent at query, service \"inactive\"/\"not-found\" unit absent): harness outcome unobservable; raw client exited(255); cleanup=converged",
     );
     // Signaled form + unproven cleanup.
     assert_eq!(
-        format_unobservable_report(&observation, &RawClientResult::Signaled(9), false),
+        format_unobservable_report(
+            &observation,
+            &RawClientResult::Signaled(9),
+            false
+        ),
         "error: execution outcome unobservable (container absent at query, service \"inactive\"/\"not-found\" unit absent): harness outcome unobservable; raw client signaled(9); cleanup=unproven",
     );
     // Terminal-control/newline injection in observed strings is
@@ -255,7 +268,11 @@ fn renderer_goldens_pin_shape_and_escaping() {
         service_load_state: "loaded\x1b[2J".to_string(),
         unit_file_present: true,
     };
-    let rendered = format_unobservable_report(&hostile, &RawClientResult::Exited(1), true);
+    let rendered = format_unobservable_report(
+        &hostile,
+        &RawClientResult::Exited(1),
+        true,
+    );
     assert!(
         !rendered.contains('\n') && !rendered.contains('\x1b'),
         "no raw control bytes in rendering: {rendered:?}"
@@ -279,7 +296,11 @@ fn renderer_reports_present_container_truthfully() {
         unit_file_present: true,
     };
     assert_eq!(
-        format_unobservable_report(&observation, &RawClientResult::Exited(137), true),
+        format_unobservable_report(
+            &observation,
+            &RawClientResult::Exited(137),
+            true
+        ),
         "error: execution outcome unobservable (container present at query, service \"deactivating\"/\"loaded\" unit present): harness outcome unobservable; raw client exited(137); cleanup=converged",
     );
 }
@@ -289,13 +310,45 @@ fn absence_proof_converged_rule_pins() {
     use cistella::isolators::corroboration::AbsenceProof;
     // Converged: strictly absent container + terminal service state
     // (LoadState not-found here) + absent unit file.
-    assert!(AbsenceProof::new(1, "inactive".to_string(), "not-found".to_string(), true).converged);
+    assert!(
+        AbsenceProof::new(
+            1,
+            "inactive".to_string(),
+            "not-found".to_string(),
+            true
+        )
+        .converged
+    );
     // Converged via the other terminal state (inactive ActiveState).
-    assert!(AbsenceProof::new(1, "inactive".to_string(), "loaded".to_string(), true).converged);
+    assert!(
+        AbsenceProof::new(
+            1,
+            "inactive".to_string(),
+            "loaded".to_string(),
+            true
+        )
+        .converged
+    );
     // Stopped-but-present container never converges (residue).
-    assert!(!AbsenceProof::new(0, "inactive".to_string(), "loaded".to_string(), true).converged);
+    assert!(
+        !AbsenceProof::new(
+            0,
+            "inactive".to_string(),
+            "loaded".to_string(),
+            true
+        )
+        .converged
+    );
     // Active service never converges, even with absent container.
-    assert!(!AbsenceProof::new(1, "active".to_string(), "loaded".to_string(), true).converged);
+    assert!(
+        !AbsenceProof::new(
+            1,
+            "active".to_string(),
+            "loaded".to_string(),
+            true
+        )
+        .converged
+    );
     // Non-terminal service states never converge: activating,
     // deactivating, failed, reloading.
     for state in [
@@ -306,17 +359,39 @@ fn absence_proof_converged_rule_pins() {
         "maintenance",
     ] {
         assert!(
-            !AbsenceProof::new(1, state.to_string(), "loaded".to_string(), true).converged,
+            !AbsenceProof::new(
+                1,
+                state.to_string(),
+                "loaded".to_string(),
+                true
+            )
+            .converged,
             "non-terminal service state must not converge: {state}"
         );
     }
     // Present unit file never converges.
     assert!(
-        !AbsenceProof::new(1, "inactive".to_string(), "not-found".to_string(), false).converged
+        !AbsenceProof::new(
+            1,
+            "inactive".to_string(),
+            "not-found".to_string(),
+            false
+        )
+        .converged
     );
     // Empty service strings (manager failure / query unavailable)
     // never converge: only explicit terminal states attest.
-    assert!(!AbsenceProof::new(1, String::new(), String::new(), true).converged);
+    assert!(
+        !AbsenceProof::new(1, String::new(), String::new(), true).converged
+    );
     // Non-0/1 container codes never converge.
-    assert!(!AbsenceProof::new(125, "inactive".to_string(), "loaded".to_string(), true).converged);
+    assert!(
+        !AbsenceProof::new(
+            125,
+            "inactive".to_string(),
+            "loaded".to_string(),
+            true
+        )
+        .converged
+    );
 }

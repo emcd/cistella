@@ -4,7 +4,9 @@
 //! fixtures live there.
 
 use super::operation_log::state_root;
-use cistella::operation_log::{Budget, Injected, Operation, Outcome, op_id_valid, read_operation};
+use cistella::operation_log::{
+    Budget, Injected, Operation, Outcome, op_id_valid, read_operation,
+};
 #[test]
 fn classify_records_markers_for_unread_fields() {
     // The classify record distinguishes observed facts from
@@ -13,7 +15,8 @@ fn classify_records_markers_for_unread_fields() {
     // reads it), rather than invented.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
     cistella::operation_log::record_gc_classify(
         &mut Some(op),
@@ -30,7 +33,8 @@ fn classify_records_markers_for_unread_fields() {
             decision: "reap-exited-container".to_string(),
         },
     );
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open2");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open2");
     drop(op);
     let read = read_operation(&dir).expect("read");
     let classify = read
@@ -67,12 +71,16 @@ fn scoped_error_is_a_failure_for_the_pruner() {
     // would go.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let ok = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let ok = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let ok_dir = ok.dir().to_path_buf();
     ok.close("success");
-    let failing = cistella::operation_log::scoped_at(&log_root, "gc", None, |_| {
-        Err::<(), _>(cistella::error::CistellaError::Runtime("boom".to_string()))
-    });
+    let failing =
+        cistella::operation_log::scoped_at(&log_root, "gc", None, |_| {
+            Err::<(), _>(cistella::error::CistellaError::Runtime(
+                "boom".to_string(),
+            ))
+        });
     assert!(failing.is_err(), "business error propagates");
     let budget = Budget {
         total: 64 * 1024 * 1024,
@@ -80,7 +88,8 @@ fn scoped_error_is_a_failure_for_the_pruner() {
         success_cap: 0,
         age_secs: 3600,
     };
-    let report = cistella::operation_log::prune::prune_with(&log_root, &budget);
+    let report =
+        cistella::operation_log::prune::prune_with(&log_root, &budget);
     assert_eq!(report.evicted, 1, "exactly the success victim goes");
     assert!(!ok_dir.exists(), "success victim evicted");
     let failed: Vec<_> = std::fs::read_dir(&log_root)
@@ -110,7 +119,8 @@ fn unknown_completed_outcome_counts_as_failure() {
     // "everything but failure is success" would evict both.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let ok = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let ok = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     ok.close("success");
     let dir = log_root.join("abc123unknown");
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -125,7 +135,10 @@ fn unknown_completed_outcome_counts_as_failure() {
             payload["outcome"] = serde_json::json!(outcome);
         }
         bytes.extend_from_slice(
-            &cistella::operation_log::encode_frame(payload.to_string().as_bytes()).expect("encode"),
+            &cistella::operation_log::encode_frame(
+                payload.to_string().as_bytes(),
+            )
+            .expect("encode"),
         );
     }
     std::fs::write(dir.join("records.log"), bytes).expect("write");
@@ -135,7 +148,8 @@ fn unknown_completed_outcome_counts_as_failure() {
         success_cap: 0,
         age_secs: 3600,
     };
-    let report = cistella::operation_log::prune::prune_with(&log_root, &budget);
+    let report =
+        cistella::operation_log::prune::prune_with(&log_root, &budget);
     assert_eq!(report.evicted, 1, "only the success victim goes");
     assert!(
         dir.exists(),
@@ -168,11 +182,17 @@ fn missing_props_record_as_unavailable_not_defaults() {
     // fixture — so this pins the producer-to-record wiring.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
-    let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let classification =
-        cistella::isolators::quadlet_gc::classify_candidate(None, Ok(false), Some(&empty), "");
+    let empty: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let classification = cistella::isolators::quadlet_gc::classify_candidate(
+        None,
+        Ok(false),
+        Some(&empty),
+        "",
+    );
     cistella::operation_log::record_gc_classify(
         &mut Some(op),
         &cistella::operation_log::Classify {
@@ -214,7 +234,8 @@ fn ps_spawn_failure_records_abort_receipt() {
     // receipt a spawned-but-failed run gets.
     let root = state_root();
     let log_root = root.path().join("logs");
-    let op = Operation::open(&log_root, "gc", None, &Injected::default()).expect("open");
+    let op = Operation::open(&log_root, "gc", None, &Injected::default())
+        .expect("open");
     let dir = op.dir().to_path_buf();
     let mut slot = Some(op);
     let error = cistella::isolators::quadlet_gc::ps_candidate_names(

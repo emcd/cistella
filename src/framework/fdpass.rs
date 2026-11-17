@@ -25,8 +25,9 @@ use std::time::Duration;
 use nix::cmsg_space;
 use nix::sys::socket::sockopt::PeerCredentials;
 use nix::sys::socket::{
-    AddressFamily, Backlog, ControlMessage, ControlMessageOwned, MsgFlags, SockFlag, SockType,
-    UnixAddr, bind, connect, getsockopt, listen, recvmsg, sendmsg, socket,
+    AddressFamily, Backlog, ControlMessage, ControlMessageOwned, MsgFlags,
+    SockFlag, SockType, UnixAddr, bind, connect, getsockopt, listen, recvmsg,
+    sendmsg, socket,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,17 +69,22 @@ pub struct BundleHeader {
 /// Returns `CistellaError::Runtime` on directory, random-name,
 /// bind, or listen failure.
 pub fn bind_rendezvous(dir: &Path) -> Result<(OwnedFd, PathBuf)> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| CistellaError::Runtime(format!("create fd rendezvous dir: {e}")))?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        CistellaError::Runtime(format!("create fd rendezvous dir: {e}"))
+    })?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| CistellaError::Runtime(format!("chmod fd rendezvous dir: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("chmod fd rendezvous dir: {e}"))
+        })?;
     let mut random = [0u8; 16];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut file| {
             use std::io::Read;
             file.read_exact(&mut random)
         })
-        .map_err(|e| CistellaError::Runtime(format!("read random socket name: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("read random socket name: {e}"))
+        })?;
     let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let path = dir.join(format!("guest-{name}.sock"));
     let listener = socket(
@@ -88,13 +94,16 @@ pub fn bind_rendezvous(dir: &Path) -> Result<(OwnedFd, PathBuf)> {
         None,
     )
     .map_err(|e| CistellaError::Runtime(format!("create fd socket: {e}")))?;
-    let addr = UnixAddr::new(&path)
-        .map_err(|e| CistellaError::Runtime(format!("bad socket path: {e}")))?;
+    let addr = UnixAddr::new(&path).map_err(|e| {
+        CistellaError::Runtime(format!("bad socket path: {e}"))
+    })?;
     bind(listener.as_raw_fd(), &addr)
         .map_err(|e| CistellaError::Runtime(format!("bind fd socket: {e}")))?;
     listen(
         &listener,
-        Backlog::new(1).map_err(|e| CistellaError::Runtime(format!("listen backlog: {e}")))?,
+        Backlog::new(1).map_err(|e| {
+            CistellaError::Runtime(format!("listen backlog: {e}"))
+        })?,
     )
     .map_err(|e| CistellaError::Runtime(format!("listen fd socket: {e}")))?;
     Ok((listener, path))
@@ -114,14 +123,19 @@ pub fn bind_rendezvous(dir: &Path) -> Result<(OwnedFd, PathBuf)> {
 ///
 /// Returns `CistellaError::Contract` on uid/pid mismatch and
 /// `CistellaError::Runtime` on accept failure.
-pub fn accept_authenticated(listener: &OwnedFd, expected_pid: i32) -> Result<OwnedFd> {
-    let raw = nix::sys::socket::accept(listener.as_raw_fd())
-        .map_err(|e| CistellaError::Runtime(format!("accept fd socket: {e}")))?;
+pub fn accept_authenticated(
+    listener: &OwnedFd,
+    expected_pid: i32,
+) -> Result<OwnedFd> {
+    let raw = nix::sys::socket::accept(listener.as_raw_fd()).map_err(|e| {
+        CistellaError::Runtime(format!("accept fd socket: {e}"))
+    })?;
     // SAFETY: freshly accepted, owned here, wrapped exactly once.
     // (Held across the checks below so every refusal path closes.)
     let accepted = unsafe { OwnedFd::from_raw_fd(raw) };
-    let credentials = getsockopt(&accepted, PeerCredentials)
-        .map_err(|e| CistellaError::Runtime(format!("peer credentials: {e}")))?;
+    let credentials = getsockopt(&accepted, PeerCredentials).map_err(|e| {
+        CistellaError::Runtime(format!("peer credentials: {e}"))
+    })?;
     // SAFETY: getuid is inherently safe.
     let me = unsafe { nix::libc::getuid() };
     if credentials.uid() != me || credentials.pid() != expected_pid {
@@ -145,10 +159,12 @@ pub fn connect_rendezvous(path: &Path) -> Result<OwnedFd> {
         None,
     )
     .map_err(|e| CistellaError::Runtime(format!("create fd socket: {e}")))?;
-    let addr =
-        UnixAddr::new(path).map_err(|e| CistellaError::Runtime(format!("bad socket path: {e}")))?;
-    connect(sock.as_raw_fd(), &addr)
-        .map_err(|e| CistellaError::Runtime(format!("connect fd socket: {e}")))?;
+    let addr = UnixAddr::new(path).map_err(|e| {
+        CistellaError::Runtime(format!("bad socket path: {e}"))
+    })?;
+    connect(sock.as_raw_fd(), &addr).map_err(|e| {
+        CistellaError::Runtime(format!("connect fd socket: {e}"))
+    })?;
     Ok(sock)
 }
 
@@ -172,7 +188,8 @@ pub fn send_bundle(
     fds: &[BorrowedFd<'_>; 3],
     timeout: Duration,
 ) -> Result<()> {
-    let raws: Vec<std::os::fd::RawFd> = fds.iter().map(|fd| fd.as_raw_fd()).collect();
+    let raws: Vec<std::os::fd::RawFd> =
+        fds.iter().map(|fd| fd.as_raw_fd()).collect();
     send_raw(sock, header, &raws, timeout)
 }
 
@@ -213,8 +230,8 @@ fn send_raw(
 ) -> Result<()> {
     use nix::poll::{PollFd, PollFlags, poll};
     let deadline = std::time::Instant::now() + timeout;
-    let body =
-        serde_json::to_vec(header).map_err(|e| CistellaError::Runtime(format!("header: {e}")))?;
+    let body = serde_json::to_vec(header)
+        .map_err(|e| CistellaError::Runtime(format!("header: {e}")))?;
     let iov = [IoSlice::new(&body)];
     let sent = loop {
         let mut pollfds = [PollFd::new(sock.as_fd(), PollFlags::POLLOUT)];
@@ -223,10 +240,12 @@ fn send_raw(
                 .checked_duration_since(std::time::Instant::now())
                 .unwrap_or(Duration::ZERO),
         )
-        .map_err(|_| CistellaError::Runtime("fd send timeout out of range".to_string()))?;
-        if poll(&mut pollfds, wait)
-            .map_err(|e| CistellaError::Runtime(format!("poll fd socket: {e}")))?
-            == 0
+        .map_err(|_| {
+            CistellaError::Runtime("fd send timeout out of range".to_string())
+        })?;
+        if poll(&mut pollfds, wait).map_err(|e| {
+            CistellaError::Runtime(format!("poll fd socket: {e}"))
+        })? == 0
         {
             return Err(CistellaError::Contract(
                 "fd bundle send timed out".to_string(),
@@ -242,8 +261,10 @@ fn send_raw(
             Ok(sent) => break sent,
             Err(nix::errno::Errno::EAGAIN) => continue,
             Err(e) => {
-                return Err(CistellaError::Runtime(format!("send fd bundle: {e}")));
-            }
+                return Err(CistellaError::Runtime(format!(
+                    "send fd bundle: {e}"
+                )));
+            },
         }
     };
     if sent != body.len() {
@@ -273,7 +294,10 @@ fn send_raw(
 /// Returns `CistellaError::Contract` on shape/count/truncation
 /// violations and `CistellaError::Runtime` on wait/receive
 /// failure.
-pub fn recv_bundle(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, [OwnedFd; 3])> {
+pub fn recv_bundle(
+    sock: &OwnedFd,
+    timeout: Duration,
+) -> Result<(BundleHeader, [OwnedFd; 3])> {
     let (header, fds) = recv_raw(sock, timeout)?;
     if fds.len() != 3 {
         return Err(CistellaError::Contract(format!(
@@ -315,11 +339,15 @@ pub fn recv_diagnostics_bundle(
 
 /// Shared receive: one atomic message, rights owned immediately,
 /// header parsed. Count checks stay with the typed callers.
-fn recv_raw(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, Vec<OwnedFd>)> {
+fn recv_raw(
+    sock: &OwnedFd,
+    timeout: Duration,
+) -> Result<(BundleHeader, Vec<OwnedFd>)> {
     use nix::poll::{PollFd, PollFlags, poll};
     let mut pollfds = [PollFd::new(sock.as_fd(), PollFlags::POLLIN)];
-    let wait = nix::poll::PollTimeout::try_from(timeout)
-        .map_err(|_| CistellaError::Runtime("fd wait timeout out of range".to_string()))?;
+    let wait = nix::poll::PollTimeout::try_from(timeout).map_err(|_| {
+        CistellaError::Runtime("fd wait timeout out of range".to_string())
+    })?;
     let ready = poll(&mut pollfds, wait)
         .map_err(|e| CistellaError::Runtime(format!("poll fd socket: {e}")))?;
     if ready == 0 {
@@ -337,17 +365,18 @@ fn recv_raw(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, Vec<Owne
             Some(&mut cmsgspace),
             MsgFlags::MSG_CMSG_CLOEXEC,
         )
-        .map_err(|e| CistellaError::Runtime(format!("receive fd bundle: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("receive fd bundle: {e}"))
+        })?;
         // Own every delivered right FIRST: all checks below drop
         // `OwnedFd`, so every refusal path closes automatically.
         // Truncation is unreachable with a `MAX_RIGHTS` buffer
         // (the kernel caps sends there), but the flag refusal
         // stays behind the wrap for defense in depth.
         let mut fds = Vec::new();
-        for cmsg in received
-            .cmsgs()
-            .map_err(|_| CistellaError::Contract("fd bundle control truncated".to_string()))?
-        {
+        for cmsg in received.cmsgs().map_err(|_| {
+            CistellaError::Contract("fd bundle control truncated".to_string())
+        })? {
             match cmsg {
                 // SAFETY: fresh kernel references from this
                 // message, wrapped exactly once each.
@@ -360,13 +389,15 @@ fn recv_raw(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, Vec<Owne
                     return Err(CistellaError::Contract(
                         "unexpected fd bundle control message".to_string(),
                     ));
-                }
+                },
             }
         }
         if received.flags.contains(MsgFlags::MSG_TRUNC)
             || received.flags.contains(MsgFlags::MSG_CTRUNC)
         {
-            return Err(CistellaError::Contract("fd bundle truncated".to_string()));
+            return Err(CistellaError::Contract(
+                "fd bundle truncated".to_string(),
+            ));
         }
         if received.bytes == 0 {
             return Err(CistellaError::Contract(
@@ -376,9 +407,12 @@ fn recv_raw(sock: &OwnedFd, timeout: Duration) -> Result<(BundleHeader, Vec<Owne
         let nbytes = received.bytes;
         // `received` is dead past these copies, ending its borrow
         // of `data`: header parsing runs on the plain buffer.
-        let header: BundleHeader = serde_json::from_slice(&data[..nbytes]).map_err(|_| {
-            CistellaError::Contract("bad fd bundle header: shape violation".to_string())
-        })?;
+        let header: BundleHeader = serde_json::from_slice(&data[..nbytes])
+            .map_err(|_| {
+                CistellaError::Contract(
+                    "bad fd bundle header: shape violation".to_string(),
+                )
+            })?;
         (header, fds)
     };
     Ok((header, fds))

@@ -14,11 +14,16 @@ fn fixture_digest(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
-fn write_guest(dir: &tempfile::TempDir, name: &str, mode: u32) -> (std::path::PathBuf, Vec<u8>) {
+fn write_guest(
+    dir: &tempfile::TempDir,
+    name: &str,
+    mode: u32,
+) -> (std::path::PathBuf, Vec<u8>) {
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
     let path = dir.path().join(name);
     std::fs::write(&path, &bytes).expect("write fixture");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+        .expect("chmod");
     (path, bytes)
 }
 
@@ -27,7 +32,8 @@ fn path_source_verifies_and_pins() {
     use cistella::guest_source::resolve_path_source;
     let dir = tempfile::tempdir().expect("tmpdir");
     let (path, bytes) = write_guest(&dir, "guest", 0o755);
-    let pinned = resolve_path_source(&path, &fixture_digest(&bytes)).expect("valid resolves");
+    let pinned = resolve_path_source(&path, &fixture_digest(&bytes))
+        .expect("valid resolves");
     assert_eq!(pinned.digest, fixture_digest(&bytes));
 }
 
@@ -39,7 +45,8 @@ fn replaced_path_guest_refuses_at_conduct() {
     let expected = fixture_digest(&bytes);
     resolve_path_source(&path, &expected).expect("original resolves");
     std::fs::write(&path, b"#!/bin/sh\nexit 1\n").expect("replace bytes");
-    let error = resolve_path_source(&path, &expected).expect_err("replacement must refuse");
+    let error = resolve_path_source(&path, &expected)
+        .expect_err("replacement must refuse");
     assert!(
         error.to_string().contains("digest mismatch"),
         "got: {error}"
@@ -64,8 +71,8 @@ fn symlink_final_registered_path_refuses() {
     let (real, bytes) = write_guest(&dir, "real", 0o755);
     let link = dir.path().join("link");
     std::os::unix::fs::symlink(&real, &link).expect("symlink");
-    let error =
-        resolve_path_source(&link, &fixture_digest(&bytes)).expect_err("symlink must refuse");
+    let error = resolve_path_source(&link, &fixture_digest(&bytes))
+        .expect_err("symlink must refuse");
     assert!(error.to_string().contains("symlink"), "got: {error}");
 }
 
@@ -74,8 +81,8 @@ fn non_executable_registered_path_refuses() {
     use cistella::guest_source::resolve_path_source;
     let dir = tempfile::tempdir().expect("tmpdir");
     let (path, bytes) = write_guest(&dir, "guest", 0o644);
-    let error =
-        resolve_path_source(&path, &fixture_digest(&bytes)).expect_err("non-exec must refuse");
+    let error = resolve_path_source(&path, &fixture_digest(&bytes))
+        .expect_err("non-exec must refuse");
     assert!(error.to_string().contains("not executable"), "got: {error}");
 }
 
@@ -100,11 +107,18 @@ fn symlinked_parent_canonicalizes() {
     std::fs::create_dir(&real).expect("mkdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
     std::fs::write(real.join("guest"), &bytes).expect("write fixture");
-    std::fs::set_permissions(real.join("guest"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
-    std::os::unix::fs::symlink(&real, dir.path().join("link")).expect("symlink");
-    let pinned = resolve_path_source(&dir.path().join("link/guest"), &fixture_digest(&bytes))
-        .expect("symlinked parent resolves");
+    std::fs::set_permissions(
+        real.join("guest"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::os::unix::fs::symlink(&real, dir.path().join("link"))
+        .expect("symlink");
+    let pinned = resolve_path_source(
+        &dir.path().join("link/guest"),
+        &fixture_digest(&bytes),
+    )
+    .expect("symlinked parent resolves");
     assert_eq!(pinned.digest, fixture_digest(&bytes));
 }
 
@@ -112,23 +126,34 @@ fn symlinked_parent_canonicalizes() {
 fn world_writable_ancestor_refuses_sticky_passes() {
     use cistella::guest_source::resolve_path_source;
     let dir = tempfile::tempdir().expect("tmpdir");
-    for (name, mode, ok) in [("open", 0o777, false), ("sticky", 0o1777, true)] {
+    for (name, mode, ok) in [("open", 0o777, false), ("sticky", 0o1777, true)]
+    {
         let sub = dir.path().join(name);
         std::fs::create_dir(&sub).expect("mkdir");
         let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
         std::fs::write(sub.join("guest"), &bytes).expect("write fixture");
-        std::fs::set_permissions(sub.join("guest"), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(
+            sub.join("guest"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod");
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(mode))
             .expect("chmod");
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(mode)).expect("chmod");
-        let outcome = resolve_path_source(&sub.join("guest"), &fixture_digest(&bytes));
+        let outcome =
+            resolve_path_source(&sub.join("guest"), &fixture_digest(&bytes));
         if ok {
             outcome.expect("sticky ancestor passes");
         } else {
-            let error = outcome.expect_err("world-writable ancestor must refuse");
-            assert!(error.to_string().contains("world-writable"), "got: {error}");
+            let error =
+                outcome.expect_err("world-writable ancestor must refuse");
+            assert!(
+                error.to_string().contains("world-writable"),
+                "got: {error}"
+            );
         }
         // Restore owner-write access for tmpdir cleanup on strict umasks.
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
     }
 }
 
@@ -162,8 +187,9 @@ fn cache_dir_location_rules() {
 fn missing_registered_path_refuses_typed() {
     use cistella::guest_source::resolve_path_source;
     let dir = tempfile::tempdir().expect("tmpdir");
-    let error = resolve_path_source(&dir.path().join("absent"), &fixture_digest(b"x"))
-        .expect_err("absence must refuse");
+    let error =
+        resolve_path_source(&dir.path().join("absent"), &fixture_digest(b"x"))
+            .expect_err("absence must refuse");
     assert!(error.to_string().contains("absent"), "got: {error}");
     let error = resolve_path_source(
         std::path::Path::new("/nonexistent-dir-cistella/guest"),
@@ -184,10 +210,13 @@ struct FixtureOrigin {
     hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-fn serve_queued(responses: Vec<(u16, Vec<u8>, std::time::Duration)>) -> FixtureOrigin {
+fn serve_queued(
+    responses: Vec<(u16, Vec<u8>, std::time::Duration)>,
+) -> FixtureOrigin {
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fixture origin");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind fixture origin");
     let url = format!(
         "http://{}/guest",
         listener.local_addr().expect("local addr")
@@ -196,7 +225,8 @@ fn serve_queued(responses: Vec<(u16, Vec<u8>, std::time::Duration)>) -> FixtureO
     let counter = std::sync::Arc::clone(&hits);
     listener.set_nonblocking(true).expect("nonblocking");
     std::thread::spawn(move || {
-        let mut queue: std::collections::VecDeque<_> = responses.into_iter().collect();
+        let mut queue: std::collections::VecDeque<_> =
+            responses.into_iter().collect();
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(15) {
             match listener.accept() {
@@ -227,13 +257,13 @@ fn serve_queued(responses: Vec<(u16, Vec<u8>, std::time::Duration)>) -> FixtureO
                     );
                     let _ = stream.write_all(header.as_bytes());
                     let _ = stream.write_all(&body);
-                }
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if queue.is_empty() {
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                },
                 Err(_) => break,
             }
         }
@@ -241,7 +271,10 @@ fn serve_queued(responses: Vec<(u16, Vec<u8>, std::time::Duration)>) -> FixtureO
     FixtureOrigin { url, hits }
 }
 
-fn fetch_entry(url: &str, digest: [u8; 32]) -> cistella::guest_registry::Guest {
+fn fetch_entry(
+    url: &str,
+    digest: [u8; 32],
+) -> cistella::guest_registry::Guest {
     cistella::guest_registry::Guest {
         name: "fetched".to_string(),
         role: "fetched-role".to_string(),
@@ -303,17 +336,23 @@ fn sticky_untrusted_owner_ancestor_refuses() {
     std::fs::create_dir(&sub).expect("mkdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
     std::fs::write(sub.join("guest"), &bytes).expect("write fixture");
-    std::fs::set_permissions(sub.join("guest"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
+    std::fs::set_permissions(
+        sub.join("guest"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
     std::os::unix::fs::chown(&sub, Some(65534), None).expect("chown nobody");
-    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o1777)).expect("chmod");
-    let error = resolve_path_source(&sub.join("guest"), &fixture_digest(&bytes))
-        .expect_err("alien sticky must refuse");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o1777))
+        .expect("chmod");
+    let error =
+        resolve_path_source(&sub.join("guest"), &fixture_digest(&bytes))
+            .expect_err("alien sticky must refuse");
     assert!(
         error.to_string().contains("sticky but not seat-owned"),
         "got: {error}"
     );
-    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
 }
 
 #[test]
@@ -329,8 +368,10 @@ fn dangling_symlink_slot_refuses_without_fetch() {
     let ctx = ResolveCtx::new(dir.path().join("cache"));
     std::fs::create_dir_all(&ctx.cache_dir).expect("mkdir cache");
     let slot = ctx.cache_dir.join(hex::encode(digest));
-    std::os::unix::fs::symlink(dir.path().join("dangling-target"), &slot).expect("symlink slot");
-    let error = fetch_source(&origin.url, &digest, &ctx).expect_err("dangling slot must refuse");
+    std::os::unix::fs::symlink(dir.path().join("dangling-target"), &slot)
+        .expect("symlink slot");
+    let error = fetch_source(&origin.url, &digest, &ctx)
+        .expect_err("dangling slot must refuse");
     assert!(error.to_string().contains("symlink"), "got: {error}");
     assert_eq!(
         origin.hits.load(std::sync::atomic::Ordering::SeqCst),
@@ -354,7 +395,8 @@ fn cache_dir_symlink_refuses() {
     let link = dir.path().join("link-cache");
     std::os::unix::fs::symlink(&real, &link).expect("symlink cache");
     let bytes = b"fixture bytes".to_vec();
-    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let ctx = ResolveCtx::new(link);
     let error = fetch_source(&origin.url, &fixture_digest(&bytes), &ctx)
         .expect_err("symlinked cache must refuse");
@@ -382,7 +424,8 @@ fn cache_dir_foreign_owner_refuses() {
     std::fs::create_dir(&cache).expect("mkdir");
     std::os::unix::fs::chown(&cache, Some(65534), None).expect("chown nobody");
     let bytes = b"fixture bytes".to_vec();
-    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let ctx = ResolveCtx::new(cache);
     let error = fetch_source(&origin.url, &fixture_digest(&bytes), &ctx)
         .expect_err("foreign cache must refuse");
@@ -402,7 +445,8 @@ fn fetch_miss_slots_and_hit_reverifies_without_refetch() {
     use cistella::guest_source::resolve;
     let dir = tempfile::tempdir().expect("tmpdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
-    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let ctx = fetch_ctx(&dir);
     let entry = fetch_entry(&origin.url, fixture_digest(&bytes));
     let first = resolve(&entry, &ctx).expect("miss downloads");
@@ -476,7 +520,8 @@ fn poisoned_cache_slot_refuses_per_use() {
     use cistella::guest_source::resolve;
     let dir = tempfile::tempdir().expect("tmpdir");
     let bytes = b"#!/bin/sh\nexit 0\n".to_vec();
-    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let ctx = fetch_ctx(&dir);
     let entry = fetch_entry(&origin.url, fixture_digest(&bytes));
     resolve(&entry, &ctx).expect("pristine slot resolves");
@@ -498,14 +543,16 @@ fn poisoned_cache_slot_refuses_per_use() {
 fn fetch_error_status_and_size_bound_refuse() {
     use cistella::guest_source::resolve;
     let dir = tempfile::tempdir().expect("tmpdir");
-    let origin = serve_queued(vec![(404, b"nope".to_vec(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(404, b"nope".to_vec(), std::time::Duration::ZERO)]);
     let ctx = fetch_ctx(&dir);
     let entry = fetch_entry(&origin.url, fixture_digest(b"nope"));
     let error = resolve(&entry, &ctx).expect_err("error status must refuse");
     assert!(error.to_string().contains("status 404"), "got: {error}");
     // Oversize body against a tiny bound: refuses, slots nothing.
     let big = vec![0x41u8; 2048];
-    let origin = serve_queued(vec![(200, big.clone(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(200, big.clone(), std::time::Duration::ZERO)]);
     let mut ctx = fetch_ctx(&dir);
     ctx.fetch_max_bytes = 16;
     let entry = fetch_entry(&origin.url, fixture_digest(&big));
@@ -551,7 +598,8 @@ fn wrong_protocol_major_refuses_at_resolve() {
         },
         arguments: Vec::new(),
     };
-    let error = resolve(&entry, &fetch_ctx(&dir)).expect_err("future major must refuse");
+    let error = resolve(&entry, &fetch_ctx(&dir))
+        .expect_err("future major must refuse");
     assert!(error.to_string().contains("protocol"), "got: {error}");
 }
 
@@ -574,7 +622,8 @@ fn substitution_after_guard_open_stages_into_guarded_dir() {
     std::os::unix::fs::symlink(&attacker, &cache).expect("plant symlink");
     let bytes = b"guarded bytes".to_vec();
     let digest = fixture_digest(&bytes);
-    let origin = serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
+    let origin =
+        serve_queued(vec![(200, bytes.clone(), std::time::Duration::ZERO)]);
     let outcome = guard
         .fetch(
             &origin.url,
@@ -588,7 +637,8 @@ fn substitution_after_guard_open_stages_into_guarded_dir() {
     // guard's path, which still names the renamed-aside dir only
     // by string — the bytes live in the real dir).
     assert_eq!(outcome.slot, cache.join(hex::encode(digest)));
-    let staged = std::fs::read(real.join(hex::encode(digest))).expect("slot in real dir");
+    let staged = std::fs::read(real.join(hex::encode(digest)))
+        .expect("slot in real dir");
     assert_eq!(staged, bytes);
     // Nothing passed through the swapped path: the attacker dir
     // holds no slot, no temp, nothing.
@@ -599,6 +649,7 @@ fn substitution_after_guard_open_stages_into_guarded_dir() {
     assert!(entries.is_empty(), "attacker dir untouched: {entries:?}");
     // And the swapped path itself refuses a fresh guard (symlink
     // at the cache path never becomes a guard).
-    let error = prepare_cache_dir(&cache).expect_err("swapped path must refuse");
+    let error =
+        prepare_cache_dir(&cache).expect_err("swapped path must refuse");
     assert!(error.to_string().contains("symlink"), "got: {error}");
 }

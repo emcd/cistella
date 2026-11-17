@@ -13,21 +13,24 @@ fn dir_with(name: &str, mode: u32) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tmpdir");
     let path = dir.path().join(name);
     std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write fixture");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+        .expect("chmod");
     dir
 }
 
 #[test]
 fn executable_sibling_resolves() {
     let dir = dir_with("cistella-guest-probe", 0o755);
-    let found = discover_in(dir.path(), "cistella-guest-probe").expect("must resolve");
+    let found =
+        discover_in(dir.path(), "cistella-guest-probe").expect("must resolve");
     assert_eq!(found, dir.path().join("cistella-guest-probe"));
 }
 
 #[test]
 fn missing_binary_names_expected_path() {
     let dir = tempfile::tempdir().expect("tmpdir");
-    let error = discover_in(dir.path(), "cistella-guest-absent").expect_err("absence must refuse");
+    let error = discover_in(dir.path(), "cistella-guest-absent")
+        .expect_err("absence must refuse");
     let message = error.to_string();
     assert!(
         message.contains("cistella-guest-absent"),
@@ -38,7 +41,8 @@ fn missing_binary_names_expected_path() {
 #[test]
 fn non_executable_refuses() {
     let dir = dir_with("cistella-guest-noexec", 0o644);
-    let error = discover_in(dir.path(), "cistella-guest-noexec").expect_err("non-exec must refuse");
+    let error = discover_in(dir.path(), "cistella-guest-noexec")
+        .expect_err("non-exec must refuse");
     assert!(error.to_string().contains("not executable"), "got: {error}");
 }
 
@@ -46,7 +50,8 @@ fn non_executable_refuses() {
 fn directory_refuses() {
     let dir = tempfile::tempdir().expect("tmpdir");
     std::fs::create_dir(dir.path().join("cistella-guest-dir")).expect("mkdir");
-    let error = discover_in(dir.path(), "cistella-guest-dir").expect_err("directory must refuse");
+    let error = discover_in(dir.path(), "cistella-guest-dir")
+        .expect_err("directory must refuse");
     assert!(
         error.to_string().contains("not a regular file"),
         "got: {error}"
@@ -61,7 +66,8 @@ fn symlink_sibling_refused_unfollowed() {
         dir.path().join("cistella-guest-link"),
     )
     .expect("symlink");
-    let error = discover_in(dir.path(), "cistella-guest-link").expect_err("symlink must refuse");
+    let error = discover_in(dir.path(), "cistella-guest-link")
+        .expect_err("symlink must refuse");
     assert!(
         error.to_string().contains("not a regular file"),
         "no-follow posture, got: {error}"
@@ -72,7 +78,8 @@ fn symlink_sibling_refused_unfollowed() {
 fn escape_names_refuse() {
     let dir = tempfile::tempdir().expect("tmpdir");
     for name in ["", ".", "..", "sub/guest", "../guest", "/abs/guest"] {
-        let error = discover_in(dir.path(), name).expect_err("escape must refuse");
+        let error =
+            discover_in(dir.path(), name).expect_err("escape must refuse");
         assert!(
             error.to_string().contains("bare file name"),
             "name {name:?} got: {error}"
@@ -90,7 +97,13 @@ fn host_external_missing_binary_spawns_nothing() {
         terminate_grace: std::time::Duration::from_secs(1),
         frame_completion: std::time::Duration::from_secs(60),
     };
-    let error = match host_external(dir.path(), "cistella-guest-absent", &[], &[], deadlines) {
+    let error = match host_external(
+        dir.path(),
+        "cistella-guest-absent",
+        &[],
+        &[],
+        deadlines,
+    ) {
         Ok(_) => panic!("absence must refuse before spawn"),
         Err(error) => error,
     };
@@ -110,9 +123,10 @@ fn host_external_escape_name_refuses() {
         terminate_grace: std::time::Duration::from_secs(1),
         frame_completion: std::time::Duration::from_secs(60),
     };
-    let error = match host_external(dir.path(), "../guest", &[], &[], deadlines) {
-        Ok(_) => panic!("escape must refuse before spawn"),
-        Err(error) => error,
-    };
+    let error =
+        match host_external(dir.path(), "../guest", &[], &[], deadlines) {
+            Ok(_) => panic!("escape must refuse before spawn"),
+            Err(error) => error,
+        };
     assert!(error.to_string().contains("bare file name"), "got: {error}");
 }

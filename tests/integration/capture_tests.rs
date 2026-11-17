@@ -16,7 +16,7 @@ use super::capture::*;
 /// harness paths — those stay best-effort and report).
 fn reap_child(child: nix::unistd::Pid) {
     match nix::sys::wait::waitpid(child, None) {
-        Ok(_) => {}
+        Ok(_) => {},
         Err(error) => panic!("control child failed to reap: {error}"),
     }
 }
@@ -50,7 +50,12 @@ fn child_gone_records_exit_code_at_first_consumption() {
             let mut reaped = false;
             let mut exited_at = None;
             let mut disposition = ChildDisposition::Unknown;
-            spin_until_gone(child, &mut reaped, &mut exited_at, &mut disposition);
+            spin_until_gone(
+                child,
+                &mut reaped,
+                &mut exited_at,
+                &mut disposition,
+            );
             assert!(reaped, "terminal observation reaps");
             assert_eq!(disposition, ChildDisposition::Exited(7));
             assert!(exited_at.is_some(), "exit observation timestamped");
@@ -63,7 +68,7 @@ fn child_gone_records_exit_code_at_first_consumption() {
                 &mut disposition
             ));
             assert_eq!(disposition, ChildDisposition::Exited(7));
-        }
+        },
         nix::unistd::ForkResult::Child => unsafe { libc::_exit(7) },
     }
 }
@@ -77,14 +82,19 @@ fn child_gone_records_signal_death() {
             let mut reaped = false;
             let mut exited_at = None;
             let mut disposition = ChildDisposition::Unknown;
-            spin_until_gone(child, &mut reaped, &mut exited_at, &mut disposition);
+            spin_until_gone(
+                child,
+                &mut reaped,
+                &mut exited_at,
+                &mut disposition,
+            );
             assert!(reaped, "terminal observation reaps");
             assert_eq!(
                 disposition,
                 ChildDisposition::Signaled(libc::SIGTERM),
                 "signal death recorded, not an exit code"
             );
-        }
+        },
         nix::unistd::ForkResult::Child => unsafe {
             libc::raise(libc::SIGTERM);
             libc::_exit(3);
@@ -104,15 +114,23 @@ fn child_gone_reports_live_child_without_consuming() {
             let mut exited_at = None;
             let mut disposition = ChildDisposition::Unknown;
             assert!(
-                !child_gone(child, &mut reaped, &mut exited_at, &mut disposition),
+                !child_gone(
+                    child,
+                    &mut reaped,
+                    &mut exited_at,
+                    &mut disposition
+                ),
                 "live child is not gone"
             );
             assert!(!reaped, "nothing reaped");
             assert_eq!(disposition, ChildDisposition::Unknown);
             assert!(exited_at.is_none(), "no exit observed");
-            let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+            let _ = nix::sys::signal::kill(
+                child,
+                nix::sys::signal::Signal::SIGKILL,
+            );
             reap_child(child);
-        }
+        },
         nix::unistd::ForkResult::Child => unsafe {
             // Shed inherited sibling fds: this sleeper outlives
             // every capture window and must not hold another
@@ -162,12 +180,12 @@ fn capture_descendant_held_pipe_grace_expires_bounded() {
                 "grace expiry stays inside the budget"
             );
             unsafe { libc::close(held) };
-        }
+        },
         nix::unistd::ForkResult::Child => {
             let _ = nix::unistd::close(read.into_raw_fd());
             let _ = nix::unistd::close(write.into_raw_fd());
             unsafe { libc::_exit(0) };
-        }
+        },
     }
 }
 
@@ -193,7 +211,8 @@ fn capture_pty_eio_after_reaped_slave_close() {
                 None,
             );
             assert!(
-                outcome.bytes == b"PTY-DONE\n" || outcome.bytes == b"PTY-DONE\r\n",
+                outcome.bytes == b"PTY-DONE\n"
+                    || outcome.bytes == b"PTY-DONE\r\n",
                 "queued bytes complete (pty may translate LF to CRLF), got: {:?}",
                 outcome.bytes
             );
@@ -205,13 +224,14 @@ fn capture_pty_eio_after_reaped_slave_close() {
             assert!(
                 matches!(
                     outcome.end,
-                    CaptureEnd::Eof | CaptureEnd::PtyEio { child_reaped: true }
+                    CaptureEnd::Eof
+                        | CaptureEnd::PtyEio { child_reaped: true }
                 ),
                 "end of stream is EOF or reaped-EIO, got: {:?}",
                 outcome.end
             );
             assert!(outcome.matched, "settle predicate fires");
-        }
+        },
         nix::pty::ForkptyResult::Child => {
             // Minimal post-fork body: async-signal-safe only.
             let message = b"PTY-DONE\n";
@@ -223,7 +243,7 @@ fn capture_pty_eio_after_reaped_slave_close() {
                 );
                 libc::_exit(0);
             }
-        }
+        },
     }
 }
 
@@ -247,7 +267,7 @@ fn capture_pty_descendant_holds_slave_grace_expires() {
             let _ = nix::unistd::close(master.into_raw_fd());
             let _ = nix::unistd::close(slave.into_raw_fd());
             unsafe { libc::_exit(0) };
-        }
+        },
     };
     reap_child(child);
     let file = std::fs::File::from(master);
@@ -296,7 +316,7 @@ fn capture_cap_reports_truncation_never_complete() {
             assert!(outcome.truncated, "cap reports truncation");
             assert_eq!(outcome.bytes.len(), 64);
             assert_eq!(&outcome.bytes[..6], b"000000");
-        }
+        },
         nix::unistd::ForkResult::Child => {
             let _ = nix::unistd::close(read.into_raw_fd());
             use std::os::unix::io::{AsFd, AsRawFd};
@@ -314,7 +334,7 @@ fn capture_cap_reports_truncation_never_complete() {
                 unsafe { libc::_exit(2) };
             }
             unsafe { libc::_exit(0) };
-        }
+        },
     }
 }
 
@@ -324,7 +344,8 @@ fn capture_cap_reports_truncation_never_complete() {
 pub fn set_nonblocking(file: &std::fs::File) {
     use std::os::unix::io::AsRawFd;
     let flags =
-        nix::fcntl::fcntl(file.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).expect("flags query");
+        nix::fcntl::fcntl(file.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            .expect("flags query");
     let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
     nix::fcntl::fcntl(file.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
@@ -350,9 +371,11 @@ fn excerpt_caps_long_buffers_and_marks_omission() {
 fn refusal_hits_reports_occurrences_not_verdicts() {
     // Occurrence reporting only: hits name what the bytes
     // contain, and an empty capture proves nothing.
-    let hits = refusal_hits(b"launch incarnation unestablishable (refusing)\n");
+    let hits =
+        refusal_hits(b"launch incarnation unestablishable (refusing)\n");
     assert_eq!(hits, vec!["unestablishable"]);
-    let hits = refusal_hits(b"error: selector: no session matches; stale data\n");
+    let hits =
+        refusal_hits(b"error: selector: no session matches; stale data\n");
     assert_eq!(hits, vec!["stale", "selector: no session matches"]);
     assert!(
         refusal_hits(b"clean output\n").is_empty(),
@@ -387,7 +410,10 @@ fn capture_drains_after_exit_before_first_read() {
                 |_| false,
                 None,
             );
-            assert_eq!(outcome.bytes, expected, "post-exit drain keeps every byte");
+            assert_eq!(
+                outcome.bytes, expected,
+                "post-exit drain keeps every byte"
+            );
             assert_eq!(outcome.end, CaptureEnd::Eof);
             assert_eq!(
                 outcome.disposition,
@@ -409,7 +435,7 @@ fn capture_drains_after_exit_before_first_read() {
                 outcome.refusal_hits.is_empty(),
                 "no refusal vocabulary in marker"
             );
-        }
+        },
         nix::unistd::ForkResult::Child => {
             use std::os::unix::io::{AsFd, AsRawFd};
             let w = write.as_fd().as_raw_fd();
@@ -420,7 +446,8 @@ fn capture_drains_after_exit_before_first_read() {
                 let wrote = unsafe {
                     libc::write(
                         w,
-                        expected[written..].as_ptr() as *const std::os::raw::c_void,
+                        expected[written..].as_ptr()
+                            as *const std::os::raw::c_void,
                         (expected.len() - written) as libc::size_t,
                     )
                 };
@@ -430,7 +457,7 @@ fn capture_drains_after_exit_before_first_read() {
                 written += wrote as usize;
             }
             unsafe { libc::_exit(0) };
-        }
+        },
     }
 }
 
@@ -499,7 +526,7 @@ fn capture_split_writes_reassemble() {
             );
             assert_eq!(outcome.end, CaptureEnd::Eof);
             assert!(outcome.refusal_hits.is_empty(), "no refusal vocabulary");
-        }
+        },
         nix::unistd::ForkResult::Child => {
             use std::os::unix::io::{AsFd, AsRawFd};
             let w = write.as_fd().as_raw_fd();
@@ -518,7 +545,7 @@ fn capture_split_writes_reassemble() {
                 }
             }
             unsafe { libc::_exit(0) };
-        }
+        },
     }
 }
 
@@ -548,12 +575,12 @@ fn capture_silent_nonzero_exit_is_empty_eof() {
                 "nothing written, nothing captured"
             );
             assert_eq!(outcome.end, CaptureEnd::Eof);
-        }
+        },
         nix::unistd::ForkResult::Child => {
             let _ = nix::unistd::close(read.into_raw_fd());
             let _ = nix::unistd::close(write.into_raw_fd());
             unsafe { libc::_exit(1) };
-        }
+        },
     }
 }
 
@@ -600,20 +627,21 @@ fn retired_stop_on_exit(
                     stage();
                 }
                 std::thread::sleep(Duration::from_millis(10));
-            }
+            },
             Err(_) => return (acc, None, "read-error"),
         }
         // Faithful to retired production: only an actual
         // terminal status breaks; errors (including ECHILD)
         // continue the loop.
-        if let Ok(status) =
-            nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG))
-        {
+        if let Ok(status) = nix::sys::wait::waitpid(
+            child,
+            Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+        ) {
             match status {
-                nix::sys::wait::WaitStatus::StillAlive => {}
+                nix::sys::wait::WaitStatus::StillAlive => {},
                 nix::sys::wait::WaitStatus::Exited(_, code) => {
                     return (acc, Some(code), "saw-exit");
-                }
+                },
                 _ => return (acc, None, "saw-exit-other"),
             }
         }
@@ -751,7 +779,9 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                         Duration::from_secs(10),
                         Duration::from_secs(2),
                         CAPTURE_CAP,
-                        |bytes| String::from_utf8_lossy(bytes).contains("PART2"),
+                        |bytes| {
+                            String::from_utf8_lossy(bytes).contains("PART2")
+                        },
                         Some(&stage_exit),
                     );
                     assert_eq!(
@@ -770,13 +800,16 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                         Instant::now() + Duration::from_secs(10),
                     );
                     assert_eq!(fin.disposition, ChildDisposition::Exited(0));
-                    let end_ok = matches!(outcome.end, CaptureEnd::Eof | CaptureEnd::PtyEio { .. });
+                    let end_ok = matches!(
+                        outcome.end,
+                        CaptureEnd::Eof | CaptureEnd::PtyEio { .. }
+                    );
                     assert!(
                         verdict_ready(end_ok, &fin, outcome.matched),
                         "clean EOF plus clean exit verifies"
                     );
                 }
-            }
+            },
             nix::unistd::ForkResult::Child => {
                 unsafe { libc::close(gate_write.into_raw_fd()) };
                 let gate = gate_read.into_raw_fd();
@@ -811,7 +844,7 @@ fn capture_old_shape_loses_bytes_new_shape_retains_them() {
                     unsafe { libc::_exit(2) };
                 }
                 unsafe { libc::_exit(0) };
-            }
+            },
         }
     }
 }

@@ -120,7 +120,8 @@ fn cli_terminate_converges_attached_conduct() {
     // report names the observation with the raw client result.
     // Completion-attested tap: `child.wait` alone cannot guarantee
     // the drain consumed the final bytes.
-    let conduct_status = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct exits");
+    let conduct_status =
+        reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("conduct exits");
     let tap = taps.finalize(std::time::Duration::from_secs(10));
     assert!(
         tap.drain_clean,
@@ -161,7 +162,8 @@ fn cli_terminate_converges_attached_conduct() {
     );
     let state = service_state(&id);
     assert!(
-        state.contains("LoadState=not-found") || state.contains("ActiveState=inactive"),
+        state.contains("LoadState=not-found")
+            || state.contains("ActiveState=inactive"),
         "service inactive/not-found after converged teardown: {state}"
     );
     assert!(

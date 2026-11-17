@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 
 use cistella::framework::contract::{CancelFlag, Deadlines};
 use cistella::framework::protocol::{
-    DEFAULT_MAX_FRAME, Envelope, Exchange, GuestHost, HOST_MAX_FRAME, HelloResponse,
-    PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes, parse_envelope, read_frame,
-    write_frame,
+    DEFAULT_MAX_FRAME, Envelope, Exchange, GuestHost, HOST_MAX_FRAME,
+    HelloResponse, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes,
+    parse_envelope, read_frame, write_frame,
 };
 
 const FAST: Duration = Duration::from_secs(3);
@@ -81,7 +81,8 @@ fn frame_truncation_and_eof_refuse() {
 
 #[test]
 fn envelope_unknown_fields_refuse() {
-    let body = br#"{"protocol":1,"id":"a","op":"o","payload":null,"smuggled":true}"#;
+    let body =
+        br#"{"protocol":1,"id":"a","op":"o","payload":null,"smuggled":true}"#;
     let error = parse_envelope(body).unwrap_err();
     assert!(error.to_string().contains("bad envelope"));
 }
@@ -90,7 +91,8 @@ fn envelope_unknown_fields_refuse() {
 fn hello_negotiates_and_clamps() {
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         assert_eq!(envelope.op, "hello");
         let response = Envelope {
@@ -111,7 +113,8 @@ fn hello_negotiates_and_clamps() {
 fn hello_version_mismatch_refuses() {
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         let response = Envelope {
             protocol: PROTOCOL_MAJOR,
@@ -130,7 +133,8 @@ fn hello_version_mismatch_refuses() {
 fn request_correlates_and_rejects_unknown_id() {
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         // Wrong ID: host must refuse, not deliver.
         let response = Envelope {
@@ -150,7 +154,8 @@ fn request_correlates_and_rejects_unknown_id() {
 fn pending_on_solo_exchange_refuses() {
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         let response = Envelope {
             protocol: PROTOCOL_MAJOR,
@@ -169,7 +174,8 @@ fn pending_on_solo_exchange_refuses() {
 fn stream_collects_pending_then_terminal() {
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         for _ in 0..2 {
             let pending = Envelope {
@@ -235,11 +241,12 @@ fn blocked_write_consumes_budget_instead_of_hanging() {
     let payload = json!({"pad": "x".repeat(63 * 1024)});
     let mut write_timed_out = false;
     for _ in 0..256 {
-        match host.request("fill", payload.clone(), Duration::from_millis(100)) {
+        match host.request("fill", payload.clone(), Duration::from_millis(100))
+        {
             Err(e) if e.to_string() == "protocol: frame write timed out" => {
                 write_timed_out = true;
                 break;
-            }
+            },
             Err(_) => continue,
             Ok(_) => continue,
         }
@@ -261,7 +268,8 @@ fn unbounded_await_collects_until_terminal_or_cancel() {
     use cistella::framework::protocol::AWAIT_RESULT_OP;
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         for _ in 0..2 {
             std::thread::sleep(Duration::from_millis(50));
@@ -297,7 +305,8 @@ fn unbounded_await_collects_until_terminal_or_cancel() {
     // Cancelled unbounded stream detaches with a typed error.
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         std::thread::sleep(Duration::from_secs(30));
         let _ = &envelope;
@@ -314,7 +323,9 @@ fn spawn_binds_opened_executable_identity() {
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read("/bin/cat").expect("read cat");
     let expected = hex::encode(Sha256::digest(&bytes));
-    let host = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    let host =
+        GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default())
+            .unwrap();
     assert_eq!(host.executable_digest(), expected);
     // Identity and exec share one open description: no path check
     // could race this digest.
@@ -379,11 +390,11 @@ fn blocked_write_cleanup_kills_and_reaps() {
             Err(e) if e.to_string() == "protocol: frame write timed out" => {
                 write_timed_out = true;
                 break;
-            }
+            },
             Err(e) => {
                 break_error = Some(e.to_string());
                 break;
-            }
+            },
             Ok(_) => continue,
         }
     }
@@ -392,7 +403,8 @@ fn blocked_write_cleanup_kills_and_reaps() {
         "full pipe must time out the send (iterations={iterations}, break_error={break_error:?})"
     );
     host.shutdown().unwrap();
-    let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
+    let gone =
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
     assert!(gone.is_err());
 }
 
@@ -407,7 +419,8 @@ fn drop_without_shutdown_still_reaps() {
         .unwrap();
         host.pid()
     };
-    let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
+    let gone =
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
     assert!(gone.is_err(), "dropped host must reap its guest");
 }
 
@@ -455,7 +468,8 @@ fn envelope_errors_are_fixed_classes_without_echo() {
 fn correlation_refusal_names_no_guest_string() {
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         // Grammar-valid but wrong ID: refusal must not echo it.
         let response = Envelope {
@@ -484,7 +498,9 @@ fn unbounded_await_survives_idle_silence() {
     for timeout in [None, Some(Duration::from_millis(300))] {
         let (mut host, mut peer) = exchange();
         let peer_thread = std::thread::spawn(move || {
-            let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+            let request =
+                read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST)
+                    .unwrap();
             let envelope = parse_envelope(&request).unwrap();
             std::thread::sleep(Duration::from_millis(800));
             respond(
@@ -499,15 +515,16 @@ fn unbounded_await_survives_idle_silence() {
             );
         });
         let cancel = CancelFlag::default();
-        let result = host.request_stream(AWAIT_RESULT_OP, json!({}), timeout, &cancel);
+        let result =
+            host.request_stream(AWAIT_RESULT_OP, json!({}), timeout, &cancel);
         match timeout {
             None => {
                 let outcome = result.unwrap();
                 assert_eq!(outcome.result, json!({"exit_status": 0}));
-            }
+            },
             Some(_) => {
                 result.unwrap_err();
-            }
+            },
         }
         peer_thread.join().unwrap();
     }
@@ -578,7 +595,9 @@ fn group_escapee_with_closed_fds_outside_enforcement() {
     }
     let dir = tempfile::tempdir().expect("tmpdir");
     let marker = dir.path().join("marker").to_string_lossy().to_string();
-    let script = format!("setsid sh -c 'exec >/dev/null 2>&1; sleep 2; touch {marker}' & exit 0");
+    let script = format!(
+        "setsid sh -c 'exec >/dev/null 2>&1; sleep 2; touch {marker}' & exit 0"
+    );
     let mut host = GuestHost::spawn(
         Path::new("/bin/sh"),
         &["-c".to_string(), script],
@@ -599,8 +618,12 @@ fn concurrent_guests_coexist() {
     // The old process-global gate is gone: two live guests hello
     // and round-trip independently, proving the protocol supports
     // multiple extensions without serialization.
-    let mut first = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
-    let mut second = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    let mut first =
+        GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default())
+            .unwrap();
+    let mut second =
+        GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default())
+            .unwrap();
     for host in [&mut first, &mut second] {
         host.exchange_mut().hello(&[], FAST).unwrap();
         let payload = host
@@ -623,9 +646,14 @@ fn in_group_term_ignorer_cleared_by_kill() {
         terminate_grace: Duration::from_secs(2),
         ..Deadlines::default()
     };
-    let script = "(trap '' TERM; exec >/dev/null 2>&1; sleep 30) & exit 0".to_string();
-    let mut host =
-        GuestHost::spawn(Path::new("/bin/sh"), &["-c".to_string(), script], deadlines).unwrap();
+    let script =
+        "(trap '' TERM; exec >/dev/null 2>&1; sleep 30) & exit 0".to_string();
+    let mut host = GuestHost::spawn(
+        Path::new("/bin/sh"),
+        &["-c".to_string(), script],
+        deadlines,
+    )
+    .unwrap();
     let pgid = host.pid() as i32;
     std::thread::sleep(Duration::from_millis(500));
     host.shutdown().unwrap();
@@ -673,18 +701,21 @@ fn example_binary(name: &str) -> std::path::PathBuf {
         .nth(2)
         .expect("target/<profile>/deps ancestors")
         .join("examples");
-    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+        Vec::new();
     if let Ok(entries) = std::fs::read_dir(&examples_dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().into_owned();
-            if file_name != name && !file_name.starts_with(&format!("{name}-")) {
+            if file_name != name && !file_name.starts_with(&format!("{name}-"))
+            {
                 continue;
             }
             let metadata = entry.metadata().expect("metadata");
             if !metadata.is_file() || (metadata.mode() & 0o111) == 0 {
                 continue;
             }
-            candidates.push((metadata.modified().expect("mtime"), entry.path()));
+            candidates
+                .push((metadata.modified().expect("mtime"), entry.path()));
         }
     }
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
@@ -702,7 +733,11 @@ fn example_binary(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn guest_executable_must_be_absolute() {
-    let error = match GuestHost::spawn(Path::new("relative/guest"), &[], Deadlines::default()) {
+    let error = match GuestHost::spawn(
+        Path::new("relative/guest"),
+        &[],
+        Deadlines::default(),
+    ) {
         Err(error) => error,
         Ok(_) => panic!("relative guest path must refuse"),
     };
@@ -715,7 +750,9 @@ fn cat_loopback_negotiates_and_round_trips() {
     // non-pending payload, so hello negotiates (echoed HelloRequest
     // parses as HelloResponse with version 1) and solo requests
     // round-trip their payload.
-    let mut host = GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default()).unwrap();
+    let mut host =
+        GuestHost::spawn(Path::new("/bin/cat"), &[], Deadlines::default())
+            .unwrap();
     let negotiated = host
         .exchange_mut()
         .hello(&["host-cap".to_string()], FAST)
@@ -749,7 +786,8 @@ fn slow_guest_times_out_and_reaps() {
     );
     host.shutdown().unwrap();
     // Reaped: signalling the pid fails with ESRCH.
-    let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
+    let gone =
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None);
     assert!(gone.is_err());
 }
 
@@ -789,7 +827,8 @@ fn spawn_presents_executable_path_as_argv0() {
     let pid = host.pid();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let observed = loop {
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let cmdline =
+            std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
         let argv0 = cmdline
             .split(|byte| *byte == 0)
             .next()
@@ -818,7 +857,8 @@ fn epoch2_refuses_legacy_v1_hello_as_version_error() {
     // the refusal, proving no dispatch/mint/compile ran.
     let (mut host, mut peer) = exchange();
     let peer_thread = std::thread::spawn(move || {
-        let request = read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
+        let request =
+            read_frame(&mut peer, PRE_NEGOTIATION_MAX_FRAME, FAST).unwrap();
         let envelope = parse_envelope(&request).unwrap();
         assert_eq!(envelope.op, "hello");
         let response = Envelope {
@@ -858,7 +898,9 @@ fn peer_exited_reports_true_after_child_exit() {
     // Discrimination primitive for dispatcher expiry: an
     // already-exited child must read true (poll briefly —
     // exec-to-exit is fast but unscheduled).
-    let mut host = GuestHost::spawn(Path::new("/bin/true"), &[], Deadlines::default()).unwrap();
+    let mut host =
+        GuestHost::spawn(Path::new("/bin/true"), &[], Deadlines::default())
+            .unwrap();
     let mut exited = false;
     for _ in 0..100 {
         if host.peer_exited() {

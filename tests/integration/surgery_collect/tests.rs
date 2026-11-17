@@ -9,13 +9,21 @@ use std::os::unix::process::ExitStatusExt;
 
 fn fake_output(code: i32, stdout: &str, stderr: &str) -> Output {
     Output {
-        status: std::process::ExitStatus::from_raw(if code == 0 { 0 } else { code << 8 }),
+        status: std::process::ExitStatus::from_raw(if code == 0 {
+            0
+        } else {
+            code << 8
+        }),
         stdout: stdout.as_bytes().to_vec(),
         stderr: stderr.as_bytes().to_vec(),
     }
 }
 
-fn ok(code: i32, stdout: &str, stderr: &str) -> Result<Output, BoundedRunError> {
+fn ok(
+    code: i32,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Output, BoundedRunError> {
     Ok(fake_output(code, stdout, stderr))
 }
 
@@ -27,7 +35,10 @@ fn changed_inspect() -> Result<Output, BoundedRunError> {
     ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", "")
 }
 
-fn timeout_with(partial_out: &str, partial_err: &str) -> Result<Output, BoundedRunError> {
+fn timeout_with(
+    partial_out: &str,
+    partial_err: &str,
+) -> Result<Output, BoundedRunError> {
     Err(BoundedRunError::Timeout {
         waited: Duration::from_secs(5),
         reaped: true,
@@ -59,7 +70,11 @@ impl FakeRunner {
 }
 
 impl ProbeRunner for FakeRunner {
-    fn run(&self, argv: &[String], deadline: Instant) -> Result<Output, BoundedRunError> {
+    fn run(
+        &self,
+        argv: &[String],
+        deadline: Instant,
+    ) -> Result<Output, BoundedRunError> {
         self.recorded.borrow_mut().push((argv.to_vec(), deadline));
         self.script
             .borrow_mut()
@@ -93,7 +108,8 @@ impl ManualClock {
 
 impl Clock for ManualClock {
     fn now(&self) -> Instant {
-        let step = self.steps.borrow_mut().pop_front().unwrap_or(self.fallback);
+        let step =
+            self.steps.borrow_mut().pop_front().unwrap_or(self.fallback);
         let t = self.t.get();
         self.t.set(t + step);
         t
@@ -152,7 +168,11 @@ fn small_remaining_budget_still_probes_with_clamped_exec() {
 
 #[test]
 fn budget_windows_fit_inside_the_phase() {
-    let runner = FakeRunner::new(vec![ok(0, "abc123 2026-10-26 00:01:00 +0000 UTC\n", "")]);
+    let runner = FakeRunner::new(vec![ok(
+        0,
+        "abc123 2026-10-26 00:01:00 +0000 UTC\n",
+        "",
+    )]);
     let clock = ManualClock::new(Duration::from_millis(100));
     let t0 = clock.now();
     let phase = t0 + Duration::from_secs(60);
@@ -190,9 +210,16 @@ fn baseline_runs_before_mutation_with_real_unit() {
         ok(0, "", ""),
     ]);
     let clock = ManualClock::new(Duration::from_millis(100));
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let (surgery, maybe_evidence) =
-        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (surgery, maybe_evidence) = run_surgery_cycle(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        &argv,
+    );
     assert!(surgery.expect("surgery runs").status.success());
     let evidence = maybe_evidence.expect("landing evidence on success");
     assert!(
@@ -261,9 +288,16 @@ fn changed_identity_with_small_remaining_budget_lands() {
     // Fallback advances: a landing regression times out
     // instead of hanging a frozen clock.
     let clock = ManualClock::scripted(steps, Duration::from_secs(1));
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let (surgery, maybe_evidence) =
-        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (surgery, maybe_evidence) = run_surgery_cycle(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        &argv,
+    );
     assert!(surgery.expect("surgery runs").status.success());
     let evidence = maybe_evidence.expect("landing evidence on success");
     // Landing happened (not a timeout): two polls ran, no
@@ -309,10 +343,19 @@ fn changed_identity_past_deadline_is_rejected() {
     // Fallback advances: any path that stops landing still
     // reaches the timeout verdict instead of hanging.
     let clock = ManualClock::scripted(steps, Duration::from_secs(1));
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
-    }));
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run_surgery_cycle(
+                &runner,
+                &clock,
+                "c",
+                BOUND_ID,
+                BOUND_STARTED,
+                &argv,
+            );
+        }));
     let err = result.expect_err("late change must time out, not land");
     let msg = err
         .downcast_ref::<String>()
@@ -338,9 +381,16 @@ fn failed_mutation_reports_original_error_without_waiting() {
     ]);
     let clock = ManualClock::new(Duration::ZERO);
     let t0 = clock.now();
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let (surgery, evidence) =
-        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (surgery, evidence) = run_surgery_cycle(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        &argv,
+    );
     let out = surgery.expect("runner error is Ok");
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unit gone"));
@@ -361,13 +411,20 @@ fn spawn_failed_mutation_reports_without_waiting() {
         Err(BoundedRunError::Spawn("no daemon".to_string())),
     ]);
     let clock = ManualClock::new(Duration::ZERO);
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let (surgery, evidence) =
-        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (surgery, evidence) = run_surgery_cycle(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        &argv,
+    );
     match surgery {
         Err(BoundedRunError::Spawn(detail)) => {
             assert!(detail.contains("no daemon"), "{detail}")
-        }
+        },
         other => panic!("expected spawn failure, got {other:?}"),
     }
     assert!(evidence.is_none());
@@ -394,10 +451,19 @@ fn timeout_report_leads_with_original_verdict_over_healthy_postmortem() {
         ok(0, "journal-ok\n", ""),
     ]);
     let clock = ManualClock::new(Duration::from_secs(5));
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
-    }));
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run_surgery_cycle(
+                &runner,
+                &clock,
+                "c",
+                BOUND_ID,
+                BOUND_STARTED,
+                &argv,
+            );
+        }));
     let err = result.expect_err("unqueryable polls must time out");
     let msg = err
         .downcast_ref::<String>()
@@ -595,7 +661,8 @@ fn spawn_error_survives_through_actual_report() {
 fn wait_detail_survives_through_actual_report() {
     // waited=/reaped= detail and partials must reach the
     // rendered report, not be dropped beside the label.
-    let runner = FakeRunner::new(vec![timeout_with("partial-out", "partial-err")]);
+    let runner =
+        FakeRunner::new(vec![timeout_with("partial-out", "partial-err")]);
     let clock = ManualClock::new(Duration::ZERO);
     let out = run_diagnostic(
         &runner,
@@ -646,9 +713,16 @@ fn successful_mutation_identity_is_retained_for_later_failures() {
         ok(0, "", ""),
     ]);
     let clock = ManualClock::new(Duration::from_millis(100));
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let (surgery, maybe_evidence) =
-        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (surgery, maybe_evidence) = run_surgery_cycle(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        &argv,
+    );
     assert!(surgery.expect("surgery runs").status.success());
     let evidence = maybe_evidence.expect("landing evidence on success");
     assert!(
@@ -695,9 +769,16 @@ fn retained_mutation_streams_cap_with_truncation_marker() {
         ok(0, "", ""),
     ]);
     let clock = ManualClock::new(Duration::from_millis(100));
-    let argv = vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
-    let (_, maybe_evidence) =
-        run_surgery_cycle(&runner, &clock, "c", BOUND_ID, BOUND_STARTED, &argv);
+    let argv =
+        vec!["podman".to_string(), "restart".to_string(), "c".to_string()];
+    let (_, maybe_evidence) = run_surgery_cycle(
+        &runner,
+        &clock,
+        "c",
+        BOUND_ID,
+        BOUND_STARTED,
+        &argv,
+    );
     let evidence = maybe_evidence.expect("landing evidence on success");
     assert!(
         evidence.mutation_report.contains("[+1000 truncated]"),

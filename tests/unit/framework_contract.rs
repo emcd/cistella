@@ -6,15 +6,17 @@
 //! the mount suite.
 
 use cistella::framework::contract::{
-    Assumption, BaselineBinding, Capability, CapabilitySet, ControlDeadline, Deadlines,
-    EnvContribution, GuestHookRequest, HOOK_ARTIFACT_KIND_BLOB, HOOK_ON_FAILURE_PRE_EXEC,
-    HOOK_STAGING_ISOLATOR, HookArtifact, HookProbe, HookSource, MAX_HOOK_ARGV, MergeContext,
-    MountContribution, MountMode, MountTriple, PermissionContribution, Phase, Placement,
-    PolicyClaim, PreparePlan, Provenance, ReconciliationKey, Rights, Scope, Severity,
+    Assumption, BaselineBinding, Capability, CapabilitySet, ControlDeadline,
+    Deadlines, EnvContribution, GuestHookRequest, HOOK_ARTIFACT_KIND_BLOB,
+    HOOK_ON_FAILURE_PRE_EXEC, HOOK_STAGING_ISOLATOR, HookArtifact, HookProbe,
+    HookSource, MAX_HOOK_ARGV, MergeContext, MountContribution, MountMode,
+    MountTriple, PermissionContribution, Phase, Placement, PolicyClaim,
+    PreparePlan, Provenance, ReconciliationKey, Rights, Scope, Severity,
     merge_prepare,
 };
 use cistella::framework::registry::{
-    LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME,
+    LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH,
+    WRAPPER_FILE_NAME,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -218,7 +220,8 @@ fn duplicate_hook_order_refuses_and_hooks_sort() {
         &MergeContext::empty("/home/cistella"),
     )
     .unwrap();
-    let orders: Vec<u32> = merged.guest_hooks.iter().map(|hook| hook.order).collect();
+    let orders: Vec<u32> =
+        merged.guest_hooks.iter().map(|hook| hook.order).collect();
     assert_eq!(orders, vec![3, 9]);
 }
 
@@ -266,14 +269,16 @@ fn empty_claim_pattern_refuses() {
 
 #[test]
 fn reserved_env_names_refuse_atomically() {
-    let reserved: HashSet<String> = ["HOME".to_string()].iter().cloned().collect();
+    let reserved: HashSet<String> =
+        ["HOME".to_string()].iter().cloned().collect();
     let occupied = Vec::new();
     let context = MergeContext::new("/home/cistella", reserved, occupied);
     let plan = PreparePlan {
         environment: vec![env("HOME", "/tmp/evil"), env("CLEAN_VAR", "1")],
         ..PreparePlan::default()
     };
-    let error = merge_prepare(plan, &full_capabilities(), &context).unwrap_err();
+    let error =
+        merge_prepare(plan, &full_capabilities(), &context).unwrap_err();
     assert!(error.to_string().contains("HOME"));
 }
 
@@ -284,7 +289,8 @@ fn occupied_mount_targets_refuse_overlap() {
         container_target: "/data".to_string(),
         mode: MountMode::Ro,
     }];
-    let context = MergeContext::new("/home/cistella", HashSet::new(), occupied);
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), occupied);
     // Exact-target overlap with the emitted set refuses.
     let plan = PreparePlan {
         mounts: vec![mount("/data")],
@@ -396,7 +402,10 @@ fn reconciliation_key_reuse_keeps_attempt_identity() {
 }
 
 /// Merges one hook mutation and returns the refusal message.
-fn hook_refusal(mut hook: GuestHookRequest, mutate: impl FnOnce(&mut GuestHookRequest)) -> String {
+fn hook_refusal(
+    mut hook: GuestHookRequest,
+    mutate: impl FnOnce(&mut GuestHookRequest),
+) -> String {
     mutate(&mut hook);
     let plan = PreparePlan {
         guest_hooks: vec![hook],
@@ -427,7 +436,8 @@ fn hook_bad_sha256_refuses() {
     assert!(message.contains("sha256"), "got: {message}");
     let message = hook_refusal(hook(1), |hook| {
         hook.artifact.sha256 =
-            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855".to_string();
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+                .to_string();
     });
     assert!(message.contains("sha256"), "got: {message}");
 }
@@ -534,7 +544,8 @@ fn driver_modes_imply_policy_once() {
         container_target: "/data".to_string(),
         mode: MountMode::Ro,
     }];
-    let context = MergeContext::new("/home/cistella", HashSet::new(), occupied);
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), occupied);
     let plan = PreparePlan {
         mounts: vec![mount_from("/srv/other", "/other")],
         permissions: vec![perm("/other", Rights::Full)],
@@ -558,9 +569,15 @@ fn sugar_and_explicit_coexist_by_join_with_floor() {
         container_target: "/data".to_string(),
         mode: MountMode::Ro,
     }];
-    let context = MergeContext::new("/home/cistella", HashSet::new(), occupied)
-        .with_profile_permissions(vec![profile_perm("/data", Rights::Full)]);
-    let merged = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap();
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), occupied)
+            .with_profile_permissions(vec![profile_perm(
+                "/data",
+                Rights::Full,
+            )]);
+    let merged =
+        merge_prepare(PreparePlan::default(), &full_capabilities(), &context)
+            .unwrap();
     assert!(merged.placements.is_empty());
     assert!(
         merged.permissions.is_empty(),
@@ -570,9 +587,15 @@ fn sugar_and_explicit_coexist_by_join_with_floor() {
 
 #[test]
 fn explicit_permission_unmatched_target_refuses() {
-    let context = MergeContext::new("/home/cistella", HashSet::new(), Vec::new())
-        .with_profile_permissions(vec![profile_perm("/nowhere", Rights::Read)]);
-    let error = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap_err();
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), Vec::new())
+            .with_profile_permissions(vec![profile_perm(
+                "/nowhere",
+                Rights::Read,
+            )]);
+    let error =
+        merge_prepare(PreparePlan::default(), &full_capabilities(), &context)
+            .unwrap_err();
     assert!(
         error.to_string().contains("unknown grant target"),
         "got: {error}"
@@ -581,13 +604,16 @@ fn explicit_permission_unmatched_target_refuses() {
 
 #[test]
 fn duplicate_explicit_permission_refuses() {
-    let context = MergeContext::new("/home/cistella", HashSet::new(), Vec::new())
-        .with_profile_permissions(vec![
-            profile_perm("/tmp", Rights::Read),
-            profile_perm("/tmp", Rights::Read),
-        ])
-        .with_baselines(vec!["/dev".to_string(), "/tmp".to_string()]);
-    let error = merge_prepare(PreparePlan::default(), &full_capabilities(), &context).unwrap_err();
+    let context =
+        MergeContext::new("/home/cistella", HashSet::new(), Vec::new())
+            .with_profile_permissions(vec![
+                profile_perm("/tmp", Rights::Read),
+                profile_perm("/tmp", Rights::Read),
+            ])
+            .with_baselines(vec!["/dev".to_string(), "/tmp".to_string()]);
+    let error =
+        merge_prepare(PreparePlan::default(), &full_capabilities(), &context)
+            .unwrap_err();
     assert!(
         error.to_string().contains("duplicate permission"),
         "got: {error}"
@@ -690,7 +716,10 @@ fn ssh_perm(p: &str) -> PermissionContribution {
     }
 }
 
-fn ssh_expectation(p: &str, c: &str) -> cistella::framework::contract::InstanceExpectation {
+fn ssh_expectation(
+    p: &str,
+    c: &str,
+) -> cistella::framework::contract::InstanceExpectation {
     cistella::framework::contract::InstanceExpectation {
         owner: ssh_owner(),
         env: vec![("SSH_AUTH_SOCK".to_string(), p.to_string())],
@@ -759,8 +788,12 @@ fn other_guest_ssa_refuses_under_declaration() {
         environment: vec![env("SSH_AUTH_SOCK", "/sock")],
         ..PreparePlan::default()
     };
-    let error =
-        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("bundle"), "got: {error}");
 }
 
@@ -779,8 +812,12 @@ fn declared_bundle_empty_refuses() {
 fn declared_bundle_divergent_value_refuses() {
     let mut plan = ssh_plan("/sock", "/sock");
     plan.environment[0].value = "/elsewhere".to_string();
-    let error =
-        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("bundle"), "got: {error}");
 }
 
@@ -788,8 +825,12 @@ fn declared_bundle_divergent_value_refuses() {
 fn declared_bundle_extra_mount_refuses() {
     let mut plan = ssh_plan("/sock", "/sock");
     plan.mounts.push(ssh_mount("/extra", "/extra"));
-    let error =
-        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("bundle"), "got: {error}");
 }
 
@@ -802,8 +843,12 @@ fn declared_bundle_claim_refuses() {
         scope: Scope::OnExtensions,
         provenance: ssh_owner(),
     });
-    let error =
-        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("bundle"), "got: {error}");
 }
 
@@ -814,8 +859,12 @@ fn stranger_ssa_refuses_reserved_beside_fulfilled_bundle() {
     // owner-bound, never name-bound.
     let mut plan = ssh_plan("/sock", "/sock");
     plan.environment.push(env("SSH_AUTH_SOCK", "/sock"));
-    let error =
-        merge_prepare(plan, &full_capabilities(), &ssh_context("/sock", "/sock")).unwrap_err();
+    let error = merge_prepare(
+        plan,
+        &full_capabilities(),
+        &ssh_context("/sock", "/sock"),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("reserved name"), "got: {error}");
 }
 
@@ -836,7 +885,8 @@ fn expected_credentials_exact_kinds_admit() {
 fn expected_credentials_missing_refuses() {
     use cistella::framework::contract::check_expected_credentials;
     let context = ssh_context("/sock", "/sock");
-    let error = check_expected_credentials(&[], &context.expectations).unwrap_err();
+    let error =
+        check_expected_credentials(&[], &context.expectations).unwrap_err();
     assert!(
         error.to_string().contains("credential mismatch"),
         "got: {error}"
@@ -853,7 +903,8 @@ fn expected_credentials_wrong_owner_refuses() {
         owner: Provenance::Extension("probe".to_string()),
     }];
     let context = ssh_context("/sock", "/sock");
-    let error = check_expected_credentials(&held, &context.expectations).unwrap_err();
+    let error =
+        check_expected_credentials(&held, &context.expectations).unwrap_err();
     assert!(
         error.to_string().contains("credential mismatch"),
         "got: {error}"

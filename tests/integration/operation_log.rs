@@ -27,16 +27,22 @@ fn assert_gc_logged_reap(id: &str) -> String {
         if !cistella::operation_log::op_id_valid(&name) {
             continue;
         }
-        let read = match cistella::operation_log::read_operation(&entry.path()) {
+        let read = match cistella::operation_log::read_operation(&entry.path())
+        {
             Ok(read) => read,
             Err(_) => continue,
         };
         let mut classified = false;
         let mut terminal_ok = false;
         for record in &read.records {
-            if record.get("phase").and_then(|v| v.as_str()) != Some("classify") {
-                if record.get("kind").and_then(|v| v.as_str()) == Some("terminal") {
-                    terminal_ok = record.get("outcome").and_then(|v| v.as_str()) == Some("success");
+            if record.get("phase").and_then(|v| v.as_str()) != Some("classify")
+            {
+                if record.get("kind").and_then(|v| v.as_str())
+                    == Some("terminal")
+                {
+                    terminal_ok =
+                        record.get("outcome").and_then(|v| v.as_str())
+                            == Some("success");
                 }
                 continue;
             }
@@ -68,22 +74,28 @@ fn assert_gc_logged_reap(id: &str) -> String {
 /// container: it names the container on a unit-removed record and
 /// the session on an attestation record. Pure over the records so
 /// the sibling filtering below is pinned without a backend.
-fn teardown_targets(records: &[serde_json::Value], id: &str, container: &str) -> bool {
+fn teardown_targets(
+    records: &[serde_json::Value],
+    id: &str,
+    container: &str,
+) -> bool {
     let mut saw_unit = false;
     let mut saw_session = false;
     for record in records {
         match record.get("step").and_then(|v| v.as_str()) {
             Some("unit-removed")
-                if record.get("container").and_then(|v| v.as_str()) == Some(container) =>
+                if record.get("container").and_then(|v| v.as_str())
+                    == Some(container) =>
             {
                 saw_unit = true;
-            }
+            },
             Some("attestation-reaped")
-                if record.get("session").and_then(|v| v.as_str()) == Some(id) =>
+                if record.get("session").and_then(|v| v.as_str())
+                    == Some(id) =>
             {
                 saw_session = true;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     saw_unit && saw_session
@@ -99,7 +111,8 @@ fn assert_teardown_logged_reload(gc_id: &str, id: &str, container: &str) {
     let mut found = false;
     let listing = std::fs::read_dir(&root).expect("log root readable");
     for entry in listing.flatten() {
-        let read = match cistella::operation_log::read_operation(&entry.path()) {
+        let read = match cistella::operation_log::read_operation(&entry.path())
+        {
             Ok(read) => read,
             Err(_) => continue,
         };
@@ -107,8 +120,10 @@ fn assert_teardown_logged_reload(gc_id: &str, id: &str, container: &str) {
             Some(start) => start,
             None => continue,
         };
-        let is_teardown = start.get("actor").and_then(|v| v.as_str()) == Some("teardown");
-        let parent = start.get("parent").and_then(|v| v.as_str()).unwrap_or("");
+        let is_teardown =
+            start.get("actor").and_then(|v| v.as_str()) == Some("teardown");
+        let parent =
+            start.get("parent").and_then(|v| v.as_str()).unwrap_or("");
         if !is_teardown || parent != gc_id {
             continue;
         }
@@ -125,13 +140,14 @@ fn assert_teardown_logged_reload(gc_id: &str, id: &str, container: &str) {
             match record.get("step").and_then(|v| v.as_str()) {
                 Some("stop-settled") => {
                     saw_stop = true;
-                }
+                },
                 Some("unit-removed")
-                    if record.get("container").and_then(|v| v.as_str()) == Some(container) =>
+                    if record.get("container").and_then(|v| v.as_str())
+                        == Some(container) =>
                 {
                     reload = record.get("reload").and_then(|v| v.as_str());
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         let reload = reload.expect("teardown records its reload outcome");
@@ -164,10 +180,15 @@ fn teardown_filter_matches_only_the_target_sibling() {
     for children in [&[&target, &other], &[&other, &target]] {
         let matched: Vec<&&Vec<serde_json::Value>> = children
             .iter()
-            .filter(|records| teardown_targets(records, "sess-target", "cistella-target"))
+            .filter(|records| {
+                teardown_targets(records, "sess-target", "cistella-target")
+            })
             .collect();
         assert_eq!(matched.len(), 1, "exactly the target child matches");
-        assert!(matched[0][1].get("container").and_then(|v| v.as_str()) == Some("cistella-target"));
+        assert!(
+            matched[0][1].get("container").and_then(|v| v.as_str())
+                == Some("cistella-target")
+        );
     }
     // A sibling with a stop but no target identity never matches.
     assert!(!teardown_targets(
@@ -195,7 +216,8 @@ fn gc_operation_log_reconstructs_reap() {
     // the child must acquire the same lock.
     let _freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
     conduct.kill().expect("kill conduct");
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("reap conduct post-kill");
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-kill");
     guard.id = None;
     assert!(unit_path(&home, &id).exists(), "orphan unit remains");
     // External stop simulating a crash: the container is gone
@@ -245,7 +267,8 @@ fn gc_with_unwritable_log_root_reaps_identically() {
     wait_active(&id);
     let _freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
     conduct.kill().expect("kill conduct");
-    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT).expect("reap conduct post-kill");
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-kill");
     guard.id = None;
     assert!(unit_path(&home, &id).exists(), "orphan unit remains");
     // Same external stop as above: a killed driver alone leaves a

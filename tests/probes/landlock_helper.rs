@@ -45,8 +45,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use libc::{
-    EACCES, EBADF, ENOSYS, EPERM, O_CLOEXEC, O_PATH, PR_SET_NO_NEW_PRIVS, SYS_landlock_add_rule,
-    SYS_landlock_create_ruleset, SYS_landlock_restrict_self, c_int, close, fcntl, open,
+    EACCES, EBADF, ENOSYS, EPERM, O_CLOEXEC, O_PATH, PR_SET_NO_NEW_PRIVS,
+    SYS_landlock_add_rule, SYS_landlock_create_ruleset,
+    SYS_landlock_restrict_self, c_int, close, fcntl, open,
 };
 
 // (The `LANDLOCK_ABI_VERSION` constant was removed — the helper
@@ -97,7 +98,11 @@ const LANDLOCK_RULE_PATH_BENEATH: u64 = 1;
 
 /// Thin syscall wrapper (libc exposes `SYS_landlock_*` numbers but
 /// not the typed helpers; we use raw `syscall()`).
-unsafe fn syscall2(num: libc::c_long, a1: libc::c_long, a2: libc::c_long) -> c_int {
+unsafe fn syscall2(
+    num: libc::c_long,
+    a1: libc::c_long,
+    a2: libc::c_long,
+) -> c_int {
     unsafe { libc::syscall(num, a1, a2) as c_int }
 }
 
@@ -188,22 +193,29 @@ impl std::fmt::Display for HelperError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unsupported(why) => write!(f, "unsupported: {why}"),
-            Self::BadPath(p, e) => write!(f, "bad path {}: errno {}", p.display(), e),
+            Self::BadPath(p, e) => {
+                write!(f, "bad path {}: errno {}", p.display(), e)
+            },
             Self::ExecFailed(e) => write!(f, "execvp failed: errno {e}"),
             Self::BadArgument(s) => write!(f, "bad argument: {s}"),
         }
     }
 }
 
-fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), HelperError> {
+fn apply_landlock_and_exec(
+    allows: &[PathBuf],
+    argv: &[String],
+) -> Result<(), HelperError> {
     // Open each allowed path with O_PATH so we can pin them by fd
     // for `LANDLOCK_RULE_PATH_BENEATH`. The fd survives in the
     // wrapped process (helper execs into it without CLOEXEC), so the
     // ruleset reaches the wrapped command.
     let mut allowed_fds: Vec<c_int> = Vec::with_capacity(allows.len());
     for path in allows {
-        let cpath = CString::new(path.as_os_str().as_bytes())
-            .map_err(|e| HelperError::BadArgument(format!("{}: {}", path.display(), e)))?;
+        let cpath =
+            CString::new(path.as_os_str().as_bytes()).map_err(|e| {
+                HelperError::BadArgument(format!("{}: {}", path.display(), e))
+            })?;
         let fd = unsafe { open(cpath.as_ptr(), O_PATH | O_CLOEXEC) };
         if fd < 0 {
             let e = io::Error::last_os_error().raw_os_error().unwrap_or(EBADF);
@@ -255,8 +267,12 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
         // The host dispatch layer can probe if it wants a richer
         // verdict; the helper stays truthful.
         return Err(match e {
-            ENOSYS => HelperError::Unsupported("landlock_create_ruleset: ENOSYS"),
-            EPERM => HelperError::Unsupported("landlock_create_ruleset: EPERM"),
+            ENOSYS => {
+                HelperError::Unsupported("landlock_create_ruleset: ENOSYS")
+            },
+            EPERM => {
+                HelperError::Unsupported("landlock_create_ruleset: EPERM")
+            },
             _ => HelperError::Unsupported("landlock_create_ruleset: refused"),
         });
     }
@@ -327,9 +343,15 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
             close(ruleset_fd);
         }
         return Err(match e {
-            ENOSYS => HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): ENOSYS"),
-            EPERM => HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): EPERM"),
-            _ => HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): refused"),
+            ENOSYS => {
+                HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): ENOSYS")
+            },
+            EPERM => {
+                HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): EPERM")
+            },
+            _ => {
+                HelperError::Unsupported("prctl(PR_SET_NO_NEW_PRIVS): refused")
+            },
         });
     }
 
@@ -339,7 +361,9 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
     // cause (seccomp-blocked vs kernel-absent vs capability-denied)
     // is not inferable from errno alone; the host dispatch layer
     // probes if it needs a richer verdict.
-    let r = unsafe { syscall2(SYS_landlock_restrict_self, ruleset_fd as libc::c_long, 0) };
+    let r = unsafe {
+        syscall2(SYS_landlock_restrict_self, ruleset_fd as libc::c_long, 0)
+    };
     if r < 0 {
         let e = io::Error::last_os_error().raw_os_error().unwrap_or(EPERM);
         for &f in &allowed_fds {
@@ -351,7 +375,9 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
             close(ruleset_fd);
         }
         return Err(match e {
-            ENOSYS => HelperError::Unsupported("landlock_restrict_self: ENOSYS"),
+            ENOSYS => {
+                HelperError::Unsupported("landlock_restrict_self: ENOSYS")
+            },
             EPERM => HelperError::Unsupported("landlock_restrict_self: EPERM"),
             _ => HelperError::Unsupported("landlock_restrict_self: refused"),
         });
@@ -369,7 +395,8 @@ fn apply_landlock_and_exec(allows: &[PathBuf], argv: &[String]) -> Result<(), He
         .map(|a| CString::new(a.as_bytes()))
         .collect::<Result<_, _>>()
         .map_err(|e| HelperError::BadArgument(format!("argv: {e}")))?;
-    let mut c_argv_ptrs: Vec<*const libc::c_char> = c_argv.iter().map(|s| s.as_ptr()).collect();
+    let mut c_argv_ptrs: Vec<*const libc::c_char> =
+        c_argv.iter().map(|s| s.as_ptr()).collect();
     c_argv_ptrs.push(std::ptr::null());
     let c_arg0 = &c_argv[0];
     unsafe {
@@ -388,7 +415,9 @@ fn print_help() {
     eprintln!("landlock_helper — Landlock ABI v1 wrapper helper");
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  landlock_helper --allow=<path> [--allow=<path>...] -- <argv>...");
+    eprintln!(
+        "  landlock_helper --allow=<path> [--allow=<path>...] -- <argv>..."
+    );
     eprintln!();
     eprintln!("Exit codes:");
     eprintln!("  0  wrapped command exited normally");

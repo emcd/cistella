@@ -10,8 +10,8 @@ use std::path::Path;
 
 use super::codec::read_outcome;
 use super::{
-    EVICTED_DIR, MAX_FRAME_PAYLOAD, Outcome, Owner, PER_OP_CAP, RECORDS_NAME, Result,
-    SCAN_ENTRY_CAP, decode_frames, op_id_valid, owner_alive,
+    EVICTED_DIR, MAX_FRAME_PAYLOAD, Outcome, Owner, PER_OP_CAP, RECORDS_NAME,
+    Result, SCAN_ENTRY_CAP, decode_frames, op_id_valid, owner_alive,
 };
 
 /// Pruning budget: production defaults mirror the normative caps;
@@ -94,7 +94,8 @@ fn inspect_op(root: &Path, name: &str, now_secs: u64) -> Option<OpView> {
     }
     // A present marker means terminal writes or fsync may still be
     // pending; any symlink here only ever skips (safe direction).
-    let has_marker = std::fs::symlink_metadata(dir.join(super::FINALIZING_MARKER)).is_ok();
+    let has_marker =
+        std::fs::symlink_metadata(dir.join(super::FINALIZING_MARKER)).is_ok();
     let mtime_secs = meta
         .modified()
         .ok()
@@ -118,7 +119,7 @@ fn inspect_op(root: &Path, name: &str, now_secs: u64) -> Option<OpView> {
                 start_readable: false,
                 has_marker,
             });
-        }
+        },
     };
     if !super::trusted_entry(&file_meta) || !file_meta.is_file() {
         return Some(OpView {
@@ -152,7 +153,7 @@ fn inspect_op(root: &Path, name: &str, now_secs: u64) -> Option<OpView> {
                 start_readable: false,
                 has_marker,
             });
-        }
+        },
     };
     let (records, _) = decode_frames(&content);
     let outcome = read_outcome(&records);
@@ -203,7 +204,7 @@ fn is_active(view: &OpView, now_secs: u64, age_secs: u64) -> bool {
                 return now_secs.saturating_sub(view.mtime_secs) <= age_secs;
             }
             false
-        }
+        },
     }
 }
 
@@ -258,7 +259,8 @@ fn remove_op(
         Err(_) => return UnlinkOutcome::Failed,
     };
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
-    let op_fd: std::os::fd::OwnedFd = unsafe { std::os::fd::OwnedFd::from_raw_fd(op_raw) };
+    let op_fd: std::os::fd::OwnedFd =
+        unsafe { std::os::fd::OwnedFd::from_raw_fd(op_raw) };
     use std::os::fd::AsRawFd;
     let unlink = |file: &str| {
         unlinkat(
@@ -287,7 +289,11 @@ fn remove_op(
 /// Records one eviction as a marker file under `<root>/evicted/`,
 /// best-effort: the loss stays observable even when the marker
 /// write fails (the prune report counts the attempt).
-fn record_eviction(root: &crate::guest_anchor::AnchoredDir, name: &str, reason: &str) {
+fn record_eviction(
+    root: &crate::guest_anchor::AnchoredDir,
+    name: &str,
+    reason: &str,
+) {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -323,7 +329,8 @@ fn record_eviction(root: &crate::guest_anchor::AnchoredDir, name: &str, reason: 
         )
         .map_err(|errno| errno.to_string())?;
         // SAFETY: freshly opened above, owned here, wrapped exactly once.
-        let fd: std::os::fd::OwnedFd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+        let fd: std::os::fd::OwnedFd =
+            unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
         use std::os::fd::AsRawFd;
         // No follow, no blocking open, regular file only: a planted
         // symlink truncates nothing outside the log tree, a planted
@@ -342,7 +349,8 @@ fn record_eviction(root: &crate::guest_anchor::AnchoredDir, name: &str, reason: 
         )
         .map_err(|errno| errno.to_string())?;
         // SAFETY: freshly opened above, owned here, wrapped exactly once.
-        let file: std::fs::File = unsafe { std::os::fd::OwnedFd::from_raw_fd(file_raw).into() };
+        let file: std::fs::File =
+            unsafe { std::os::fd::OwnedFd::from_raw_fd(file_raw).into() };
         // Refuse non-regular files outright: with O_NOFOLLOW the open
         // itself cannot traverse a symlink, and this check drops FIFOs,
         // sockets, and directories before any byte is written.
@@ -359,7 +367,9 @@ fn record_eviction(root: &crate::guest_anchor::AnchoredDir, name: &str, reason: 
                 })
                 .unwrap_or(true);
             if bad {
-                return Err("operation log marker is not a regular file".to_string());
+                return Err(
+                    "operation log marker is not a regular file".to_string()
+                );
             }
         }
         let mut file = file;
@@ -417,7 +427,9 @@ pub fn select_victims(root: &Path, budget: &Budget) -> Selection {
             views.push(view);
         }
     }
-    let aged = |view: &OpView| now_secs.saturating_sub(view.mtime_secs) > budget.age_secs;
+    let aged = |view: &OpView| {
+        now_secs.saturating_sub(view.mtime_secs) > budget.age_secs
+    };
     let mut success: Vec<&OpView> = Vec::new();
     let mut failure: Vec<&OpView> = Vec::new();
     for view in &views {
@@ -434,7 +446,9 @@ pub fn select_victims(root: &Path, budget: &Budget) -> Selection {
             // and every unknown completed outcome accrue to the
             // protected failure class rather than silently
             // passing as success.
-            Outcome::Completed(outcome) if outcome == "success" => success.push(view),
+            Outcome::Completed(outcome) if outcome == "success" => {
+                success.push(view)
+            },
             _ => failure.push(view),
         }
     }
@@ -507,10 +521,10 @@ pub fn evict(root: &Path, victims: &[Victim], budget: &Budget) -> PruneReport {
                 report.evicted += 1;
                 report.bytes_reclaimed += bytes;
                 record_eviction(&anchored, &victim.name, victim.reason);
-            }
+            },
             UnlinkOutcome::Skipped => {
                 report.skipped += 1;
-            }
+            },
             UnlinkOutcome::Failed => report.eviction_failures += 1,
         }
     }
@@ -563,7 +577,8 @@ fn prune_eviction_markers(
         Err(_) => return Ok(()),
     };
     // SAFETY: freshly opened above, owned here, wrapped exactly once.
-    let fd: std::os::fd::OwnedFd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+    let fd: std::os::fd::OwnedFd =
+        unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
     use std::os::fd::AsRawFd;
     let mut scanned = 0usize;
     let mut entries: Vec<(String, u64, bool)> = Vec::new();
@@ -574,14 +589,17 @@ fn prune_eviction_markers(
                 break;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let is_link = entry.file_type().map(|t| t.is_symlink()).unwrap_or(true);
+            let is_link =
+                entry.file_type().map(|t| t.is_symlink()).unwrap_or(true);
             // lstat, never follow: a planted link is never read.
-            let mtime = std::fs::symlink_metadata(root.path().join(EVICTED_DIR).join(&name))
-                .ok()
-                .and_then(|meta| meta.modified().ok())
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(now_secs);
+            let mtime = std::fs::symlink_metadata(
+                root.path().join(EVICTED_DIR).join(&name),
+            )
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(now_secs);
             entries.push((name, mtime, is_link));
         }
     }

@@ -88,7 +88,7 @@ impl StreamReader {
             FramePoll::Complete(body) => {
                 self.first_progress = None;
                 Ok(Some(body))
-            }
+            },
             // Idle and mid-slice progress both yield the slice:
             // Partial resumes next call with state intact instead
             // of failing the trickle.

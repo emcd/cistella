@@ -18,7 +18,8 @@ fn guest_tables_default_plain() {
     )
     .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    let prof: cistella::profile::Profile = toml::from_str(&text).expect("minimal parses");
+    let prof: cistella::profile::Profile =
+        toml::from_str(&text).expect("minimal parses");
     // Absent tables: podman backend, no guests — 0.1.x profiles
     // run unchanged on the plain 2.x path.
     assert_eq!(
@@ -47,7 +48,8 @@ fn guest_tables_admit_declared_landlock() {
     )
     .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    let prof: cistella::profile::Profile = toml::from_str(&text).expect("tables parse");
+    let prof: cistella::profile::Profile =
+        toml::from_str(&text).expect("tables parse");
     use cistella::guest_registry::Registry;
     use cistella::profile::{ExtensionResolution, IsolatorResolution};
     assert_eq!(
@@ -74,7 +76,8 @@ fn guest_tables_refuse_unknown_and_duplicate() {
     )
     .unwrap();
     let prof: cistella::profile::Profile =
-        toml::from_str(&std::fs::read_to_string(&path).unwrap()).expect("parses");
+        toml::from_str(&std::fs::read_to_string(&path).unwrap())
+            .expect("parses");
     let error = prof.resolve_isolator(&Registry::default()).unwrap_err();
     assert!(error.to_string().contains("docker"), "got: {error}");
     // Unknown extension refuses (a typo can never silently
@@ -100,7 +103,8 @@ fn guest_tables_refuse_unknown_and_duplicate() {
         )
         .unwrap();
         let prof: cistella::profile::Profile =
-            toml::from_str(&std::fs::read_to_string(&path).unwrap()).expect("parses");
+            toml::from_str(&std::fs::read_to_string(&path).unwrap())
+                .expect("parses");
         let error = prof.resolve_extensions(&Registry::default()).unwrap_err();
         assert!(error.to_string().contains(expect), "got: {error}");
     }
@@ -125,7 +129,10 @@ fn test_registry() -> Registry {
     .expect("test registry parses")
 }
 
-fn profile_naming(isolator: &str, extensions: &[&str]) -> cistella::profile::Profile {
+fn profile_naming(
+    isolator: &str,
+    extensions: &[&str],
+) -> cistella::profile::Profile {
     let mut toml = format!(
         "image = \"localhost/cistella/opencode:example\"\n\
          mounts = []\n\
@@ -144,7 +151,9 @@ fn registered_names_resolve_by_table() {
     let registry = test_registry();
     let prof = profile_naming("file-isolator", &["file-extension"]);
     match prof.resolve_isolator(&registry).expect("isolator resolves") {
-        IsolatorResolution::Registered(entry) => assert_eq!(entry.name, "file-isolator"),
+        IsolatorResolution::Registered(entry) => {
+            assert_eq!(entry.name, "file-isolator")
+        },
         IsolatorResolution::Podman => panic!("must resolve registered"),
     }
     let extensions = prof
@@ -152,10 +161,14 @@ fn registered_names_resolve_by_table() {
         .expect("extension resolves");
     assert_eq!(extensions.len(), 1);
     match &extensions[0] {
-        ExtensionResolution::Registered(entry) => assert_eq!(entry.name, "file-extension"),
-        ExtensionResolution::Landlock | ExtensionResolution::Tmpdir | ExtensionResolution::Ssh => {
+        ExtensionResolution::Registered(entry) => {
+            assert_eq!(entry.name, "file-extension")
+        },
+        ExtensionResolution::Landlock
+        | ExtensionResolution::Tmpdir
+        | ExtensionResolution::Ssh => {
             panic!("must resolve registered")
-        }
+        },
     }
     // Shipped names resolve first even with a populated registry.
     let prof = profile_naming("podman", &["landlock"]);

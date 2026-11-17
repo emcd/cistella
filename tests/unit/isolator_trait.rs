@@ -8,11 +8,13 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cistella::framework::contract::{
-    CancelFlag, Capability, ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
+    CancelFlag, Capability, ExecutionHandle, LifecycleState,
+    ReconciliationKey, UnitHandle,
 };
 use cistella::framework::isolator::{
-    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities, RemovedAttestation,
-    StartedAttestation, StdioBinding, StoppedAttestation, UnitSnapshot,
+    CreateSpec, ExecutionOutcome, Isolator, IsolatorCapabilities,
+    RemovedAttestation, StartedAttestation, StdioBinding, StoppedAttestation,
+    UnitSnapshot,
 };
 use cistella::isolators::podman::classify_state;
 
@@ -110,11 +112,17 @@ impl Isolator for MemIsolator {
                 execution.as_str()
             )));
         }
-        outcomes.insert(execution.as_str().to_string(), ExecutionOutcome::Exited(0));
+        outcomes.insert(
+            execution.as_str().to_string(),
+            ExecutionOutcome::Exited(0),
+        );
         Ok(ExecutionOutcome::Exited(0))
     }
 
-    fn inspect(&self, handle: &UnitHandle) -> Result<UnitSnapshot, cistella::error::CistellaError> {
+    fn inspect(
+        &self,
+        handle: &UnitHandle,
+    ) -> Result<UnitSnapshot, cistella::error::CistellaError> {
         let lifecycle = self
             .states
             .lock()
@@ -131,7 +139,10 @@ impl Isolator for MemIsolator {
         })
     }
 
-    fn state(&self, handle: &UnitHandle) -> Result<LifecycleState, cistella::error::CistellaError> {
+    fn state(
+        &self,
+        handle: &UnitHandle,
+    ) -> Result<LifecycleState, cistella::error::CistellaError> {
         Ok(self.inspect(handle)?.lifecycle)
     }
 
@@ -307,7 +318,8 @@ fn unit_dir_scan_finds_key_and_ignores_others() {
         "[Container]\nLabel=cistella.reconciliation-key=\"key-2\"\n",
     )
     .expect("write unit");
-    std::fs::write(dir.path().join("notes.txt"), "not a unit").expect("write notes");
+    std::fs::write(dir.path().join("notes.txt"), "not a unit")
+        .expect("write notes");
     let entries = std::fs::read_dir(dir.path()).expect("read dir");
     assert_eq!(
         scan_unit_dir(entries, "key-1").expect("scan runs clean"),
@@ -325,21 +337,28 @@ fn unit_dir_scan_refuses_unreadable_candidates() {
     use cistella::isolators::podman::scan_unit_dir;
     let dir = tempfile::tempdir().expect("tmpdir");
     let locked = dir.path().join("cistella-locked.container");
-    std::fs::write(&locked, "[Container]\nLabel=cistella.id=\"x\"\n").expect("write unit");
+    std::fs::write(&locked, "[Container]\nLabel=cistella.id=\"x\"\n")
+        .expect("write unit");
     // Owner bits fully cleared (read-only alone stays readable).
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod 000");
     if std::fs::read(&locked).is_ok() {
         // File modes not enforced here (e.g. running as root): the
         // refusal path cannot be exercised.
         eprintln!("skip: unreadable-file probe reads back");
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).expect("restore");
+        std::fs::set_permissions(
+            &locked,
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("restore");
         return;
     }
     let entries = std::fs::read_dir(dir.path()).expect("read dir");
     let error = scan_unit_dir(entries, "key-1").unwrap_err();
     assert!(error.to_string().contains("unreadable candidate unit"));
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).expect("restore");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644))
+        .expect("restore");
 }
 
 #[test]
@@ -348,8 +367,10 @@ fn unit_dir_scan_refuses_failed_iteration() {
     // Deterministic iterator failure: no filesystem stages a
     // mid-iteration getdents error reliably (open fds keep working
     // past chmod), so the test injects the Err item directly.
-    let injected: std::io::Result<std::fs::DirEntry> = Err(std::io::Error::other("staged"));
-    let error = scan_unit_dir(vec![injected].into_iter(), "key-1").unwrap_err();
+    let injected: std::io::Result<std::fs::DirEntry> =
+        Err(std::io::Error::other("staged"));
+    let error =
+        scan_unit_dir(vec![injected].into_iter(), "key-1").unwrap_err();
     assert!(error.to_string().contains("unit directory iteration"));
 }
 

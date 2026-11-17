@@ -8,12 +8,14 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::framework::contract::CancelFlag;
 
-use super::protocol_frames::{AWAIT_RESULT_OP, FrameAssembler, FramePoll, read_frame};
+use super::protocol_frames::{
+    AWAIT_RESULT_OP, FrameAssembler, FramePoll, read_frame,
+};
 use super::{
-    DEFAULT_MAX_FRAME, Envelope, HOST_MAX_FRAME, HelloRequest, HelloResponse, Negotiated,
-    PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, READ_POLL_BUDGET, SEND_BUDGET, StreamOutcome,
-    envelope_bytes, is_pending, parse_envelope, protocol_error, wait_readable,
-    write_frame_deadline,
+    DEFAULT_MAX_FRAME, Envelope, HOST_MAX_FRAME, HelloRequest, HelloResponse,
+    Negotiated, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, READ_POLL_BUDGET,
+    SEND_BUDGET, StreamOutcome, envelope_bytes, is_pending, parse_envelope,
+    protocol_error, wait_readable, write_frame_deadline,
 };
 
 /// Frame exchange over a byte stream: correlation, negotiation, bounds.
@@ -64,7 +66,10 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     ///
     /// Returns `CistellaError::Protocol` when EOF does not arrive in
     /// budget or the drain fails.
-    pub(crate) fn drain_reader_to_eof(&mut self, deadline: Instant) -> Result<()> {
+    pub(crate) fn drain_reader_to_eof(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<()> {
         let mut chunk = [0u8; 8192];
         loop {
             if !wait_readable(&self.reader, deadline)? {
@@ -75,8 +80,14 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
             match self.reader.read(&mut chunk) {
                 Ok(0) => return Ok(()),
                 Ok(_) => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(protocol_error(format!("stdout EOF drain: {e}"))),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    continue;
+                },
+                Err(e) => {
+                    return Err(protocol_error(format!(
+                        "stdout EOF drain: {e}"
+                    )));
+                },
             }
         }
     }
@@ -99,13 +110,22 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     ///
     /// Returns `CistellaError::Protocol` on a closed exchange,
     /// oversize, budget exhaustion, or write failure.
-    pub fn send(&mut self, envelope: &Envelope, deadline: Instant) -> Result<()> {
+    pub fn send(
+        &mut self,
+        envelope: &Envelope,
+        deadline: Instant,
+    ) -> Result<()> {
         let max_frame = self.max_frame;
         let writer = self
             .writer
             .as_mut()
             .ok_or_else(|| protocol_error("exchange is closed"))?;
-        write_frame_deadline(writer, &envelope_bytes(envelope), max_frame, deadline)
+        write_frame_deadline(
+            writer,
+            &envelope_bytes(envelope),
+            max_frame,
+            deadline,
+        )
     }
 
     /// Receives one envelope frame and parses it.
@@ -140,7 +160,11 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     ///
     /// Returns `CistellaError::Protocol` on framing errors, version
     /// mismatch, or a non-hello response.
-    pub fn hello(&mut self, capabilities: &[String], timeout: Duration) -> Result<Negotiated> {
+    pub fn hello(
+        &mut self,
+        capabilities: &[String],
+        timeout: Duration,
+    ) -> Result<Negotiated> {
         let request = Envelope {
             protocol: PROTOCOL_MAJOR,
             id: "hello".to_string(),
@@ -154,7 +178,8 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
         // One end-to-end budget for send + receive.
         let deadline = Instant::now() + timeout;
         self.send(&request, deadline)?;
-        let response = self.recv(deadline.saturating_duration_since(Instant::now()))?;
+        let response =
+            self.recv(deadline.saturating_duration_since(Instant::now()))?;
         if response.id != "hello" {
             return Err(protocol_error("hello correlation failed"));
         }
@@ -172,7 +197,9 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
             return Err(protocol_error("expected hello response"));
         }
         let hello: HelloResponse = serde_json::from_value(response.payload)
-            .map_err(|_| protocol_error("bad hello payload: shape violation"))?;
+            .map_err(|_| {
+                protocol_error("bad hello payload: shape violation")
+            })?;
         if hello.version != PROTOCOL_MAJOR {
             return Err(protocol_error(format!(
                 "unsupported guest version {}",
@@ -200,7 +227,12 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     ///
     /// Returns `CistellaError::Protocol` on correlation failure,
     /// pending-on-solo, timeout, or transport errors.
-    pub fn request(&mut self, op: &str, payload: Value, timeout: Duration) -> Result<Value> {
+    pub fn request(
+        &mut self,
+        op: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let id = self.mint_id();
         self.live_ids.insert(id.clone());
         let deadline = Instant::now() + timeout;
@@ -249,7 +281,8 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
             payload,
         };
         // Unbounded streams still bound the single send.
-        let send_deadline = deadline.unwrap_or_else(|| Instant::now() + SEND_BUDGET);
+        let send_deadline =
+            deadline.unwrap_or_else(|| Instant::now() + SEND_BUDGET);
         self.send(&envelope, send_deadline)?;
         if deadline.is_none() {
             return self.collect_unbounded(&id, cancel);
@@ -268,7 +301,7 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
                         return Err(protocol_error(format!("{op} timed out")));
                     }
                     end - now
-                }
+                },
                 // Unreachable: None returns above, but the match must
                 // stay total over the option.
                 None => READ_POLL_BUDGET,
@@ -297,7 +330,11 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
     /// Returns `CistellaError::Protocol` on correlation failure,
     /// cancellation, framing errors, or transport errors — never on
     /// idle silence, however long.
-    fn collect_unbounded(&mut self, id: &str, cancel: &CancelFlag) -> Result<StreamOutcome> {
+    fn collect_unbounded(
+        &mut self,
+        id: &str,
+        cancel: &CancelFlag,
+    ) -> Result<StreamOutcome> {
         let mut assembler = FrameAssembler::new();
         let mut pending = 0u32;
         loop {
@@ -306,7 +343,11 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
                 return Err(protocol_error("stream cancelled"));
             }
             let slice = Instant::now() + READ_POLL_BUDGET;
-            match assembler.poll_once(&mut self.reader, self.max_frame, slice)? {
+            match assembler.poll_once(
+                &mut self.reader,
+                self.max_frame,
+                slice,
+            )? {
                 FramePoll::Complete(body) => {
                     let response = parse_envelope(&body)?;
                     Self::check_correlation(&response, id)?;
@@ -319,7 +360,7 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
                         pending,
                         result: response.payload,
                     });
-                }
+                },
                 // Idle silence and mid-frame progress both poll again;
                 // the assembler keeps partial bytes across slices.
                 FramePoll::Idle | FramePoll::Partial => continue,
@@ -341,7 +382,8 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
             payload,
         };
         self.send(&envelope, deadline)?;
-        let response = self.recv(deadline.saturating_duration_since(Instant::now()))?;
+        let response =
+            self.recv(deadline.saturating_duration_since(Instant::now()))?;
         Self::check_correlation(&response, id)?;
         if is_pending(&response.payload) {
             return Err(protocol_error(format!(
@@ -358,7 +400,9 @@ impl<R: Read + AsFd, W: Write + AsFd> Exchange<R, W> {
         // IDs are grammar-checked at parse; the diagnostic names no
         // guest string (value-free).
         if response.id != id {
-            return Err(protocol_error("response for unknown or duplicate id"));
+            return Err(protocol_error(
+                "response for unknown or duplicate id",
+            ));
         }
         Ok(())
     }

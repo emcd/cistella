@@ -17,7 +17,8 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
 
-    let (mut conduct, id, mut guard) = spawn_conduct(&home, &worktree_str, &["--identity", "bob"]);
+    let (mut conduct, id, mut guard) =
+        spawn_conduct(&home, &worktree_str, &["--identity", "bob"]);
     wait_active(&id);
     let container = format!("cistella-{id}");
     // Harness-running (not just service-active): the guest binds
@@ -50,7 +51,8 @@ fn inspect_postmortem_and_gc_reap_orphan() {
     // holding it across our own gc would self-deadlock
     // (separate process, same flock). Stop and the assertions
     // never take the lock themselves.
-    let _creation_freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
+    let _creation_freeze =
+        cistella::lock::LockGuard::acquire().expect("lock acquires");
     conduct.kill().expect("kill conduct");
     let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
         .expect("reap conduct post-teardown (missing reap is wedged-child evidence, not cleanup)");

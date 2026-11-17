@@ -77,7 +77,8 @@ fn fatal_terminal_failed_shutdown_names_uncertainty_without_latch() {
     let recorded = report.lock().expect("report lock").clone();
     let recorded = recorded.expect("proof failure records for close()");
     assert!(
-        recorded.contains("guest send failed") && recorded.contains("surviving process group"),
+        recorded.contains("guest send failed")
+            && recorded.contains("surviving process group"),
         "record names reason and class, got: {recorded}"
     );
 }
@@ -237,7 +238,8 @@ fn rehost_failure_err_dominates_regardless_of_residue() {
     for residue_ok in [false, true] {
         let teardown_err = CistellaError::Protocol("kill_group".to_string());
         let reported =
-            rehost_failure_verdict(Err(teardown_err), residue_ok, original()).to_string();
+            rehost_failure_verdict(Err(teardown_err), residue_ok, original())
+                .to_string();
         assert_eq!(
             reported, "protocol: kill_group",
             "teardown error dominates, got: {reported}"
@@ -311,7 +313,9 @@ fn preserve_fd_probe_requires_singular_flag() {
 
 #[test]
 fn plural_strategy_selects_count_form() {
-    use cistella::transport::{PreserveStrategy, exec_hooked_args, exec_hooked_plain_args};
+    use cistella::transport::{
+        PreserveStrategy, exec_hooked_args, exec_hooked_plain_args,
+    };
     // Singular keeps the exact list form at the natural number;
     // plural composes the bare count (write-end pre-duped onto
     // fd 3 by the backend, so no number crosses).
@@ -347,7 +351,12 @@ fn plural_strategy_selects_count_form() {
         !plural.iter().any(|flag| flag.starts_with("--preserve-fd=")),
         "{plural:?}"
     );
-    let plain = exec_hooked_plain_args("ctr", &["sh".to_string()], PreserveStrategy::Plural, 9);
+    let plain = exec_hooked_plain_args(
+        "ctr",
+        &["sh".to_string()],
+        PreserveStrategy::Plural,
+        9,
+    );
     assert!(plain.contains(&"--preserve-fds=1".to_string()), "{plain:?}");
 }
 
@@ -360,13 +369,17 @@ fn diag_inheritable_gate_covers_owned_pipe() {
     // deterministic on owned fds, no table dependence.
     let (read, write) = nix::unistd::pipe().expect("pipe");
     for fd in [read.as_raw_fd(), write.as_raw_fd()] {
-        let current = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFD).expect("getfd");
-        let cleared =
-            nix::fcntl::FdFlag::from_bits_retain(current) & !nix::fcntl::FdFlag::FD_CLOEXEC;
-        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(cleared)).expect("clear");
+        let current = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFD)
+            .expect("getfd");
+        let cleared = nix::fcntl::FdFlag::from_bits_retain(current)
+            & !nix::fcntl::FdFlag::FD_CLOEXEC;
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(cleared))
+            .expect("clear");
         assert_diag_inheritable(fd).expect("inheritable passes");
-        let set = nix::fcntl::FdFlag::from_bits_retain(current) | nix::fcntl::FdFlag::FD_CLOEXEC;
-        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(set)).expect("set");
+        let set = nix::fcntl::FdFlag::from_bits_retain(current)
+            | nix::fcntl::FdFlag::FD_CLOEXEC;
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(set))
+            .expect("set");
         let error = assert_diag_inheritable(fd).unwrap_err();
         assert!(
             error.to_string().contains("preservation refused"),

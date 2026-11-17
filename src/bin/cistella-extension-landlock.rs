@@ -22,12 +22,12 @@ use cistella::framework::contract::{
     HOOK_ARTIFACT_KIND_BLOB, HOOK_ON_FAILURE_PRE_EXEC, HOOK_STAGING_ISOLATOR,
 };
 use cistella::framework::protocol::{
-    DEFAULT_MAX_FRAME, HOST_MAX_FRAME, PRE_NEGOTIATION_MAX_FRAME, PROTOCOL_MAJOR, envelope_bytes,
-    parse_envelope, read_frame, write_frame,
+    DEFAULT_MAX_FRAME, HOST_MAX_FRAME, PRE_NEGOTIATION_MAX_FRAME,
+    PROTOCOL_MAJOR, envelope_bytes, parse_envelope, read_frame, write_frame,
 };
 use cistella::framework::registry::{
-    LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH, WRAPPER_FILE_NAME,
-    digest_sibling,
+    LANDLOCK_PROBE_OP, SHIPPED_REGISTRY_ID, STAGED_WRAPPER_GUEST_PATH,
+    WRAPPER_FILE_NAME, digest_sibling,
 };
 
 /// Role capability announced at hello (also the closed-negotiation
@@ -70,11 +70,14 @@ fn send<W: Write>(
 /// sets plus the single Landlock hook. The wrapper digest is
 /// observed from the sibling install directory at answer time, so
 /// the advertised bytes are exactly the shipped bytes.
-fn answer_prepare(exe_dir: &std::path::Path) -> Result<serde_json::Value, ExitCode> {
-    let sha256 = digest_sibling(exe_dir, WRAPPER_FILE_NAME).map_err(|error| {
-        eprintln!("error: wrapper unavailable: {error}");
-        ExitCode::from(2)
-    })?;
+fn answer_prepare(
+    exe_dir: &std::path::Path,
+) -> Result<serde_json::Value, ExitCode> {
+    let sha256 =
+        digest_sibling(exe_dir, WRAPPER_FILE_NAME).map_err(|error| {
+            eprintln!("error: wrapper unavailable: {error}");
+            ExitCode::from(2)
+        })?;
     Ok(serde_json::json!({
         "environment": [],
         "mounts": [],
@@ -118,10 +121,11 @@ fn main() -> ExitCode {
 
     // Hello under the pre-negotiation ceiling: version must match
     // before any planning, and the request must actually be hello.
-    let hello_body = match read_frame(&mut reader, PRE_NEGOTIATION_MAX_FRAME, HELLO_WAIT) {
-        Ok(body) => body,
-        Err(_) => return ExitCode::from(2),
-    };
+    let hello_body =
+        match read_frame(&mut reader, PRE_NEGOTIATION_MAX_FRAME, HELLO_WAIT) {
+            Ok(body) => body,
+            Err(_) => return ExitCode::from(2),
+        };
     let hello = match parse_envelope(&hello_body) {
         Ok(envelope) => envelope,
         Err(_) => return ExitCode::from(2),
@@ -143,7 +147,8 @@ fn main() -> ExitCode {
     let body = envelope_bytes(&response);
     {
         let mut writer = stdout.lock();
-        if write_frame(&mut writer, &body, PRE_NEGOTIATION_MAX_FRAME).is_err() {
+        if write_frame(&mut writer, &body, PRE_NEGOTIATION_MAX_FRAME).is_err()
+        {
             return ExitCode::from(2);
         }
     }
@@ -155,10 +160,16 @@ fn main() -> ExitCode {
         // digest is re-observed per answer, never cached.
         let frame = match read_frame(&mut reader, max_frame, OP_BUDGET) {
             Ok(body) => body,
-            Err(error) if cistella::framework::protocol::is_clean_eof(&error) => {
+            Err(error)
+                if cistella::framework::protocol::is_clean_eof(&error) =>
+            {
                 return ExitCode::SUCCESS;
-            }
-            Err(error) if cistella::framework::protocol::is_read_timeout(&error) => continue,
+            },
+            Err(error)
+                if cistella::framework::protocol::is_read_timeout(&error) =>
+            {
+                continue;
+            },
             Err(_) => return ExitCode::from(2),
         };
         let envelope = match parse_envelope(&frame) {
@@ -175,7 +186,9 @@ fn main() -> ExitCode {
             Err(code) => return code,
         };
         let mut writer = stdout.lock();
-        if send(&mut writer, &envelope.id, "prepare", payload, max_frame).is_err() {
+        if send(&mut writer, &envelope.id, "prepare", payload, max_frame)
+            .is_err()
+        {
             return ExitCode::from(2);
         }
     }

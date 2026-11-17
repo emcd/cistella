@@ -11,13 +11,17 @@ use crate::error::Result;
 /// Opens one operation log, logging the loss to stderr instead of
 /// failing: the business operation always proceeds.
 #[must_use]
-pub fn open_best_effort(root: &Path, verb: &str, parent: Option<&str>) -> Option<Operation> {
+pub fn open_best_effort(
+    root: &Path,
+    verb: &str,
+    parent: Option<&str>,
+) -> Option<Operation> {
     match Operation::open(root, verb, parent, &read_injected()) {
         Ok(op) => Some(op),
         Err(error) => {
             eprintln!("operation log unavailable ({verb}): {error}");
             None
-        }
+        },
     }
 }
 
@@ -140,7 +144,9 @@ impl Observed {
     #[must_use]
     pub fn queried(value: Option<&str>) -> Self {
         match value {
-            Some(text) if !text.is_empty() => Observed::Present(text.to_string()),
+            Some(text) if !text.is_empty() => {
+                Observed::Present(text.to_string())
+            },
             _ => Observed::Missing,
         }
     }
@@ -177,7 +183,11 @@ pub fn record_gc_classify(op: &mut Option<Operation>, c: &Classify) {
 
 /// Records a gc scan-level receipt (used when the scan aborts
 /// before any per-candidate classification exists).
-pub fn record_gc_scan(op: &mut Option<Operation>, decision: &str, detail: &str) {
+pub fn record_gc_scan(
+    op: &mut Option<Operation>,
+    decision: &str,
+    detail: &str,
+) {
     record_step(
         op,
         serde_json::json!({
@@ -212,7 +222,11 @@ pub fn record_gc_reap(
 
 /// Records one gc sweep phase (tmpdir, attestation); silent on
 /// logging failure.
-pub fn record_gc_phase(op: &mut Option<Operation>, phase: &str, reaped: &[String]) {
+pub fn record_gc_phase(
+    op: &mut Option<Operation>,
+    phase: &str,
+    reaped: &[String],
+) {
     record_step(
         op,
         serde_json::json!({

@@ -1,84 +1,28 @@
-//! The `conduct` verb for the `cistella` binary: session hosting
-//! orchestration (mint, install, start, exec, teardown) plus its
-//! helpers.
+//! Session hosting orchestration: mint, install, start, exec, teardown.
 //!
-//! Bin-crate module (declared in `main.rs`, NOT part of the library):
-//! moved verbatim from `main.rs`, no logic changes.
+//! Split from `cli_conduct.rs` at the file-size limit.
 
 use crate::cli_util::canonical_directory;
 use cistella::framework::conduct::{
-    abort_startup, finalize_unobservable, host_isolator, release_client, report_release,
+    abort_startup, finalize_unobservable, host_isolator, release_client,
+    report_release,
 };
 use cistella::framework::contract::{Deadlines, ReconciliationKey};
-use cistella::framework::isolator::{CreateSpec, ExecutionOutcome, Isolator, StdioBinding};
+use cistella::framework::isolator::{
+    CreateSpec, ExecutionOutcome, Isolator, StdioBinding,
+};
 use cistella::framework::prepare_select::prepare_selected_extension;
 use cistella::framework::signals;
 use cistella::guest_registry::Registry;
-use cistella::isolators::client::WireClient;
 use cistella::mount::{MountMode, MountTriple, podman_volume_args};
 use cistella::profile::Profile;
 use cistella::runtime::resolve_image_digest;
 use cistella::session::{Session, mint_session_id, parse_cli_label};
 
-/// Returns the cwd as a string for the `--session-directory` host default.
-fn cwd_string() -> Result<String, cistella::error::CistellaError> {
-    std::env::current_dir()
-        .map_err(|e| cistella::error::CistellaError::Runtime(format!("cwd: {e}")))
-        .map(|p| p.to_string_lossy().to_string())
-}
-
-/// Returns the default identity label (invoking user, else `default`).
-fn default_identity() -> String {
-    let user = std::env::var("USER").unwrap_or_default();
-    if !user.is_empty() {
-        return user;
-    }
-    let out = std::process::Command::new("id")
-        .arg("-un")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if out.is_empty() {
-        "default".to_string()
-    } else {
-        out
-    }
-}
-/// Retires a proven-dead pre-exec client and hosts a
-/// replacement under the still-held creation-window guard. Close
-/// (unconditional join/unlink) frees the rendezvous path, then a
-/// fresh host replays the same key. The first-death context
-/// reports to stderr at retire time; the second failure dominates
-/// downstream. Re-host failure converges directly by name with the
-/// lock-held half — the full converge would re-acquire the guard
-/// and deadlock — and a residue-dominant report.
-///
-/// Returns the fresh client, or the terminal error after
-/// converging (the caller drops the guard and reports).
-fn retire_and_rehost(
-    client: WireClient,
-    exe_dir: &std::path::Path,
-    rendezvous_dir: &std::path::Path,
-    container_name: &str,
-    session_id: &str,
-    first_error: &cistella::error::CistellaError,
-    isolator: &cistella::profile::IsolatorResolution,
-) -> Result<WireClient, cistella::error::CistellaError> {
-    eprintln!("error: pre-exec guest death ({first_error}): retiring client and re-hosting");
-    report_release(release_client(client, rendezvous_dir));
-    match host_isolator(exe_dir, rendezvous_dir, isolator) {
-        Ok(fresh) => Ok(fresh),
-        Err(rehost_error) => {
-            let teardown_result = cistella::runtime::teardown_inner(container_name, session_id);
-            let residue_ok = cistella::runtime::residue_gone(container_name);
-            Err(cistella::isolators::client::rehost_failure_verdict(
-                teardown_result,
-                residue_ok,
-                rehost_error,
-            ))
-        }
-    }
-}
+use super::{
+    cwd_string, default_identity, retire_and_rehost, start_delay_ms,
+    start_gate,
+};
 /// Implements `conduct`: mint, install under lock, start, exec, teardown.
 ///
 /// Ten parameters mirror the conduct CLI surface one-to-one; bundling
@@ -102,7 +46,8 @@ pub(crate) fn conduct_session(
 ) -> Result<i32, cistella::error::CistellaError> {
     use cistella::error::CistellaError;
     use cistella::profile::ResolutionSource;
-    let source = ResolutionSource::from_host_env(configuration_directory.as_deref())?;
+    let source =
+        ResolutionSource::from_host_env(configuration_directory.as_deref())?;
     let directory_raw = match session_directory {
         Some(d) => d,
         None => cwd_string()?,
@@ -185,7 +130,11 @@ pub(crate) fn conduct_session(
         .iter()
         .map(|a| cistella::mount::parse_mount_triple(a))
         .collect::<Result<_, _>>()?;
-    let mut triples = cistella::mount::merge_cli_mounts(&triples, &cli_triples, &worktree_target)?;
+    let mut triples = cistella::mount::merge_cli_mounts(
+        &triples,
+        &cli_triples,
+        &worktree_target,
+    )?;
     cistella::mount::validate_mounts(&triples, &prof.container_home)?;
     // Nested-under-RO availability preflight: admitted topologies start
     // only when the intermediate chain pre-exists in the RO ancestor's
@@ -198,11 +147,17 @@ pub(crate) fn conduct_session(
     // Contract; absence-by-default is preserved (the unacknowledged
     // compiled-default denial still refuses).
     let policy = cistella::framework::policy::PolicySet::load(None)?;
-    cistella::framework::conduct::evaluate_profile_contributions(&prof, &accepted_env, &policy)?;
-    let exe_dir =
-        std::env::current_exe().map_err(|e| CistellaError::Runtime(format!("driver path: {e}")))?;
+    cistella::framework::conduct::evaluate_profile_contributions(
+        &prof,
+        &accepted_env,
+        &policy,
+    )?;
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| CistellaError::Runtime(format!("driver path: {e}")))?;
     let exe_dir = exe_dir.parent().ok_or_else(|| {
-        CistellaError::Runtime("driver binary has no parent directory".to_string())
+        CistellaError::Runtime(
+            "driver binary has no parent directory".to_string(),
+        )
     })?;
     // SSH ambient selection rides positionally parallel to the
     // extensions vector (see `Profile::ssh_selection_argv`):
@@ -214,9 +169,9 @@ pub(crate) fn conduct_session(
     // the empty plan, pure Podman behavior; registered means the
     // recorded role required with hooks optional; shipped Landlock
     // keeps the declared-but-empty refusal below).
-    let landlock_selected = extensions
-        .iter()
-        .any(|entry| matches!(entry, cistella::profile::ExtensionResolution::Landlock));
+    let landlock_selected = extensions.iter().any(|entry| {
+        matches!(entry, cistella::profile::ExtensionResolution::Landlock)
+    });
     // The prepare lease drops here on every path (quiescence was
     // proven in-runner wherever a handle came back; unproven paths
     // retain their record for stale-gc instead of returning one).
@@ -244,7 +199,11 @@ pub(crate) fn conduct_session(
     // reconciles orphans. Failures refuse pre-create.
     if !evaluated.merged.cleanup.is_empty() {
         let base = cistella::lock::runtime_base();
-        cistella::cleanup::record_cleanup(&base, &id, &evaluated.merged.cleanup)?;
+        cistella::cleanup::record_cleanup(
+            &base,
+            &id,
+            &evaluated.merged.cleanup,
+        )?;
     }
     // Hook staging: each requested hook resolves to a private
     // verified copy mounted RO at the known guest path before
@@ -253,27 +212,33 @@ pub(crate) fn conduct_session(
     let mut _staged_guards = Vec::new();
     let mut staged_triples = Vec::new();
     for hook in &evaluated.merged.guest_hooks {
-        let (guard, triple) = cistella::framework::registry::stage_hook_artifact(
-            exe_dir,
-            &id,
-            hook.order,
-            &hook.artifact,
-        )?;
+        let (guard, triple) =
+            cistella::framework::registry::stage_hook_artifact(
+                exe_dir,
+                &id,
+                hook.order,
+                &hook.artifact,
+            )?;
         triples.push(triple.clone());
         staged_triples.push(triple);
         _staged_guards.push(guard);
     }
-    let (revised, placements, effective) = cistella::framework::hooks::prepare_conduct_topology(
-        triples,
-        &staged_triples,
-        &evaluated.merged.placements,
-        &evaluated.effective,
-        &evaluated.merged.guest_hooks,
-        &directory,
-    )?;
+    let (revised, placements, effective) =
+        cistella::framework::hooks::prepare_conduct_topology(
+            triples,
+            &staged_triples,
+            &evaluated.merged.placements,
+            &evaluated.effective,
+            &evaluated.merged.guest_hooks,
+            &directory,
+        )?;
     // Final joint topology gate (validate, preflight, scoped
     // pre-create) — still pre-create, no residue.
-    cistella::mount_init::gate_final_topology(&revised, prof.home(), &evaluated.merged.cleanup)?;
+    cistella::mount_init::gate_final_topology(
+        &revised,
+        prof.home(),
+        &evaluated.merged.cleanup,
+    )?;
     // Hook launch plan: confinement roots plus wrapper
     // argv compose pre-create — an untranslatable topology, a
     // session outside the confinement root, or a bad shape refuses
@@ -281,17 +246,18 @@ pub(crate) fn conduct_session(
     // (which drops on return). The diagnostics pipe joins
     // post-host (a pre-host pipe would leak into the guest's
     // inherited fds and defeat EOF).
-    let hook_argv: Option<Vec<String>> = if evaluated.merged.guest_hooks.is_empty() {
-        None
-    } else {
-        Some(cistella::framework::hooks::plan_hook_argv(
-            &evaluated.merged.guest_hooks,
-            &placements,
-            &effective,
-            &directory,
-            &argv,
-        )?)
-    };
+    let hook_argv: Option<Vec<String>> =
+        if evaluated.merged.guest_hooks.is_empty() {
+            None
+        } else {
+            Some(cistella::framework::hooks::plan_hook_argv(
+                &evaluated.merged.guest_hooks,
+                &placements,
+                &effective,
+                &directory,
+                &argv,
+            )?)
+        };
     let volumes = podman_volume_args(&revised, prof.home(), None);
     let all_volumes = volumes;
     let mut env_extra: Vec<String> = prof
@@ -333,28 +299,35 @@ pub(crate) fn conduct_session(
     // explicit descriptor passing inside the client, uniform across
     // PTY and piped sessions. The in-process backend stays as the
     // conformance reference and post-mortem inspector only.
-    let rendezvous_dir = std::env::temp_dir().join(format!("cistella-rdv-{id}"));
+    let rendezvous_dir =
+        std::env::temp_dir().join(format!("cistella-rdv-{id}"));
     let mut client = match host_isolator(exe_dir, &rendezvous_dir, &isolator) {
         Ok(client) => client,
         Err(error) => {
             let _ = std::fs::remove_dir(&rendezvous_dir);
             return Err(error);
-        }
+        },
     };
     // Diagnostics pipe joins post-host (a pre-host pipe would leak
     // into the guest's inherited fds and defeat EOF) and pre-lock:
     // failure releases the guest first (the client has no Drop),
     // then reports — no unit exists yet, so no teardown runs.
-    let hook_plan: Option<cistella::framework::hooks::HookLaunchPlan> = match hook_argv {
-        None => None,
-        Some(argv) => match cistella::framework::hooks::plan_hook_launch(argv) {
-            Ok(plan) => Some(plan),
-            Err(e) => {
-                report_release(release_client(client, &rendezvous_dir));
-                return Err(e);
-            }
-        },
-    };
+    let hook_plan: Option<cistella::framework::hooks::HookLaunchPlan> =
+        match hook_argv {
+            None => None,
+            Some(argv) => {
+                match cistella::framework::hooks::plan_hook_launch(argv) {
+                    Ok(plan) => Some(plan),
+                    Err(e) => {
+                        report_release(release_client(
+                            client,
+                            &rendezvous_dir,
+                        ));
+                        return Err(e);
+                    },
+                }
+            },
+        };
     let key = ReconciliationKey::generate();
     let grace = Deadlines::default().terminate_grace;
     // Creation window: lock BEFORE any unit-file creation,
@@ -366,7 +339,7 @@ pub(crate) fn conduct_session(
         Err(error) => {
             report_release(release_client(client, &rendezvous_dir));
             return Err(error);
-        }
+        },
     };
     if let Some(signum) = signals::pending_signal() {
         drop(guard);
@@ -438,12 +411,16 @@ pub(crate) fn conduct_session(
                                 signum,
                             ));
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            50,
+                        ));
                     }
                 } else {
                     let delay = start_delay_ms();
                     let waited = std::time::Instant::now();
-                    while waited.elapsed() < std::time::Duration::from_millis(delay) {
+                    while waited.elapsed()
+                        < std::time::Duration::from_millis(delay)
+                    {
                         if let Some(signum) = signals::pending_signal() {
                             drop(guard);
                             return Ok(abort_startup(
@@ -455,7 +432,9 @@ pub(crate) fn conduct_session(
                                 signum,
                             ));
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            50,
+                        ));
                     }
                 }
                 match client.initiate(&handle, &key) {
@@ -491,18 +470,26 @@ pub(crate) fn conduct_session(
                         // quiesce before converging, same as before: a
                         // timed-out initiate leaves the guest live with an
                         // in-flight start that must die before the residue check.
-                        let terminal = client.death_checked::<()>(Err(error)).unwrap_err();
-                        report_release(release_client(client, &rendezvous_dir));
+                        let terminal = client
+                            .death_checked::<()>(Err(error))
+                            .unwrap_err();
+                        report_release(release_client(
+                            client,
+                            &rendezvous_dir,
+                        ));
                         drop(guard);
-                        if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
-                            && !cistella::runtime::residue_gone(&container_name)
+                        if let Err(teardown_err) =
+                            cistella::runtime::teardown(&container_name, &id)
+                            && !cistella::runtime::residue_gone(
+                                &container_name,
+                            )
                         {
                             return Err(teardown_err);
                         }
                         return Err(terminal);
-                    }
+                    },
                 }
-            }
+            },
             Err(error) => {
                 if cistella::isolators::client::pre_exec_recovery_verdict(
                     replacement_used,
@@ -522,11 +509,11 @@ pub(crate) fn conduct_session(
                         Ok(fresh) => {
                             client = fresh;
                             continue;
-                        }
+                        },
                         Err(terminal) => {
                             drop(guard);
                             return Err(terminal);
-                        }
+                        },
                     }
                 }
                 // Terminal create path: residue duty FIRST
@@ -537,18 +524,20 @@ pub(crate) fn conduct_session(
                 // check. Shutdown first (bounded), then converge, then
                 // report — the residue decision runs after the guest is
                 // gone, never beside a live mutator.
-                let terminal = client.death_checked::<()>(Err(error)).unwrap_err();
+                let terminal =
+                    client.death_checked::<()>(Err(error)).unwrap_err();
                 report_release(release_client(client, &rendezvous_dir));
                 drop(guard);
                 // Every failure past install runs teardown so no residue remains;
                 // a teardown failure with residue left behind dominates the report.
-                if let Err(teardown_err) = cistella::runtime::teardown(&container_name, &id)
+                if let Err(teardown_err) =
+                    cistella::runtime::teardown(&container_name, &id)
                     && !cistella::runtime::residue_gone(&container_name)
                 {
                     return Err(teardown_err);
                 }
                 return Err(terminal);
-            }
+            },
         }
     };
     // Guest-context capability probe: the staged
@@ -562,7 +551,14 @@ pub(crate) fn conduct_session(
             Deadlines::default().apply,
         )
     {
-        let teardown_result = client.teardown_unit(&unit, grace, &key, &container_name, &id, true);
+        let teardown_result = client.teardown_unit(
+            &unit,
+            grace,
+            &key,
+            &container_name,
+            &id,
+            true,
+        );
         let residue_ok = cistella::runtime::residue_gone(&container_name);
         let uncertain = client.shutdown_uncertain();
         drop(guard);
@@ -585,12 +581,18 @@ pub(crate) fn conduct_session(
     // live (re-acquiring the held lock would deadlock the no-residue
     // path); the residue decision is made before the drop.
     let volume_targets = cistella::mount::volume_targets(&all_volumes);
-    let sources =
-        cistella::mount::preparation_sources(&prof.mounts, &cli_triples, &worktree_target);
+    let sources = cistella::mount::preparation_sources(
+        &prof.mounts,
+        &cli_triples,
+        &worktree_target,
+    );
     // Managed bind targets (triples rooted in declared cleanup
     // roots): nested user binds beneath them are the admitted
     // feature — the offender search exempts managed space only.
-    let managed = cistella::mount::managed_bind_targets(&revised, &evaluated.merged.cleanup);
+    let managed = cistella::mount::managed_bind_targets(
+        &revised,
+        &evaluated.merged.cleanup,
+    );
     if let Err(e) = cistella::prepare::prepare_mountpoints(
         &container_name,
         &sources,
@@ -604,7 +606,14 @@ pub(crate) fn conduct_session(
         // teardown error dominates on residue OR shutdown
         // uncertainty (never demote recorded shutdown residue to
         // the prepare error on a clean snapshot).
-        let teardown_result = client.teardown_unit(&unit, grace, &key, &container_name, &id, true);
+        let teardown_result = client.teardown_unit(
+            &unit,
+            grace,
+            &key,
+            &container_name,
+            &id,
+            true,
+        );
         let residue_ok = cistella::runtime::residue_gone(&container_name);
         let uncertain = client.shutdown_uncertain();
         drop(guard);
@@ -655,17 +664,25 @@ pub(crate) fn conduct_session(
     // entirely (identity unestablishable — no readiness conferred).
     // A failed pre-capture converges exactly like a launch failure
     // below (refuse + typed teardown, nothing published).
-    let backend_native = matches!(isolator, cistella::profile::IsolatorResolution::Podman);
+    let backend_native =
+        matches!(isolator, cistella::profile::IsolatorResolution::Podman);
     let pre_incarnation = if backend_native {
         match cistella::attestation::query_incarnation(&container_name) {
             Ok(incarnation) => Some(incarnation),
             Err(error) => {
-                let refusal = cistella::error::CistellaError::Runtime(format!(
-                    "launch incarnation unestablishable (refusing): {error}"
-                ));
-                if let Err(teardown_err) =
-                    client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-                {
+                let refusal = cistella::error::CistellaError::Runtime(
+                    format!(
+                        "launch incarnation unestablishable (refusing): {error}"
+                    ),
+                );
+                if let Err(teardown_err) = client.teardown_unit(
+                    &unit,
+                    grace,
+                    &key,
+                    &container_name,
+                    &id,
+                    false,
+                ) {
                     report_release(release_client(client, &rendezvous_dir));
                     eprintln!(
                         "error: teardown after incarnation refusal ({refusal}): {teardown_err}"
@@ -674,7 +691,7 @@ pub(crate) fn conduct_session(
                 }
                 report_release(release_client(client, &rendezvous_dir));
                 return Err(refusal);
-            }
+            },
         }
     } else {
         None
@@ -700,16 +717,23 @@ pub(crate) fn conduct_session(
     let (execution, exec_failure) = match attempt {
         Ok(pair) => pair,
         Err(error) => {
-            if let Err(teardown_err) =
-                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-            {
+            if let Err(teardown_err) = client.teardown_unit(
+                &unit,
+                grace,
+                &key,
+                &container_name,
+                &id,
+                false,
+            ) {
                 report_release(release_client(client, &rendezvous_dir));
-                eprintln!("error: teardown after launch failure ({error}): {teardown_err}");
+                eprintln!(
+                    "error: teardown after launch failure ({error}): {teardown_err}"
+                );
                 return Ok(1);
             }
             report_release(release_client(client, &rendezvous_dir));
             return Err(error);
-        }
+        },
     };
     // Launch-commit publication (readiness attestation): the
     // pure pre/post bound decides — publish ONLY the pre-bound
@@ -718,7 +742,8 @@ pub(crate) fn conduct_session(
     // positive). Foreign sessions publish an unincarnated
     // commitment (no readiness conferred).
     if backend_native {
-        let post_result = cistella::attestation::query_incarnation(&container_name);
+        let post_result =
+            cistella::attestation::query_incarnation(&container_name);
         let committed = match cistella::attestation::commit_decision(
             pre_incarnation.as_ref(),
             post_result.as_ref().ok(),
@@ -732,8 +757,11 @@ pub(crate) fn conduct_session(
                     execution_handle: execution.as_str().to_string(),
                     incarnation: Some(bound),
                 };
-                cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation)
-            }
+                cistella::attestation::publish(
+                    &cistella::lock::runtime_base(),
+                    &attestation,
+                )
+            },
             cistella::attestation::CommitDecision::Refuse(reason) => {
                 // Preserve the query failure detail when the
                 // post-check itself errored (diagnostics, not
@@ -743,14 +771,21 @@ pub(crate) fn conduct_session(
                     Ok(_) => format!("{reason} (refusing)"),
                 };
                 Err(cistella::error::CistellaError::Runtime(detail))
-            }
+            },
         };
         if let Err(refusal) = committed {
-            if let Err(teardown_err) =
-                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-            {
+            if let Err(teardown_err) = client.teardown_unit(
+                &unit,
+                grace,
+                &key,
+                &container_name,
+                &id,
+                false,
+            ) {
                 report_release(release_client(client, &rendezvous_dir));
-                eprintln!("error: teardown after incarnation refusal ({refusal}): {teardown_err}");
+                eprintln!(
+                    "error: teardown after incarnation refusal ({refusal}): {teardown_err}"
+                );
                 return Ok(1);
             }
             report_release(release_client(client, &rendezvous_dir));
@@ -769,56 +804,73 @@ pub(crate) fn conduct_session(
             execution_handle: execution.as_str().to_string(),
             incarnation: None,
         };
-        if let Err(refusal) =
-            cistella::attestation::publish(&cistella::lock::runtime_base(), &attestation).map_err(
-                |e| {
-                    cistella::error::CistellaError::Runtime(format!(
-                        "foreign commitment publish failed (refusing): {e}"
-                    ))
-                },
-            )
-        {
-            if let Err(teardown_err) =
-                client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-            {
+        if let Err(refusal) = cistella::attestation::publish(
+            &cistella::lock::runtime_base(),
+            &attestation,
+        )
+        .map_err(|e| {
+            cistella::error::CistellaError::Runtime(format!(
+                "foreign commitment publish failed (refusing): {e}"
+            ))
+        }) {
+            if let Err(teardown_err) = client.teardown_unit(
+                &unit,
+                grace,
+                &key,
+                &container_name,
+                &id,
+                false,
+            ) {
                 report_release(release_client(client, &rendezvous_dir));
-                eprintln!("error: teardown after commitment refusal ({refusal}): {teardown_err}");
+                eprintln!(
+                    "error: teardown after commitment refusal ({refusal}): {teardown_err}"
+                );
                 return Ok(1);
             }
             report_release(release_client(client, &rendezvous_dir));
             return Err(refusal);
         }
     }
-    let status =
-        match client.death_checked(client.await_result(&execution, signals::conduct_cancel())) {
-            Ok(outcome) => outcome,
-            Err(cistella::error::CistellaError::Detached(_)) => {
-                // Signaled while attached: terminate owns the kill,
-                // then exit with the signal disposition. The SIGTERM
-                // fallback covers detach-without-signal (unusual, but
-                // matches the common-case disposition).
-                let signum = signals::conduct_cancel().signum().unwrap_or(15);
-                let _ = client.terminate(&unit, grace, &key);
-                let _ = client.remove(&unit, &key);
-                report_release(release_client(client, &rendezvous_dir));
-                if !cistella::runtime::residue_gone(&container_name) {
-                    eprintln!("error: signal teardown left residue for {container_name}");
-                    return Ok(1);
-                }
-                return Ok(128 + signum);
+    let status = match client.death_checked(
+        client.await_result(&execution, signals::conduct_cancel()),
+    ) {
+        Ok(outcome) => outcome,
+        Err(cistella::error::CistellaError::Detached(_)) => {
+            // Signaled while attached: terminate owns the kill,
+            // then exit with the signal disposition. The SIGTERM
+            // fallback covers detach-without-signal (unusual, but
+            // matches the common-case disposition).
+            let signum = signals::conduct_cancel().signum().unwrap_or(15);
+            let _ = client.terminate(&unit, grace, &key);
+            let _ = client.remove(&unit, &key);
+            report_release(release_client(client, &rendezvous_dir));
+            if !cistella::runtime::residue_gone(&container_name) {
+                eprintln!(
+                    "error: signal teardown left residue for {container_name}"
+                );
+                return Ok(1);
             }
-            Err(error) => {
-                if let Err(teardown_err) =
-                    client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-                {
-                    report_release(release_client(client, &rendezvous_dir));
-                    eprintln!("error: teardown after await failure ({error}): {teardown_err}");
-                    return Ok(1);
-                }
+            return Ok(128 + signum);
+        },
+        Err(error) => {
+            if let Err(teardown_err) = client.teardown_unit(
+                &unit,
+                grace,
+                &key,
+                &container_name,
+                &id,
+                false,
+            ) {
                 report_release(release_client(client, &rendezvous_dir));
-                return Err(error);
+                eprintln!(
+                    "error: teardown after await failure ({error}): {teardown_err}"
+                );
+                return Ok(1);
             }
-        };
+            report_release(release_client(client, &rendezvous_dir));
+            return Err(error);
+        },
+    };
     // Transition failure: exec failed with cause, or the
     // boundary stayed ambiguous (signal in the race window —
     // operator-approved scope: exact fidelity holds only
@@ -830,11 +882,18 @@ pub(crate) fn conduct_session(
     // failed transition owns its specific disposition even when
     // the completion is also ambiguous.
     if let Some(detail) = exec_failure {
-        if let Err(teardown_err) =
-            client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
-        {
+        if let Err(teardown_err) = client.teardown_unit(
+            &unit,
+            grace,
+            &key,
+            &container_name,
+            &id,
+            false,
+        ) {
             report_release(release_client(client, &rendezvous_dir));
-            eprintln!("error: teardown after transition failure: {teardown_err}");
+            eprintln!(
+                "error: teardown after transition failure: {teardown_err}"
+            );
             return Ok(1);
         }
         report_release(release_client(client, &rendezvous_dir));
@@ -875,26 +934,35 @@ pub(crate) fn conduct_session(
     // harness disposition. A residue-class release failure dominates
     // even a clean harness (the guest's shutdown owns group-reap
     // and pipe-EOF verification, which teardown cannot see).
-    match client.teardown_unit(&unit, grace, &key, &container_name, &id, false) {
-        Ok(()) => {}
-        Err(teardown_err) if !cistella::runtime::residue_gone(&container_name) => {
+    match client.teardown_unit(&unit, grace, &key, &container_name, &id, false)
+    {
+        Ok(()) => {},
+        Err(teardown_err)
+            if !cistella::runtime::residue_gone(&container_name) =>
+        {
             let harness_note = match &status {
-                ExecutionOutcome::Signaled(signum) => format!("harness signaled 128+{signum}"),
-                ExecutionOutcome::Exited(code) => format!("harness exited {code}"),
+                ExecutionOutcome::Signaled(signum) => {
+                    format!("harness signaled 128+{signum}")
+                },
+                ExecutionOutcome::Exited(code) => {
+                    format!("harness exited {code}")
+                },
                 // Unreachable: unobservable outcomes return above
                 // after their own teardown. Covered for exhaustiveness
                 // without claiming a harness disposition.
-                ExecutionOutcome::Unobservable(_) => "harness outcome unobservable".to_string(),
+                ExecutionOutcome::Unobservable(_) => {
+                    "harness outcome unobservable".to_string()
+                },
             };
             eprintln!("error: teardown after {harness_note}: {teardown_err}");
             report_release(release_client(client, &rendezvous_dir));
             return Ok(1);
-        }
+        },
         Err(death_err) if client.guest_dead() => {
             report_release(release_client(client, &rendezvous_dir));
             eprintln!("error: {death_err}");
             return Ok(1);
-        }
+        },
         Err(uncertain_err) if client.shutdown_uncertain() => {
             // Unverified quiescence: the shutdown residue dominates
             // EVEN WHEN the snapshot above is clean (a surviving
@@ -903,8 +971,8 @@ pub(crate) fn conduct_session(
             report_release(release_client(client, &rendezvous_dir));
             eprintln!("error: {uncertain_err}");
             return Ok(1);
-        }
-        Err(_) => {}
+        },
+        Err(_) => {},
     }
     if let Err(error) = release_client(client, &rendezvous_dir) {
         eprintln!("error: guest release: {error}");
@@ -912,34 +980,10 @@ pub(crate) fn conduct_session(
     }
     // Finalize observations (records-only, post-convergence): the
     // phase creates nothing — returned notes are diagnostics.
-    for note in cistella::framework::hooks::run_finalize_observations(&evaluated.merged) {
+    for note in cistella::framework::hooks::run_finalize_observations(
+        &evaluated.merged,
+    ) {
         eprintln!("finalize: {note}");
     }
     Ok(status.exit_code())
-}
-
-/// Test hook: milliseconds to stall between install and start, polling for
-/// signals, opening a deterministic signal-during-startup window.
-fn start_delay_ms() -> u64 {
-    std::env::var("CISTELLA_CONDUCT_START_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-}
-
-/// Test hook: path of a release marker file. When set, the
-/// install/start stall polls for that file instead of sleeping
-/// a fixed duration: release is the test creating the file,
-/// abort is a pending signal. This is explicitly a
-/// test-only synchronization hook next to
-/// `start_delay_ms` — a bounded-interval existence check plus
-/// a per-iteration signal check, with no overall timeout and
-/// no bearing on the enter/readiness policy. Absence of the
-/// file never advances the session; the test's own bound
-/// fails the test instead.
-fn start_gate() -> Option<std::path::PathBuf> {
-    std::env::var("CISTELLA_CONDUCT_START_GATE")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
 }

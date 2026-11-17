@@ -35,12 +35,14 @@ use std::io;
 use std::process::ExitCode;
 
 use libc::{
-    ENOSYS, PR_SET_NO_NEW_PRIVS, SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_THREAD,
-    SECCOMP_SET_MODE_FILTER, SYS_prctl, SYS_seccomp, c_long,
+    ENOSYS, PR_SET_NO_NEW_PRIVS, SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO,
+    SECCOMP_RET_KILL_THREAD, SECCOMP_SET_MODE_FILTER, SYS_prctl, SYS_seccomp,
+    c_long,
 };
 
 /// `seccomp(2)` filter mode 1 = install a BPF filter.
-const SECCOMP_SET_MODE_FILTER_VALUE: c_long = SECCOMP_SET_MODE_FILTER as c_long;
+const SECCOMP_SET_MODE_FILTER_VALUE: c_long =
+    SECCOMP_SET_MODE_FILTER as c_long;
 
 /// One BPF instruction (matches the kernel's `struct sock_filter`).
 #[repr(C)]
@@ -200,7 +202,9 @@ fn main() -> ExitCode {
     //    Advisor). After this, the seccomp filter below is
     //    irrevocable for the calling thread and its descendants.
     if let Err(e) = unsafe { prctl_no_new_privs() } {
-        eprintln!("landlock_kill_wrapper: prctl(PR_SET_NO_NEW_PRIVS) failed: errno {e}");
+        eprintln!(
+            "landlock_kill_wrapper: prctl(PR_SET_NO_NEW_PRIVS) failed: errno {e}"
+        );
         return ExitCode::from(1);
     }
 
@@ -221,7 +225,8 @@ fn main() -> ExitCode {
             e
         })
         .unwrap();
-    let mut c_argv_ptrs: Vec<*const libc::c_char> = c_argv.iter().map(|s| s.as_ptr()).collect();
+    let mut c_argv_ptrs: Vec<*const libc::c_char> =
+        c_argv.iter().map(|s| s.as_ptr()).collect();
     c_argv_ptrs.push(std::ptr::null());
     let c_arg0 = &c_argv[0];
     unsafe {

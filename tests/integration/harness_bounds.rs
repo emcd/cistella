@@ -20,7 +20,8 @@ fn id_line_silent_child_times_out_within_budget() {
     let (reader, writer) = UnixStream::pair().expect("socket pair");
     // Writer deliberately held open: no bytes, no EOF.
     let start = std::time::Instant::now();
-    let outcome = read_conduct_id(reader, std::time::Duration::from_millis(300));
+    let outcome =
+        read_conduct_id(reader, std::time::Duration::from_millis(300));
     let elapsed = start.elapsed();
     assert!(
         elapsed < std::time::Duration::from_secs(5),
@@ -39,7 +40,8 @@ fn id_line_silent_child_times_out_within_budget() {
 #[test]
 fn id_line_eof_without_id_is_not_a_timeout() {
     let (reader, mut writer) = UnixStream::pair().expect("socket pair");
-    std::io::Write::write_all(&mut writer, b"startup noise\n").expect("write noise");
+    std::io::Write::write_all(&mut writer, b"startup noise\n")
+        .expect("write noise");
     drop(writer);
     let outcome = read_conduct_id(reader, std::time::Duration::from_secs(10));
     assert!(
@@ -60,7 +62,8 @@ fn id_line_happy_path_keeps_noise_skip_and_leftover() {
     )
     .expect("write id line");
     let (found, _reader, leftover) =
-        read_conduct_id(reader, std::time::Duration::from_secs(10)).expect("id line reads");
+        read_conduct_id(reader, std::time::Duration::from_secs(10))
+            .expect("id line reads");
     assert_eq!(found, id, "minted id accepted");
     assert_eq!(
         leftover, b"TRAILING",
@@ -74,7 +77,8 @@ fn id_line_happy_path_keeps_noise_skip_and_leftover() {
 #[test]
 fn id_line_malformed_id_is_loud() {
     let (reader, mut writer) = UnixStream::pair().expect("socket pair");
-    std::io::Write::write_all(&mut writer, b"conduct NOT-VALID!!\n").expect("write bad id");
+    std::io::Write::write_all(&mut writer, b"conduct NOT-VALID!!\n")
+        .expect("write bad id");
     drop(writer);
     let outcome = read_conduct_id(reader, std::time::Duration::from_secs(10));
     assert!(
@@ -118,7 +122,8 @@ fn stuck_poll_command_times_out_and_reaps() {
 fn flood_child_captured_fully_without_truncation() {
     let mut cmd = std::process::Command::new("sh");
     cmd.args(["-c", "exec head -c 200000 /dev/zero | exec tr '\\0' 'x'"]);
-    let out = run_bounded(cmd, std::time::Duration::from_secs(20)).expect("flood run succeeds");
+    let out = run_bounded(cmd, std::time::Duration::from_secs(20))
+        .expect("flood run succeeds");
     assert!(out.status.success(), "flood child exited cleanly");
     assert_eq!(out.stdout.len(), 200000, "every flooded byte captured");
     assert!(
@@ -159,7 +164,8 @@ fn unpiped_stream_needs_no_capture() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn echo");
-    let out = wait_bounded(child, std::time::Duration::from_secs(10)).expect("echo reaped");
+    let out = wait_bounded(child, std::time::Duration::from_secs(10))
+        .expect("echo reaped");
     assert!(out.status.success(), "echo exited cleanly");
     assert_eq!(out.stdout, b"hi\n", "piped stream captured");
     assert!(
@@ -213,11 +219,15 @@ fn stdout_drain_survives_quiet_gap_after_id_line() {
     // (No SO_RCVBUF games: unix(7) documents RcvBuf as void on
     // AF_UNIX — the handshake below needs no buffer tuning.)
     let flags =
-        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).expect("F_GETFL");
+        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            .expect("F_GETFL");
     let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-    nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
-        .expect("O_NONBLOCK");
+    nix::fcntl::fcntl(
+        reader.as_raw_fd(),
+        nix::fcntl::FcntlArg::F_SETFL(oflags),
+    )
+    .expect("O_NONBLOCK");
     // Test-owned sink (production passes io::sink()): the drained
     // bytes are observable here.
     let (sink_reader, sink_writer) = UnixStream::pair().expect("sink pair");
@@ -279,11 +289,15 @@ fn stdout_drain_without_restore_loses_post_gap_write() {
     use std::os::unix::io::AsRawFd;
     let (reader, mut writer) = UnixStream::pair().expect("socket pair");
     let flags =
-        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).expect("F_GETFL");
+        nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)
+            .expect("F_GETFL");
     let mut oflags = nix::fcntl::OFlag::from_bits_retain(flags);
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-    nix::fcntl::fcntl(reader.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))
-        .expect("O_NONBLOCK");
+    nix::fcntl::fcntl(
+        reader.as_raw_fd(),
+        nix::fcntl::FcntlArg::F_SETFL(oflags),
+    )
+    .expect("O_NONBLOCK");
     let (sink_reader, sink_writer) = UnixStream::pair().expect("sink pair");
     // Prequeue BEFORE spawn: bounded 1KB write, fits any buffer.
     writer.write_all(&[b'k'; 1024]).expect("prequeued payload");
@@ -320,7 +334,7 @@ fn stdout_drain_without_restore_loses_post_gap_write() {
         .expect("sink timeout armed");
     let mut eof = [0u8; 1];
     match sink_reader.read(&mut eof) {
-        Ok(0) => {}
+        Ok(0) => {},
         other => panic!("sink closed with worker teardown, got: {other:?}"),
     }
     drop(writer);
@@ -341,7 +355,8 @@ fn id_line_continuous_producer_still_times_out() {
         }
     });
     let start = std::time::Instant::now();
-    let outcome = read_conduct_id(reader, std::time::Duration::from_millis(300));
+    let outcome =
+        read_conduct_id(reader, std::time::Duration::from_millis(300));
     let elapsed = start.elapsed();
     assert!(
         elapsed < std::time::Duration::from_secs(5),
@@ -409,7 +424,8 @@ fn failed_capture_refuses_success() {
     let out_slot = Arc::new(Mutex::new(StreamCapture::empty()));
     let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = drain_capped(FailAfter { chunks: 2 }, Arc::clone(&out_slot), tx);
+    let handle =
+        drain_capped(FailAfter { chunks: 2 }, Arc::clone(&out_slot), tx);
     rx.recv_timeout(std::time::Duration::from_secs(10))
         .expect("drain reports completion");
     handle.join().expect("drain thread reaped");
@@ -437,7 +453,7 @@ fn failed_capture_refuses_success() {
                 partial_stdout.contains("12345678"),
                 "partial bytes kept as triage: {partial_stdout:?}"
             );
-        }
+        },
         other => panic!("failed capture must refuse Ok: {other:?}"),
     }
 }
@@ -557,13 +573,15 @@ fn guard_drop_during_unwind_preserves_original_panic() {
             let msg = payload
                 .downcast_ref::<&str>()
                 .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .or_else(|| {
+                    payload.downcast_ref::<String>().map(String::as_str)
+                })
                 .unwrap_or("<non-string panic>");
             assert!(
                 msg.contains("original failure"),
                 "original panic payload preserved, got: {msg}"
             );
-        }
+        },
         Ok(()) => panic!("unwind did not propagate"),
     }
 }
@@ -584,7 +602,8 @@ fn bounded_at_holds_one_deadline_for_exit_and_cleanup() {
         .spawn()
         .expect("spawn sleep");
     let start = std::time::Instant::now();
-    let outcome = wait_bounded_at(child, start + std::time::Duration::from_secs(22));
+    let outcome =
+        wait_bounded_at(child, start + std::time::Duration::from_secs(22));
     let elapsed = start.elapsed();
     assert!(
         elapsed >= std::time::Duration::from_secs(1),
@@ -597,7 +616,7 @@ fn bounded_at_holds_one_deadline_for_exit_and_cleanup() {
     match outcome {
         Err(BoundedRunError::Timeout { reaped, .. }) => {
             assert!(reaped, "composition kill reaps: no zombie left behind")
-        }
+        },
         other => panic!("stuck child reads as timeout: {other:?}"),
     }
 }
@@ -622,12 +641,19 @@ fn probe_exit_classification_distinguishes_operational_failure() {
         classify_probe_exit("podman image exists", exit(1), "absent", &[1]),
         Probe::Unavailable(_)
     ));
-    match classify_probe_exit("podman image exists", exit(125), "Error: daemon", &[1]) {
+    match classify_probe_exit(
+        "podman image exists",
+        exit(125),
+        "Error: daemon",
+        &[1],
+    ) {
         Probe::Broken(detail) => assert!(
             detail.contains("daemon"),
             "stderr retained in Broken: {detail}"
         ),
-        other => panic!("exit 125 is operational failure, never a skip: {other:?}"),
+        other => {
+            panic!("exit 125 is operational failure, never a skip: {other:?}")
+        },
     }
     assert!(
         matches!(
@@ -718,8 +744,10 @@ fn held_descendant_pipe_caps_drain_at_exit_plus_allowance() {
     // Retain control FIRST (before asserting): exact pid from the
     // file (never a pattern kill), SIGKILL, then poll for absence.
     // A failed assertion below must not orphan the sleeper.
-    let pid_text = std::fs::read_to_string(&pidfile).expect("sleeper pid recorded");
-    let pid = Pid::from_raw(pid_text.trim().parse::<i32>().expect("pid parses"));
+    let pid_text =
+        std::fs::read_to_string(&pidfile).expect("sleeper pid recorded");
+    let pid =
+        Pid::from_raw(pid_text.trim().parse::<i32>().expect("pid parses"));
     kill(pid, Signal::SIGKILL).expect("sleeper signaled");
     let gone_start = std::time::Instant::now();
     loop {
@@ -731,7 +759,7 @@ fn held_descendant_pipe_caps_drain_at_exit_plus_allowance() {
                     "sleeper reaped after SIGKILL"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+            },
         }
     }
     assert!(
@@ -776,7 +804,8 @@ fn overflow_cleanup_reap_failure_reports_without_deadlock() {
     }));
     let err_slot = Arc::new(Mutex::new(StreamCapture::empty()));
     let start = std::time::Instant::now();
-    let outcome = overflow_cleanup(&mut child, &out_slot, &err_slot, start, |_| false);
+    let outcome =
+        overflow_cleanup(&mut child, &out_slot, &err_slot, start, |_| false);
     let elapsed = start.elapsed();
     // Owned cleanup FIRST (before asserting): a failed assertion
     // below must not strand the live child. SIGKILL now; the
@@ -798,8 +827,10 @@ fn overflow_cleanup_reap_failure_reports_without_deadlock() {
                 partial_stdout.contains("partial"),
                 "retained bytes kept as triage: {partial_stdout:?}"
             );
-        }
-        other => panic!("forced reap-failure reads as unreaped timeout: {other:?}"),
+        },
+        other => {
+            panic!("forced reap-failure reads as unreaped timeout: {other:?}")
+        },
     }
     assert!(
         reap_bounded(&mut child, CHILD_REAP_TIMEOUT).is_some(),

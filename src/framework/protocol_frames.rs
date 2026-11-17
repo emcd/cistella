@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 
 use crate::error::Result;
 
-use super::{EOF_AT_BOUNDARY, HEADER_LEN, IDLE_TIMEOUT, masked, protocol_error, wait_readable};
+use super::{
+    EOF_AT_BOUNDARY, HEADER_LEN, IDLE_TIMEOUT, masked, protocol_error,
+    wait_readable,
+};
 
 /// Reads one length-prefixed frame, rejecting oversize before allocation.
 ///
@@ -39,7 +42,7 @@ pub fn read_frame(
             FramePoll::Complete(body) => return Ok(body),
             FramePoll::Idle => {
                 return Err(protocol_error(IDLE_TIMEOUT));
-            }
+            },
             FramePoll::Partial => continue,
         }
     }
@@ -118,11 +121,17 @@ impl FrameAssembler {
                 // connection), distinct from mid-frame truncation.
                 Ok(0) if self.header_read == 0 && self.body.is_empty() => {
                     return Err(protocol_error(EOF_AT_BOUNDARY));
-                }
-                Ok(0) => return Err(protocol_error("truncated frame: EOF mid-frame")),
+                },
+                Ok(0) => {
+                    return Err(protocol_error(
+                        "truncated frame: EOF mid-frame",
+                    ));
+                },
                 Ok(n) => self.header_read += n,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(protocol_error(format!("frame read: {e}"))),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(e) => {
+                    return Err(protocol_error(format!("frame read: {e}")));
+                },
             }
         }
         let length = match self.length {
@@ -137,7 +146,7 @@ impl FrameAssembler {
                 self.length = Some(length);
                 self.body = Vec::with_capacity(length.min(65536));
                 length
-            }
+            },
         };
         while self.body.len() < length {
             if !wait_readable(reader, deadline)? {
@@ -146,10 +155,16 @@ impl FrameAssembler {
             let remaining = length - self.body.len();
             let mut chunk = vec![0u8; remaining.min(8192)];
             match reader.read(&mut chunk) {
-                Ok(0) => return Err(protocol_error("truncated frame: EOF mid-frame")),
+                Ok(0) => {
+                    return Err(protocol_error(
+                        "truncated frame: EOF mid-frame",
+                    ));
+                },
                 Ok(n) => self.body.extend_from_slice(&chunk[..n]),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(protocol_error(format!("frame read: {e}"))),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(e) => {
+                    return Err(protocol_error(format!("frame read: {e}")));
+                },
             }
         }
         // Reset for the next frame on this connection: a stale header
@@ -170,7 +185,11 @@ impl FrameAssembler {
 /// Returns `CistellaError::Protocol` when the payload exceeds
 /// `max_frame` or the write fails (EPIPE on a dead peer arrives as
 /// a typed error, never a signal).
-pub fn write_frame(writer: &mut impl Write, payload: &[u8], max_frame: usize) -> Result<()> {
+pub fn write_frame(
+    writer: &mut impl Write,
+    payload: &[u8],
+    max_frame: usize,
+) -> Result<()> {
     if payload.len() > max_frame {
         return Err(protocol_error(format!(
             "frame length {} exceeds maximum {max_frame}",

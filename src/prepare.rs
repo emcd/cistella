@@ -36,7 +36,10 @@ fn is_beneath(path: &str, ancestor: &str) -> bool {
 /// per candidate at runtime (see `preparation_authorized`); this set
 /// only focuses the execs.
 #[must_use]
-pub fn preparation_candidates(targets: &[String], container_home: &str) -> Vec<String> {
+pub fn preparation_candidates(
+    targets: &[String],
+    container_home: &str,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for target in targets {
         if !target.starts_with('/') {
@@ -47,7 +50,8 @@ pub fn preparation_candidates(targets: &[String], container_home: &str) -> Vec<S
             if parent.is_empty() || parent == container_home {
                 break;
             }
-            let dominated = targets.iter().any(|t| parent == t || is_beneath(parent, t));
+            let dominated =
+                targets.iter().any(|t| parent == t || is_beneath(parent, t));
             if !dominated {
                 out.push(parent.to_string());
             }
@@ -71,7 +75,11 @@ pub fn preparation_candidates(targets: &[String], container_home: &str) -> Vec<S
 /// managed root) still refuses. Everything else (tmpfs-home
 /// subtrees, container-local overlay paths) is eligible.
 #[must_use]
-pub fn preparation_authorized(resolved: &str, bind_targets: &[String], managed: &[String]) -> bool {
+pub fn preparation_authorized(
+    resolved: &str,
+    bind_targets: &[String],
+    managed: &[String],
+) -> bool {
     if resolved == "/" {
         return false;
     }
@@ -100,7 +108,9 @@ fn run_deadline(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| CistellaError::Runtime(format!("spawn {program}: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("spawn {program}: {e}"))
+        })?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::scope(|s| {
@@ -108,7 +118,9 @@ fn run_deadline(
             let _ = tx.send(child.wait_with_output());
         });
         match rx.recv_timeout(timeout) {
-            Ok(out) => out.map_err(|e| CistellaError::Runtime(format!("{program} io: {e}"))),
+            Ok(out) => out.map_err(|e| {
+                CistellaError::Runtime(format!("{program} io: {e}"))
+            }),
             Err(_) => {
                 // Kills the host client; the in-container exec cannot
                 // outlive the failure because every preparation error is
@@ -122,7 +134,7 @@ fn run_deadline(
                     "{program} exceeded {}ms deadline",
                     timeout.as_millis()
                 )))
-            }
+            },
         }
     })
 }
@@ -172,7 +184,9 @@ fn podman_exec(
 /// rejected at validation). Missing paths simply have no entry, which is
 /// exactly the created-vs-preexisting signal the chown rule needs.
 #[must_use]
-pub fn parse_stat_map(output: &str) -> std::collections::HashMap<String, String> {
+pub fn parse_stat_map(
+    output: &str,
+) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     for line in output.lines() {
         if let Some((uid, name)) = line.split_once(' ') {
@@ -225,10 +239,13 @@ pub fn prepare_mountpoints(
         return Ok(());
     }
     // Seat uid: one bounded integer, no default on any other shape.
-    let uid_out = podman_exec(container, None, "id", &["-u".to_string()], timeout)?;
+    let uid_out =
+        podman_exec(container, None, "id", &["-u".to_string()], timeout)?;
     let uid_text = String::from_utf8_lossy(&uid_out.stdout);
     let uid: u32 = uid_text.trim().parse().map_err(|_| {
-        CistellaError::Runtime(format!("seat uid not a single integer: {uid_text:?}"))
+        CistellaError::Runtime(format!(
+            "seat uid not a single integer: {uid_text:?}"
+        ))
     })?;
     // Resolve bind targets in the same batch: lexical targets cannot see
     // image-baked symlink components, so authorization compares
@@ -285,9 +302,11 @@ pub fn prepare_mountpoints(
     let mut mkdir_args = vec!["-p".to_string(), "--".to_string()];
     mkdir_args.extend(authorized.iter().cloned());
     podman_exec(container, Some("root"), "mkdir", &mkdir_args, timeout)?;
-    let mut stat_args = vec!["-c".to_string(), "%u %n".to_string(), "--".to_string()];
+    let mut stat_args =
+        vec!["-c".to_string(), "%u %n".to_string(), "--".to_string()];
     stat_args.extend(authorized.iter().cloned());
-    let stat_out = podman_exec(container, Some("root"), "stat", &stat_args, timeout)?;
+    let stat_out =
+        podman_exec(container, Some("root"), "stat", &stat_args, timeout)?;
     let owners = parse_stat_map(&String::from_utf8_lossy(&stat_out.stdout));
     // Chown the root-owned subset: podman pre-creates missing parents as
     // root before preparation runs, so "absent before mkdir" would spare

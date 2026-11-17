@@ -21,7 +21,9 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 
 use crate::error::{CistellaError, Result};
-use crate::framework::contract::{ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle};
+use crate::framework::contract::{
+    ExecutionHandle, LifecycleState, ReconciliationKey, UnitHandle,
+};
 use crate::framework::isolator::ExecutionOutcome;
 use crate::isolators::quadlet::{container_exists, quadlet_dir};
 use crate::registry::unit_file_label;
@@ -123,7 +125,10 @@ impl PodmanIsolator {
             .get(handle)
             .cloned()
             .ok_or_else(|| {
-                CistellaError::Contract(format!("unknown unit handle: {}", handle.as_str()))
+                CistellaError::Contract(format!(
+                    "unknown unit handle: {}",
+                    handle.as_str()
+                ))
             })
     }
 
@@ -141,7 +146,7 @@ impl PodmanIsolator {
         match units.get(&pending.unit)? {
             UnitEntry::Live(record) => {
                 Some((record.container_name.clone(), record.unit_name.clone()))
-            }
+            },
             UnitEntry::Removed { .. } => None,
         }
     }
@@ -180,15 +185,19 @@ impl PodmanIsolator {
     fn record(&self, handle: &UnitHandle) -> Result<UnitRecord> {
         match self.resolve(handle)? {
             UnitEntry::Live(record) => Ok(record),
-            UnitEntry::Removed { .. } => Err(CistellaError::Contract(format!(
-                "unit handle removed: {}",
-                handle.as_str()
-            ))),
+            UnitEntry::Removed { .. } => Err(CistellaError::Contract(
+                format!("unit handle removed: {}", handle.as_str()),
+            )),
         }
     }
 
     /// Records a handle/key pair after successful creation.
-    fn register(&self, handle: UnitHandle, record: UnitRecord, key: &ReconciliationKey) {
+    fn register(
+        &self,
+        handle: UnitHandle,
+        record: UnitRecord,
+        key: &ReconciliationKey,
+    ) {
         self.units
             .lock()
             .expect("unit table lock")
@@ -220,18 +229,27 @@ impl PodmanIsolator {
     ///
     /// Returns `CistellaError::Runtime` on podman or filesystem
     /// query failure.
-    fn scan_locate(&self, key: &ReconciliationKey) -> Result<Option<UnitHandle>> {
+    fn scan_locate(
+        &self,
+        key: &ReconciliationKey,
+    ) -> Result<Option<UnitHandle>> {
         let out = Command::new("podman")
             .args([
                 "ps",
                 "--all",
                 "--filter",
-                &format!("label={}={}", LABEL_RECONCILIATION_KEY, key.as_str()),
+                &format!(
+                    "label={}={}",
+                    LABEL_RECONCILIATION_KEY,
+                    key.as_str()
+                ),
                 "--format",
                 "{{.Names}}",
             ])
             .output()
-            .map_err(|e| CistellaError::Runtime(format!("podman ps for key: {e}")))?;
+            .map_err(|e| {
+                CistellaError::Runtime(format!("podman ps for key: {e}"))
+            })?;
         if !out.status.success() {
             return Err(CistellaError::Runtime(format!(
                 "podman ps for key failed: {}",
@@ -262,13 +280,15 @@ impl PodmanIsolator {
         };
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            },
             Err(e) => {
                 return Err(CistellaError::Runtime(format!(
                     "scan {}: {e}",
                     dir.display()
                 )));
-            }
+            },
         };
         if let Some((name, sid)) = scan_unit_dir(entries, key.as_str())? {
             return Ok(Some(self.adopt_key(key, &name, &sid)));
@@ -277,7 +297,12 @@ impl PodmanIsolator {
     }
 
     /// Adopts a scan hit and binds it to the key.
-    fn adopt_key(&self, key: &ReconciliationKey, name: &str, sid: &str) -> UnitHandle {
+    fn adopt_key(
+        &self,
+        key: &ReconciliationKey,
+        name: &str,
+        sid: &str,
+    ) -> UnitHandle {
         let handle = self.adopt(name, sid);
         self.keys
             .lock()
@@ -310,11 +335,15 @@ pub fn find_container_names(text: &str) -> Vec<String> {
 ///
 /// Returns `CistellaError::Runtime` on spawn failure, inspect
 /// failure for a present container, or unparsable output.
-fn inspect_labels(name: &str) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+fn inspect_labels(
+    name: &str,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let out = Command::new("podman")
         .args(["inspect", "--format", "{{json .Config.Labels}}", name])
         .output()
-        .map_err(|e| CistellaError::Runtime(format!("podman inspect labels: {e}")))?;
+        .map_err(|e| {
+            CistellaError::Runtime(format!("podman inspect labels: {e}"))
+        })?;
     if !out.status.success() {
         // Vanished between ps and inspect reads as absence; a
         // present-but-uninspectable container refuses (fail-closed:
@@ -328,9 +357,13 @@ fn inspect_labels(name: &str) -> Result<Option<serde_json::Map<String, serde_jso
             String::from_utf8_lossy(&out.stderr)
         )));
     }
-    serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&out.stdout)
-        .map(Some)
-        .map_err(|e| CistellaError::Runtime(format!("podman inspect labels {name}: {e}")))
+    serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(
+        &out.stdout,
+    )
+    .map(Some)
+    .map_err(|e| {
+        CistellaError::Runtime(format!("podman inspect labels {name}: {e}"))
+    })
 }
 
 /// Scans one unit directory for a key label.
@@ -352,8 +385,9 @@ pub fn scan_unit_dir(
     key: &str,
 ) -> Result<Option<(String, String)>> {
     for entry in entries {
-        let entry =
-            entry.map_err(|e| CistellaError::Runtime(format!("unit directory iteration: {e}")))?;
+        let entry = entry.map_err(|e| {
+            CistellaError::Runtime(format!("unit directory iteration: {e}"))
+        })?;
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "container") {
             continue;
@@ -365,15 +399,22 @@ pub fn scan_unit_dir(
         if !name.starts_with("cistella-") {
             continue;
         }
-        let key_hit = unit_file_label(&path, LABEL_RECONCILIATION_KEY).map_err(|e| {
-            CistellaError::Runtime(format!("unreadable candidate unit {}: {e}", path.display()))
-        })?;
+        let key_hit = unit_file_label(&path, LABEL_RECONCILIATION_KEY)
+            .map_err(|e| {
+                CistellaError::Runtime(format!(
+                    "unreadable candidate unit {}: {e}",
+                    path.display()
+                ))
+            })?;
         if key_hit.as_deref() != Some(key) {
             continue;
         }
         let sid = unit_file_label(&path, LABEL_ID)
             .map_err(|e| {
-                CistellaError::Runtime(format!("unreadable candidate unit {}: {e}", path.display()))
+                CistellaError::Runtime(format!(
+                    "unreadable candidate unit {}: {e}",
+                    path.display()
+                ))
             })?
             .unwrap_or_default();
         return Ok(Some((name, sid)));
@@ -426,7 +467,7 @@ pub fn classify_state(
             } else {
                 LifecycleState::Initiated
             }
-        }
+        },
         Some(_) => LifecycleState::Stopped,
         None => {
             if !unit_present {
@@ -436,7 +477,7 @@ pub fn classify_state(
             } else {
                 LifecycleState::Created
             }
-        }
+        },
     }
 }
 
@@ -453,7 +494,9 @@ fn container_pidns(name: &str) -> Result<String> {
         let out = Command::new("podman")
             .args(["inspect", "--format", "{{.State.Pid}}", name])
             .output()
-            .map_err(|e| CistellaError::Runtime(format!("podman inspect pid: {e}")))?;
+            .map_err(|e| {
+                CistellaError::Runtime(format!("podman inspect pid: {e}"))
+            })?;
         if out.status.success() {
             let pid: i32 = String::from_utf8_lossy(&out.stdout)
                 .trim()
@@ -461,7 +504,9 @@ fn container_pidns(name: &str) -> Result<String> {
                 .unwrap_or(0);
             if pid > 0 {
                 let link = std::fs::read_link(format!("/proc/{pid}/ns/pid"))
-                    .map_err(|e| CistellaError::Runtime(format!("read pidns of {pid}: {e}")))?;
+                    .map_err(|e| {
+                    CistellaError::Runtime(format!("read pidns of {pid}: {e}"))
+                })?;
                 return Ok(link.to_string_lossy().to_string());
             }
         }
