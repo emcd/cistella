@@ -171,4 +171,3 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   so pair-form worktrees may sit beneath profile ancestors.
 - User documentation (usage, profile reference, trust model and
   limitations) and a maintainer guide.
-

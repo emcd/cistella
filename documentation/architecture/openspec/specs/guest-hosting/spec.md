@@ -134,4 +134,3 @@ Admitted SHALL mean present in the dispatcher's `pending` table (inserted only a
 
 - **WHEN** a post-terminal error passes through `death_checked` while the uncertain flag is set
 - **THEN** it returns the RECORDED shutdown failure via `shutdown_dominant` (uncertainty/residue dominance preserved, not bypassed)
-
