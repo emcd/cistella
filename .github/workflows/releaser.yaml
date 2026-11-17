@@ -531,4 +531,3 @@ jobs:
         env:
           SKIP: 'cargo-nextest-release'
         run: pre-commit run --hook-stage pre-push --all-files --config .auxiliary/configuration/pre-commit.yaml
-
