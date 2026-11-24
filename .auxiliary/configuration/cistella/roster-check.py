@@ -396,19 +396,82 @@ def job_display_template(job_id, block):
     return job_id
 
 
+def workflow_steps(block):
+    """Split a job block into (name, text) steps. Text before the
+    first `- name:` (runs-on, needs, if, outputs) yields name None."""
+    steps = []
+    current = [None, []]
+    for line in block.splitlines():
+        m = re.match(r"^\s*-\s+name:", line)
+        if m:
+            steps.append(tuple(current))
+            current = [line.split("name:", 1)[1].strip(), [line]]
+            continue
+        current[1].append(line)
+    steps.append(tuple(current))
+    return [(name, "\n".join(lines)) for name, lines in steps]
+
+
+def step_run_content(step_text):
+    """Shell source of one step: block-scalar `run: |` body lines
+    plus any single-line `run:` value. Steps without `run`
+    contribute nothing."""
+    out = []
+    in_run = False
+    indent = 0
+    for line in step_text.splitlines():
+        m = re.match(r"^(\s*)run:\s*\|\s*$", line)
+        if m:
+            in_run = True
+            indent = len(m.group(1))
+            continue
+        if in_run:
+            if line.strip() == "":
+                continue
+            if len(line) - len(line.lstrip(" ")) <= indent:
+                in_run = False
+            else:
+                out.append(line)
+                continue
+        m2 = re.match(r"^\s*run:\s*(.+?)\s*$", line)
+        if m2:
+            out.append(m2.group(1))
+    return out
+
+
+def step_env_bindings(step_text):
+    """Step-level `env:` NAME -> `${{ ... }}` bindings."""
+    return dict(
+        re.findall(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\$\{\{.*?\}\})\s*$",
+            step_text,
+            re.M,
+        )
+    )
+
+
 def check_workflow_identities(text):
     """Pin the required-check identity invariant (tier-1 G1).
     The required `test` job must always execute the full
     live-minus-roster selection: its steps must never reference
     ANY manual input (all `inputs.` spellings, normalised), its
     job-level `if:` must never skip on diagnostics (a skipped
-    required check reads as success), and its nextest selection
-    must positively be exactly the roster exclusion. The
-    `audit` job must not reference any manual filter. When the
-    workflow defines a `filter` input, filtered gating
-    diagnostics must live in a distinct job whose rendered check
-    name collides with no other job. Raises SystemExit on any
-    violation."""
+    required check reads as success), no expression may be
+    interpolated directly into its shell source (values travel
+    through step `env` and quoted arguments instead), and its
+    nextest selection must positively be exactly the roster
+    exclusion: one step must bind it in `env` and its own
+    command line must fully match the supported live invocation
+    (anchored `cargo nextest run`, the release plus config plus
+    live-profile flag tokens, the double-quoted `-E` argument,
+    the `2>&1 | tee suite.log` tail, nothing else on the line).
+    Bounded syntax, not a general shell parser. The `roster`
+    job, when present, and the `diagnostic` run scripts obey
+    the same no-interpolation discipline. The `audit` job must
+    not reference any manual filter. When the workflow defines
+    a `filter` input, filtered gating diagnostics must live in
+    a distinct job whose rendered check name collides with no
+    other job. Raises SystemExit on any violation."""
     text = normalise_inputs(text)
     jobs = split_workflow_jobs(text)
     if "test" not in jobs:
@@ -432,14 +495,65 @@ def check_workflow_identities(text):
             f"inputs.{m.group(1)} (filtered runs must use the distinct "
             "diagnostic job)"
         )
-    if not re.search(
-        r"-E\s+['\"]\$\{\{\s*needs\.roster\.outputs\.exclusion\s*\}\}['\"]",
-        test_code,
-    ):
+    for _name, step in workflow_steps(test_block):
+        for ln in step_run_content(step):
+            if "${{" in ln.split("#", 1)[0]:
+                fail(
+                    "workflow identity: required `test` job interpolates "
+                    "an expression directly into shell source (bind it "
+                    "through step `env` and quote the argument)"
+                )
+    bound_use_found = False
+    for _name, step in workflow_steps(test_block):
+        bindings = step_env_bindings(step)
+        lines = [ln.split("#", 1)[0] for ln in step_run_content(step)]
+        for var, expr in bindings.items():
+            if not re.fullmatch(r"\s*needs\.roster\.outputs\.exclusion\s*", expr[3:-2]):
+                continue
+            for ln in lines:
+                if re.search(
+                    r"^\s*cargo\s+nextest\s+run"
+                    r"\s+--release\s+--locked"
+                    r"\s+--config-file\s+\S+"
+                    r"\s+-P\s+live\s+--run-ignored=all"
+                    r"\s+-E\s+\"\$" + var + r"\""
+                    r"\s+2>&1\s*\|\s*tee\s+suite\.log\s*$",
+                    ln,
+                ) or re.search(
+                    r"^\s*cargo\s+nextest\s+run"
+                    r"\s+--release\s+--locked"
+                    r"\s+--config-file\s+\S+"
+                    r"\s+-P\s+live\s+--run-ignored=all"
+                    r"\s+-E\s+\"\$\{" + var + r"\}\""
+                    r"\s+2>&1\s*\|\s*tee\s+suite\.log\s*$",
+                    ln,
+                ):
+                    bound_use_found = True
+    if not bound_use_found:
         fail(
             "workflow identity: required `test` job does not run "
-            "exactly the roster exclusion"
+            "exactly the roster exclusion through a quoted step-`env` "
+            "argument"
         )
+    if "roster" in jobs:
+        roster_code = "\n".join(
+            ln.split("#", 1)[0] for ln in jobs["roster"].splitlines()
+        )
+        m = re.search(r"inputs\.(\w+)", roster_code)
+        if m:
+            fail(
+                "workflow identity: `roster` job references "
+                f"inputs.{m.group(1)} (generated selections take no "
+                "manual input)"
+            )
+        for _name, step in workflow_steps(jobs["roster"]):
+            for ln in step_run_content(step):
+                if "${{" in ln.split("#", 1)[0]:
+                    fail(
+                        "workflow identity: `roster` job interpolates "
+                        "an expression directly into shell source (bind it "
+                        "through step `env` and quote the argument)"
+                    )
     if "audit" in jobs:
         audit_block = jobs["audit"]
         audit_head = (
@@ -479,6 +593,15 @@ def check_workflow_identities(text):
                 "inputs.filter (the filtered run lives there, not in "
                 "the required job)"
             )
+        for _name, step in workflow_steps(jobs["diagnostic"]):
+            for ln in step_run_content(step):
+                code = ln.split("#", 1)[0]
+                if re.search(r"inputs\.(\w+)", code) or "${{" in code:
+                    fail(
+                        "workflow identity: `diagnostic` job references "
+                        "an expression directly in shell source (bind it "
+                        "through step `env` and quote the argument)"
+                    )
         diag_template = job_display_template("diagnostic", jobs["diagnostic"])
         for other, block in jobs.items():
             if other == "diagnostic":
@@ -1142,19 +1265,32 @@ on:
         required: false
         default: ''
 jobs:
+  roster:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prove roster accounting
+        env:
+          ROSTER_INCLUSION: ${{ steps.filters.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ steps.filters.outputs.exclusion }}
+        run: |
+          python3 roster-check.py x.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION"
   test:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Test (live profile)
+        env:
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
-          cargo nextest run -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log
   diagnostic:
     if: github.event_name == 'workflow_dispatch' && inputs.filter != ''
     runs-on: ubuntu-latest
     steps:
       - name: Test (targeted diagnostic, non-gating)
+        env:
+          MANUAL_FILTER: ${{ inputs.filter }}
         run: |
-          cargo nextest run -E "( inputs.filter ) and exclusion" 2>&1 | tee diagnostic.log
+          cargo nextest run -E "( $MANUAL_FILTER ) and exclusion" 2>&1 | tee diagnostic.log
   audit:
     if: inputs.full_audit == true
     runs-on: ubuntu-latest
@@ -1172,7 +1308,7 @@ jobs:
         "workflow-required-references-filter",
         lambda: check_workflow_identities(
             GOOD_WORKFLOW.replace(
-                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION"',
                 'cargo nextest run -E "( inputs.filter ) and exclusion"',
             )
         ),
@@ -1183,7 +1319,7 @@ jobs:
         "workflow-required-bracket-step-evades",
         lambda: check_workflow_identities(
             GOOD_WORKFLOW.replace(
-                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION"',
                 "cargo nextest run -E \"( inputs['filter'] ) and exclusion\"",
             )
         ),
@@ -1205,12 +1341,158 @@ jobs:
         "workflow-required-wrong-selection",
         lambda: check_workflow_identities(
             GOOD_WORKFLOW.replace(
-                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION"',
                 "cargo nextest run -E 'something-else'",
             )
         ),
         False,
         "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-single-quoted-literal",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION"',
+                "cargo nextest run -E '$ROSTER_EXCLUSION'",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-unquoted-literal",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION"',
+                "cargo nextest run -E $ROSTER_EXCLUSION",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-cross-step-binding",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                """      - name: Test (live profile)
+        env:
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
+        run: |
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log""",
+                """      - name: Test (live profile)
+        env:
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
+        run: |
+          echo bound
+      - name: Test (live profile, continued)
+        run: |
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log""",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-inline-interpolation",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                """        run: |
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log""",
+                "        run: cargo nextest run -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log",
+            )
+        ),
+        False,
+        "directly into shell source",
+    )
+    check(
+        "workflow-diagnostic-non-input-expression",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run -E "( $MANUAL_FILTER ) and exclusion"',
+                'cargo nextest run -E "( $MANUAL_FILTER ) and ${{ needs.roster.outputs.exclusion }}"',
+            )
+        ),
+        False,
+        "in shell source",
+    )
+    check(
+        "workflow-required-printf-words-selection",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log',
+                "printf 'cargo nextest run' -E \"$ROSTER_EXCLUSION\" 2>&1 | tee suite.log",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-bare-then-printf-selection",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log',
+                "cargo nextest run 2>&1 | tee suite.log; printf '%s' -E \"$ROSTER_EXCLUSION\" 2>&1 | tee suite.log",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-semicolon-printf-selection",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log',
+                "cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all; printf '%s\\n' -E \"$ROSTER_EXCLUSION\" 2>&1 | tee suite.log",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-off-command-selection",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log',
+                "printf '%s\\n' -E \"$ROSTER_EXCLUSION\" 2>&1 | tee suite.log\n"
+                "          cargo nextest run 2>&1 | tee suite.log",
+            )
+        ),
+        False,
+        "does not run exactly the roster exclusion",
+    )
+    check(
+        "workflow-required-direct-interpolation",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION"',
+                "cargo nextest run -E '${{ needs.roster.outputs.exclusion }}'",
+            )
+        ),
+        False,
+        "directly into shell source",
+    )
+    check(
+        "workflow-diagnostic-direct-inputs-in-run",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'cargo nextest run -E "( $MANUAL_FILTER ) and exclusion"',
+                'cargo nextest run -E "( inputs.filter ) and exclusion"',
+            )
+        ),
+        False,
+        "in shell source",
+    )
+    check(
+        "workflow-roster-direct-interpolation",
+        lambda: check_workflow_identities(
+            GOOD_WORKFLOW.replace(
+                'python3 roster-check.py x.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION"',
+                "python3 roster-check.py x.toml '${{ steps.filters.outputs.inclusion }}' "
+                "'${{ steps.filters.outputs.exclusion }}'",
+            )
+        ),
+        False,
+        "`roster` job interpolates",
     )
     check(
         "workflow-diagnostic-name-collision",
@@ -1227,7 +1509,7 @@ jobs:
         "workflow-diagnostic-not-consuming",
         lambda: check_workflow_identities(
             GOOD_WORKFLOW.replace("inputs.filter != ''", "inputs.other != ''").replace(
-                "( inputs.filter )", "( inputs.other )"
+                "${{ inputs.filter }}", "${{ inputs.other }}"
             )
         ),
         False,

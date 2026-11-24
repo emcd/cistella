@@ -6,14 +6,26 @@ name: cistella-gates
 # self-contained; keep in sync with the OS/CPU answers (linux, x86_64 +
 # arm64) plus the 26.04 surgery-watch legs.
 #
-# NOTE: the template `custom` job currently passes no inputs, so the
-# workflow_call inputs below (filter, full_audit) receive defaults until
-# the template forwards dispatch inputs. Diagnostic/audit legs stay
-# dormant until then; the required live legs are unaffected.
+# NOTE: the template `custom` job passes `platforms` and `cargo-profile`
+# (dev). This file declares both as required inputs plus its own
+# optional `filter`/`full_audit` (defaults keep push/PR runs safe).
+# The leg matrix below stays self-contained (24.04 + 26.04 surgery-watch
+# legs) rather than fanning out from `inputs.platforms`, because the
+# project must cover runners beyond the template initializer set.
+# Diagnostic/audit legs stay dormant until then; the required live legs
+# are unaffected.
 
 on:
   workflow_call:
     inputs:
+      platforms:
+        description: 'JSON array of {os, cpu, runner, target} platform objects.'
+        required: true
+        type: string
+      cargo-profile:
+        description: 'Cargo profile to gate: dev or release.'
+        required: true
+        type: string
       filter:
         description: 'Nextest -E filter for a targeted run (empty = full suite)'
         required: false
@@ -40,6 +52,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
 
   lint:
@@ -48,6 +63,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         # System-language hooks (cargo fmt/clippy, linecheck built from
@@ -104,6 +121,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -141,9 +160,12 @@ jobs:
         # tier overlap, union gaps, ordinary-test removal. The
         # check itself gates; only test failures in the
         # informational leg below may be non-gating.
+        env:
+          ROSTER_INCLUSION: ${{ steps.filters.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ steps.filters.outputs.exclusion }}
         run: |
           set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
 
       - name: Prove workflow check identities
         # REQUIRED gate (tier-1 G1): the required `test` job
@@ -151,9 +173,12 @@ jobs:
         # never references the manual `filter` input; filtered
         # gating diagnostics live in the distinct `diagnostic`
         # job; the `audit` job never references the filter.
+        # Pin both consumer files so the release lane cannot
+        # drift from the gating contract.
         run: |
           set -euo pipefail
           python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/local--tester.yaml
+          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/local--releaser.yaml
 
   test:
     needs: [lint, roster]
@@ -170,6 +195,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -186,9 +213,12 @@ jobs:
         # used, and retains this platform's evidence. Fails the
         # job (and the run) on stale/duplicate/overmatching
         # entries, overlap, union gaps, or ordinary-test removal.
+        env:
+          ROSTER_INCLUSION: ${{ needs.roster.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
           set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
       - name: Enable systemd lingering
         # Live sessions run under the runner user's systemd user
         # manager; lingering starts it without an active login.
@@ -227,9 +257,10 @@ jobs:
         # see the dedicated `audit` job below.)
         env:
           RUST_BACKTRACE: '1'
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
           set -euo pipefail
-          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log
 
       - name: Upload gating log
         # The retained audit artifact for the gating tier: full
@@ -291,6 +322,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -303,9 +336,12 @@ jobs:
       - name: Prove roster accounting (this leg)
         # Same required proof as every other leg before its
         # selection is used.
+        env:
+          ROSTER_INCLUSION: ${{ needs.roster.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
           set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
       - name: Enable systemd lingering
         run: sudo loginctl enable-linger "$USER"
 
@@ -330,9 +366,11 @@ jobs:
         # required gate.
         env:
           RUST_BACKTRACE: '1'
+          MANUAL_FILTER: ${{ inputs.filter }}
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
           set -euo pipefail
-          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "( ${{ inputs.filter }} ) and ${{ needs.roster.outputs.exclusion }}" --success-output=immediate 2>&1 | tee diagnostic.log
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "( $MANUAL_FILTER ) and $ROSTER_EXCLUSION" --success-output=immediate 2>&1 | tee diagnostic.log
 
       - name: Upload diagnostic log
         if: always()
@@ -362,6 +400,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -378,9 +418,12 @@ jobs:
         # used, and retains this platform's evidence. Fails the
         # job (and the run) on stale/duplicate/overmatching
         # entries, overlap, union gaps, or ordinary-test removal.
+        env:
+          ROSTER_INCLUSION: ${{ needs.roster.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
           set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
       - name: Enable systemd lingering
         run: sudo loginctl enable-linger "$USER"
 
@@ -407,9 +450,11 @@ jobs:
         # legitimately empty diagnostic selection is
         # distinguishable from an unexpected empty selection.
         id: effective
+        env:
+          MANUAL_FILTER: ${{ inputs.filter }}
         run: |
           set -euo pipefail
-          OUT="$(python3 .auxiliary/configuration/cistella/roster-check.py effective-subset .auxiliary/configuration/cistella/test-exclusions.toml --manual '${{ inputs.filter }}' --config-file .auxiliary/configuration/nextest.toml)"
+          OUT="$(python3 .auxiliary/configuration/cistella/roster-check.py effective-subset .auxiliary/configuration/cistella/test-exclusions.toml --manual "$MANUAL_FILTER" --config-file .auxiliary/configuration/nextest.toml)"
           echo "$OUT"
           {
             echo "filter=$(printf '%s' "$OUT" | sed -n 's/^effective_filter=//p')"
@@ -428,11 +473,14 @@ jobs:
         # zero; reds are recorded from the retained log below.
         env:
           RUST_BACKTRACE: '1'
+          EFFECTIVE_FILTER: ${{ steps.effective.outputs.filter }}
+          EFFECTIVE_EMPTY: ${{ steps.effective.outputs.empty }}
+          EFFECTIVE_OMITTED: ${{ steps.effective.outputs.omitted }}
         run: |
-          FILTER='${{ steps.effective.outputs.filter }}'
-          echo "effective flaky selection (omitted roster entries: ${{ steps.effective.outputs.omitted }})"
+          FILTER="$EFFECTIVE_FILTER"
+          echo "effective flaky selection (omitted roster entries: $EFFECTIVE_OMITTED)"
           ARGS=(--release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E "$FILTER" --no-fail-fast)
-          if [ "${{ steps.effective.outputs.empty }}" = "true" ]; then
+          if [ "$EFFECTIVE_EMPTY" = "true" ]; then
             ARGS+=(--no-tests pass)
           fi
           # The exit-code + Summary discriminator lives in the
@@ -445,7 +493,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           tail -30 flaky.log
-          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ steps.effective.outputs.empty }}"
+          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "$EFFECTIVE_EMPTY"
 
       - name: Upload flaky log
         # The retained audit artifact: full run output for every
@@ -488,6 +536,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -501,9 +551,12 @@ jobs:
         # Same required proof as every other leg: the audit runs
         # the full universe, and this step pins what "full"
         # means at this tip before anything executes.
+        env:
+          ROSTER_INCLUSION: ${{ needs.roster.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
         run: |
           set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
 
       - name: Enable systemd lingering
         run: sudo loginctl enable-linger "$USER"

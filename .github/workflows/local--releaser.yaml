@@ -1,0 +1,186 @@
+name: cistella-release-gates
+
+# Project-owned release gates (cistella), called by the template
+# releaser's `custom-release` job. This file is never rendered by the
+# template — Copier leaves it alone, so `copier update` cannot conflict
+# here. Publish jobs wait on `custom-release`, so this is what keeps
+# the live suite gating releases (the dissolved 0.9.0 publish-needs
+# grafts live here now instead of on the rendered releaser).
+#
+# The leg matrix below is self-contained; keep in sync with the OS/CPU
+# answers (linux, x86_64 + arm64) plus the 26.04 surgery-watch legs.
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: 'JSON array of {os, cpu, runner, target} platform objects.'
+        required: true
+        type: string
+      cargo-profile:
+        description: 'Cargo profile to gate: dev or release.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+
+  roster:
+    # Quarantine roster resolution and proof. REQUIRED gate (not
+    # informational): validates the generated selections and
+    # exposes the -E filters. Needs no podman or systemd
+    # (`nextest list` enumerates without executing).
+    runs-on: ubuntu-latest
+    outputs:
+      inclusion: ${{ steps.filters.outputs.inclusion }}
+      exclusion: ${{ steps.filters.outputs.exclusion }}
+      empty: ${{ steps.filters.outputs.empty }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Resolve quarantine filters
+        id: filters
+        # Generated from the single-source roster, never
+        # hand-written: the roster-check below proves they mean
+        # what the roster says.
+        run: |
+          set -euo pipefail
+          GEN="$(python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml GENERATE GENERATE)"
+          {
+            echo "inclusion=$(printf '%s' "$GEN" | sed -n 's/^inclusion=//p')"
+            echo "exclusion=$(printf '%s' "$GEN" | sed -n 's/^exclusion=//p')"
+            echo "empty=$(printf '%s' "$GEN" | sed -n 's/^empty=//p')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prove test doubles (backend-free controls)
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py --self-test
+
+      - name: Prove roster accounting
+        env:
+          ROSTER_INCLUSION: ${{ steps.filters.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ steps.filters.outputs.exclusion }}
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
+
+      - name: Prove workflow check identities
+        # The required `test` job below always runs the full
+        # live-minus-roster selection and never references a
+        # manual input. Pin both consumer files here so the
+        # release lane cannot drift from the gating contract.
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/local--tester.yaml
+          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/local--releaser.yaml
+
+  test:
+    needs: [roster]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Project-owned leg set (cistella): 24.04 + 26.04 LTS on both
+        # CPUs, self-contained so the template initializer stays
+        # pristine. Keep in sync with the OS/CPU answers (linux,
+        # x86_64 + arm64) plus the 26.04 surgery-watch legs.
+        platform: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.platform }}
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+
+      - name: Prove roster accounting (this leg)
+        # Required gate on every matrix leg: re-proves the roster
+        # check under this platform before its selections are
+        # used, and retains this platform's evidence.
+        env:
+          ROSTER_INCLUSION: ${{ needs.roster.outputs.inclusion }}
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
+        run: |
+          set -euo pipefail
+          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml "$ROSTER_INCLUSION" "$ROSTER_EXCLUSION" --config-file .auxiliary/configuration/nextest.toml
+      - name: Enable systemd lingering
+        # Live sessions run under the runner user's systemd user
+        # manager; lingering starts it without an active login.
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Install Podman
+        # Rootless sessions need the engine plus subordinate-ID tooling.
+        run: sudo apt-get update && sudo apt-get install -y podman uidmap
+
+      - name: Verify session prerequisites
+        # Fails the job early with a readable error when the runner
+        # cannot host sessions, instead of one 60s timeout per test.
+        run: |
+          set -eu
+          podman --version
+          systemctl --user is-system-running --wait
+
+      - name: Build example images
+        # Live tests conduct against `localhost/cistella/opencode:example`
+        # and refuse to pull implicitly: the image must exist locally.
+        run: ./data/dockerfiles/validate.sh
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test (live profile)
+        # REQUIRED gate identity: test(platform) ALWAYS means the
+        # FULL live-minus-roster selection on this leg.
+        env:
+          RUST_BACKTRACE: '1'
+          ROSTER_EXCLUSION: ${{ needs.roster.outputs.exclusion }}
+        run: |
+          set -euo pipefail
+          cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E "$ROSTER_EXCLUSION" 2>&1 | tee suite.log
+
+      - name: Upload gating log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: suite-log-${{ matrix.platform }}
+          path: suite.log
+
+      - name: Collect operation logs
+        if: failure()
+        run: |
+          mkdir -p op-log
+          if [ -d "${XDG_STATE_HOME:-$HOME/.local/state}/cistella/logs" ]; then
+            cp -r "${XDG_STATE_HOME:-$HOME/.local/state}/cistella/logs" op-log/logs
+          else
+            echo "no operation logs on this leg" > op-log/README
+          fi
+
+      - name: Upload operation logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: op-log-${{ matrix.platform }}
+          path: op-log
+          retention-days: 14

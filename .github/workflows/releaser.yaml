@@ -18,42 +18,62 @@ jobs:
 
   initialize:
     uses: ./.github/workflows/common-initializer.yaml
+    permissions: {}
 
   release-gates:
     needs: [initialize]
+    permissions:
+      contents: read
+    uses: emcd/rust-project-common/.github/workflows/xrepo--tester.yaml@gha-1
+    with:
+      platforms: ${{ needs.initialize.outputs.platforms }}
+      cargo-profile: release
+      has-library: true
+
+  # Consumer-owned release gates live in ./.github/workflows/local--releaser.yaml
+  # (authored by the consumer, never rendered by the template). Publish jobs
+  # wait on it alongside the release gates. Job-level uses: reusable
+  # workflows cannot be invoked from a step.
+  custom-release:
+    needs: [initialize]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/local--releaser.yaml
+    with:
+      platforms: ${{ needs.initialize.outputs.platforms }}
+      cargo-profile: release
+
+  # Local per-platform packaging. Runs unconditionally: custom off or on,
+  # dry runs, and publication-off configurations all still package, because
+  # publishers and binaries must never run on unpackaged gates.
+  package:
+    needs: [initialize, release-gates]
     strategy:
       fail-fast: true
       matrix:
-        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
-    runs-on: ${{ matrix.cell.runner }}
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
     steps:
 
       - name: Check Out
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set Up Toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Target
-        run: rustup target add ${{ matrix.cell.target }}
-
-      - name: Install nextest
-        run: cargo install cargo-nextest --version 0.9.146 --locked
+        env:
+          TARGET_TRIPLE: ${{ matrix.platform.target }}
+        run: rustup target add "${TARGET_TRIPLE}"
+        shell: bash
 
       - name: Generate Lockfile If Missing
         run: test -f Cargo.lock || cargo generate-lockfile
         shell: bash
-
-      - name: Build Release
-        run: cargo build --release --locked --all-targets
-
-      - name: Test Release
-        env:
-          RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --no-tests=warn
-
-      - name: Test Release Doctests
-        run: cargo test --doc --release --locked
 
       - name: Package
         run: cargo package --locked --no-verify
@@ -67,8 +87,7 @@ jobs:
   #   attestation is never silently skipped.
   publish-crates-io:
     if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/') }}
-    # Project-owned graft (cistella): publish also waits on the live suite.
-    needs: [initialize, release-gates, test]
+    needs: [initialize, release-gates, package, custom-release]
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
@@ -78,6 +97,8 @@ jobs:
 
       - name: Check Out
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set Up Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -96,23 +117,29 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   build-binaries:
-    # Project-owned graft (cistella): binaries wait on the live suite too.
-    needs: [initialize, release-gates, test, pre-push]
+    needs: [initialize, release-gates, package, custom-release]
+    permissions:
+      contents: read
     strategy:
       fail-fast: true
       matrix:
-        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
-    runs-on: ${{ matrix.cell.runner }}
+        platform: ${{ fromJSON(needs.initialize.outputs.platforms) }}
+    runs-on: ${{ matrix.platform.runner }}
     steps:
 
       - name: Check Out
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set Up Toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Target
-        run: rustup target add ${{ matrix.cell.target }}
+        env:
+          TARGET_TRIPLE: ${{ matrix.platform.target }}
+        run: rustup target add "${TARGET_TRIPLE}"
+        shell: bash
 
       - name: Generate Lockfile If Missing
         run: test -f Cargo.lock || cargo generate-lockfile
@@ -127,8 +154,8 @@ jobs:
         # Matrix values arrive via env, never interpolated into the script:
         # they are template-generated constants, but the habit must be uniform.
         env:
-          BINARY_TARGET: ${{ matrix.cell.target }}
-          BINARY_OS: ${{ matrix.cell.os }}
+          BINARY_TARGET: ${{ matrix.platform.target }}
+          BINARY_OS: ${{ matrix.platform.os }}
         run: |
           set -eu
           target="${BINARY_TARGET}"
@@ -144,7 +171,7 @@ jobs:
       - name: Upload Binary Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: binary-${{ matrix.cell.os }}-${{ matrix.cell.cpu }}
+          name: binary-${{ matrix.platform.os }}-${{ matrix.platform.cpu }}
           path: ${{ steps.binary.outputs.name }}
 
   publish-github:
@@ -160,6 +187,8 @@ jobs:
 
       - name: Check Out
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Download All Binaries
         uses: actions/download-artifact@v8
@@ -185,9 +214,9 @@ jobs:
       - name: Stage Attestation Bundle
         # actions/attest records provenance in the repository API and emits a
         # local bundle at an action-chosen path. Copy it under a deterministic
-        # name into artifacts/ so the release upload below attaches it. The
-        # output reference arrives via env so no expression text is
-        # interpolated into the script.
+        # name into artifacts/ so the release upload glob attaches it to the
+        # release. The output reference arrives via env so no expression text
+        # is interpolated into the script.
         env:
           BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: |
@@ -218,316 +247,3 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             -- "${RELEASE_TAG}" \
             artifacts/*
-  # =====================================================================
-  # Project-owned jobs (cistella). Everything below this line is ours,
-  # appended after the template-owned jobs above, which stay byte-verbatim
-  # (modulo the two marked publish needs-grafts) so `copier update`
-  # 3-way-merges cleanly. The leg matrix below is self-contained (see
-  # note) rather than drawn from initializer cells.
-  # =====================================================================
-
-  roster:
-    # Quarantine roster resolution and proof. REQUIRED gate (not
-    # informational): validates the generated selections and
-    # exposes the -E filters. Needs no podman or systemd
-    # (`nextest list` enumerates without executing).
-    runs-on: ubuntu-latest
-    outputs:
-      inclusion: ${{ steps.filters.outputs.inclusion }}
-      exclusion: ${{ steps.filters.outputs.exclusion }}
-      empty: ${{ steps.filters.outputs.empty }}
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9
-
-      - name: Resolve quarantine filters
-        id: filters
-        # Generated from the single-source roster, never
-        # hand-written: the roster check below proves they mean
-        # what the roster says.
-        run: |
-          set -euo pipefail
-          GEN="$(python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml GENERATE GENERATE)"
-          {
-            echo "inclusion=$(printf '%s' "$GEN" | sed -n 's/^inclusion=//p')"
-            echo "exclusion=$(printf '%s' "$GEN" | sed -n 's/^exclusion=//p')"
-            echo "empty=$(printf '%s' "$GEN" | sed -n 's/^empty=//p')"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Prove test doubles (backend-free controls)
-        # The 40 self-test fixtures pin parsing, predicate
-        # validation, union/disjoint/ordinary rules, filter
-        # generation, and the flaky-leg decision table — without
-        # cargo. New roster-check logic must extend them.
-        run: |
-          set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py --self-test
-
-      - name: Prove roster accounting
-        # Fails loudly on: stale/duplicate/overmatching entries,
-        # tier overlap, union gaps, ordinary-test removal. The
-        # check itself gates; only test failures in the
-        # informational leg below may be non-gating.
-        run: |
-          set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ steps.filters.outputs.inclusion }}' '${{ steps.filters.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
-
-      - name: Prove workflow check identities
-        # REQUIRED gate (tier-1 G1): the required `test` job
-        # always runs the full live-minus-roster selection and
-        # never references a manual filter input; the `audit`
-        # job never references it either.
-        run: |
-          set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py check-workflow .github/workflows/releaser.yaml
-
-  test:
-    needs: [roster]
-    strategy:
-      fail-fast: false
-      matrix:
-        # Project-owned leg set (cistella): 24.04 + 26.04 LTS on both
-        # CPUs, self-contained so the template initializer stays
-        # pristine. Keep in sync with the OS/CPU answers (linux,
-        # x86_64 + arm64) plus the 26.04 surgery-watch legs.
-        platform: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
-    runs-on: ${{ matrix.platform }}
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Check Formatting
-        if: matrix.platform == 'ubuntu-24.04'
-        run: cargo fmt --all -- --check
-
-      - name: Run Clippy
-        if: matrix.platform == 'ubuntu-24.04'
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --release --locked
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9
-
-
-      - name: Prove roster accounting (this leg)
-        # Required gate on every matrix leg: re-proves the roster
-        # check under this platform before its selections are
-        # used, and retains this platform's evidence. Fails the
-        # job (and the run) on stale/duplicate/overmatching
-        # entries, overlap, union gaps, or ordinary-test removal.
-        run: |
-          set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
-      - name: Enable systemd lingering
-        # Live sessions run under the runner user's systemd user
-        # manager; lingering starts it without an active login.
-        # (Same runner setup as the qa workflow.)
-        run: sudo loginctl enable-linger "$USER"
-
-      - name: Install Podman
-        # Rootless sessions need the engine plus subordinate-ID tooling.
-        run: sudo apt-get update && sudo apt-get install -y podman uidmap
-
-      - name: Verify session prerequisites
-        # Fails the job early with a readable error when the runner
-        # cannot host sessions, instead of one 60s timeout per test.
-        run: |
-          set -eu
-          podman --version
-          systemctl --user is-system-running --wait
-
-      - name: Build example images
-        # Live tests conduct against `localhost/cistella/opencode:example`
-        # and refuse to pull implicitly: the image must exist locally.
-        run: ./data/dockerfiles/validate.sh
-
-      - name: Test (live profile)
-        # Same live-tier caveat as the qa workflow: hosted runners are
-        # unproven ground for systemd user sessions plus rootless
-        # Podman, so the authoritative live gate stays the host
-        # pre-push hook until a self-hosted runner exists.
-        # Quarantined tests are excluded via the roster-derived
-        # filter (empty roster = the filter matches everything,
-        # so the run is byte-identical to the unfiltered gate).
-        env:
-          RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked --config-file .auxiliary/configuration/nextest.toml -P live --run-ignored=all -E '${{ needs.roster.outputs.exclusion }}' 2>&1 | tee suite.log
-
-      - name: Upload gating log
-        # The retained audit artifact for the gating tier: full
-        # run output for every matrix leg, regardless of outcome,
-        # mirroring the flaky-leg upload below.
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: suite-log-${{ matrix.platform }}
-          path: suite.log
-
-  flaky:
-    # Informational quarantine tier: runs exactly the rostered
-    # tests under the `flaky` profile on the same cell matrix.
-    # Non-gating by construction — failures here are tracked
-    # evidence, never a red gate and never retried to green.
-    # The test step itself discriminates infra failures from
-    # test failures (see below); setup failures fail the job.
-    needs: [roster]
-    strategy:
-      fail-fast: false
-      matrix:
-        # Project-owned leg set (cistella): 24.04 + 26.04 LTS on both
-        # CPUs, self-contained so the template initializer stays
-        # pristine. Keep in sync with the OS/CPU answers (linux,
-        # x86_64 + arm64) plus the 26.04 surgery-watch legs.
-        platform: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
-    runs-on: ${{ matrix.platform }}
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9
-
-
-      - name: Prove roster accounting (this leg)
-        # Required gate on every matrix leg: re-proves the roster
-        # check under this platform before its selections are
-        # used, and retains this platform's evidence. Fails the
-        # job (and the run) on stale/duplicate/overmatching
-        # entries, overlap, union gaps, or ordinary-test removal.
-        run: |
-          set -euo pipefail
-          python3 .auxiliary/configuration/cistella/roster-check.py .auxiliary/configuration/cistella/test-exclusions.toml '${{ needs.roster.outputs.inclusion }}' '${{ needs.roster.outputs.exclusion }}' --config-file .auxiliary/configuration/nextest.toml
-      - name: Enable systemd lingering
-        run: sudo loginctl enable-linger "$USER"
-
-      - name: Install Podman
-        run: sudo apt-get update && sudo apt-get install -y podman uidmap
-
-      - name: Verify session prerequisites
-        run: |
-          set -eu
-          podman --version
-          systemctl --user is-system-running --wait
-
-      - name: Build example images
-        run: ./data/dockerfiles/validate.sh
-
-      - name: Build
-        run: cargo build --release --locked
-
-      - name: Resolve effective subset
-        # No manual filter on this workflow: the effective
-        # selection is the roster inclusion, computed with the
-        # leg's own flags. Omitted is always empty here; the
-        # explicit accounting lives in the qa workflow, which
-        # carries the dispatch filter.
-        id: effective
-        run: |
-          set -euo pipefail
-          OUT="$(python3 .auxiliary/configuration/cistella/roster-check.py effective-subset .auxiliary/configuration/cistella/test-exclusions.toml --config-file .auxiliary/configuration/nextest.toml)"
-          echo "$OUT"
-          {
-            echo "filter=$(printf '%s' "$OUT" | sed -n 's/^effective_filter=//p')"
-            echo "empty=$(printf '%s' "$OUT" | sed -n 's/^empty=//p')"
-            echo "omitted=$(printf '%s' "$OUT" | sed -n 's/^omitted=//p')"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Test (flaky profile, informational)
-        # Informational leg: test failures are tracked evidence,
-        # never a red gate and never retried to green. There is
-        # deliberately NO continue-on-error here — the step
-        # itself discriminates: it exits non-zero ONLY when the
-        # run did not complete (infrastructure, config-parse,
-        # discovery, or build failure) or when the selection is
-        # unexpectedly empty. Completed runs, green or red, exit
-        # zero; reds are recorded from the retained log below.
-        env:
-          RUST_BACKTRACE: '1'
-        run: |
-          FILTER='${{ steps.effective.outputs.filter }}'
-          echo "effective flaky selection (omitted roster entries: ${{ steps.effective.outputs.omitted }})"
-          ARGS=(--release --locked --config-file .auxiliary/configuration/nextest.toml -P flaky --run-ignored=all -E "$FILTER" --no-fail-fast)
-          if [ "${{ steps.effective.outputs.empty }}" = "true" ]; then
-            ARGS+=(--no-tests pass)
-          fi
-          # The exit-code + Summary discriminator lives in the
-          # tested roster-check classifier (see --self-test), not
-          # in shell one-liners: informational test failures pass,
-          # anything else (infra/config/discovery/build failure,
-          # unexpected empty selection) fails the step loudly.
-          set +e
-          cargo nextest run "${ARGS[@]}" 2>&1 | tee flaky.log
-          code=${PIPESTATUS[0]}
-          set -e
-          tail -30 flaky.log
-          python3 .auxiliary/configuration/cistella/roster-check.py decide-flaky flaky.log --exit-code "$code" --expect-empty "${{ steps.effective.outputs.empty }}"
-
-      - name: Upload flaky log
-        # The retained audit artifact: full run output for every
-        # informational execution, regardless of outcome.
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: flaky-log-${{ matrix.platform }}
-          path: flaky.log
-
-  pre-push:
-    # The release workflow is a superset of the qa workflow: in addition
-    # to the matrix test above, it runs the full pre-push hook suite
-    # (release build + live tier) from the same pre-commit config
-    # developers run locally.
-    needs: [test]
-    runs-on: ubuntu-latest
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Install linecheck
-        run: cargo install linecheck --locked --version 1.2.1
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9
-
-      - name: Install pre-commit
-        run: pipx install pre-commit==4.6.2
-
-      - name: Run pre-push hooks
-        # Skips the live-test hook: the matrix test job above already
-        # runs the full live suite, so each suite runs exactly once.
-        # What remains here is the release build gate.
-        env:
-          SKIP: 'cargo-nextest-release'
-        run: pre-commit run --hook-stage pre-push --all-files --config .auxiliary/configuration/pre-commit.yaml

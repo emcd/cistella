@@ -1,3 +1,9 @@
+# Scribbles and temporary work are never committed.
+#
+# These are the fleet's scratch locations: `.auxiliary/scribbles/` holds
+# throw-away experiments, `.auxiliary/temporary/` holds ephemeral test
+# state and build artifacts that are safe to delete. See the project
+# agent instructions for the current conventions.
 /scribbles/
 /temporary/
 # Per-host local cistella configuration (e.g. the dogfood profile).

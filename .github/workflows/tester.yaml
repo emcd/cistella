@@ -7,72 +7,90 @@ on:
     branches: ['master', 'release-*']
   workflow_dispatch: {}
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
 
   initialize:
     uses: ./.github/workflows/common-initializer.yaml
+    permissions: {}
 
-  gates:
-    needs: [initialize]
-    strategy:
-      fail-fast: true
-      matrix:
-        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
-    runs-on: ${{ matrix.cell.runner }}
+  gates-dev:
+    needs: [initialize, hygiene]
+    permissions:
+      contents: read
+    uses: emcd/rust-project-common/.github/workflows/xrepo--tester.yaml@gha-1
+    with:
+      platforms: ${{ needs.initialize.outputs.platforms }}
+      cargo-profile: dev
+      has-library: true
+
+  gates-release:
+    needs: [initialize, hygiene]
+    permissions:
+      contents: read
+    uses: emcd/rust-project-common/.github/workflows/xrepo--tester.yaml@gha-1
+    with:
+      platforms: ${{ needs.initialize.outputs.platforms }}
+      cargo-profile: release
+      has-library: true
+
+  # Dedicated file-hygiene runner: the single sanctioned exception to running
+  # no pre-commit in CI. Hook IDs are enumerated explicitly; copiertv keeps
+  # this list identical to the template pre-commit configuration.
+  hygiene:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
 
       - name: Check Out
         uses: actions/checkout@v7
-
-      - name: Set Up Toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add Target
-        run: rustup target add ${{ matrix.cell.target }}
+        with:
+          persist-credentials: false
 
       - name: Install pre-commit
         run: pipx install pre-commit==4.6.2
 
-      - name: Install linecheck
-        run: cargo install linecheck --version 1.2.1 --locked
+      - name: Check Large Files
+        run: pre-commit run check-added-large-files --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Install nextest
-        run: cargo install cargo-nextest --version 0.9.146 --locked
+      - name: Check Filename Case Conflict
+        run: pre-commit run check-case-conflict --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Generate Lockfile If Missing
-        # Fresh copies have no Cargo.lock (the template cannot pre-resolve
-        # dependencies). Bootstrap it once; later runs enforce it via --locked.
-        # Explicit bash: Windows runners default to pwsh, which has no `test`.
-        run: test -f Cargo.lock || cargo generate-lockfile
-        shell: bash
+      - name: Check Merge Conflict Markers
+        run: pre-commit run check-merge-conflict --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Run pre-commit Stage
-        run: pre-commit run --hook-stage pre-commit --config .auxiliary/configuration/pre-commit.yaml --all-files --show-diff-on-failure
+      - name: Check Dangling Symlinks
+        run: pre-commit run check-symlinks --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-  build:
-    needs: [initialize]
-    strategy:
-      fail-fast: true
-      matrix:
-        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
-    runs-on: ${{ matrix.cell.runner }}
-    steps:
+      - name: Check VCS Permalinks
+        run: pre-commit run check-vcs-permalinks --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Check Out
-        uses: actions/checkout@v7
+      - name: Check Destroyed Symlinks
+        run: pre-commit run destroyed-symlinks --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Set Up Toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Check Private Keys
+        run: pre-commit run detect-private-key --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Add Target
-        run: rustup target add ${{ matrix.cell.target }}
+      - name: Check Mixed Line Endings
+        run: pre-commit run mixed-line-ending --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Generate Lockfile If Missing
-        run: test -f Cargo.lock || cargo generate-lockfile
-        shell: bash
+      - name: Validate JSON Files
+        run: pre-commit run check-json --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
-      - name: Build
-        run: cargo build --locked --all-targets
+      - name: Validate TOML Files
+        run: pre-commit run check-toml --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
+
+      - name: Validate YAML Files
+        run: pre-commit run check-yaml --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
+
+      - name: Fix End of Files
+        run: pre-commit run end-of-file-fixer --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
+
+      - name: Fix Trailing Whitespace
+        run: pre-commit run trailing-whitespace --config .auxiliary/configuration/pre-commit.yaml --hook-stage pre-commit --all-files --show-diff-on-failure
 
   # Consumer-owned gates live in ./.github/workflows/local--tester.yaml
   # (authored by the consumer, never rendered by the template). This job
@@ -83,3 +101,20 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/local--tester.yaml
+    with:
+      platforms: ${{ needs.initialize.outputs.platforms }}
+      cargo-profile: dev
+
+  final-gate:
+    needs: [gates-dev, gates-release, hygiene, custom]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+
+      - name: Evaluate Gate Results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 -c 'import json, os, sys; needs = json.loads(os.environ["NEEDS_JSON"]); bad = {k: v.get("result") for k, v in needs.items() if v.get("result") != "success"}; sys.exit("failing gates: %s" % bad if bad else print("all gate jobs succeeded"))'
+        shell: bash
