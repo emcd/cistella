@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 
 use cistella::isolators::quadlet_gc::{
-    GC_SCOPE_ENV, parse_gc_scope, scope_allows,
+    GC_SCOPE_ENV, parse_gc_scope, scope_allows, scope_from_env,
 };
 
 fn set(names: &[&str]) -> HashSet<String> {
@@ -25,11 +25,34 @@ fn scope_env_name_is_stable() {
 }
 
 #[test]
-fn unset_and_blank_scope_means_unscoped() {
+fn unset_scope_means_unscoped() {
     assert_eq!(parse_gc_scope(None), None);
-    assert_eq!(parse_gc_scope(Some("")), None);
-    assert_eq!(parse_gc_scope(Some("   ")), None);
-    assert_eq!(parse_gc_scope(Some(",,")), None);
+    assert_eq!(scope_from_env(None), None);
+}
+
+#[test]
+fn blank_explicit_scope_matches_nothing() {
+    // Only absence authorizes the legacy sweep: an explicit
+    // blank (or comma-only) setting matches nothing instead of
+    // silently widening, so a misconfigured gc reaps nothing.
+    for value in ["", "   ", ",,", " , , "] {
+        assert_eq!(
+            parse_gc_scope(Some(value)),
+            Some(HashSet::new()),
+            "blank scope must match nothing: {value:?}"
+        );
+        assert!(!scope_allows(&parse_gc_scope(Some(value)), "aaa"));
+    }
+    assert_eq!(scope_from_env(Some("".as_ref())), Some(HashSet::new()));
+}
+
+#[test]
+fn unreadable_scope_matches_nothing() {
+    // Non-Unicode variable bytes cannot name sessions; match
+    // nothing rather than widen to the legacy sweep.
+    use std::os::unix::ffi::OsStrExt;
+    let raw = std::ffi::OsStr::from_bytes(b"\xff\xfe");
+    assert_eq!(scope_from_env(Some(raw)), Some(HashSet::new()));
 }
 
 #[test]

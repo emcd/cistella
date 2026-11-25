@@ -17,28 +17,46 @@ use crate::registry::unit_file_label;
 use crate::session::LABEL_ID;
 
 /// Environment variable scoping one gc invocation to a set of
-/// sessions: comma-separated session ids. Unset or blank means
-/// unscoped (legacy suite-wide behavior). Tests scope each gc to
-/// their own fixtures so concurrent suites never observe each
-/// other's orphans; production leaves it unset. Set per child
-/// process only, never in shared process state.
+/// sessions: comma-separated session ids. Unset means unscoped
+/// (legacy suite-wide behavior); an explicit empty value
+/// matches nothing. The operation-log tests scope each gc to
+/// their own fixtures; production leaves it unset. Set per
+/// child process only, never in shared process state.
 pub const GC_SCOPE_ENV: &str = "CISTELLA_GC_SCOPE";
 
 /// Parses a scope variable value into the allowed session set:
 /// comma-separated, whitespace-trimmed, empties dropped. `None`
-/// (or blank) means unscoped. Pure so unit tests pin it without
-/// process env.
+/// (variable absent) means unscoped. An explicit-but-empty value
+/// matches nothing — only absence authorizes the legacy sweep,
+/// so a blank setting fails safe instead of silently widening.
+/// Pure so unit tests pin it without process env.
 #[must_use]
 pub fn parse_gc_scope(
     value: Option<&str>,
 ) -> Option<std::collections::HashSet<String>> {
-    let value = value.unwrap_or_default();
-    let set: std::collections::HashSet<String> = value
-        .split(',')
-        .map(|entry| entry.trim().to_string())
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    if set.is_empty() { None } else { Some(set) }
+    let value = value?;
+    Some(
+        value
+            .split(',')
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect(),
+    )
+}
+
+/// Resolves the scope from the raw process variable: absent
+/// means the legacy suite-wide scan; present-but-unreadable
+/// (non-Unicode) matches nothing rather than widening. Pure
+/// over the `var_os` read so unit tests pin the invalid-input
+/// path.
+#[must_use]
+pub fn scope_from_env(
+    value: Option<&std::ffi::OsStr>,
+) -> Option<std::collections::HashSet<String>> {
+    match value?.to_str() {
+        None => Some(std::collections::HashSet::new()),
+        Some(text) => parse_gc_scope(Some(text)),
+    }
 }
 
 /// Whether a resolved session id is visible to this gc run:
@@ -303,8 +321,9 @@ fn gc_exited_locked_inner(
     let systemd = systemd_user_available();
     // Fixture isolation: a scoped run never observes other
     // sessions' candidates at any phase. Unset means the legacy
-    // suite-wide scan.
-    let scope = parse_gc_scope(std::env::var(GC_SCOPE_ENV).ok().as_deref());
+    // suite-wide scan; an explicit empty or unreadable value
+    // matches nothing rather than widening.
+    let scope = scope_from_env(std::env::var_os(GC_SCOPE_ENV).as_deref());
     // Enumerate candidates from both sources: unit files + podman ps
     let mut candidates = ps_candidate_names(op, "podman")?;
     // From Quadlet unit directory (orphaned files invisible to ps due to --rm)
@@ -442,11 +461,13 @@ fn gc_exited_locked_inner(
             unit_props.as_ref(),
             &sid,
         );
-        // Scoped runs skip anything they cannot attribute to
-        // their own fixtures: no classify record, no reap, no
-        // live-set entry. The receipt log therefore never names
-        // another test's session from this run.
-        if !scope_allows(&scope, &sid) {
+        // Scoped runs skip demonstrably foreign candidates: a
+        // resolved session id outside the scope gets no classify
+        // record, no reap, no live-set entry. Uncertain identity
+        // (empty sid) keeps the legacy fail-closed path below, so
+        // an uninspectable present container still aborts the scan
+        // instead of vanishing silently.
+        if !sid.is_empty() && !scope_allows(&scope, &sid) {
             continue;
         }
         if classification.abort == Some(AbortKind::FailClosed) {

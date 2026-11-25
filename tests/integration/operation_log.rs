@@ -2,13 +2,18 @@
 //! on a real backend, and logger faults leaving gc identical.
 //!
 //! Both tests scope their gc invocations to their own fixtures
-//! (`CISTELLA_GC_SCOPE`), so concurrent suites never observe
-//! each other's orphans — including the unwritable-log-root
-//! path, whose gc reaps without leaving receipts by design. The
-//! reconstruction scan still tolerates receipted sibling reaps
-//! (the log naming this session is the receipt no matter which
-//! gc wrote it); scoping prevents the receipt-less cross-reap
-//! the scan cannot see. The shared-vs-isolated control below
+//! (`CISTELLA_GC_SCOPE`), so their gc runs never cross-reap:
+//! a scoped gc only observes the sessions it names, including
+//! on the unwritable-log-root path, whose gc reaps without
+//! leaving receipts by design. Other suite tests still run
+//! unscoped gc (unchanged), so this is not yet a suite-wide
+//! property — the shared-vs-isolated control below demonstrates
+//! the boundary mechanism under deliberate overlap, with the
+//! shared arm bounded to its named fixtures. The reconstruction
+//! scan still tolerates receipted sibling reaps (the log naming
+//! this session is the receipt no matter which gc wrote it);
+//! scoping prevents the receipt-less cross-reap the scan
+//! cannot see. The shared-vs-isolated control below
 //! demonstrates both halves under deliberate overlap.
 //!
 //! All three tests mirror the orphan-test lock discipline: the
@@ -408,14 +413,18 @@ fn gc_scope_isolates_sibling_fixtures() {
     let worktree = src_worktree();
     let worktree_str = worktree.path().to_string_lossy().to_string();
     let home = home_dir();
-    // Phase 1 (shared scope): an unscoped sibling gc observes and
-    // reaps the victim orphan, with receipts. This is the
-    // historical interference, demonstrated receipted: the
-    // victim's own gc never runs, yet the unit is gone and the
-    // log names it.
+    // Phase 1 (shared scope): a sibling gc scoped to both
+    // named fixtures observes and reaps the victim orphan, with
+    // receipts. This is the historical interference, demonstrated
+    // receipted: the victim's own gc never runs, yet the unit is
+    // gone and the log names it. The scope names both fixtures so
+    // the demonstration cannot touch any other test's orphans.
     let (victim_shared, container_shared) =
         make_orphan(&home, &worktree_str, "scope-shared");
-    let out = run_cistella(&home, &["gc"]);
+    let (sibling_shared, _) =
+        make_orphan(&home, &worktree_str, "scope-shared-sib");
+    let scope = format!("{victim_shared},{sibling_shared}");
+    let out = run_gc_isolated(&home, &scope, None);
     assert!(
         out.status.success(),
         "shared sibling gc: {}",
@@ -424,6 +433,10 @@ fn gc_scope_isolates_sibling_fixtures() {
     assert!(
         !unit_path(&home, &victim_shared).exists(),
         "shared sibling gc observes the victim"
+    );
+    assert!(
+        !unit_path(&home, &sibling_shared).exists(),
+        "shared sibling gc still reaps its own orphan"
     );
     let shared_gc = assert_gc_logged_reap(&victim_shared);
     assert_teardown_logged_reload(
