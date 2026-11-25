@@ -252,6 +252,18 @@ pub fn reap_orphans(
     base: &Path,
     live_sessions: &std::collections::HashSet<String>,
 ) -> Vec<String> {
+    reap_orphans_scoped(base, live_sessions, None)
+}
+
+/// Scope-bound twin of [`reap_orphans`]: sessions outside
+/// `scope` are never observed, so a scoped gc leaves other
+/// fixtures' attestations alone. `None` scope is the legacy
+/// suite-wide sweep.
+pub fn reap_orphans_scoped(
+    base: &Path,
+    live_sessions: &std::collections::HashSet<String>,
+    scope: Option<&std::collections::HashSet<String>>,
+) -> Vec<String> {
     let mut reaped = Vec::new();
     let state_dir = crate::lock::PrepareLease::state_dir(base);
     if !state_dir.exists() {
@@ -277,6 +289,13 @@ pub fn reap_orphans(
             continue;
         }
         if live_sessions.contains(session) {
+            continue;
+        }
+        // Fixture isolation: scoped sweeps never observe other
+        // sessions' attestations.
+        if let Some(allowed) = scope
+            && !allowed.contains(session)
+        {
             continue;
         }
         dir.remove_file(&name);

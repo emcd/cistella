@@ -1,18 +1,111 @@
 //! Operation-log live pins: gc decisions reconstructed from the log
 //! on a real backend, and logger faults leaving gc identical.
 //!
-//! Both tests mirror the orphan-test lock discipline: the creation
-//! lock is held across the kill and the presence assertions, then
-//! DROPPED before invoking `gc` - a child gc must acquire the same
-//! lock, so holding it across the spawn is a deterministic
-//! self-deadlock (60s timeout, zero output). The reconstruction
-//! scans every gc operation log under the shared root, so it stays
-//! sound when a sibling gc reaps the fixture first: the log that
-//! names this session is the receipt no matter which gc wrote it.
+//! Both tests scope their gc invocations to their own fixtures
+//! (`CISTELLA_GC_SCOPE`), so concurrent suites never observe
+//! each other's orphans — including the unwritable-log-root
+//! path, whose gc reaps without leaving receipts by design. The
+//! reconstruction scan still tolerates receipted sibling reaps
+//! (the log naming this session is the receipt no matter which
+//! gc wrote it); scoping prevents the receipt-less cross-reap
+//! the scan cannot see. The shared-vs-isolated control below
+//! demonstrates both halves under deliberate overlap.
+//!
+//! All three tests mirror the orphan-test lock discipline: the
+//! creation lock is held across the kill and the presence
+//! assertions, then DROPPED before invoking `gc` - a child gc
+//! must acquire the same lock, so holding it across the spawn
+//! is a deterministic self-deadlock (60s timeout, zero output).
 
 use std::process::Command;
 
 use super::helpers::*;
+
+/// gc with explicit child env and no test-process mutation: the
+/// scope isolates this gc to the named sessions (its own
+/// fixtures), and an optional state-home override points the
+/// operation log at a blocker file (logger fault, decisions
+/// identical, zero receipts).
+fn run_gc_isolated(
+    home: &str,
+    scope: &str,
+    state_home: Option<&std::path::Path>,
+) -> std::process::Output {
+    let mut cmd = spawn_cistella_cmd(home, &["gc"]);
+    cmd.env(cistella::isolators::quadlet_gc::GC_SCOPE_ENV, scope);
+    if let Some(root) = state_home {
+        cmd.env("XDG_STATE_HOME", root);
+    }
+    run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("spawn gc")
+}
+
+/// Asserts no gc operation log classifies this session as a
+/// reap: the isolation boundary held and no sibling observed
+/// the fixture. Mirror of the reconstruction scan, expecting
+/// absence.
+fn assert_no_gc_logged_reap(id: &str) {
+    let root = cistella::operation_log::log_root();
+    let listing = std::fs::read_dir(&root).expect("log root readable");
+    for entry in listing.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !cistella::operation_log::op_id_valid(&name) {
+            continue;
+        }
+        let read = match cistella::operation_log::read_operation(&entry.path())
+        {
+            Ok(read) => read,
+            Err(_) => continue,
+        };
+        for record in &read.records {
+            if record.get("phase").and_then(|v| v.as_str()) != Some("classify")
+            {
+                continue;
+            }
+            let sid = record.get("sid").and_then(|v| v.as_str()).unwrap_or("");
+            let decision = record
+                .get("decision")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert!(
+                !(sid == id && decision == "reap-orphan-unit"),
+                "scoped-out session {id} observed by a gc"
+            );
+        }
+    }
+}
+
+/// Builds one gc-eligible orphan: conduct, kill, external stop,
+/// presence assertions. Mirrors the two existing tests' setup;
+/// the caller owns the creation-lock discipline around gc.
+fn make_orphan(
+    home: &str,
+    worktree: &str,
+    identity: &str,
+) -> (String, String) {
+    let (mut conduct, id, mut guard) =
+        spawn_conduct(home, worktree, &["--identity", identity]);
+    wait_active(&id);
+    let _freeze = cistella::lock::LockGuard::acquire().expect("lock acquires");
+    conduct.kill().expect("kill conduct");
+    let _ = reap_bounded(&mut conduct, CHILD_REAP_TIMEOUT)
+        .expect("reap conduct post-kill");
+    guard.id = None;
+    assert!(unit_path(home, &id).exists(), "orphan unit remains");
+    let container = format!("cistella-{id}");
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["--user", "stop", &format!("{container}.service")]);
+    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("stop runs");
+    assert!(
+        out.status.success(),
+        "stop {container}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        unit_path(home, &id).exists(),
+        "unit file outlives external stop"
+    );
+    (id, container)
+}
 
 /// Finds any gc operation log naming this session in a classify
 /// record, and asserts the reap decision plus a success terminal
@@ -238,7 +331,7 @@ fn gc_operation_log_reconstructs_reap() {
         "unit file outlives external stop"
     );
     drop(_freeze);
-    let out = run_cistella(&home, &["gc"]);
+    let out = run_gc_isolated(&home, &id, None);
     assert!(
         out.status.success(),
         "gc: {}",
@@ -288,12 +381,7 @@ fn gc_with_unwritable_log_root_reaps_identically() {
     );
     drop(_freeze);
     let blocker = tempfile::NamedTempFile::new().expect("blocker file");
-    let mut cmd = Command::new(bin());
-    cmd.arg("gc");
-    cmd.env("HOME", &home);
-    cmd.env("TERM", "xterm-ghostty");
-    cmd.env("XDG_STATE_HOME", blocker.path());
-    let out = run_bounded(cmd, RUN_CISTELLA_TIMEOUT).expect("spawn gc");
+    let out = run_gc_isolated(&home, &id, Some(blocker.path()));
     assert!(
         out.status.success(),
         "gc without logging: {}",
@@ -302,5 +390,90 @@ fn gc_with_unwritable_log_root_reaps_identically() {
     assert!(
         !unit_path(&home, &id).exists(),
         "gc reaps identically without its log"
+    );
+}
+
+/// Shared-vs-isolated control under deliberate overlap: the same
+/// two-orphan layout interferes under shared scope and stays
+/// clean under isolated scope. Sibling gc invocations stand in
+/// for the concurrent suite actor that produced the historical
+/// receipt-less removal; the owning gc stays scoped to its own
+/// fixture throughout.
+#[ignore = "live: requires systemd user manager and podman"]
+#[test]
+fn gc_scope_isolates_sibling_fixtures() {
+    if !systemd_gate() {
+        return;
+    }
+    let worktree = src_worktree();
+    let worktree_str = worktree.path().to_string_lossy().to_string();
+    let home = home_dir();
+    // Phase 1 (shared scope): an unscoped sibling gc observes and
+    // reaps the victim orphan, with receipts. This is the
+    // historical interference, demonstrated receipted: the
+    // victim's own gc never runs, yet the unit is gone and the
+    // log names it.
+    let (victim_shared, container_shared) =
+        make_orphan(&home, &worktree_str, "scope-shared");
+    let out = run_cistella(&home, &["gc"]);
+    assert!(
+        out.status.success(),
+        "shared sibling gc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !unit_path(&home, &victim_shared).exists(),
+        "shared sibling gc observes the victim"
+    );
+    let shared_gc = assert_gc_logged_reap(&victim_shared);
+    assert_teardown_logged_reload(
+        &shared_gc,
+        &victim_shared,
+        &container_shared,
+    );
+    // Phase 2 (isolated scope): the victim and sibling orphans
+    // coexist, but the sibling gc is scoped to its own session
+    // with an unopenable log root — the exact historical shape.
+    // The victim must survive unobserved: unit remains, and no
+    // classify record names it anywhere.
+    let (sibling, _) = make_orphan(&home, &worktree_str, "scope-sibling");
+    let (victim_isolated, container_isolated) =
+        make_orphan(&home, &worktree_str, "scope-victim");
+    // Unwritable root: the exact historical receipt-less shape.
+    // Scope alone must protect the victim; the log absence is
+    // expected here, not evidence.
+    let blocker = tempfile::NamedTempFile::new().expect("blocker file");
+    let out = run_gc_isolated(&home, &sibling, Some(blocker.path()));
+    assert!(
+        out.status.success(),
+        "isolated sibling gc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !unit_path(&home, &sibling).exists(),
+        "scoped gc still reaps its own orphan"
+    );
+    assert!(
+        unit_path(&home, &victim_isolated).exists(),
+        "scoped sibling gc leaves the victim alone"
+    );
+    assert_no_gc_logged_reap(&victim_isolated);
+    // The victim's owning gc, scoped to its own session, reaps
+    // with the full receipt chain intact.
+    let out = run_gc_isolated(&home, &victim_isolated, None);
+    assert!(
+        out.status.success(),
+        "owning gc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !unit_path(&home, &victim_isolated).exists(),
+        "owning gc reaps its orphan"
+    );
+    let gc_id = assert_gc_logged_reap(&victim_isolated);
+    assert_teardown_logged_reload(
+        &gc_id,
+        &victim_isolated,
+        &container_isolated,
     );
 }

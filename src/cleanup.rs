@@ -704,4 +704,5 @@ pub fn group_dead(pgid: u32) -> bool {
 mod tmpdir;
 pub use self::tmpdir::{
     parse_slice_session, reap_tmpdir_orphans, reap_tmpdir_orphans_in,
+    reap_tmpdir_orphans_in_scoped, reap_tmpdir_orphans_scoped,
 };

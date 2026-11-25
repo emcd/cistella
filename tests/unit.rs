@@ -79,6 +79,8 @@ mod profile_resolution;
 mod protocol;
 #[path = "unit/quadlet_gc_classify.rs"]
 mod quadlet_gc_classify;
+#[path = "unit/quadlet_gc_scope.rs"]
+mod quadlet_gc_scope;
 #[path = "unit/quadlet_remove.rs"]
 mod quadlet_remove;
 #[path = "unit/registry.rs"]

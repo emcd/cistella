@@ -68,10 +68,27 @@ pub fn parse_slice_session(name: &str) -> Option<String> {
 pub fn reap_tmpdir_orphans(
     live_sessions: &std::collections::HashSet<String>,
 ) -> Vec<String> {
-    reap_tmpdir_orphans_in(
+    reap_tmpdir_orphans_in_scoped(
         &seat_temp_root(),
         &crate::lock::runtime_base(),
         live_sessions,
+        None,
+    )
+}
+
+/// Scope-bound twin of [`reap_tmpdir_orphans`]: only sessions in
+/// `scope` are eligible, so a scoped gc never evaluates other
+/// fixtures' leases. `None` scope behaves exactly like the
+/// unscoped sweep.
+pub fn reap_tmpdir_orphans_scoped(
+    live_sessions: &std::collections::HashSet<String>,
+    scope: Option<&std::collections::HashSet<String>>,
+) -> Vec<String> {
+    reap_tmpdir_orphans_in_scoped(
+        &seat_temp_root(),
+        &crate::lock::runtime_base(),
+        live_sessions,
+        scope,
     )
 }
 
@@ -82,6 +99,19 @@ pub fn reap_tmpdir_orphans_in(
     root: &Path,
     base: &Path,
     live_sessions: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    reap_tmpdir_orphans_in_scoped(root, base, live_sessions, None)
+}
+
+/// Scope-bound twin of [`reap_tmpdir_orphans_in`]: candidates
+/// whose session is outside `scope` are skipped before any lease
+/// evaluation, so other fixtures are never observed. `None`
+/// scope is the legacy suite-wide sweep.
+pub fn reap_tmpdir_orphans_in_scoped(
+    root: &Path,
+    base: &Path,
+    live_sessions: &std::collections::HashSet<String>,
+    scope: Option<&std::collections::HashSet<String>>,
 ) -> Vec<String> {
     let mut removed = Vec::new();
     let entries = match std::fs::read_dir(root) {
@@ -102,6 +132,14 @@ pub fn reap_tmpdir_orphans_in(
         let Some(session) = parse_slice_session(&name) else {
             continue;
         };
+        // Fixture isolation: scoped sweeps never evaluate other
+        // sessions' leases — eligibility is decided inside the
+        // scope only. Unscoped sweeps keep legacy behavior.
+        if let Some(allowed) = scope
+            && !allowed.contains(&session)
+        {
+            continue;
+        }
         if live_sessions.contains(&session) {
             continue;
         }

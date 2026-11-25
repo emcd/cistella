@@ -16,6 +16,46 @@ use crate::operation_log;
 use crate::registry::unit_file_label;
 use crate::session::LABEL_ID;
 
+/// Environment variable scoping one gc invocation to a set of
+/// sessions: comma-separated session ids. Unset or blank means
+/// unscoped (legacy suite-wide behavior). Tests scope each gc to
+/// their own fixtures so concurrent suites never observe each
+/// other's orphans; production leaves it unset. Set per child
+/// process only, never in shared process state.
+pub const GC_SCOPE_ENV: &str = "CISTELLA_GC_SCOPE";
+
+/// Parses a scope variable value into the allowed session set:
+/// comma-separated, whitespace-trimmed, empties dropped. `None`
+/// (or blank) means unscoped. Pure so unit tests pin it without
+/// process env.
+#[must_use]
+pub fn parse_gc_scope(
+    value: Option<&str>,
+) -> Option<std::collections::HashSet<String>> {
+    let value = value.unwrap_or_default();
+    let set: std::collections::HashSet<String> = value
+        .split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if set.is_empty() { None } else { Some(set) }
+}
+
+/// Whether a resolved session id is visible to this gc run:
+/// everything is visible unscoped; scoped runs see only listed
+/// sessions. Empty ids never match, so unattributable
+/// candidates stay untouched under scope.
+#[must_use]
+pub fn scope_allows(
+    scope: &Option<std::collections::HashSet<String>>,
+    sid: &str,
+) -> bool {
+    match scope {
+        None => true,
+        Some(allowed) => !sid.is_empty() && allowed.contains(sid),
+    }
+}
+
 /// GC result.
 #[derive(Debug, Clone)]
 pub struct GcResult {
@@ -261,6 +301,10 @@ fn gc_exited_locked_inner(
 ) -> Result<GcResult> {
     let mut reaped = Vec::new();
     let systemd = systemd_user_available();
+    // Fixture isolation: a scoped run never observes other
+    // sessions' candidates at any phase. Unset means the legacy
+    // suite-wide scan.
+    let scope = parse_gc_scope(std::env::var(GC_SCOPE_ENV).ok().as_deref());
     // Enumerate candidates from both sources: unit files + podman ps
     let mut candidates = ps_candidate_names(op, "podman")?;
     // From Quadlet unit directory (orphaned files invisible to ps due to --rm)
@@ -398,6 +442,13 @@ fn gc_exited_locked_inner(
             unit_props.as_ref(),
             &sid,
         );
+        // Scoped runs skip anything they cannot attribute to
+        // their own fixtures: no classify record, no reap, no
+        // live-set entry. The receipt log therefore never names
+        // another test's session from this run.
+        if !scope_allows(&scope, &sid) {
+            continue;
+        }
         if classification.abort == Some(AbortKind::FailClosed) {
             // Present but uninspectable: a real invocation failure,
             // not Quadlet `--rm` absence. Fail closed, with the
@@ -479,16 +530,23 @@ fn gc_exited_locked_inner(
     // Phase 3: tmpdir orphans attributable to dead sessions. Unit
     // teardowns above converged (any failure propagated instead),
     // so sessions absent from the live set are dead — orphans with
-    // live leases or live guest groups still skip inside.
-    let tmpdir_reaped = crate::cleanup::reap_tmpdir_orphans(&live_sessions);
+    // live leases or live guest groups still skip inside. Under
+    // scope only the run's own sessions are eligible; anything
+    // else stays for its owner.
+    let tmpdir_reaped = crate::cleanup::reap_tmpdir_orphans_scoped(
+        &live_sessions,
+        scope.as_ref(),
+    );
     operation_log::record_gc_phase(op, "tmpdir", &tmpdir_reaped);
     reaped.extend(tmpdir_reaped);
     // Phase 3b: attestation orphans (sessions with no live unit:
-    // crashed conducts, pre-teardown kills). Same live-set gate;
-    // reaped names report alongside containers.
-    let attestation_reaped = crate::attestation::reap_orphans(
+    // crashed conducts, pre-teardown kills). Same live-set gate,
+    // additionally scope-bound like the tmpdir sweep; reaped names
+    // report alongside containers.
+    let attestation_reaped = crate::attestation::reap_orphans_scoped(
         &crate::lock::runtime_base(),
         &live_sessions,
+        scope.as_ref(),
     );
     operation_log::record_gc_phase(op, "attestation", &attestation_reaped);
     reaped.extend(attestation_reaped);
