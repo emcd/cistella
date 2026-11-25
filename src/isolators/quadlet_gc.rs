@@ -96,18 +96,18 @@ pub fn scope_permits_reap(
 }
 
 /// Whether this classification leaves liveness uncertain in a
-/// way that could belong to a live session: a present container
-/// without a resolved identity. Exited containers are dead by
-/// status and absent candidates have no live backend behind
-/// them, so only the present-unresolved shape withholds
-/// dependent sweeps. Pure so unit tests pin it through the
+/// way that could belong to a live session: an unresolved
+/// identity with no abort behind it. Exited containers are dead
+/// by status and aborts precede sweeps regardless, so only the
+/// unresolved decision withholds. Podman absence is not unit
+/// death — a loaded/active unit with an unreadable id is
+/// ambiguous either way. Pure so unit tests pin it through the
 /// real classification mapping.
 #[must_use]
 pub fn unresolved_live_possible(
     classification: &CandidateClassification,
 ) -> bool {
     classification.decision == "unresolved-no-session"
-        && classification.exists == "present"
 }
 
 /// GC result.
@@ -390,9 +390,9 @@ fn gc_exited_locked_inner(
     // absence — failed scan is not "no unit".
     let mut live_sessions: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    // Present-but-unresolved candidates: liveness knowledge is
-    // incomplete, and the missing id could belong to a live
-    // session the sweeps below would then treat as absence.
+    // Unresolved candidates: liveness knowledge is incomplete,
+    // and the missing id could belong to a live session the
+    // sweeps below would then treat as absence.
     let mut unresolved_present = false;
     let mut ordered: Vec<String> = candidates.into_iter().collect();
     ordered.sort();
@@ -510,9 +510,9 @@ fn gc_exited_locked_inner(
         if !sid.is_empty() && !scope_allows(&scope, &sid) {
             continue;
         }
-        // Present-but-unresolved candidates leave liveness
-        // knowledge incomplete; the dependent sweeps must not
-        // treat that absence as death.
+        // Unresolved candidates leave liveness knowledge
+        // incomplete; the dependent sweeps must not treat that
+        // absence as death.
         if unresolved_live_possible(&classification) {
             unresolved_present = true;
         }
@@ -617,7 +617,7 @@ fn gc_exited_locked_inner(
         operation_log::record_gc_scan(
             op,
             "withheld-unresolved-live",
-            "dependent sweeps withheld: present container without resolved identity",
+            "dependent sweeps withheld: unresolved session identity",
         );
     }
     let tmpdir_reaped = if sweeps_permitted {

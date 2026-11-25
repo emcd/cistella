@@ -155,25 +155,35 @@ fn empty_scope_set_reaps_nothing() {
 }
 
 #[test]
-fn unresolved_present_withholds_dependent_sweeps() {
+fn unresolved_withholds_dependent_sweeps() {
     use cistella::isolators::quadlet_gc::unresolved_live_possible;
     // Running container without a resolved identity: liveness
     // uncertain, sweeps must stand down.
     let unknown_live = classify_candidate(Some("running"), Ok(true), None, "");
     assert_eq!(unknown_live.decision, "unresolved-no-session");
     assert!(unresolved_live_possible(&unknown_live));
+    // Loaded/active unit behind an absent container with an
+    // unreadable id: ambiguous either way (podman absence is
+    // not unit death), sweeps must stand down.
+    let mut active = HashMap::new();
+    active.insert("ActiveState".to_string(), "active".to_string());
+    active.insert("LoadState".to_string(), "loaded".to_string());
+    let ambiguous = classify_candidate(None, Ok(false), Some(&active), "");
+    assert_eq!(ambiguous.decision, "unresolved-no-session");
+    assert!(unresolved_live_possible(&ambiguous));
+    // Fully vanished backend still withholds: no abort behind
+    // it, so the rule stays one shape (unresolved withholds).
+    let absent_unknown = classify_candidate(None, Ok(false), None, "");
+    assert!(unresolved_live_possible(&absent_unknown));
     // Exited containers are dead by status: sweeps unaffected.
     let exited = classify_candidate(Some("exited"), Ok(true), None, "");
     assert!(!unresolved_live_possible(&exited));
-    // Absent candidates have no live backend behind them.
-    let absent =
-        classify_candidate(None, Ok(false), Some(&inactive_unit()), "aaa");
-    assert!(!unresolved_live_possible(&absent));
-    let absent_unknown = classify_candidate(None, Ok(false), None, "");
-    assert!(!unresolved_live_possible(&absent_unknown));
-    // Resolved live sessions are known, not uncertain.
+    // Resolved sessions are known, not uncertain.
     let live = classify_candidate(Some("running"), Ok(true), None, "aaa");
     assert!(!unresolved_live_possible(&live));
+    let orphan =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "aaa");
+    assert!(!unresolved_live_possible(&orphan));
     // Fail-closed aborts precede sweeps regardless.
     let failed = classify_candidate(None, Ok(true), None, "");
     assert!(!unresolved_live_possible(&failed));
