@@ -153,3 +153,71 @@ fn empty_scope_set_reaps_nothing() {
         classify_candidate(None, Ok(false), Some(&inactive_unit()), "aaa");
     assert!(!scope_permits_reap(&scope, "aaa", &orphan));
 }
+
+#[test]
+fn unresolved_present_withholds_dependent_sweeps() {
+    use cistella::isolators::quadlet_gc::unresolved_live_possible;
+    // Running container without a resolved identity: liveness
+    // uncertain, sweeps must stand down.
+    let unknown_live = classify_candidate(Some("running"), Ok(true), None, "");
+    assert_eq!(unknown_live.decision, "unresolved-no-session");
+    assert!(unresolved_live_possible(&unknown_live));
+    // Exited containers are dead by status: sweeps unaffected.
+    let exited = classify_candidate(Some("exited"), Ok(true), None, "");
+    assert!(!unresolved_live_possible(&exited));
+    // Absent candidates have no live backend behind them.
+    let absent =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "aaa");
+    assert!(!unresolved_live_possible(&absent));
+    let absent_unknown = classify_candidate(None, Ok(false), None, "");
+    assert!(!unresolved_live_possible(&absent_unknown));
+    // Resolved live sessions are known, not uncertain.
+    let live = classify_candidate(Some("running"), Ok(true), None, "aaa");
+    assert!(!unresolved_live_possible(&live));
+    // Fail-closed aborts precede sweeps regardless.
+    let failed = classify_candidate(None, Ok(true), None, "");
+    assert!(!unresolved_live_possible(&failed));
+}
+
+#[test]
+fn scoped_sweep_retains_out_of_scope_attestations() {
+    use cistella::attestation::{Attestation, Incarnation};
+    fn sample(session: &str) -> Attestation {
+        Attestation {
+            session_id: session.to_string(),
+            container_name: format!("cistella-{session}"),
+            attempt_key: "key-1".to_string(),
+            argv: vec!["sleep".to_string(), "infinity".to_string()],
+            execution_handle: "exec-1".to_string(),
+            incarnation: Some(Incarnation {
+                container_id: "deadbeef".to_string(),
+                started_at: "2026-10-20T00:00:00Z".to_string(),
+            }),
+        }
+    }
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let base = dir.path();
+    let kept = sample("scopekept01");
+    let out = sample("scopeout02");
+    cistella::attestation::publish(base, &kept).expect("publish kept");
+    cistella::attestation::publish(base, &out).expect("publish out");
+    // Neither session is live; the scope names only the kept
+    // one. The in-scope orphan reaps; the out-of-scope
+    // attestation is retained despite missing from the live
+    // set — the sweep never observes it.
+    let scope = parse_gc_scope(Some("scopekept01"));
+    let reaped = cistella::attestation::reap_orphans_scoped(
+        base,
+        &std::collections::HashSet::new(),
+        scope.as_ref(),
+    );
+    assert_eq!(reaped.len(), 1, "exactly the in-scope orphan reaps");
+    assert!(
+        reaped[0].contains("scopekept01"),
+        "reaped name attributes the in-scope session: {reaped:?}"
+    );
+    let retained = cistella::attestation::read(base, "scopeout02")
+        .expect("read")
+        .expect("out-of-scope attestation survives");
+    assert_eq!(retained, out);
+}

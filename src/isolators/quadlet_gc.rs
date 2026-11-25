@@ -95,6 +95,21 @@ pub fn scope_permits_reap(
     scope_allows(scope, sid)
 }
 
+/// Whether this classification leaves liveness uncertain in a
+/// way that could belong to a live session: a present container
+/// without a resolved identity. Exited containers are dead by
+/// status and absent candidates have no live backend behind
+/// them, so only the present-unresolved shape withholds
+/// dependent sweeps. Pure so unit tests pin it through the
+/// real classification mapping.
+#[must_use]
+pub fn unresolved_live_possible(
+    classification: &CandidateClassification,
+) -> bool {
+    classification.decision == "unresolved-no-session"
+        && classification.exists == "present"
+}
+
 /// GC result.
 #[derive(Debug, Clone)]
 pub struct GcResult {
@@ -375,6 +390,10 @@ fn gc_exited_locked_inner(
     // absence — failed scan is not "no unit".
     let mut live_sessions: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // Present-but-unresolved candidates: liveness knowledge is
+    // incomplete, and the missing id could belong to a live
+    // session the sweeps below would then treat as absence.
+    let mut unresolved_present = false;
     let mut ordered: Vec<String> = candidates.into_iter().collect();
     ordered.sort();
     for name in ordered {
@@ -491,6 +510,12 @@ fn gc_exited_locked_inner(
         if !sid.is_empty() && !scope_allows(&scope, &sid) {
             continue;
         }
+        // Present-but-unresolved candidates leave liveness
+        // knowledge incomplete; the dependent sweeps must not
+        // treat that absence as death.
+        if unresolved_live_possible(&classification) {
+            unresolved_present = true;
+        }
         if classification.abort == Some(AbortKind::FailClosed) {
             // Present but uninspectable: a real invocation failure,
             // not Quadlet `--rm` absence. Fail closed, with the
@@ -582,22 +607,45 @@ fn gc_exited_locked_inner(
     // so sessions absent from the live set are dead — orphans with
     // live leases or live guest groups still skip inside. Under
     // scope only the run's own sessions are eligible; anything
-    // else stays for its owner.
-    let tmpdir_reaped = crate::cleanup::reap_tmpdir_orphans_scoped(
-        &live_sessions,
-        scope.as_ref(),
-    );
+    // else stays for its owner. When a present-but-unresolved
+    // candidate leaves liveness knowledge incomplete, the sweeps
+    // are withheld outright instead of reading that absence as
+    // death (unit reaps above already required positive
+    // identity, so they are unaffected).
+    let sweeps_permitted = scope.is_none() || !unresolved_present;
+    if !sweeps_permitted {
+        operation_log::record_gc_scan(
+            op,
+            "withheld-unresolved-live",
+            "dependent sweeps withheld: present container without resolved identity",
+        );
+    }
+    let tmpdir_reaped = if sweeps_permitted {
+        crate::cleanup::reap_tmpdir_orphans_scoped(
+            &live_sessions,
+            scope.as_ref(),
+        )
+    } else {
+        Vec::new()
+    };
     operation_log::record_gc_phase(op, "tmpdir", &tmpdir_reaped);
     reaped.extend(tmpdir_reaped);
     // Phase 3b: attestation orphans (sessions with no live unit:
     // crashed conducts, pre-teardown kills). Same live-set gate,
-    // additionally scope-bound like the tmpdir sweep; reaped names
-    // report alongside containers.
-    let attestation_reaped = crate::attestation::reap_orphans_scoped(
-        &crate::lock::runtime_base(),
-        &live_sessions,
-        scope.as_ref(),
-    );
+    // additionally scope-bound like the tmpdir sweep — and
+    // likewise withheld on unresolved liveness, so an allowed
+    // live session's attestation is never deleted for missing
+    // from the incomplete set. Reaped names report alongside
+    // containers.
+    let attestation_reaped = if sweeps_permitted {
+        crate::attestation::reap_orphans_scoped(
+            &crate::lock::runtime_base(),
+            &live_sessions,
+            scope.as_ref(),
+        )
+    } else {
+        Vec::new()
+    };
     operation_log::record_gc_phase(op, "attestation", &attestation_reaped);
     reaped.extend(attestation_reaped);
     Ok(GcResult { reaped })
