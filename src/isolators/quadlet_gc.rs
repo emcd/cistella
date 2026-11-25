@@ -74,6 +74,27 @@ pub fn scope_allows(
     }
 }
 
+/// Whether a classified candidate may proceed to teardown
+/// under scope: the classification must select reaping AND, for
+/// scoped runs, the session must be positively identified as a
+/// member. Uncertain identities (empty sid) and foreign
+/// sessions never reach mutation under scope — an exited
+/// container without a label, or an orphan unit with an
+/// unreadable id, keeps its legacy record but stays put.
+/// Unscoped runs keep legacy behavior. Pure so unit tests pin
+/// the classification-to-mutation path without a backend.
+#[must_use]
+pub fn scope_permits_reap(
+    scope: &Option<std::collections::HashSet<String>>,
+    sid: &str,
+    classification: &CandidateClassification,
+) -> bool {
+    if !(classification.is_exited_container || classification.is_orphan_unit) {
+        return false;
+    }
+    scope_allows(scope, sid)
+}
+
 /// GC result.
 #[derive(Debug, Clone)]
 pub struct GcResult {
@@ -493,8 +514,16 @@ fn gc_exited_locked_inner(
                 "podman inspect {name} failed while container exists: {inspect_err}"
             )));
         }
-        if classification.is_exited_container || classification.is_orphan_unit
-        {
+        // Scoped mutation requires positive identity membership:
+        // the classification selects reaping AND the session is
+        // resolved inside the scope. Uncertain identities keep
+        // their legacy record below but never reach teardown, so
+        // an exited container without a label, or an orphan unit
+        // with an unreadable id, stays put under scope — and the
+        // dependent sweeps never treat that unresolved state as
+        // absence through the live set (only resolved sessions
+        // enter it, in both modes).
+        if scope_permits_reap(&scope, &sid, &classification) {
             to_reap.push((
                 name.clone(),
                 sid.clone(),

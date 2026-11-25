@@ -7,10 +7,11 @@
 //! isolation is demonstrated live; these tests pin the parsing
 //! and predicate the live suite relies on.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use cistella::isolators::quadlet_gc::{
-    GC_SCOPE_ENV, parse_gc_scope, scope_allows, scope_from_env,
+    GC_SCOPE_ENV, classify_candidate, parse_gc_scope, scope_allows,
+    scope_from_env, scope_permits_reap,
 };
 
 fn set(names: &[&str]) -> HashSet<String> {
@@ -90,4 +91,65 @@ fn empty_session_id_never_matches_scope() {
     let scope = parse_gc_scope(Some("aaa"));
     assert!(!scope_allows(&scope, ""));
     assert!(!scope_allows(&Some(HashSet::new()), "aaa"));
+}
+
+/// Inactive-unit property map: the orphan path with a readable
+/// unit behind an absent container.
+fn inactive_unit() -> HashMap<String, String> {
+    let mut props = HashMap::new();
+    props.insert("ActiveState".to_string(), "inactive".to_string());
+    props.insert("LoadState".to_string(), "loaded".to_string());
+    props
+}
+
+#[test]
+fn scoped_reap_requires_resolved_member_identity() {
+    let scope = parse_gc_scope(Some("aaa"));
+    // In-scope resolved orphan reaps.
+    let own =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "aaa");
+    assert!(own.is_orphan_unit);
+    assert!(scope_permits_reap(&scope, "aaa", &own));
+    // Foreign resolved orphan never reaches mutation.
+    let foreign =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "bbb");
+    assert!(foreign.is_orphan_unit);
+    assert!(!scope_permits_reap(&scope, "bbb", &foreign));
+    // Exited container without a label: reap decision, empty
+    // identity — stays put under scope despite the decision.
+    let unlabeled = classify_candidate(Some("exited"), Ok(true), None, "");
+    assert!(unlabeled.is_exited_container);
+    assert!(!scope_permits_reap(&scope, "", &unlabeled));
+    // Orphan unit with an unreadable id: same bar.
+    let unreadable =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "");
+    assert!(unreadable.is_orphan_unit);
+    assert!(!scope_permits_reap(&scope, "", &unreadable));
+    // Non-reap decisions never reach mutation either way.
+    let live = classify_candidate(Some("running"), Ok(true), None, "aaa");
+    assert!(!live.is_exited_container && !live.is_orphan_unit);
+    assert!(!scope_permits_reap(&scope, "aaa", &live));
+}
+
+#[test]
+fn unscoped_reap_keeps_legacy_behavior() {
+    // Unscoped runs mutate exactly on the classification
+    // decision, including unattributed identities.
+    let exited = classify_candidate(Some("exited"), Ok(true), None, "");
+    assert!(scope_permits_reap(&None, "", &exited));
+    let orphan =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "");
+    assert!(scope_permits_reap(&None, "", &orphan));
+    let live = classify_candidate(Some("running"), Ok(true), None, "");
+    assert!(!scope_permits_reap(&None, "", &live));
+}
+
+#[test]
+fn empty_scope_set_reaps_nothing() {
+    // Explicit-but-empty scope matches nothing, including on
+    // the mutation path.
+    let scope = Some(HashSet::new());
+    let orphan =
+        classify_candidate(None, Ok(false), Some(&inactive_unit()), "aaa");
+    assert!(!scope_permits_reap(&scope, "aaa", &orphan));
 }
